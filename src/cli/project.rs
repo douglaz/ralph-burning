@@ -18,7 +18,7 @@ use crate::composition::agent_execution_builder;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
-use crate::contexts::milestone_record::bundle::MilestoneBundle;
+use crate::contexts::milestone_record::bundle::{bead_matches_implicit_slot, MilestoneBundle};
 use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus};
 use crate::contexts::milestone_record::service::{
     self as milestone_service, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
@@ -556,7 +556,7 @@ fn load_milestone_bundle(
     milestone_id: &MilestoneId,
 ) -> AppResult<LoadedMilestoneBundle> {
     let raw = store.read_plan_json(base_dir, milestone_id)?;
-    let bundle: MilestoneBundle =
+    let mut bundle: MilestoneBundle =
         serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
             file: format!("milestones/{}/plan.json", milestone_id),
             details: error.to_string(),
@@ -572,6 +572,14 @@ fn load_milestone_bundle(
         });
     }
 
+    backfill_legacy_explicit_bead_flags(&mut bundle, milestone_id);
+    bundle
+        .validate()
+        .map_err(|errors| AppError::CorruptRecord {
+            file: format!("milestones/{}/plan.json", milestone_id),
+            details: errors.join("; "),
+        })?;
+
     let mut hasher = Sha256::new();
     hasher.update(raw.as_bytes());
 
@@ -579,6 +587,29 @@ fn load_milestone_bundle(
         bundle,
         plan_hash: format!("{:x}", hasher.finalize()),
     })
+}
+
+fn backfill_legacy_explicit_bead_flags(bundle: &mut MilestoneBundle, milestone_id: &MilestoneId) {
+    let mut next_implicit_bead = 1usize;
+
+    for workstream in &mut bundle.workstreams {
+        for proposal in &mut workstream.beads {
+            let implicit_bead_id = format!("{}.bead-{}", milestone_id.as_str(), next_implicit_bead);
+            next_implicit_bead += 1;
+
+            if proposal.explicit_id.is_some() {
+                continue;
+            }
+
+            if let Some(candidate) = proposal.bead_id.as_deref() {
+                proposal.explicit_id = Some(!bead_matches_implicit_slot(
+                    candidate,
+                    milestone_id.as_str(),
+                    &implicit_bead_id,
+                ));
+            }
+        }
+    }
 }
 
 fn validate_milestone_plan_snapshot(
@@ -760,11 +791,29 @@ fn resolve_bead_plan(
 ) -> AppResult<ResolvedBeadPlan> {
     ensure_bead_belongs_to_milestone(milestone_id, bead)?;
 
-    let matching_by_id = bundle
-        .all_beads()
-        .into_iter()
-        .filter(|proposal| proposal_matches_bead_id(proposal, milestone_id, bead))
-        .collect::<Vec<_>>();
+    let mut next_implicit_bead = 1usize;
+    let mut matching_by_id = Vec::new();
+    let mut matching_by_title = Vec::new();
+    let mut authoritative_implicit_match = None;
+
+    for workstream in &bundle.workstreams {
+        for proposal in &workstream.beads {
+            let implicit_bead_id = format!("{}.bead-{}", milestone_id.as_str(), next_implicit_bead);
+            next_implicit_bead += 1;
+
+            if proposal_matches_bead_id(proposal, milestone_id, bead) {
+                matching_by_id.push(proposal);
+            }
+            if proposal_is_title_fallback_candidate(proposal, milestone_id, &implicit_bead_id)
+                && proposal.title == bead.title
+            {
+                if bead_matches_implicit_slot(&bead.id, milestone_id.as_str(), &implicit_bead_id) {
+                    authoritative_implicit_match = Some(proposal);
+                }
+                matching_by_title.push(proposal);
+            }
+        }
+    }
 
     match matching_by_id.as_slice() {
         [proposal] => {
@@ -785,16 +834,17 @@ fn resolve_bead_plan(
         }
     }
 
-    let matching_beads = bundle
-        .all_beads()
-        .into_iter()
-        .filter(|proposal| proposal.bead_id.is_none() && proposal.title == bead.title)
-        .collect::<Vec<_>>();
-
-    match matching_beads.as_slice() {
-        [proposal] => Ok(ResolvedBeadPlan {
+    if let Some(proposal) = authoritative_implicit_match {
+        return Ok(ResolvedBeadPlan {
             flow_override: proposal.flow_override,
             membership_confirmed: true,
+        });
+    }
+
+    match matching_by_title.as_slice() {
+        [proposal] => Ok(ResolvedBeadPlan {
+            flow_override: proposal.flow_override,
+            membership_confirmed: false,
         }),
         [] => Ok(ResolvedBeadPlan {
             flow_override: None,
@@ -815,6 +865,9 @@ fn proposal_matches_bead_id(
     milestone_id: &MilestoneId,
     bead: &BeadDetail,
 ) -> bool {
+    if proposal.explicit_id != Some(true) {
+        return false;
+    }
     let Some(candidate) = proposal.bead_id.as_deref() else {
         return false;
     };
@@ -823,6 +876,26 @@ fn proposal_matches_bead_id(
         .strip_prefix(&format!("{}.", milestone_id.as_str()))
         .unwrap_or(bead.id.as_str());
     candidate == bead.id || candidate == expected_suffix
+}
+
+fn proposal_is_title_fallback_candidate(
+    proposal: &crate::contexts::milestone_record::bundle::BeadProposal,
+    milestone_id: &MilestoneId,
+    implicit_bead_id: &str,
+) -> bool {
+    if proposal.explicit_id.is_none() {
+        return match proposal.bead_id.as_deref() {
+            None => true,
+            Some(candidate) => {
+                bead_matches_implicit_slot(candidate, milestone_id.as_str(), implicit_bead_id)
+            }
+        };
+    }
+
+    proposal.explicit_id == Some(false)
+        && proposal.bead_id.as_deref().is_some_and(|candidate| {
+            bead_matches_implicit_slot(candidate, milestone_id.as_str(), implicit_bead_id)
+        })
 }
 
 fn format_dependency_reference(dependency: &crate::adapters::br_models::DependencyRef) -> String {
@@ -1177,10 +1250,9 @@ async fn handle_amend_add(args: AmendAddArgs) -> AppResult<()> {
     // Test-only injection seam: delete the writer lock file before close()
     // to exercise close-failure handling at the CLI level.
     if std::env::var("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE").is_ok() {
-        let lock_path = current_dir.join(format!(
-            ".ralph-burning/daemon/leases/writer-{}.lock",
-            project_id.as_str()
-        ));
+        let lock_path = FileSystem::live_workspace_root_path(&current_dir)
+            .join("daemon/leases")
+            .join(format!("writer-{}.lock", project_id.as_str()));
         let _ = std::fs::remove_file(&lock_path);
     }
 
@@ -1269,10 +1341,9 @@ async fn handle_amend_remove(id: String) -> AppResult<()> {
     // Test-only injection seam: delete the writer lock file before close()
     // to exercise close-failure handling at the CLI level.
     if std::env::var("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE").is_ok() {
-        let lock_path = current_dir.join(format!(
-            ".ralph-burning/daemon/leases/writer-{}.lock",
-            project_id.as_str()
-        ));
+        let lock_path = FileSystem::live_workspace_root_path(&current_dir)
+            .join("daemon/leases")
+            .join(format!("writer-{}.lock", project_id.as_str()));
         let _ = std::fs::remove_file(&lock_path);
     }
 
@@ -1324,10 +1395,9 @@ async fn handle_amend_clear() -> AppResult<()> {
     // Test-only injection seam: delete the writer lock file before close()
     // to exercise close-failure handling at the CLI level.
     if std::env::var("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE").is_ok() {
-        let lock_path = current_dir.join(format!(
-            ".ralph-burning/daemon/leases/writer-{}.lock",
-            project_id.as_str()
-        ));
+        let lock_path = FileSystem::live_workspace_root_path(&current_dir)
+            .join("daemon/leases")
+            .join(format!("writer-{}.lock", project_id.as_str()));
         let _ = std::fs::remove_file(&lock_path);
     }
 
@@ -1391,18 +1461,27 @@ fn truncate_utf8(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_bead_belongs_to_milestone, ensure_bead_creation_targets_are_actionable,
-        infer_parent_epic_id, resolve_bead_plan, validate_milestone_plan_snapshot,
+        backfill_legacy_explicit_bead_flags, ensure_bead_belongs_to_milestone,
+        ensure_bead_creation_targets_are_actionable, infer_parent_epic_id, load_milestone_bundle,
+        resolve_bead_plan, validate_milestone_plan_snapshot,
     };
+    use std::path::Path;
+
     use crate::adapters::br_models::{
         BeadDetail, BeadPriority, BeadStatus, BeadType, DependencyKind, DependencyRef,
     };
+    use crate::adapters::fs::FsMilestonePlanStore;
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
     };
     use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus};
     use crate::shared::domain::FlowPreset;
     use crate::shared::error::AppError;
+
+    fn setup_milestone_workspace(dir: &Path, milestone_id: &str) {
+        std::fs::create_dir_all(dir.join(".ralph-burning/milestones").join(milestone_id))
+            .expect("create milestone workspace");
+    }
 
     fn sample_bundle() -> MilestoneBundle {
         MilestoneBundle {
@@ -1425,6 +1504,7 @@ mod tests {
                 description: None,
                 beads: vec![BeadProposal {
                     bead_id: None,
+                    explicit_id: None,
                     title: "Bootstrap bead-backed task creation".to_owned(),
                     description: None,
                     bead_type: Some("feature".to_owned()),
@@ -1438,6 +1518,51 @@ mod tests {
             default_flow: FlowPreset::QuickDev,
             agents_guidance: None,
         }
+    }
+
+    fn sample_two_bead_bundle() -> MilestoneBundle {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads.insert(
+            0,
+            BeadProposal {
+                bead_id: None,
+                explicit_id: None,
+                title: "Define task-source metadata".to_owned(),
+                description: None,
+                bead_type: Some("task".to_owned()),
+                priority: Some(1),
+                labels: Vec::new(),
+                depends_on: Vec::new(),
+                acceptance_criteria: Vec::new(),
+                flow_override: None,
+            },
+        );
+        bundle
+    }
+
+    #[test]
+    fn load_milestone_bundle_rejects_invalid_bundle_semantics() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        setup_milestone_workspace(tmp.path(), milestone_id.as_str());
+
+        let mut bundle = sample_two_bead_bundle();
+        bundle.workstreams[0].beads[1].bead_id = Some("bead-1".to_owned());
+        let raw = serde_json::to_string_pretty(&bundle).expect("serialize bundle");
+        std::fs::write(
+            tmp.path()
+                .join(".ralph-burning/milestones")
+                .join(milestone_id.as_str())
+                .join("plan.json"),
+            raw,
+        )
+        .expect("write plan.json");
+
+        let error = load_milestone_bundle(&FsMilestonePlanStore, tmp.path(), &milestone_id)
+            .expect_err("invalid plan bundle should fail");
+
+        assert!(matches!(error, AppError::CorruptRecord { .. }));
+        assert!(error.to_string().contains("duplicate bead identifier"));
     }
 
     fn sample_bead() -> BeadDetail {
@@ -1477,7 +1602,7 @@ mod tests {
 
     #[test]
     fn resolve_bead_plan_returns_per_bead_flow_override() {
-        let bundle = sample_bundle();
+        let bundle = sample_two_bead_bundle();
         let bead = sample_bead();
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
 
@@ -1491,8 +1616,55 @@ mod tests {
     fn resolve_bead_plan_does_not_confirm_title_fallback_against_mismatched_explicit_bead_id() {
         let mut bundle = sample_bundle();
         bundle.workstreams[0].beads[0].bead_id = Some("ms-alpha.bead-200".to_owned());
+        bundle.workstreams[0].beads[0].explicit_id = Some(true);
         let bead = sample_bead();
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        assert_eq!(resolved.flow_override, None);
+        assert!(!resolved.membership_confirmed);
+    }
+
+    #[test]
+    fn resolve_bead_plan_confirms_legacy_canonical_bead_ids_after_backfill() {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].bead_id = Some("ms-alpha.bead-2".to_owned());
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        backfill_legacy_explicit_bead_flags(&mut bundle, &milestone_id);
+        let bead = sample_bead();
+
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
+        assert!(resolved.membership_confirmed);
+    }
+
+    #[test]
+    fn resolve_bead_plan_treats_legacy_short_canonical_slot_ids_as_implicit_after_backfill() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.workstreams[0].beads[1].bead_id = Some("bead-2".to_owned());
+        backfill_legacy_explicit_bead_flags(&mut bundle, &milestone_id);
+
+        let mut bead = sample_bead();
+        bead.title = "Renamed live bead".to_owned();
+
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        assert_eq!(resolved.flow_override, None);
+        assert!(!resolved.membership_confirmed);
+    }
+
+    #[test]
+    fn resolve_bead_plan_treats_legacy_qualified_canonical_slot_ids_as_implicit_after_backfill() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.workstreams[0].beads[1].bead_id = Some("ms-alpha.bead-2".to_owned());
+        backfill_legacy_explicit_bead_flags(&mut bundle, &milestone_id);
+
+        let mut bead = sample_bead();
+        bead.title = "Renamed live bead".to_owned();
 
         let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
 
@@ -1511,6 +1683,34 @@ mod tests {
 
         assert_eq!(resolved.flow_override, None);
         assert!(!resolved.membership_confirmed);
+    }
+
+    #[test]
+    fn resolve_bead_plan_does_not_confirm_reordered_implicit_proposal_by_title_alone() {
+        let mut bundle = sample_two_bead_bundle();
+        bundle.workstreams[0].beads.swap(0, 1);
+        let bead = sample_bead();
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
+        assert!(!resolved.membership_confirmed);
+    }
+
+    #[test]
+    fn resolve_bead_plan_uses_current_implicit_slot_to_break_duplicate_title_ties() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.workstreams[0].beads[0].title = "Bootstrap bead-backed task creation".to_owned();
+        bundle.workstreams[0].beads[0].flow_override = Some(FlowPreset::QuickDev);
+        bundle.workstreams[0].beads[1].flow_override = Some(FlowPreset::DocsChange);
+
+        let resolved =
+            resolve_bead_plan(&bundle, &milestone_id, &sample_bead()).expect("resolve bead");
+
+        assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
+        assert!(resolved.membership_confirmed);
     }
 
     #[test]

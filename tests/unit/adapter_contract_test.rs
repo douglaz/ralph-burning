@@ -18,7 +18,7 @@ use ralph_burning::contexts::project_run_record::service::{
     RollbackPointStorePort, RunSnapshotPort, RuntimeLogStorePort,
 };
 use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
-use ralph_burning::shared::domain::{FlowPreset, ProjectId, StageId};
+use ralph_burning::shared::domain::{FlowPreset, ProjectConfig, ProjectId, StageId};
 use ralph_burning::shared::error::AppError;
 
 fn test_timestamp() -> chrono::DateTime<Utc> {
@@ -126,6 +126,24 @@ fn project_store_list_returns_sorted_ids() {
 }
 
 #[test]
+fn project_store_list_prefers_live_project_when_audit_mirror_is_incomplete() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    fs::remove_file(
+        tmp.path()
+            .join(".ralph-burning/projects/alpha/project.toml"),
+    )
+    .unwrap();
+
+    let store = FsProjectStore;
+    let ids = store.list_project_ids(tmp.path()).unwrap();
+    let id_strs: Vec<&str> = ids.iter().map(|p| p.as_str()).collect();
+    assert_eq!(id_strs, vec!["alpha"]);
+}
+
+#[test]
 fn project_store_stage_and_commit_delete_removes_project() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
@@ -198,11 +216,7 @@ fn project_store_commit_noop_when_no_pending_delete() {
 fn project_store_read_missing_project_toml_returns_corrupt() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
-    create_project_on_disk(tmp.path(), "alpha");
-
-    // Remove project.toml but keep directory
-    let project_root = tmp.path().join(".ralph-burning/projects/alpha");
-    fs::remove_file(project_root.join("project.toml")).unwrap();
+    fs::create_dir_all(tmp.path().join(".ralph-burning/projects/alpha")).unwrap();
 
     let store = FsProjectStore;
     let pid = ProjectId::new("alpha").unwrap();
@@ -214,13 +228,7 @@ fn project_store_read_missing_project_toml_returns_corrupt() {
 fn project_store_exists_with_missing_project_toml_returns_corrupt() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
-    create_project_on_disk(tmp.path(), "alpha");
-
-    fs::remove_file(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/project.toml"),
-    )
-    .unwrap();
+    fs::create_dir_all(tmp.path().join(".ralph-burning/projects/alpha")).unwrap();
 
     let store = FsProjectStore;
     let pid = ProjectId::new("alpha").unwrap();
@@ -232,30 +240,47 @@ fn project_store_exists_with_missing_project_toml_returns_corrupt() {
 fn project_store_list_with_corrupt_project_toml_returns_error() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
-    create_project_on_disk(tmp.path(), "alpha");
-
-    // Remove project.toml to simulate corruption
-    fs::remove_file(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/project.toml"),
-    )
-    .unwrap();
+    fs::create_dir_all(tmp.path().join(".ralph-burning/projects/alpha")).unwrap();
 
     let store = FsProjectStore;
     let err = store.list_project_ids(tmp.path()).unwrap_err();
     assert!(matches!(err, AppError::CorruptRecord { .. }));
 }
 
+#[cfg(unix)]
 #[test]
-fn project_store_read_malformed_toml_returns_corrupt() {
+fn write_project_config_rejects_symlinks_while_seeding_live_workspace() {
+    use std::os::unix::fs::symlink;
+
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
     create_project_on_disk(tmp.path(), "alpha");
 
-    // Write malformed TOML
+    let pid = ProjectId::new("alpha").unwrap();
+    let live_project_root = tmp.path().join(".git/.ralph-burning-live/projects/alpha");
+    if live_project_root.exists() {
+        fs::remove_dir_all(&live_project_root).unwrap();
+    }
+
+    let audit_project_root = tmp.path().join(".ralph-burning/projects/alpha");
+    let outside_file = tmp.path().join("outside.txt");
+    fs::write(&outside_file, "secret").unwrap();
+    symlink(&outside_file, audit_project_root.join("linked.txt")).unwrap();
+
+    let error =
+        FileSystem::write_project_config(tmp.path(), &pid, &ProjectConfig::default()).unwrap_err();
+    assert!(matches!(error, AppError::CorruptRecord { .. }));
+    assert!(!live_project_root.join("linked.txt").exists());
+}
+
+#[test]
+fn project_store_read_malformed_toml_returns_corrupt() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    let project_root = tmp.path().join(".ralph-burning/projects/alpha");
+    fs::create_dir_all(&project_root).unwrap();
     fs::write(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/project.toml"),
+        project_root.join("project.toml"),
         "this is not valid toml ][}{",
     )
     .unwrap();

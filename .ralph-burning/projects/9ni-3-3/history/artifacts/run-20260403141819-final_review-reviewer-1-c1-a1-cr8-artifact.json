@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260403141819-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T19:13:27.178328349Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 correctness issue: the new legacy backfill logic in `create-from-bead` over-classifies missing-`explicit_id` canonical beads as explicit, which breaks compatibility with older `plan.json` round-trips and can preserve metadata after title drift when the match should be unconfirmed.\n\n## Amendments\n\n1. In `src/cli/project.rs:586-595`, `backfill_legacy_explicit_bead_flags` now marks every legacy proposal with a populated `bead_id` as explicit. That regresses the already-supported compatibility path where a canonical `plan.json` is round-tripped through older tooling that preserves `bead_id` but drops the newer `explicit_id` field (`tests/cli.rs:2029-2044`). After such a round-trip, an originally implicit `ms-alpha.bead-2` is reclassified as explicit, so `resolve_bead_plan` matches it by id in `src/cli/project.rs:842-852` even after live title drift and incorrectly preserves `flow_override`, `plan_hash`, and `plan_version` for a bead whose identity was never explicitly pinned. The fix needs a backward-compatible discriminator that still treats missing-`explicit_id` canonical slot ids as implicit in this round-tripped case, plus a regression test for a stripped-`explicit_id` canonical plan with a renamed live bead.\n   Rationale: This is a real contract-compatibility regression for machine consumers of `plan.json`: older round-tripping tooling can now silently convert implicit beads into explicit ones and cause false membership/lineage confirmation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

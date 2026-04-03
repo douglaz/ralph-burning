@@ -32,24 +32,29 @@ pub fn initialize_workspace(
     base_dir: &Path,
     created_at: DateTime<Utc>,
 ) -> AppResult<WorkspaceInitialization> {
-    let workspace_root = workspace_root(base_dir);
+    let workspace_root = FileSystem::live_workspace_root_path(base_dir);
+    let audit_root = FileSystem::audit_workspace_root_path(base_dir);
     let config_path = workspace_root.join(WORKSPACE_CONFIG_FILE);
+    let audit_config_path = audit_root.join(WORKSPACE_CONFIG_FILE);
 
-    if config_path.exists() {
-        return Err(AppError::AlreadyInitialized {
-            path: workspace_root,
-        });
+    if config_path.exists() || audit_config_path.exists() {
+        return Err(AppError::AlreadyInitialized { path: audit_root });
     }
 
-    if workspace_root.exists() {
+    if workspace_root.exists() || audit_root.exists() {
         return Err(AppError::WorkspaceConflict {
-            path: workspace_root,
+            path: if workspace_root.exists() {
+                workspace_root
+            } else {
+                audit_root
+            },
         });
     }
 
     let config = WorkspaceConfig::new(created_at);
     let rendered = FileSystem::render_workspace_config(&config)?;
     FileSystem::create_workspace(&workspace_root, &rendered, REQUIRED_WORKSPACE_DIRECTORIES)?;
+    FileSystem::create_workspace(&audit_root, &rendered, REQUIRED_WORKSPACE_DIRECTORIES)?;
 
     Ok(WorkspaceInitialization {
         workspace_root,
@@ -85,7 +90,15 @@ pub fn resolve_active_project(base_dir: &Path) -> AppResult<ProjectId> {
 pub fn set_active_project(base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
     let _ = EffectiveConfig::load(base_dir)?;
     validate_project_exists(base_dir, project_id)?;
-    FileSystem::write_active_project(&workspace_root(base_dir), project_id.as_str())
+    FileSystem::write_active_project(
+        &FileSystem::live_workspace_root_path(base_dir),
+        project_id.as_str(),
+    )?;
+    let _ = FileSystem::write_active_project(
+        &FileSystem::audit_workspace_root_path(base_dir),
+        project_id.as_str(),
+    );
+    Ok(())
 }
 
 pub(crate) fn parse_workspace_config(raw: &str) -> AppResult<WorkspaceConfig> {
@@ -95,7 +108,7 @@ pub(crate) fn parse_workspace_config(raw: &str) -> AppResult<WorkspaceConfig> {
 }
 
 pub(crate) fn workspace_root(base_dir: &Path) -> PathBuf {
-    base_dir.join(WORKSPACE_DIR)
+    FileSystem::workspace_root_path(base_dir)
 }
 
 pub(crate) fn workspace_config_path(base_dir: &Path) -> PathBuf {
@@ -103,9 +116,7 @@ pub(crate) fn workspace_config_path(base_dir: &Path) -> PathBuf {
 }
 
 fn validate_project_exists(base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
-    let project_root = workspace_root(base_dir)
-        .join(PROJECTS_DIR)
-        .join(project_id.as_str());
+    let project_root = FileSystem::project_root(base_dir, project_id);
     if !project_root.is_dir() {
         return Err(AppError::ProjectNotFound {
             project_id: project_id.to_string(),

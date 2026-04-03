@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-reviewer-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260403141819-final_review-reviewer-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T19:38:20.484625627Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the milestone-plan rendering/persistence changes in `src/contexts/milestone_record/{bundle,service}.rs` and downstream consumption in `src/cli/project.rs`. I found two correctness issues: loaded `plan.json` bundles are not semantically/version validated before use, and shape-change rematerialization deletes task-run lineage before the new plan state is durably committed.\n\n## Amendments\n\n1. Validate loaded milestone plans before using them in `project create-from-bead`. In `src/cli/project.rs:553-583`, `load_milestone_bundle()` deserializes `plan.json`, backfills legacy `explicit_id` flags, and returns the bundle without ever calling `MilestoneBundle::validate()`. That means unsupported `schema_version`s and semantic corruption in the authoritative plan artifact (for example duplicate bead IDs, broken acceptance coverage, or cross-milestone references) are silently accepted by downstream bead creation instead of failing fast, even though the bundle contract is versioned and `src/contexts/milestone_record/bundle.rs:27-29` says consumers must check the schema version before processing. After backfilling legacy flags, validate the bundle and surface `CorruptRecord` if the plan is not a valid bundle.\n   Rationale: Without validation, downstream project creation can proceed from a plan file the current binary does not actually understand, which breaks the plan artifact's role as the authoritative machine input.\n2. Make plan-shape resets retry-safe by deferring lineage deletion until after the new plan/snapshot commit is durable. In `src/contexts/milestone_record/service.rs:623-668`, a shape change calls `clear_task_run_lineage()` at `:636-638` before the later fallible writes (`write_plan_json`, `write_plan_md`, `write_plan_shape`, `write_snapshot`, and journal append) complete. If any of those later steps fail, the old `task-runs.ndjson` history is already gone while `status.json` and/or the old plan files may still describe the previous plan. That turns a transient write failure into permanent loss of bead progress/history. Stage the lineage reset atomically with the new plan/snapshot state, or at minimum move the destructive clear until after the new plan artifacts and snapshot have been written successfully.\n   Rationale: This is a real durability bug: a single partial-write failure can erase the only durable task-run lineage for a milestone even though the rematerialization never committed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

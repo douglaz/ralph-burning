@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260403141819-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T17:03:00.966089508Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 correctness regressions. Milestone rematerialization is not compatible with legacy `plan.json` files that lack `explicit_id`, and the live/audit filesystem split breaks project delete semantics by leaving the mirrored audit copy visible. I also ran `cargo test milestone_record -- --nocapture` (passes) and `cargo test adapter_contract_test -- --nocapture` (25 failures, consistent with the dual-root regression).\n\n## Amendments\n\n1. Fix legacy `plan.json` compatibility in `src/contexts/milestone_record/bundle.rs:403-404` and `src/contexts/milestone_record/bundle.rs:503-527`, which feed `src/contexts/milestone_record/service.rs:695-730`. When a persisted bundle was written before `explicit_id` existed, `bead_has_explicit_id()` falls back to `bead_id.is_some()`, so every canonical bead in the old file is treated as explicit. On any later rematerialization where only non-shape fields change, `plan_shape_matches()` compares the new plan against this miscomputed all-explicit shape, decides the shape changed, and clears lineage/progress. I reproduced this by stripping `explicit_id` from a persisted plan and rematerializing with only an `executive_summary` change; `completed_beads` dropped from 1 to 0.\n   Rationale: This breaks backward compatibility with existing milestone bundles and silently loses execution progress for unchanged plans.\n2. Repair the new dual-root project storage logic in `src/adapters/fs.rs:432-438`, `src/adapters/fs.rs:535-538`, `src/adapters/fs.rs:658-715`, and `src/adapters/fs.rs:738-831`. `create_project_atomic()` writes new projects under `live_project_root()`, but `pending_delete_path()` is still rooted at `workspace_root_path()`, which stays on `.ralph-burning` until a live `workspace.toml` exists. `stage_delete()` therefore renames only the live copy while `project_root()` and `list_project_ids()` can still fall back to the mirrored audit copy, so the project never actually becomes invisible and delete/rollback leave divergent state behind. `cargo test project_store_stage_and_commit_delete_removes_project -- --nocapture` fails on this regression.\n   Rationale: Project deletion is no longer atomic or reliable; users can end up with supposedly deleted projects still addressable through the audit tree.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

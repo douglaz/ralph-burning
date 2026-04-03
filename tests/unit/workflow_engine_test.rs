@@ -131,6 +131,7 @@ fn sample_milestone_bundle(milestone_id: &str) -> MilestoneBundle {
             description: Some("Project bootstrap flow.".to_owned()),
             beads: vec![BeadProposal {
                 bead_id: Some(format!("{milestone_id}.bead-2")),
+                explicit_id: None,
                 title: "Bootstrap bead-backed task creation".to_owned(),
                 description: Some("Create a project from milestone context.".to_owned()),
                 bead_type: Some("feature".to_owned()),

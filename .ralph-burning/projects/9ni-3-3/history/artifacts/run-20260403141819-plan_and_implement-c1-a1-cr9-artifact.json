@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-plan_and_implement-c1-a1-cr9-artifact",
+  "payload_id": "run-20260403141819-plan_and_implement-c1-a1-cr9",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-03T19:23:58.468013930Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the `ralph-burning-9ni.3.3` legacy-plan regression in `src/cli/project.rs` by making `backfill_legacy_explicit_bead_flags` discriminate between true legacy explicit ids and canonical implicit slot ids when `explicit_id` is missing. Missing-`explicit_id` proposals whose stored `bead_id` still matches their implicit slot now backfill as implicit instead of explicit, so renamed live beads no longer get incorrect id-based confirmation, `flow_override`, `plan_hash`, or `plan_version` preservation after an older-tooling round-trip. Updated CLI unit and integration coverage to keep the unambiguous legacy compatibility case, and added deterministic regressions for both qualified and short canonical slot ids with live title drift.\n\n## Steps\n\n1. [Completed] Inspect the legacy explicit-id backfill and bead-plan resolution paths to confirm why stripped `explicit_id` fields were causing canonical implicit slot ids to be reclassified as explicit.\n2. [Completed] Patch `backfill_legacy_explicit_bead_flags` so missing-`explicit_id` proposals only backfill as explicit when their stored `bead_id` does not match the computed implicit slot for that position.\n3. [Completed] Update unit and CLI regressions to cover stripped-`explicit_id` canonical plans with renamed live beads for both qualified and short slot ids, then run focused formatting and validation.\n\n## Validation Evidence\n\n- Ran `cargo fmt --all`.\n- Ran `cargo test resolve_bead_plan_ -- --nocapture` and all 7 targeted unit tests passed.\n- Ran `cargo test project_create_from_bead_ -- --nocapture` and all 16 targeted CLI integration tests passed, including the new stripped-`explicit_id` canonical-slot regressions.\n\n## Outstanding Risks\n\n- Did not run the full repository test suite beyond the focused `resolve_bead_plan_` and `project_create_from_bead_` coverage.\n- The worktree still contains the unrelated untracked `.ralph-burning/` directory, which was left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 9
+}

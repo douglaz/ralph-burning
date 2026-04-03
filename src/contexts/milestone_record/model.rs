@@ -153,6 +153,10 @@ pub struct MilestoneSnapshot {
     /// Bead ID currently being executed (if any).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_bead: Option<String>,
+    /// When present, task-run lineage still needs to be truncated for the
+    /// committed plan before execution mutations may trust `task-runs.ndjson`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_lineage_reset: Option<PendingLineageReset>,
     /// Execution progress summary.
     pub progress: MilestoneProgress,
     /// Last time this snapshot was updated.
@@ -166,6 +170,7 @@ impl MilestoneSnapshot {
             plan_hash: None,
             plan_version: 0,
             active_bead: None,
+            pending_lineage_reset: None,
             progress: MilestoneProgress::default(),
             updated_at: now,
         }
@@ -185,6 +190,12 @@ impl MilestoneSnapshot {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingLineageReset {
+    pub plan_hash: String,
+    pub plan_version: u32,
 }
 
 // ── Progress Tracking ─────────────────────────────────────────────────

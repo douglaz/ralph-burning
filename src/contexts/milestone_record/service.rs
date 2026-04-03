@@ -2,16 +2,20 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::adapters::fs::FileSystem;
 use crate::shared::error::{AppError, AppResult};
 
-use super::bundle::{progress_shape_signature, render_plan_json, render_plan_md, MilestoneBundle};
+use super::bundle::{
+    explicit_id_hints, progress_shape_signature, progress_shape_signature_with_explicit_id_hints,
+    render_plan_json, render_plan_md_checked, MilestoneBundle,
+};
 use super::model::{
     collapse_task_run_attempts, latest_task_runs_per_bead, MilestoneEventType, MilestoneId,
     MilestoneJournalEvent, MilestoneProgress, MilestoneRecord, MilestoneSnapshot, MilestoneStatus,
-    TaskRunEntry, TaskRunOutcome,
+    PendingLineageReset, TaskRunEntry, TaskRunOutcome,
 };
 
 // ── Ports ───────────────────────────────────────────────────────────────────
@@ -196,6 +200,13 @@ pub trait MilestonePlanPort {
         milestone_id: &MilestoneId,
         content: &str,
     ) -> AppResult<()>;
+    fn read_plan_shape(&self, base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<String>;
+    fn write_plan_shape(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        content: &str,
+    ) -> AppResult<()>;
 }
 
 fn snapshot_corrupt_record(milestone_id: &MilestoneId, details: impl Into<String>) -> AppError {
@@ -203,6 +214,118 @@ fn snapshot_corrupt_record(milestone_id: &MilestoneId, details: impl Into<String
         file: format!("milestones/{}/status.json", milestone_id),
         details: details.into(),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StoredPlanShape {
+    plan_hash: String,
+    shape_signature: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    lineage_reset_required: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn hash_text(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn render_plan_shape_artifact(plan_hash: &str, shape_signature: &str) -> AppResult<String> {
+    serde_json::to_string_pretty(&StoredPlanShape {
+        plan_hash: plan_hash.to_owned(),
+        shape_signature: shape_signature.to_owned(),
+        lineage_reset_required: false,
+    })
+    .map_err(AppError::SerdeJson)
+}
+
+fn render_plan_shape_artifact_with_lineage_reset(
+    plan_hash: &str,
+    shape_signature: &str,
+    lineage_reset: Option<&PendingLineageReset>,
+) -> AppResult<String> {
+    serde_json::to_string_pretty(&StoredPlanShape {
+        plan_hash: plan_hash.to_owned(),
+        shape_signature: shape_signature.to_owned(),
+        lineage_reset_required: lineage_reset.is_some(),
+    })
+    .map_err(AppError::SerdeJson)
+}
+
+fn plan_json_path(base_dir: &Path, milestone_id: &MilestoneId) -> std::path::PathBuf {
+    FileSystem::milestone_root(base_dir, milestone_id).join("plan.json")
+}
+
+fn plan_shape_path(base_dir: &Path, milestone_id: &MilestoneId) -> std::path::PathBuf {
+    FileSystem::milestone_root(base_dir, milestone_id).join("plan.shape.json")
+}
+
+fn snapshot_has_pending_lineage_reset(snapshot: &MilestoneSnapshot) -> bool {
+    snapshot.pending_lineage_reset.is_some()
+}
+
+fn pending_lineage_reset_for_snapshot(snapshot: &MilestoneSnapshot) -> Option<PendingLineageReset> {
+    snapshot.pending_lineage_reset.clone()
+}
+
+fn render_committed_plan_shape_from_snapshot(
+    snapshot: &MilestoneSnapshot,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<String> {
+    let plan_hash = snapshot.plan_hash.as_deref().ok_or_else(|| {
+        snapshot_corrupt_record(
+            milestone_id,
+            "pending lineage reset requires snapshot.plan_hash to be present",
+        )
+    })?;
+    let plan_json = std::fs::read_to_string(plan_json_path(base_dir, milestone_id))?;
+    let actual_plan_hash = hash_text(&plan_json);
+    if actual_plan_hash != plan_hash {
+        return Err(snapshot_corrupt_record(
+            milestone_id,
+            format!(
+                "pending lineage reset expected committed plan hash '{plan_hash}' but plan.json hashes to '{actual_plan_hash}'"
+            ),
+        ));
+    }
+    let bundle: MilestoneBundle = serde_json::from_str(&plan_json).map_err(|error| {
+        snapshot_corrupt_record(
+            milestone_id,
+            format!("pending lineage reset could not parse committed plan.json: {error}"),
+        )
+    })?;
+    let shape_signature = progress_shape_signature(&bundle)
+        .map_err(|errors| snapshot_corrupt_record(milestone_id, errors.join("; ")))?;
+    render_plan_shape_artifact(plan_hash, &shape_signature)
+}
+
+fn clear_pending_lineage_reset_locked(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    snapshot: &mut MilestoneSnapshot,
+) -> AppResult<()> {
+    if snapshot.pending_lineage_reset.is_none() {
+        return Ok(());
+    }
+
+    let committed_plan_shape =
+        render_committed_plan_shape_from_snapshot(snapshot, base_dir, milestone_id)?;
+    clear_task_run_lineage(base_dir, milestone_id)?;
+    FileSystem::write_atomic(
+        &plan_shape_path(base_dir, milestone_id),
+        &committed_plan_shape,
+    )?;
+
+    snapshot.pending_lineage_reset = None;
+    validate_snapshot(snapshot, milestone_id)?;
+    snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
+    Ok(())
 }
 
 fn validate_snapshot(snapshot: &MilestoneSnapshot, milestone_id: &MilestoneId) -> AppResult<()> {
@@ -349,11 +472,13 @@ pub fn materialize_bundle(
 ) -> AppResult<MilestoneRecord> {
     let milestone_id = MilestoneId::new(bundle.identity.id.clone())?;
     let expected_plan_json = render_plan_json(bundle).map_err(AppError::SerdeJson)?;
-    let expected_plan_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(expected_plan_json.as_bytes());
-        format!("{:x}", hasher.finalize())
-    };
+    let expected_plan_md = render_plan_md_checked(bundle)
+        .map_err(|errors| snapshot_corrupt_record(&milestone_id, errors.join("; ")))?;
+    let expected_plan_shape_signature = progress_shape_signature(bundle)
+        .map_err(|errors| snapshot_corrupt_record(&milestone_id, errors.join("; ")))?;
+    let expected_plan_hash = hash_text(&expected_plan_json);
+    let expected_plan_shape =
+        render_plan_shape_artifact(&expected_plan_hash, &expected_plan_shape_signature)?;
 
     let mut record = if store.milestone_exists(base_dir, &milestone_id)? {
         let existing_record = store.read_milestone_record(base_dir, &milestone_id)?;
@@ -400,7 +525,18 @@ pub fn materialize_bundle(
             });
         }
 
-        if snapshot.plan_hash.as_deref() != Some(expected_plan_hash.as_str()) {
+        let should_refresh_plan = snapshot.plan_hash.as_deref()
+            != Some(expected_plan_hash.as_str())
+            || snapshot_has_pending_lineage_reset(&snapshot)
+            || plan_artifacts_need_refresh(
+                plan_store,
+                base_dir,
+                &milestone_id,
+                &expected_plan_json,
+                &expected_plan_md,
+                &expected_plan_shape,
+            )?;
+        if should_refresh_plan {
             persist_plan_locked(
                 snapshot_store,
                 journal_store,
@@ -570,45 +706,82 @@ fn persist_plan_locked(
     now: DateTime<Utc>,
 ) -> AppResult<()> {
     let plan_json = render_plan_json(bundle).map_err(AppError::SerdeJson)?;
-    let plan_md = render_plan_md(bundle);
-    let plan_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(plan_json.as_bytes());
-        format!("{:x}", hasher.finalize())
+    let plan_md = render_plan_md_checked(bundle)
+        .map_err(|errors| snapshot_corrupt_record(milestone_id, errors.join("; ")))?;
+    let plan_shape_signature = progress_shape_signature(bundle)
+        .map_err(|errors| snapshot_corrupt_record(milestone_id, errors.join("; ")))?;
+    let plan_hash = hash_text(&plan_json);
+    let plan_hash_changed = snapshot.plan_hash.as_deref() != Some(plan_hash.as_str());
+    let shape_matches = if plan_hash_changed {
+        plan_shape_matches(
+            plan_store,
+            base_dir,
+            milestone_id,
+            snapshot.plan_hash.as_deref(),
+            bundle,
+            &plan_shape_signature,
+        )?
+    } else {
+        true
     };
-    let shape_matches = plan_shape_matches(plan_store, base_dir, milestone_id, bundle)?;
-
-    if !shape_matches {
-        clear_task_run_lineage(base_dir, milestone_id)?;
-    }
+    let lineage_reset_required = !shape_matches || snapshot_has_pending_lineage_reset(snapshot);
+    let next_plan_version = if plan_hash_changed {
+        snapshot.plan_version.saturating_add(1)
+    } else {
+        snapshot.plan_version
+    };
+    let pending_lineage_reset = lineage_reset_required.then(|| PendingLineageReset {
+        plan_hash: plan_hash.clone(),
+        plan_version: next_plan_version,
+    });
+    let plan_shape = render_plan_shape_artifact_with_lineage_reset(
+        &plan_hash,
+        &plan_shape_signature,
+        pending_lineage_reset.as_ref(),
+    )?;
 
     let mut progress = reconcile_progress_for_new_plan(shape_matches, bundle, snapshot);
     progress.total_beads = bundle.bead_count() as u32;
 
     plan_store.write_plan_json(base_dir, milestone_id, &plan_json)?;
     plan_store.write_plan_md(base_dir, milestone_id, &plan_md)?;
+    plan_store.write_plan_shape(base_dir, milestone_id, &plan_shape)?;
 
-    snapshot.plan_hash = Some(plan_hash);
-    snapshot.plan_version = snapshot.plan_version.saturating_add(1);
-    snapshot.progress = progress;
-    snapshot.updated_at = now;
+    let pending_lineage_reset_before = pending_lineage_reset_for_snapshot(snapshot);
 
-    let event_type = if snapshot.plan_version == 1 {
-        MilestoneEventType::PlanDrafted
-    } else {
-        MilestoneEventType::PlanUpdated
-    };
+    if plan_hash_changed {
+        snapshot.plan_hash = Some(plan_hash.clone());
+        snapshot.plan_version = next_plan_version;
+        snapshot.progress = progress;
+        snapshot.updated_at = now;
+    }
+    snapshot.pending_lineage_reset = pending_lineage_reset.clone();
 
-    validate_snapshot(snapshot, milestone_id)?;
-    snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
+    if plan_hash_changed {
+        let event_type = if snapshot.plan_version == 1 {
+            MilestoneEventType::PlanDrafted
+        } else {
+            MilestoneEventType::PlanUpdated
+        };
 
-    let event = MilestoneJournalEvent::new(event_type, now).with_details(format!(
-        "Plan v{} with {} beads",
-        snapshot.plan_version,
-        bundle.bead_count()
-    ));
-    let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-    journal_store.append_event(base_dir, milestone_id, &line)?;
+        validate_snapshot(snapshot, milestone_id)?;
+        snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
+
+        let event = MilestoneJournalEvent::new(event_type, now).with_details(format!(
+            "Plan v{} with {} beads",
+            snapshot.plan_version,
+            bundle.bead_count()
+        ));
+        let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
+        journal_store.append_event(base_dir, milestone_id, &line)?;
+    } else if pending_lineage_reset_before != pending_lineage_reset {
+        validate_snapshot(snapshot, milestone_id)?;
+        snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
+    }
+
+    if lineage_reset_required {
+        clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, snapshot)?;
+    }
     Ok(())
 }
 
@@ -640,20 +813,69 @@ fn plan_shape_matches(
     plan_store: &impl MilestonePlanPort,
     base_dir: &Path,
     milestone_id: &MilestoneId,
-    bundle: &MilestoneBundle,
+    committed_plan_hash: Option<&str>,
+    current_bundle: &MilestoneBundle,
+    current_shape: &str,
 ) -> AppResult<bool> {
-    let Ok(existing_plan_json) = plan_store.read_plan_json(base_dir, milestone_id) else {
+    let Some(committed_plan_hash) = committed_plan_hash else {
         return Ok(false);
     };
-    let Ok(existing_bundle) = serde_json::from_str::<MilestoneBundle>(&existing_plan_json) else {
-        return Ok(false);
-    };
-    let Ok(existing_shape) = progress_shape_signature(&existing_bundle) else {
-        return Ok(false);
-    };
-    let current_shape = progress_shape_signature(bundle)
+
+    let explicit_id_hints = explicit_id_hints(current_bundle)
         .map_err(|errors| snapshot_corrupt_record(milestone_id, errors.join("; ")))?;
-    Ok(existing_shape == current_shape)
+
+    if let Ok(existing_plan_json) = plan_store.read_plan_json(base_dir, milestone_id) {
+        let existing_plan_hash = hash_text(&existing_plan_json);
+        if existing_plan_hash == committed_plan_hash {
+            let Ok(existing_bundle) = serde_json::from_str::<MilestoneBundle>(&existing_plan_json)
+            else {
+                return Ok(false);
+            };
+            let Ok(existing_shape_signature) = progress_shape_signature_with_explicit_id_hints(
+                &existing_bundle,
+                Some(&explicit_id_hints),
+            ) else {
+                return Ok(false);
+            };
+            return Ok(existing_shape_signature == current_shape);
+        }
+    }
+
+    let Ok(stored_plan_shape) = plan_store.read_plan_shape(base_dir, milestone_id) else {
+        return Ok(false);
+    };
+    let Ok(stored_plan_shape) = serde_json::from_str::<StoredPlanShape>(&stored_plan_shape) else {
+        return Ok(false);
+    };
+    if stored_plan_shape.plan_hash != committed_plan_hash {
+        return Ok(false);
+    }
+
+    Ok(stored_plan_shape.shape_signature == current_shape)
+}
+
+fn plan_artifacts_need_refresh(
+    plan_store: &impl MilestonePlanPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    expected_plan_json: &str,
+    expected_plan_md: &str,
+    expected_plan_shape: &str,
+) -> AppResult<bool> {
+    match plan_store.read_plan_json(base_dir, milestone_id) {
+        Ok(existing_plan_json) if existing_plan_json == expected_plan_json => {}
+        Ok(_) | Err(_) => return Ok(true),
+    }
+
+    match plan_store.read_plan_md(base_dir, milestone_id) {
+        Ok(existing_plan_md) if existing_plan_md == expected_plan_md => {}
+        Ok(_) | Err(_) => return Ok(true),
+    }
+
+    match plan_store.read_plan_shape(base_dir, milestone_id) {
+        Ok(existing_plan_shape) if existing_plan_shape == expected_plan_shape => Ok(false),
+        Ok(_) | Err(_) => Ok(true),
+    }
 }
 
 fn clear_task_run_lineage(base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<()> {
@@ -682,6 +904,7 @@ pub fn record_bead_start(
 ) -> AppResult<()> {
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+        clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, &mut snapshot)?;
         reconcile_snapshot_from_lineage(
             &mut snapshot,
             milestone_id,
@@ -822,6 +1045,7 @@ pub fn update_task_run(
         }
 
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+        clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, &mut snapshot)?;
         let finalized_run = lineage_store.update_task_run(
             base_dir,
             milestone_id,
@@ -889,6 +1113,7 @@ pub fn repair_task_run(
         }
 
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+        clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, &mut snapshot)?;
         let repaired_run = lineage_store.repair_task_run_terminal(
             base_dir,
             milestone_id,
@@ -1147,6 +1372,45 @@ mod tests {
         }
     }
 
+    struct FailPlanVersionSnapshotWrite {
+        blocked_plan_version: u32,
+    }
+
+    impl MilestoneSnapshotPort for FailPlanVersionSnapshotWrite {
+        fn read_snapshot(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+        ) -> AppResult<MilestoneSnapshot> {
+            FsMilestoneSnapshotStore.read_snapshot(base_dir, milestone_id)
+        }
+
+        fn write_snapshot(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            snapshot: &MilestoneSnapshot,
+        ) -> AppResult<()> {
+            if snapshot.plan_version == self.blocked_plan_version {
+                return Err(std::io::Error::other("simulated snapshot write failure").into());
+            }
+
+            FsMilestoneSnapshotStore.write_snapshot(base_dir, milestone_id, snapshot)
+        }
+
+        fn with_milestone_write_lock<T, F>(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            operation: F,
+        ) -> AppResult<T>
+        where
+            F: FnOnce() -> AppResult<T>,
+        {
+            FsMilestoneSnapshotStore.with_milestone_write_lock(base_dir, milestone_id, operation)
+        }
+    }
+
     fn setup_workspace(dir: &Path) {
         std::fs::create_dir_all(dir.join(".ralph-burning/milestones")).unwrap();
     }
@@ -1172,13 +1436,14 @@ mod tests {
             acceptance_map: vec![AcceptanceCriterion {
                 id: "AC-1".to_owned(),
                 description: "Tests pass".to_owned(),
-                covered_by: vec![],
+                covered_by: vec!["bead-1".to_owned()],
             }],
             workstreams: vec![Workstream {
                 name: "Core".to_owned(),
                 description: None,
                 beads: vec![BeadProposal {
                     bead_id: None,
+                    explicit_id: None,
                     title: "Implement feature".to_owned(),
                     description: None,
                     bead_type: Some("task".to_owned()),
@@ -1192,6 +1457,126 @@ mod tests {
             default_flow: crate::shared::domain::FlowPreset::QuickDev,
             agents_guidance: None,
         }
+    }
+
+    fn setup_pending_lineage_reset_state(
+        test_id: &str,
+        test_name: &str,
+    ) -> Result<
+        (
+            tempfile::TempDir,
+            MilestoneRecord,
+            crate::contexts::milestone_record::bundle::MilestoneBundle,
+            DateTime<Utc>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle(test_id, test_name);
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Replacement bead".to_owned(),
+            description: None,
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec![],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+        bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned(), "bead-2".to_owned()];
+
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("first bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.workstreams[0].beads.remove(0);
+        updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        updated_bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned()];
+
+        let milestone_root = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str());
+        let task_runs_path = milestone_root.join("task-runs.ndjson");
+        let preserved_lineage = std::fs::read_to_string(&task_runs_path)?;
+
+        std::fs::remove_file(&task_runs_path)?;
+        std::fs::create_dir(&task_runs_path)?;
+        let error = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(3),
+        )
+        .expect_err("lineage truncation failure should leave a pending reset");
+        assert!(!error.to_string().is_empty());
+
+        std::fs::remove_dir(&task_runs_path)?;
+        std::fs::write(&task_runs_path, preserved_lineage)?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.plan_version, 2);
+        assert_eq!(
+            snapshot.pending_lineage_reset,
+            Some(PendingLineageReset {
+                plan_hash: snapshot
+                    .plan_hash
+                    .clone()
+                    .expect("plan hash must be present after rematerialize"),
+                plan_version: 2,
+            })
+        );
+
+        Ok((tmp, record, updated_bundle, now))
     }
 
     #[test]
@@ -1740,6 +2125,7 @@ mod tests {
         let mut bundle = sample_bundle("materialize-progress", "Materialize Progress");
         bundle.workstreams[0].beads.push(BeadProposal {
             bead_id: None,
+            explicit_id: None,
             title: "Handle retry flow".to_owned(),
             description: None,
             bead_type: Some("task".to_owned()),
@@ -1751,6 +2137,7 @@ mod tests {
         });
         bundle.workstreams[0].beads.push(BeadProposal {
             bead_id: None,
+            explicit_id: None,
             title: "Document skip path".to_owned(),
             description: None,
             bead_type: Some("task".to_owned()),
@@ -1760,6 +2147,11 @@ mod tests {
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
         });
+        bundle.acceptance_map[0].covered_by = vec![
+            "bead-1".to_owned(),
+            "bead-2".to_owned(),
+            "bead-3".to_owned(),
+        ];
 
         let record = materialize_bundle(
             &store,
@@ -1883,6 +2275,283 @@ mod tests {
     }
 
     #[test]
+    fn materialize_bundle_preserves_progress_for_explicit_id_metadata_edits(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle("materialize-explicit-progress", "Explicit Progress");
+        bundle.workstreams[0].beads[0].bead_id = Some("bead-1".to_owned());
+        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+        bundle.workstreams[0].beads[0].description =
+            Some("Original description for explicit bead.".to_owned());
+        bundle.workstreams[0].description = Some("Original workstream copy.".to_owned());
+
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("explicit bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        updated_bundle.workstreams[0].name = "Renamed workstream".to_owned();
+        updated_bundle.workstreams[0].description = Some("Updated workstream copy.".to_owned());
+        updated_bundle.workstreams[0].beads[0].title = "Renamed explicit bead".to_owned();
+        updated_bundle.workstreams[0].beads[0].description =
+            Some("Updated explicit bead copy.".to_owned());
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot_after = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_after.progress.total_beads, 1);
+        assert_eq!(snapshot_after.progress.completed_beads, 1);
+        assert_eq!(snapshot_after.progress.failed_beads, 0);
+        assert_eq!(snapshot_after.progress.skipped_beads, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_preserves_progress_for_legacy_plan_json_missing_explicit_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("legacy-explicit-id", "Legacy Explicit Id");
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("implicit bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let milestone_root = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str());
+        let mut legacy_plan_json: serde_json::Value =
+            serde_json::from_str(&plan_store.read_plan_json(base, &record.id)?)?;
+        let legacy_workstreams = legacy_plan_json["workstreams"]
+            .as_array_mut()
+            .expect("plan.json workstreams should be an array");
+        for workstream in legacy_workstreams {
+            let legacy_beads = workstream["beads"]
+                .as_array_mut()
+                .expect("plan.json workstream beads should be an array");
+            for bead in legacy_beads {
+                bead.as_object_mut()
+                    .expect("plan.json bead should be an object")
+                    .remove("explicit_id");
+            }
+        }
+        std::fs::write(
+            milestone_root.join("plan.json"),
+            serde_json::to_string_pretty(&legacy_plan_json)?,
+        )?;
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot_after = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_after.plan_version, 2);
+        assert_eq!(snapshot_after.progress.total_beads, 1);
+        assert_eq!(snapshot_after.progress.completed_beads, 1);
+        assert_eq!(snapshot_after.progress.failed_beads, 0);
+        assert_eq!(snapshot_after.progress.skipped_beads, 0);
+
+        let persisted_bundle: crate::contexts::milestone_record::bundle::MilestoneBundle =
+            serde_json::from_str(&plan_store.read_plan_json(base, &record.id)?)?;
+        assert_eq!(
+            persisted_bundle.workstreams[0].beads[0].explicit_id,
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_preserves_progress_for_qualified_explicit_ids_with_flag(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle("qualified-explicit-id", "Qualified Explicit Id");
+        bundle.workstreams[0].beads[0].bead_id = Some("qualified-explicit-id.bead-1".to_owned());
+        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+        bundle.workstreams[0].beads[0].description =
+            Some("Original explicit bead copy.".to_owned());
+        bundle.workstreams[0].description = Some("Original workstream copy.".to_owned());
+
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("qualified explicit bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        updated_bundle.workstreams[0].name = "Renamed workstream".to_owned();
+        updated_bundle.workstreams[0].description = Some("Updated workstream copy.".to_owned());
+        updated_bundle.workstreams[0].beads[0].title = "Renamed explicit bead".to_owned();
+        updated_bundle.workstreams[0].beads[0].description =
+            Some("Updated explicit bead copy.".to_owned());
+
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot_after = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_after.progress.total_beads, 1);
+        assert_eq!(snapshot_after.progress.completed_beads, 1);
+        assert_eq!(snapshot_after.progress.failed_beads, 0);
+        assert_eq!(snapshot_after.progress.skipped_beads, 0);
+
+        let persisted_bundle: crate::contexts::milestone_record::bundle::MilestoneBundle =
+            serde_json::from_str(&plan_store.read_plan_json(base, &record.id)?)?;
+        assert_eq!(
+            persisted_bundle.workstreams[0].beads[0].explicit_id,
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn materialize_bundle_resets_progress_when_plan_shape_changes_and_clears_old_lineage(
     ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::contexts::milestone_record::bundle::BeadProposal;
@@ -1900,6 +2569,7 @@ mod tests {
         let mut bundle = sample_bundle("materialize-progress-reset", "Materialize Progress Reset");
         bundle.workstreams[0].beads.push(BeadProposal {
             bead_id: None,
+            explicit_id: None,
             title: "Handle retry flow".to_owned(),
             description: None,
             bead_type: Some("task".to_owned()),
@@ -1909,6 +2579,7 @@ mod tests {
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
         });
+        bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned(), "bead-2".to_owned()];
 
         let record = materialize_bundle(
             &store,
@@ -1951,6 +2622,7 @@ mod tests {
         let mut updated_bundle = bundle.clone();
         updated_bundle.workstreams[0].beads.remove(0);
         updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        updated_bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned()];
         materialize_bundle(
             &store,
             &snapshot_store,
@@ -2009,6 +2681,433 @@ mod tests {
     }
 
     #[test]
+    fn materialize_bundle_preserves_lineage_until_snapshot_update_succeeds_after_shape_change(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let failing_snapshot_store = FailPlanVersionSnapshotWrite {
+            blocked_plan_version: 2,
+        };
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle("materialize-lineage-retry", "Materialize Lineage Retry");
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Handle retry flow".to_owned(),
+            description: None,
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec![],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+        bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned(), "bead-2".to_owned()];
+
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("first bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.workstreams[0].beads.remove(0);
+        updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        updated_bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned()];
+
+        let error = materialize_bundle(
+            &store,
+            &failing_snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(3),
+        )
+        .expect_err("snapshot write failure should abort rematerialize");
+
+        assert!(error
+            .to_string()
+            .contains("simulated snapshot write failure"));
+        assert!(!lineage_store.read_task_runs(base, &record.id)?.is_empty());
+
+        let snapshot_after_failure = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_after_failure.plan_version, 1);
+        assert_eq!(snapshot_after_failure.progress.completed_beads, 1);
+
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(4),
+        )?;
+
+        let snapshot_after_retry = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_after_retry.plan_version, 2);
+        assert_eq!(snapshot_after_retry.progress.total_beads, 1);
+        assert_eq!(snapshot_after_retry.progress.completed_beads, 0);
+        assert_eq!(lineage_store.read_task_runs(base, &record.id)?.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_retries_lineage_clear_after_post_commit_truncation_failure(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle("lineage-clear-retry", "Lineage Clear Retry");
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Replacement bead".to_owned(),
+            description: None,
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec![],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+        bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned(), "bead-2".to_owned()];
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("first bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.workstreams[0].beads.remove(0);
+        updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        updated_bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned()];
+
+        let milestone_root = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str());
+        let task_runs_path = milestone_root.join("task-runs.ndjson");
+        let preserved_lineage = std::fs::read_to_string(&task_runs_path)?;
+
+        std::fs::remove_file(&task_runs_path)?;
+        std::fs::create_dir(&task_runs_path)?;
+
+        let error = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(3),
+        )
+        .expect_err("lineage truncation failure should abort rematerialize");
+
+        assert!(!error.to_string().is_empty());
+        let snapshot_after_failure = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_after_failure.plan_version, 2);
+        assert_eq!(snapshot_after_failure.progress.total_beads, 1);
+        assert_eq!(snapshot_after_failure.progress.completed_beads, 0);
+        assert_eq!(
+            snapshot_after_failure.pending_lineage_reset,
+            Some(PendingLineageReset {
+                plan_hash: snapshot_after_failure
+                    .plan_hash
+                    .clone()
+                    .expect("plan hash must remain committed"),
+                plan_version: 2,
+            })
+        );
+
+        let stored_plan_shape: StoredPlanShape =
+            serde_json::from_str(&plan_store.read_plan_shape(base, &record.id)?)?;
+        assert!(stored_plan_shape.lineage_reset_required);
+        let journal_after_failure = read_journal(&journal_store, base, &record.id)?;
+
+        std::fs::remove_dir(&task_runs_path)?;
+        std::fs::write(&task_runs_path, preserved_lineage)?;
+
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(4),
+        )?;
+
+        let snapshot_after_retry = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_after_retry.plan_version, 2);
+        assert_eq!(snapshot_after_retry.progress.total_beads, 1);
+        assert_eq!(snapshot_after_retry.progress.completed_beads, 0);
+        assert_eq!(snapshot_after_retry.pending_lineage_reset, None);
+        assert!(lineage_store.read_task_runs(base, &record.id)?.is_empty());
+
+        let stored_plan_shape: StoredPlanShape =
+            serde_json::from_str(&plan_store.read_plan_shape(base, &record.id)?)?;
+        assert!(!stored_plan_shape.lineage_reset_required);
+        assert_eq!(
+            read_journal(&journal_store, base, &record.id)?.len(),
+            journal_after_failure.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_retries_pending_lineage_clear_with_missing_sidecar(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (tmp, record, updated_bundle, now) = setup_pending_lineage_reset_state(
+            "lineage-clear-missing-sidecar",
+            "Lineage Clear Missing Sidecar",
+        )?;
+        let base = tmp.path();
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+
+        std::fs::remove_file(plan_shape_path(base, &record.id))?;
+
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(4),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.plan_version, 2);
+        assert_eq!(snapshot.pending_lineage_reset, None);
+        assert_eq!(snapshot.progress.completed_beads, 0);
+        assert!(lineage_store.read_task_runs(base, &record.id)?.is_empty());
+
+        let stored_plan_shape: StoredPlanShape =
+            serde_json::from_str(&plan_store.read_plan_shape(base, &record.id)?)?;
+        assert!(!stored_plan_shape.lineage_reset_required);
+        Ok(())
+    }
+
+    #[test]
+    fn record_bead_start_clears_pending_lineage_reset_without_sidecar(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (tmp, record, _, now) = setup_pending_lineage_reset_state(
+            "lineage-start-self-heal",
+            "Lineage Start Self Heal",
+        )?;
+        let base = tmp.path();
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+
+        std::fs::remove_file(plan_shape_path(base, &record.id))?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-2",
+            "run-2",
+            "plan-v2",
+            now + chrono::Duration::seconds(4),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.pending_lineage_reset, None);
+        assert_eq!(snapshot.progress.completed_beads, 0);
+        assert_eq!(snapshot.progress.in_progress_beads, 1);
+        assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].project_id, "project-2");
+        assert_eq!(runs[0].run_id.as_deref(), Some("run-2"));
+
+        let stored_plan_shape: StoredPlanShape =
+            serde_json::from_str(&std::fs::read_to_string(plan_shape_path(base, &record.id))?)?;
+        assert!(!stored_plan_shape.lineage_reset_required);
+        Ok(())
+    }
+
+    #[test]
+    fn update_task_run_clears_pending_lineage_reset_before_rejecting_stale_completion(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (tmp, record, _, now) = setup_pending_lineage_reset_state(
+            "lineage-update-self-heal",
+            "Lineage Update Self Heal",
+        )?;
+        let base = tmp.path();
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+
+        std::fs::write(plan_shape_path(base, &record.id), "{not valid json")?;
+
+        let error = update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            now + chrono::Duration::seconds(1),
+            TaskRunOutcome::Succeeded,
+            Some("stale completion".to_owned()),
+            now + chrono::Duration::seconds(4),
+        )
+        .expect_err("stale completions should be rejected after pending reset self-heals");
+        assert!(!error.to_string().is_empty());
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.pending_lineage_reset, None);
+        assert_eq!(snapshot.progress.completed_beads, 0);
+        assert_eq!(snapshot.progress.in_progress_beads, 0);
+        assert!(read_task_runs(&lineage_store, base, &record.id)?.is_empty());
+
+        let stored_plan_shape: StoredPlanShape =
+            serde_json::from_str(&std::fs::read_to_string(plan_shape_path(base, &record.id))?)?;
+        assert!(!stored_plan_shape.lineage_reset_required);
+        Ok(())
+    }
+
+    #[test]
+    fn repair_task_run_clears_pending_lineage_reset_before_rejecting_stale_repair(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (tmp, record, _, now) = setup_pending_lineage_reset_state(
+            "lineage-repair-self-heal",
+            "Lineage Repair Self Heal",
+        )?;
+        let base = tmp.path();
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+
+        std::fs::remove_file(plan_shape_path(base, &record.id))?;
+
+        let error = repair_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            now + chrono::Duration::seconds(1),
+            TaskRunOutcome::Succeeded,
+            Some("stale repair".to_owned()),
+            now + chrono::Duration::seconds(4),
+        )
+        .expect_err("stale repairs should be rejected after pending reset self-heals");
+        assert!(!error.to_string().is_empty());
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.pending_lineage_reset, None);
+        assert_eq!(snapshot.progress.completed_beads, 0);
+        assert_eq!(snapshot.progress.in_progress_beads, 0);
+        assert!(read_task_runs(&lineage_store, base, &record.id)?.is_empty());
+
+        let stored_plan_shape: StoredPlanShape =
+            serde_json::from_str(&std::fs::read_to_string(plan_shape_path(base, &record.id))?)?;
+        assert!(!stored_plan_shape.lineage_reset_required);
+        Ok(())
+    }
+
+    #[test]
     fn materialize_bundle_resets_progress_when_implicit_beads_reorder(
     ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::contexts::milestone_record::bundle::BeadProposal;
@@ -2029,6 +3128,7 @@ mod tests {
         );
         bundle.workstreams[0].beads.push(BeadProposal {
             bead_id: None,
+            explicit_id: None,
             title: "Second implicit bead".to_owned(),
             description: Some("Runs after the first bead.".to_owned()),
             bead_type: Some("task".to_owned()),
@@ -2038,6 +3138,7 @@ mod tests {
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
         });
+        bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned(), "bead-2".to_owned()];
 
         let record = materialize_bundle(
             &store,
@@ -2079,6 +3180,8 @@ mod tests {
 
         let mut reordered_bundle = bundle.clone();
         reordered_bundle.workstreams[0].beads.swap(0, 1);
+        reordered_bundle.workstreams[0].beads[0].depends_on.clear();
+        reordered_bundle.workstreams[0].beads[1].depends_on = vec!["bead-1".to_owned()];
         reordered_bundle.executive_summary = "Reordered milestone summary.".to_owned();
         materialize_bundle(
             &store,
@@ -2095,6 +3198,425 @@ mod tests {
         assert_eq!(snapshot_after.progress.completed_beads, 0);
         assert_eq!(snapshot_after.progress.failed_beads, 0);
         assert_eq!(snapshot_after.progress.skipped_beads, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_rejects_invalid_bundle_before_writing_plan_files(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle("materialize-invalid", "Materialize Invalid");
+        bundle.workstreams[0]
+            .beads
+            .push(crate::contexts::milestone_record::bundle::BeadProposal {
+                bead_id: None,
+                explicit_id: None,
+                title: "Implicit duplicate".to_owned(),
+                description: None,
+                bead_type: Some("task".to_owned()),
+                priority: Some(1),
+                labels: vec![],
+                depends_on: vec![],
+                acceptance_criteria: vec!["AC-1".to_owned()],
+                flow_override: None,
+            });
+        bundle.workstreams[0].beads[0].bead_id = Some("bead-2".to_owned());
+        bundle.acceptance_map[0].covered_by = vec!["bead-2".to_owned(), "bead-2".to_owned()];
+
+        let error = materialize_bundle(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &bundle,
+            now,
+        )
+        .unwrap_err();
+
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains("duplicate bead identifier") || rendered.contains("duplicates bead")
+        );
+        assert!(!base
+            .join(".ralph-burning/milestones/materialize-invalid")
+            .exists());
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_accepts_legacy_missing_covered_by_and_backfills_plan_json(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle("legacy-covered-by", "Legacy Covered By");
+        bundle.acceptance_map[0].covered_by.clear();
+
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        let persisted_bundle: MilestoneBundle =
+            serde_json::from_str(&plan_store.read_plan_json(base, &record.id)?)?;
+        assert_eq!(
+            persisted_bundle.acceptance_map[0].covered_by,
+            vec!["legacy-covered-by.bead-1".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_backfills_missing_plan_artifacts_when_hash_is_unchanged(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("artifact-backfill", "Artifact Backfill");
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+        let snapshot_before = load_snapshot(&snapshot_store, base, &record.id)?;
+        let journal_before = read_journal(&journal_store, base, &record.id)?;
+
+        let milestone_root = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str());
+        std::fs::remove_file(milestone_root.join("plan.md"))?;
+        std::fs::remove_file(milestone_root.join("plan.shape.json"))?;
+
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now + chrono::Duration::seconds(1),
+        )?;
+        let snapshot_after = load_snapshot(&snapshot_store, base, &record.id)?;
+        let journal_after = read_journal(&journal_store, base, &record.id)?;
+
+        let plan_md = plan_store.read_plan_md(base, &record.id)?;
+        assert!(plan_md.contains("## Acceptance Criteria"));
+        assert!(milestone_root.join("plan.shape.json").is_file());
+        assert_eq!(snapshot_after.plan_version, snapshot_before.plan_version);
+        assert_eq!(snapshot_after.updated_at, snapshot_before.updated_at);
+        assert_eq!(journal_after.len(), journal_before.len());
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_recomputes_shape_from_plan_json_when_sidecar_signature_is_corrupt(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle("shape-signature-corrupt", "Shape Signature Corrupt");
+        bundle.workstreams[0].beads[0].bead_id = Some("bead-1".to_owned());
+        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("explicit bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let milestone_root = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str());
+        let existing_plan_hash = hash_text(&plan_store.read_plan_json(base, &record.id)?);
+        let corrupt_shape =
+            render_plan_shape_artifact(existing_plan_hash.as_str(), "{\"beads\":[]}")?;
+        std::fs::write(milestone_root.join("plan.shape.json"), corrupt_shape)?;
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        updated_bundle.workstreams[0].name = "Renamed workstream".to_owned();
+        updated_bundle.workstreams[0].beads[0].title = "Renamed explicit bead".to_owned();
+
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.plan_version, 2);
+        assert_eq!(snapshot.progress.completed_beads, 1);
+        let expected_plan_json = render_plan_json(&updated_bundle)?;
+        let expected_plan_hash = hash_text(&expected_plan_json);
+        let expected_shape = progress_shape_signature(&updated_bundle)
+            .map_err(|errors| std::io::Error::other(errors.join("; ")))?;
+        let expected_plan_shape =
+            render_plan_shape_artifact(expected_plan_hash.as_str(), expected_shape.as_str())?;
+        assert_eq!(
+            plan_store.read_plan_shape(base, &record.id)?,
+            expected_plan_shape
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_repairs_stale_plan_shape_sidecar_after_partial_plan_write(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle("shape-sidecar-repair", "Shape Sidecar Repair");
+        bundle.workstreams[0].beads[0].bead_id = Some("bead-1".to_owned());
+        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("first bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        updated_bundle.workstreams[0].name = "Renamed workstream".to_owned();
+        updated_bundle.workstreams[0].beads[0].title = "Renamed explicit bead".to_owned();
+
+        let milestone_root = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str());
+        let expected_plan_json = render_plan_json(&updated_bundle)?;
+        let expected_plan_md = render_plan_md_checked(&updated_bundle)
+            .map_err(|errors| std::io::Error::other(errors.join("; ")))?;
+        std::fs::write(milestone_root.join("plan.json"), &expected_plan_json)?;
+        std::fs::write(milestone_root.join("plan.md"), &expected_plan_md)?;
+
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.plan_version, 2);
+        assert_eq!(snapshot.progress.completed_beads, 1);
+        let expected_plan_hash = hash_text(&expected_plan_json);
+        let expected_shape = progress_shape_signature(&updated_bundle)
+            .map_err(|errors| std::io::Error::other(errors.join("; ")))?;
+        let expected_plan_shape =
+            render_plan_shape_artifact(expected_plan_hash.as_str(), expected_shape.as_str())?;
+        assert_eq!(
+            plan_store.read_plan_shape(base, &record.id)?,
+            expected_plan_shape
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_clears_progress_when_only_uncommitted_plan_shape_matches(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle("uncommitted-shape", "Uncommitted Shape");
+        bundle.workstreams[0].beads[0].bead_id = Some("bead-1".to_owned());
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("original bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut staged_bundle = bundle.clone();
+        staged_bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Uncommitted extra bead".to_owned(),
+            description: Some("Only written during a crashed persist.".to_owned()),
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec!["staged".to_owned()],
+            depends_on: vec!["bead-1".to_owned()],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+        staged_bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned(), "bead-2".to_owned()];
+        let staged_plan_json = render_plan_json(&staged_bundle)?;
+        let staged_plan_hash = hash_text(&staged_plan_json);
+        let staged_plan_shape = render_plan_shape_artifact(
+            staged_plan_hash.as_str(),
+            progress_shape_signature(&staged_bundle)
+                .map_err(|errors| std::io::Error::other(errors.join("; ")))?
+                .as_str(),
+        )?;
+
+        let milestone_root = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str());
+        std::fs::write(milestone_root.join("plan.json"), staged_plan_json)?;
+        std::fs::write(milestone_root.join("plan.shape.json"), staged_plan_shape)?;
+
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &staged_bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.plan_version, 2);
+        assert_eq!(snapshot.progress.total_beads, 2);
+        assert_eq!(snapshot.progress.completed_beads, 0);
+        assert_eq!(lineage_store.read_task_runs(base, &record.id)?.len(), 0);
         Ok(())
     }
 

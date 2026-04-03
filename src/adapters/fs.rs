@@ -44,7 +44,8 @@ use crate::shared::domain::{ProjectConfig, ProjectId, StageId, WorkspaceConfig};
 use crate::shared::error::{AppError, AppResult};
 
 const ACTIVE_PROJECT_FILE: &str = "active-project";
-const WORKSPACE_DIR: &str = ".ralph-burning";
+const AUDIT_WORKSPACE_DIR: &str = ".ralph-burning";
+const LIVE_WORKSPACE_DIR: &str = "ralph-burning-live";
 const PROJECTS_DIR: &str = "projects";
 const PROJECT_CONFIG_FILE: &str = "project.toml";
 const PROJECT_POLICY_CONFIG_FILE: &str = "config.toml";
@@ -262,7 +263,7 @@ impl FileSystem {
         original_prompt: &str,
         refined_prompt: &str,
     ) -> AppResult<String> {
-        let project_root = Self::project_root(base_dir, project_id);
+        let project_root = Self::ensure_live_project_root(base_dir, project_id)?;
         let prompt_path = project_root.join(PROMPT_FILE);
         let original_path = project_root.join("prompt.original.md");
         let project_toml_path = project_root.join(PROJECT_CONFIG_FILE);
@@ -328,6 +329,10 @@ impl FileSystem {
             });
         }
 
+        Self::mirror_project_file(base_dir, project_id, "prompt.original.md", original_prompt);
+        Self::mirror_project_file(base_dir, project_id, PROMPT_FILE, refined_prompt);
+        Self::mirror_project_file(base_dir, project_id, PROJECT_CONFIG_FILE, &updated_toml);
+
         Ok(new_hash)
     }
 
@@ -341,16 +346,19 @@ impl FileSystem {
         project_id: &ProjectId,
         original_prompt: &str,
     ) {
-        let project_root = Self::project_root(base_dir, project_id);
+        let project_root = Self::live_project_root(base_dir, project_id);
         let prompt_path = project_root.join(PROMPT_FILE);
         let original_path = project_root.join("prompt.original.md");
         let project_toml_path = project_root.join(PROJECT_CONFIG_FILE);
+        let audit_original_path =
+            Self::audit_project_root(base_dir, project_id).join("prompt.original.md");
 
         // Restore original prompt.md
         let _ = Self::write_atomic(&prompt_path, original_prompt);
 
         // Remove prompt.original.md
         let _ = fs::remove_file(&original_path);
+        let _ = fs::remove_file(&audit_original_path);
 
         // Restore original hash in project.toml
         let original_hash = Self::prompt_hash(original_prompt);
@@ -362,25 +370,207 @@ impl FileSystem {
                 record.prompt_hash = original_hash;
                 if let Ok(updated) = toml::to_string_pretty(&record) {
                     let _ = Self::write_atomic(&project_toml_path, &updated);
+                    Self::mirror_project_file(base_dir, project_id, PROJECT_CONFIG_FILE, &updated);
                 }
             }
         }
+        Self::mirror_project_file(base_dir, project_id, PROMPT_FILE, original_prompt);
     }
 
     // ── Helpers for project filesystem layout ──
 
+    fn resolve_git_dir(base_dir: &Path) -> PathBuf {
+        let marker = base_dir.join(".git");
+        if marker.is_dir() {
+            return marker;
+        }
+        if let Ok(raw) = fs::read_to_string(&marker) {
+            if let Some(raw_git_dir) = raw.trim().strip_prefix("gitdir:") {
+                let git_dir = PathBuf::from(raw_git_dir.trim());
+                return if git_dir.is_absolute() {
+                    git_dir
+                } else {
+                    base_dir.join(git_dir)
+                };
+            }
+        }
+        marker
+    }
+
+    pub(crate) fn audit_workspace_root_path(base_dir: &Path) -> PathBuf {
+        base_dir.join(AUDIT_WORKSPACE_DIR)
+    }
+
+    pub(crate) fn live_workspace_root_path(base_dir: &Path) -> PathBuf {
+        Self::resolve_git_dir(base_dir).join(LIVE_WORKSPACE_DIR)
+    }
+
     pub(crate) fn workspace_root_path(base_dir: &Path) -> PathBuf {
-        base_dir.join(WORKSPACE_DIR)
+        let live_root = Self::live_workspace_root_path(base_dir);
+        if live_root.join("workspace.toml").is_file() {
+            live_root
+        } else {
+            Self::audit_workspace_root_path(base_dir)
+        }
     }
 
     pub(crate) fn daemon_root(base_dir: &Path) -> PathBuf {
         Self::workspace_root_path(base_dir).join("daemon")
     }
 
-    pub(crate) fn project_root(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
-        Self::workspace_root_path(base_dir)
+    pub(crate) fn live_project_root(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+        Self::live_workspace_root_path(base_dir)
             .join(PROJECTS_DIR)
             .join(project_id.as_str())
+    }
+
+    pub(crate) fn audit_project_root(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+        Self::audit_workspace_root_path(base_dir)
+            .join(PROJECTS_DIR)
+            .join(project_id.as_str())
+    }
+
+    pub(crate) fn project_root(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+        let live_root = Self::live_project_root(base_dir, project_id);
+        if live_root.exists() {
+            live_root
+        } else {
+            Self::audit_project_root(base_dir, project_id)
+        }
+    }
+
+    fn live_pending_delete_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+        Self::live_workspace_root_path(base_dir)
+            .join(PROJECTS_DIR)
+            .join(format!(".{}.pending-delete", project_id))
+    }
+
+    fn audit_pending_delete_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+        Self::audit_workspace_root_path(base_dir)
+            .join(PROJECTS_DIR)
+            .join(format!(".{}.pending-delete", project_id))
+    }
+
+    fn pending_delete_paths(base_dir: &Path, project_id: &ProjectId) -> [PathBuf; 2] {
+        [
+            Self::live_pending_delete_path(base_dir, project_id),
+            Self::audit_pending_delete_path(base_dir, project_id),
+        ]
+    }
+
+    fn project_delete_is_pending(base_dir: &Path, project_id: &ProjectId) -> bool {
+        Self::pending_delete_paths(base_dir, project_id)
+            .into_iter()
+            .any(|path| path.is_dir())
+    }
+
+    fn copy_tree(source: &Path, destination: &Path) -> AppResult<()> {
+        if !source.exists() {
+            return Ok(());
+        }
+        fs::create_dir_all(destination)?;
+        let mut entries = fs::read_dir(source)?.collect::<Result<Vec<_>, std::io::Error>>()?;
+        entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+        for entry in entries {
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                return Err(AppError::CorruptRecord {
+                    file: source_path.display().to_string(),
+                    details: "symlink entries are not supported while seeding the live workspace"
+                        .to_owned(),
+                });
+            }
+            if file_type.is_dir() {
+                Self::copy_tree(&source_path, &destination_path)?;
+            } else {
+                if let Some(parent) = destination_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&source_path, &destination_path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_live_workspace_seeded(base_dir: &Path) -> AppResult<()> {
+        let live_root = Self::live_workspace_root_path(base_dir);
+        if live_root.join("workspace.toml").is_file() {
+            return Ok(());
+        }
+        let audit_root = Self::audit_workspace_root_path(base_dir);
+        if audit_root.exists() {
+            let sentinel_name = "workspace.toml";
+            fs::create_dir_all(&live_root)?;
+            let mut entries =
+                fs::read_dir(&audit_root)?.collect::<Result<Vec<_>, std::io::Error>>()?;
+            entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+
+            let mut deferred_sentinel = None;
+            for entry in entries {
+                let source_path = entry.path();
+                let destination_path = live_root.join(entry.file_name());
+                let file_type = entry.file_type()?;
+                if file_type.is_symlink() {
+                    return Err(AppError::CorruptRecord {
+                        file: source_path.display().to_string(),
+                        details:
+                            "symlink entries are not supported while seeding the live workspace"
+                                .to_owned(),
+                    });
+                }
+
+                if entry.file_name() == sentinel_name {
+                    deferred_sentinel = Some(source_path);
+                    continue;
+                }
+
+                if file_type.is_dir() {
+                    Self::copy_tree(&source_path, &destination_path)?;
+                } else {
+                    fs::copy(&source_path, &destination_path)?;
+                }
+            }
+
+            if let Some(source_path) = deferred_sentinel {
+                fs::copy(source_path, live_root.join(sentinel_name))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_live_project_root(base_dir: &Path, project_id: &ProjectId) -> AppResult<PathBuf> {
+        Self::ensure_live_workspace_seeded(base_dir)?;
+        let live_root = Self::live_project_root(base_dir, project_id);
+        if live_root.join(PROJECT_CONFIG_FILE).is_file() {
+            return Ok(live_root);
+        }
+        let audit_root = Self::audit_project_root(base_dir, project_id);
+        if audit_root.exists() {
+            Self::copy_tree(&audit_root, &live_root)?;
+        }
+        Ok(live_root)
+    }
+
+    pub(crate) fn mirror_project_file(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        relative_path: &str,
+        contents: &str,
+    ) {
+        let path = Self::audit_project_root(base_dir, project_id).join(relative_path);
+        let _ = Self::write_atomic(&path, contents);
+    }
+
+    fn append_project_mirror_line(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        relative_path: &str,
+        line: &str,
+    ) {
+        let path = Self::audit_project_root(base_dir, project_id).join(relative_path);
+        let _ = Self::append_line(&path, line);
     }
 
     pub fn read_project_config(
@@ -406,20 +596,14 @@ impl FileSystem {
         config: &ProjectConfig,
     ) -> AppResult<()> {
         let rendered = toml::to_string_pretty(config)?;
-        Self::write_atomic(
-            &Self::project_root(base_dir, project_id).join(PROJECT_POLICY_CONFIG_FILE),
-            &rendered,
-        )
+        let project_root = Self::ensure_live_project_root(base_dir, project_id)?;
+        Self::write_atomic(&project_root.join(PROJECT_POLICY_CONFIG_FILE), &rendered)?;
+        Self::mirror_project_file(base_dir, project_id, PROJECT_POLICY_CONFIG_FILE, &rendered);
+        Ok(())
     }
 
     pub(crate) fn project_policy_config_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
         Self::project_root(base_dir, project_id).join(PROJECT_POLICY_CONFIG_FILE)
-    }
-
-    fn pending_delete_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
-        Self::workspace_root_path(base_dir)
-            .join(PROJECTS_DIR)
-            .join(format!(".{}.pending-delete", project_id))
     }
 
     fn append_line(path: &Path, line: &str) -> AppResult<()> {
@@ -494,6 +678,9 @@ pub struct FsProjectStore;
 
 impl ProjectStorePort for FsProjectStore {
     fn project_exists(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
+        if FileSystem::project_delete_is_pending(base_dir, project_id) {
+            return Ok(false);
+        }
         let project_root = FileSystem::project_root(base_dir, project_id);
         if !project_root.is_dir() {
             return Ok(false);
@@ -513,6 +700,11 @@ impl ProjectStorePort for FsProjectStore {
         base_dir: &Path,
         project_id: &ProjectId,
     ) -> AppResult<ProjectRecord> {
+        if FileSystem::project_delete_is_pending(base_dir, project_id) {
+            return Err(AppError::ProjectNotFound {
+                project_id: project_id.to_string(),
+            });
+        }
         let project_root = FileSystem::project_root(base_dir, project_id);
         let path = project_root.join(PROJECT_CONFIG_FILE);
         let raw = fs::read_to_string(&path).map_err(|e| {
@@ -540,77 +732,138 @@ impl ProjectStorePort for FsProjectStore {
     }
 
     fn list_project_ids(&self, base_dir: &Path) -> AppResult<Vec<ProjectId>> {
-        let projects_dir = FileSystem::workspace_root_path(base_dir).join(PROJECTS_DIR);
-        if !projects_dir.is_dir() {
-            return Ok(Vec::new());
-        }
-
-        let mut ids = Vec::new();
-        for entry in fs::read_dir(&projects_dir)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() {
+        let mut candidate_ids = std::collections::BTreeSet::new();
+        for projects_dir in [
+            FileSystem::audit_workspace_root_path(base_dir).join(PROJECTS_DIR),
+            FileSystem::live_workspace_root_path(base_dir).join(PROJECTS_DIR),
+        ] {
+            if !projects_dir.is_dir() {
                 continue;
             }
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            // Skip hidden directories (staging/trash from transactional operations)
-            if name_str.starts_with('.') {
-                continue;
-            }
-            if let Ok(pid) = ProjectId::new(name_str.as_ref()) {
-                if !entry.path().join(PROJECT_CONFIG_FILE).is_file() {
-                    return Err(AppError::CorruptRecord {
-                        file: format!("projects/{}/project.toml", name_str),
-                        details: "project directory exists but canonical project.toml is missing"
-                            .to_owned(),
-                    });
+            for entry in fs::read_dir(&projects_dir)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_dir() {
+                    continue;
                 }
-                ids.push(pid);
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with('.') {
+                    continue;
+                }
+                if let Ok(pid) = ProjectId::new(name_str.as_ref()) {
+                    candidate_ids.insert(pid.to_string());
+                }
             }
         }
-
+        let mut ids = Vec::new();
+        for id in candidate_ids {
+            let pid = ProjectId::new(id.clone()).expect("candidate ids already validated");
+            if FileSystem::project_delete_is_pending(base_dir, &pid) {
+                continue;
+            }
+            let project_root = FileSystem::project_root(base_dir, &pid);
+            if !project_root.is_dir() {
+                continue;
+            }
+            if !project_root.join(PROJECT_CONFIG_FILE).is_file() {
+                return Err(AppError::CorruptRecord {
+                    file: format!("projects/{id}/project.toml"),
+                    details: "project directory exists but canonical project.toml is missing"
+                        .to_owned(),
+                });
+            }
+            ids.push(pid);
+        }
         ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         Ok(ids)
     }
 
     fn stage_delete(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
-        let project_root = FileSystem::project_root(base_dir, project_id);
-        if !project_root.is_dir() {
+        let live_project_root = FileSystem::live_project_root(base_dir, project_id);
+        let audit_project_root = FileSystem::audit_project_root(base_dir, project_id);
+        if !live_project_root.is_dir() && !audit_project_root.is_dir() {
             return Err(AppError::ProjectNotFound {
                 project_id: project_id.to_string(),
             });
         }
 
-        let pending_path = FileSystem::pending_delete_path(base_dir, project_id);
-
-        // Clean up any leftover pending-delete from a previous crash
-        if pending_path.exists() {
-            fs::remove_dir_all(&pending_path)?;
+        for pending_path in FileSystem::pending_delete_paths(base_dir, project_id) {
+            if pending_path.is_dir() {
+                fs::remove_dir_all(&pending_path)?;
+            } else if pending_path.exists() {
+                fs::remove_file(&pending_path)?;
+            }
         }
 
-        // Atomic rename to pending-delete location — project becomes
-        // invisible to list/show but data stays on disk.
-        fs::rename(&project_root, &pending_path)?;
+        let mut renamed_paths = Vec::new();
+        for (project_root, pending_path) in [
+            (
+                live_project_root,
+                FileSystem::live_pending_delete_path(base_dir, project_id),
+            ),
+            (
+                audit_project_root,
+                FileSystem::audit_pending_delete_path(base_dir, project_id),
+            ),
+        ] {
+            if !project_root.is_dir() {
+                continue;
+            }
+            if let Some(parent) = pending_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            match fs::rename(&project_root, &pending_path) {
+                Ok(()) => renamed_paths.push((project_root, pending_path)),
+                Err(error) => {
+                    for (original_root, staged_root) in renamed_paths.into_iter().rev() {
+                        let _ = fs::rename(&staged_root, &original_root);
+                    }
+                    return Err(error.into());
+                }
+            }
+        }
         Ok(())
     }
 
     fn commit_delete(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
-        let pending_path = FileSystem::pending_delete_path(base_dir, project_id);
-        if pending_path.is_dir() {
-            fs::remove_dir_all(&pending_path)?;
+        for pending_path in FileSystem::pending_delete_paths(base_dir, project_id) {
+            if pending_path.is_dir() {
+                fs::remove_dir_all(&pending_path)?;
+            } else if pending_path.exists() {
+                fs::remove_file(&pending_path)?;
+            }
         }
         Ok(())
     }
 
     fn rollback_delete(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
-        let project_root = FileSystem::project_root(base_dir, project_id);
-        let pending_path = FileSystem::pending_delete_path(base_dir, project_id);
-
-        if !pending_path.is_dir() {
-            return Ok(());
+        let mut restored_paths = Vec::new();
+        for (pending_path, project_root) in [
+            (
+                FileSystem::live_pending_delete_path(base_dir, project_id),
+                FileSystem::live_project_root(base_dir, project_id),
+            ),
+            (
+                FileSystem::audit_pending_delete_path(base_dir, project_id),
+                FileSystem::audit_project_root(base_dir, project_id),
+            ),
+        ] {
+            if !pending_path.is_dir() {
+                continue;
+            }
+            if let Some(parent) = project_root.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            match fs::rename(&pending_path, &project_root) {
+                Ok(()) => restored_paths.push((pending_path, project_root)),
+                Err(error) => {
+                    for (staged_root, original_root) in restored_paths.into_iter().rev() {
+                        let _ = fs::rename(&original_root, &staged_root);
+                    }
+                    return Err(error.into());
+                }
+            }
         }
-
-        fs::rename(&pending_path, &project_root)?;
         Ok(())
     }
 
@@ -623,7 +876,7 @@ impl ProjectStorePort for FsProjectStore {
         initial_journal_line: &str,
         sessions: &SessionStore,
     ) -> AppResult<()> {
-        let project_root = FileSystem::project_root(base_dir, &record.id);
+        let project_root = FileSystem::live_project_root(base_dir, &record.id);
 
         // Stage into a temporary directory alongside the final location
         let staging_name = format!(".{}.staging.{}", record.id, std::process::id());
@@ -689,6 +942,24 @@ impl ProjectStorePort for FsProjectStore {
             return Err(e.into());
         }
 
+        let project_toml = toml::to_string_pretty(record)
+            .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
+        let project_config_toml = toml::to_string_pretty(&ProjectConfig::default())
+            .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
+        let run_json = serde_json::to_string_pretty(run_snapshot)?;
+        let mut journal_content = initial_journal_line.to_owned();
+        journal_content.push('\n');
+        FileSystem::mirror_project_file(base_dir, &record.id, PROJECT_CONFIG_FILE, &project_toml);
+        FileSystem::mirror_project_file(
+            base_dir,
+            &record.id,
+            PROJECT_POLICY_CONFIG_FILE,
+            &project_config_toml,
+        );
+        FileSystem::mirror_project_file(base_dir, &record.id, PROMPT_FILE, prompt_contents);
+        FileSystem::mirror_project_file(base_dir, &record.id, RUN_FILE, &run_json);
+        FileSystem::mirror_project_file(base_dir, &record.id, JOURNAL_FILE, &journal_content);
+
         Ok(())
     }
 }
@@ -721,8 +992,11 @@ impl JournalStorePort for FsJournalStore {
             &JOURNAL_APPEND_FAIL_CONFIG,
             "injected journal append failure for testing",
         )?;
-        let path = FileSystem::project_root(base_dir, project_id).join(JOURNAL_FILE);
-        FileSystem::append_line(&path, line)
+        let project_root = FileSystem::ensure_live_project_root(base_dir, project_id)?;
+        let path = project_root.join(JOURNAL_FILE);
+        FileSystem::append_line(&path, line)?;
+        FileSystem::append_project_mirror_line(base_dir, project_id, JOURNAL_FILE, line);
+        Ok(())
     }
 }
 
@@ -1016,9 +1290,12 @@ impl RunSnapshotWritePort for FsRunSnapshotWriteStore {
         project_id: &ProjectId,
         snapshot: &RunSnapshot,
     ) -> AppResult<()> {
-        let path = FileSystem::project_root(base_dir, project_id).join(RUN_FILE);
+        let project_root = FileSystem::ensure_live_project_root(base_dir, project_id)?;
+        let path = project_root.join(RUN_FILE);
         let contents = serde_json::to_string_pretty(snapshot)?;
-        FileSystem::write_atomic(&path, &contents)
+        FileSystem::write_atomic(&path, &contents)?;
+        FileSystem::mirror_project_file(base_dir, project_id, RUN_FILE, &contents);
+        Ok(())
     }
 }
 
@@ -1032,7 +1309,8 @@ impl RollbackPointStorePort for FsRollbackPointStore {
         project_id: &ProjectId,
         rollback_point: &RollbackPoint,
     ) -> AppResult<()> {
-        let path = FileSystem::project_root(base_dir, project_id)
+        let project_root = FileSystem::ensure_live_project_root(base_dir, project_id)?;
+        let path = project_root
             .join("rollback")
             .join(format!("{}.json", rollback_point.rollback_id));
         let contents = serde_json::to_string_pretty(rollback_point)?;
@@ -1096,7 +1374,7 @@ impl PayloadArtifactWritePort for FsPayloadArtifactWriteStore {
         payload: &PayloadRecord,
         artifact: &ArtifactRecord,
     ) -> AppResult<()> {
-        let project_root = FileSystem::project_root(base_dir, project_id);
+        let project_root = FileSystem::ensure_live_project_root(base_dir, project_id)?;
 
         let payload_final = project_root
             .join("history/payloads")
@@ -1148,6 +1426,13 @@ impl PayloadArtifactWritePort for FsPayloadArtifactWriteStore {
             let _ = fs::remove_file(&artifact_staging);
             return Err(e.into());
         }
+
+        FileSystem::mirror_project_file(
+            base_dir,
+            project_id,
+            &format!("history/artifacts/{}.json", artifact.artifact_id),
+            &artifact_json,
+        );
 
         Ok(())
     }
@@ -1214,7 +1499,8 @@ impl crate::contexts::project_run_record::service::AmendmentQueuePort for FsAmen
             &AMENDMENT_WRITE_FAIL_CONFIG,
             "injected amendment write failure for testing",
         )?;
-        let dir = FileSystem::project_root(base_dir, project_id).join("amendments");
+        let project_root = FileSystem::ensure_live_project_root(base_dir, project_id)?;
+        let dir = project_root.join("amendments");
         fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{}.json", amendment.amendment_id));
         let contents = serde_json::to_string_pretty(amendment)?;
@@ -1270,7 +1556,8 @@ impl crate::contexts::project_run_record::service::AmendmentQueuePort for FsAmen
             &AMENDMENT_REMOVE_FAIL_CONFIG,
             "injected amendment remove failure for testing",
         )?;
-        let path = FileSystem::project_root(base_dir, project_id)
+        let project_root = FileSystem::ensure_live_project_root(base_dir, project_id)?;
+        let path = project_root
             .join("amendments")
             .join(format!("{}.json", amendment_id));
         match fs::remove_file(&path) {
@@ -1281,7 +1568,8 @@ impl crate::contexts::project_run_record::service::AmendmentQueuePort for FsAmen
     }
 
     fn drain_amendments(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<u32> {
-        let dir = FileSystem::project_root(base_dir, project_id).join("amendments");
+        let project_root = FileSystem::ensure_live_project_root(base_dir, project_id)?;
+        let dir = project_root.join("amendments");
         if !dir.is_dir() {
             return Ok(0);
         }
@@ -1324,7 +1612,8 @@ impl RuntimeLogWritePort for FsRuntimeLogWriteStore {
         project_id: &ProjectId,
         entry: &RuntimeLogEntry,
     ) -> AppResult<()> {
-        let dir = FileSystem::project_root(base_dir, project_id).join("runtime/logs");
+        let project_root = FileSystem::ensure_live_project_root(base_dir, project_id)?;
+        let dir = project_root.join("runtime/logs");
         fs::create_dir_all(&dir)?;
         let path = dir.join("run.ndjson");
         let line = serde_json::to_string(entry)?;
@@ -2091,19 +2380,20 @@ const MILESTONE_STATUS_FILE: &str = "status.json";
 const MILESTONE_JOURNAL_FILE: &str = "journal.ndjson";
 const MILESTONE_PLAN_JSON_FILE: &str = "plan.json";
 const MILESTONE_PLAN_MD_FILE: &str = "plan.md";
+const MILESTONE_PLAN_SHAPE_FILE: &str = "plan.shape.json";
 const MILESTONE_TASK_RUNS_FILE: &str = "task-runs.ndjson";
 const MILESTONE_MUTATION_LOCK_FILE: &str = "mutation.lock";
 const MILESTONE_LOCKS_DIR: &str = ".locks";
 
 impl FileSystem {
     pub(crate) fn milestone_root(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
-        Self::workspace_root_path(base_dir)
+        Self::audit_workspace_root_path(base_dir)
             .join(MILESTONES_DIR)
             .join(milestone_id.as_str())
     }
 
     pub(crate) fn milestone_lock_root(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
-        Self::workspace_root_path(base_dir)
+        Self::audit_workspace_root_path(base_dir)
             .join(MILESTONES_DIR)
             .join(MILESTONE_LOCKS_DIR)
             .join(milestone_id.as_str())
@@ -2194,7 +2484,7 @@ impl MilestoneStorePort for FsMilestoneStore {
     }
 
     fn list_milestone_ids(&self, base_dir: &Path) -> AppResult<Vec<MilestoneId>> {
-        let milestones_dir = FileSystem::workspace_root_path(base_dir).join(MILESTONES_DIR);
+        let milestones_dir = FileSystem::audit_workspace_root_path(base_dir).join(MILESTONES_DIR);
         if !milestones_dir.is_dir() {
             return Ok(Vec::new());
         }
@@ -3544,6 +3834,23 @@ impl MilestonePlanPort for FsMilestonePlanStore {
         let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_PLAN_MD_FILE);
         FileSystem::write_atomic(&path, content)
     }
+
+    fn read_plan_shape(&self, base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<String> {
+        let path =
+            FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_PLAN_SHAPE_FILE);
+        Ok(fs::read_to_string(&path)?)
+    }
+
+    fn write_plan_shape(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        content: &str,
+    ) -> AppResult<()> {
+        let path =
+            FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_PLAN_SHAPE_FILE);
+        FileSystem::write_atomic(&path, content)
+    }
 }
 
 // ── Test hook for TOCTOU-safe writer-lock release ───────────────────────────
@@ -3970,7 +4277,7 @@ fn requirements_run_root(base_dir: &Path, run_id: &str) -> PathBuf {
 }
 
 fn requirements_root(base_dir: &Path) -> PathBuf {
-    FileSystem::workspace_root_path(base_dir).join(REQUIREMENTS_DIR)
+    FileSystem::audit_workspace_root_path(base_dir).join(REQUIREMENTS_DIR)
 }
 
 #[cfg(test)]
@@ -3979,6 +4286,31 @@ mod tests {
     use crate::contexts::automation_runtime::{DaemonStorePort, WriterLockReleaseOutcome};
     use crate::shared::domain::ProjectId;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_live_workspace_seeded_writes_workspace_toml_last() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let audit_root = FileSystem::audit_workspace_root_path(temp.path());
+        let live_root = FileSystem::live_workspace_root_path(temp.path());
+
+        std::fs::create_dir_all(audit_root.join("projects")).expect("create audit projects dir");
+        std::fs::write(audit_root.join("workspace.toml"), "version = 1\n")
+            .expect("write audit workspace config");
+        let outside_file = temp.path().join("outside.txt");
+        std::fs::write(&outside_file, "secret").expect("write outside file");
+        symlink(&outside_file, audit_root.join("linked.txt")).expect("create audit symlink");
+
+        let error =
+            FileSystem::ensure_live_workspace_seeded(temp.path()).expect_err("seeding must fail");
+        assert!(matches!(error, AppError::CorruptRecord { .. }));
+        assert!(
+            !live_root.join("workspace.toml").exists(),
+            "workspace.toml must not become the completion sentinel before the rest of the seed succeeds"
+        );
+    }
 
     /// Verify that `render_start_journal_details` output round-trips through
     /// `StartJournalDetails` parse→render. Both paths use the same canonical

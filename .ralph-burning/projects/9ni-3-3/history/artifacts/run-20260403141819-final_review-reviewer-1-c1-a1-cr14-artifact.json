@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-reviewer-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260403141819-final_review-reviewer-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T21:34:04.498542628Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the current delta in `src/cli/project.rs`, `src/contexts/milestone_record/bundle.rs`, and `tests/cli.rs`, including the relevant code paths end-to-end. I also ran targeted coverage with `cargo test explicit_id -- --nocapture`, `cargo test mismatched_explicit_bead_id -- --nocapture`, and `cargo test create_from_bead -- --nocapture`. I did not find any correctness, safety, or robustness issues in this pass.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}
