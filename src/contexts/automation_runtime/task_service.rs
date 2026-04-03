@@ -375,15 +375,27 @@ impl DaemonTaskService {
         base_dir: &Path,
         task_id: &str,
     ) -> AppResult<DaemonTask> {
-        let mut task = store.read_task(base_dir, task_id)?;
+        let original_task = store.read_task(base_dir, task_id)?;
+        let mut task = original_task.clone();
         task.transition_to(TaskStatus::Completed, Utc::now())?;
         store.write_task(base_dir, &task)?;
-        Self::append_journal_event(
+        if let Err(journal_err) = Self::append_journal_event(
             store,
             base_dir,
             DaemonJournalEventType::TaskCompleted,
             json!({ "task_id": task.task_id }),
-        )?;
+        ) {
+            store
+                .write_task(base_dir, &original_task)
+                .map_err(|restore_err| AppError::CorruptRecord {
+                    file: format!("daemon/tasks/{}.json", task.task_id),
+                    details: format!(
+                        "task completion journal append failed: {journal_err}; \
+                         failed to restore prior task state: {restore_err}"
+                    ),
+                })?;
+            return Err(journal_err);
+        }
         Ok(task)
     }
 

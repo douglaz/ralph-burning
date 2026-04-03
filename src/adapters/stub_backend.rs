@@ -723,6 +723,40 @@ fn canned_requirements_payload(label: &str) -> serde_json::Value {
             "handoff_summary": "Stub handoff summary.",
             "follow_ups": []
         })
+    } else if label.contains("milestone_bundle") {
+        json!({
+            "schema_version": 1,
+            "identity": {
+                "id": "ms-stub",
+                "name": "Stub Milestone"
+            },
+            "executive_summary": "Stub milestone plan summary.",
+            "goals": ["Deliver the milestone"],
+            "non_goals": [],
+            "constraints": [],
+            "acceptance_map": [{
+                "id": "AC-1",
+                "description": "Milestone can be executed from structured plan output.",
+                "covered_by": ["ms-stub.bead-1"]
+            }],
+            "workstreams": [{
+                "name": "Planning",
+                "description": "Stub workstream",
+                "beads": [{
+                    "bead_id": "ms-stub.bead-1",
+                    "title": "Stub bead",
+                    "description": "Carry the milestone plan into execution.",
+                    "bead_type": "task",
+                    "priority": 1,
+                    "labels": ["phase1"],
+                    "depends_on": [],
+                    "acceptance_criteria": ["AC-1"],
+                    "flow_override": null
+                }]
+            }],
+            "default_flow": "quick_dev",
+            "agents_guidance": "Follow the milestone plan."
+        })
     } else if label.contains("ideation") {
         json!({
             "themes": ["Core feature delivery"],

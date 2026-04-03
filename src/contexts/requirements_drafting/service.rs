@@ -21,6 +21,7 @@ use crate::contexts::agent_execution::service::{
 };
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::RawOutputPort;
+use crate::contexts::milestone_record::bundle::MilestoneBundle;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{BackendRole, FlowPreset, ProjectId, SessionPolicy};
 use crate::shared::error::{AppError, AppResult};
@@ -28,9 +29,9 @@ use crate::shared::error::{AppError, AppResult};
 use super::contracts::{RequirementsContract, RequirementsPayload, RequirementsValidatedBundle};
 use super::model::{
     AnswerEntry, CommittedStageEntry, FullModeStage, PersistedAnswers, QuestionSetPayload,
-    RequirementsJournalEvent, RequirementsJournalEventType, RequirementsReviewOutcome,
-    RequirementsRun, RequirementsStageId, RequirementsStatus, SeedSourceMetadata,
-    ValidationOutcome, PROJECT_SEED_VERSION, SUPPORTED_SEED_VERSIONS,
+    RequirementsJournalEvent, RequirementsJournalEventType, RequirementsOutputKind,
+    RequirementsReviewOutcome, RequirementsRun, RequirementsStageId, RequirementsStatus,
+    SeedSourceMetadata, ValidationOutcome, PROJECT_SEED_VERSION, SUPPORTED_SEED_VERSIONS,
 };
 use super::renderers;
 
@@ -183,6 +184,41 @@ where
         Ok(run_id)
     }
 
+    /// Execute milestone-mode requirements planning through the full pipeline.
+    pub async fn draft_milestone(
+        &self,
+        base_dir: &Path,
+        idea: &str,
+        now: DateTime<Utc>,
+        project_id: Option<&ProjectId>,
+    ) -> AppResult<String> {
+        let run_id = generate_run_id(now);
+        let mut run = RequirementsRun::new_milestone(run_id.clone(), idea.to_owned(), now);
+
+        self.store.create_run_dir(base_dir, &run_id)?;
+        self.store.write_run(base_dir, &run_id, &run)?;
+
+        let created_event = journal_event(1, now, RequirementsJournalEventType::RunCreated, &run);
+        if let Err(e) = self
+            .store
+            .append_journal_event(base_dir, &run_id, &created_event)
+        {
+            self.fail_run(
+                base_dir,
+                &mut run,
+                1,
+                &format!("journal append failed for run_created: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+
+        self.run_full_mode_pipeline(base_dir, &mut run, idea, &[], 2, now, project_id)
+            .await?;
+
+        Ok(run_id)
+    }
+
     /// Execute `requirements quick --idea "<text>"`.
     ///
     /// Quick mode uses the existing draft/review contracts in a bounded revision
@@ -254,11 +290,12 @@ where
             None
         };
 
-        let seed_prompt_path = if run.status == RequirementsStatus::Completed {
-            Some(self.store.seed_prompt_path(base_dir, run_id))
-        } else {
-            None
-        };
+        let seed_prompt_path =
+            if run.status == RequirementsStatus::Completed && run.latest_seed_id.is_some() {
+                Some(self.store.seed_prompt_path(base_dir, run_id))
+            } else {
+                None
+            };
 
         let recommended_flow = run.recommended_flow;
 
@@ -382,7 +419,7 @@ where
 
         // For full mode, invalidate synthesis and downstream stages on answer,
         // preserving ideation and research history.
-        if run.mode == super::model::RequirementsMode::Draft {
+        if run.uses_full_mode_pipeline() {
             for stage in FullModeStage::question_round_invalidated() {
                 run.committed_stages.remove(stage.as_str());
             }
@@ -872,7 +909,7 @@ where
             FullModeStage::Validation,
             &[&synthesis_artifact, &impl_spec_artifact, &gap_artifact],
         );
-        if let Some(cached) =
+        let validation_artifact = if let Some(cached) =
             self.try_reuse_stage(run, FullModeStage::Validation, &validation_cache_key)
         {
             let prior_last_transition_cached = run.last_transition_cached;
@@ -905,6 +942,7 @@ where
                     run_id: run_id.clone(),
                     details: format!("corrupt cached validation payload: {e}"),
                 })?;
+            let validation_artifact = renderers::render_validation(&validation);
             match validation.outcome {
                 ValidationOutcome::NeedsQuestions => {
                     return self
@@ -931,6 +969,7 @@ where
                 }
                 ValidationOutcome::Pass => {}
             }
+            validation_artifact
         } else {
             let prompt = template_catalog::resolve_and_render(
                 "requirements_validation",
@@ -973,6 +1012,7 @@ where
                 RequirementsPayload::Validation(v) => v.missing_information.clone(),
                 _ => vec![],
             };
+            let validation_artifact = bundle.artifact.clone();
 
             self.commit_full_mode_stage(
                 base_dir,
@@ -1004,11 +1044,35 @@ where
                 }
                 ValidationOutcome::Pass => {}
             }
+            validation_artifact
         };
 
-        // ── Project Seed ────────────────────────────────────────────────
-        self.generate_and_commit_seed(base_dir, run, &synthesis_artifact, &[], seq, project_id)
-            .await
+        match run.output_kind {
+            RequirementsOutputKind::ProjectSeed => {
+                self.generate_and_commit_seed(
+                    base_dir,
+                    run,
+                    &synthesis_artifact,
+                    &[],
+                    seq,
+                    project_id,
+                )
+                .await
+            }
+            RequirementsOutputKind::MilestoneBundle => {
+                self.generate_and_commit_milestone_bundle(
+                    base_dir,
+                    run,
+                    &synthesis_artifact,
+                    &impl_spec_artifact,
+                    &gap_artifact,
+                    &validation_artifact,
+                    seq,
+                    project_id,
+                )
+                .await
+            }
+        }
     }
 
     /// Open a question round when validation finds missing information.
@@ -1671,7 +1735,163 @@ where
         }
     }
 
-    // ── Seed generation (shared by full and quick modes) ────────────────
+    // ── Terminal output generation ──────────────────────────────────────
+
+    #[allow(clippy::too_many_arguments)]
+    async fn generate_and_commit_milestone_bundle(
+        &self,
+        base_dir: &Path,
+        run: &mut RequirementsRun,
+        synthesis_artifact: &str,
+        impl_spec_artifact: &str,
+        gap_artifact: &str,
+        validation_artifact: &str,
+        mut seq: u64,
+        project_id: Option<&ProjectId>,
+    ) -> AppResult<()> {
+        let run_id = run.run_id.clone();
+        let run_root = requirements_run_root(base_dir, &run_id);
+
+        let bundle_prompt = template_catalog::resolve_and_render(
+            "requirements_milestone_bundle",
+            base_dir,
+            project_id,
+            &[
+                ("synthesis_artifact", synthesis_artifact),
+                ("impl_spec_artifact", impl_spec_artifact),
+                ("gap_artifact", gap_artifact),
+                ("validation_artifact", validation_artifact),
+            ],
+        )?;
+
+        let result = self
+            .invoke_stage(
+                &run_root,
+                RequirementsStageId::MilestoneBundle,
+                BackendRole::Planner,
+                &bundle_prompt,
+            )
+            .await;
+
+        let bundle = match result {
+            Ok(bundle) => bundle,
+            Err(e) => {
+                self.fail_run(
+                    base_dir,
+                    run,
+                    seq,
+                    &format!("milestone bundle generation: {e}"),
+                )
+                .await?;
+                return Err(e);
+            }
+        };
+
+        let milestone_bundle = match bundle.payload {
+            RequirementsPayload::MilestoneBundle(bundle) => bundle,
+            _ => unreachable!(),
+        };
+        let artifact = renderers::render_milestone_bundle(&milestone_bundle);
+        let payload_id = format!("{run_id}-milestone-bundle-1");
+        let artifact_id = format!("{run_id}-milestone-bundle-art-1");
+        let payload_json = serde_json::to_value(&milestone_bundle)?;
+
+        if let Err(e) = self.store.write_payload_artifact_pair_atomic(
+            base_dir,
+            &run_id,
+            &payload_id,
+            &payload_json,
+            &artifact_id,
+            &artifact,
+        ) {
+            self.fail_run(
+                base_dir,
+                run,
+                seq,
+                &format!("milestone bundle persistence: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+
+        let run_before_commit = run.clone();
+        run.committed_stages.insert(
+            FullModeStage::MilestoneBundle.as_str().to_owned(),
+            CommittedStageEntry {
+                payload_id: payload_id.clone(),
+                artifact_id: artifact_id.clone(),
+                cache_key: None,
+            },
+        );
+        run.current_stage = Some(FullModeStage::MilestoneBundle);
+        run.latest_seed_id = None;
+        run.latest_milestone_bundle_id = Some(payload_id.clone());
+        run.milestone_bundle = Some(milestone_bundle.clone());
+        run.status = RequirementsStatus::Completed;
+        run.status_summary = "completed".to_owned();
+        run.updated_at = Utc::now();
+        if let Err(e) = self.store.write_run(base_dir, &run_id, run) {
+            let _ = self.store.remove_payload_artifact_pair(
+                base_dir,
+                &run_id,
+                &payload_id,
+                &artifact_id,
+            );
+            *run = run_before_commit;
+            self.fail_run(
+                base_dir,
+                run,
+                seq,
+                &format!("milestone bundle state persistence: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+
+        let event = journal_event(
+            seq,
+            Utc::now(),
+            RequirementsJournalEventType::StageCompleted,
+            run,
+        );
+        if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+            let _ = self.store.remove_payload_artifact_pair(
+                base_dir,
+                &run_id,
+                &payload_id,
+                &artifact_id,
+            );
+            run.committed_stages
+                .remove(FullModeStage::MilestoneBundle.as_str());
+            run.current_stage = Some(FullModeStage::Validation);
+            run.latest_milestone_bundle_id = None;
+            run.milestone_bundle = None;
+            self.fail_run(
+                base_dir,
+                run,
+                seq,
+                &format!("journal append failed for stage_completed (milestone_bundle): {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+        seq += 1;
+
+        let event = journal_event(
+            seq,
+            Utc::now(),
+            RequirementsJournalEventType::RunCompleted,
+            run,
+        );
+        let _ = self.store.append_journal_event(base_dir, &run_id, &event);
+
+        println!(
+            "Requirements completed. Milestone bundle ready: {}",
+            milestone_bundle.identity.id
+        );
+
+        Ok(())
+    }
 
     async fn generate_and_commit_seed(
         &self,
@@ -1730,7 +1950,7 @@ where
             mode: run.mode,
             run_id: run.run_id.clone(),
             question_rounds: run.question_round,
-            quick_revisions: if run.mode == super::model::RequirementsMode::Quick {
+            quick_revisions: if matches!(run.mode, super::model::RequirementsMode::Quick) {
                 Some(run.quick_revision_count)
             } else {
                 None
@@ -1797,7 +2017,7 @@ where
         }
 
         // Record seed in full-mode committed stages if in full mode
-        if run.mode == super::model::RequirementsMode::Draft {
+        if run.uses_full_mode_pipeline() {
             run.committed_stages.insert(
                 FullModeStage::ProjectSeed.as_str().to_owned(),
                 CommittedStageEntry {
@@ -1810,6 +2030,8 @@ where
         }
 
         run.latest_seed_id = Some(seed_payload_id.clone());
+        run.latest_milestone_bundle_id = None;
+        run.milestone_bundle = None;
         run.status = RequirementsStatus::Completed;
         run.status_summary = "completed".to_owned();
         run.updated_at = Utc::now();
@@ -1832,7 +2054,7 @@ where
             run.latest_seed_id = None;
             run.committed_stages
                 .remove(FullModeStage::ProjectSeed.as_str());
-            if run.mode == super::model::RequirementsMode::Draft {
+            if run.uses_full_mode_pipeline() {
                 // Reset current_stage to validation (last successful stage before seed).
                 run.current_stage = Some(FullModeStage::Validation);
             }
@@ -1918,6 +2140,7 @@ where
             RequirementsStageId::RequirementsDraft => RequirementsContract::draft(),
             RequirementsStageId::RequirementsReview => RequirementsContract::review(),
             RequirementsStageId::ProjectSeed => RequirementsContract::seed(),
+            RequirementsStageId::MilestoneBundle => RequirementsContract::milestone_bundle(),
             RequirementsStageId::Ideation => RequirementsContract::ideation(),
             RequirementsStageId::Research => RequirementsContract::research(),
             RequirementsStageId::Synthesis => RequirementsContract::synthesis(),
@@ -2002,7 +2225,8 @@ pub fn is_requirements_run_complete(
     run_id: &str,
 ) -> AppResult<bool> {
     let run = store.read_run(base_dir, run_id)?;
-    Ok(run.status == RequirementsStatus::Completed)
+    Ok(run.status == RequirementsStatus::Completed
+        && run.output_kind == RequirementsOutputKind::ProjectSeed)
 }
 
 /// Extract seed handoff data from a completed requirements run.
@@ -2019,6 +2243,16 @@ pub fn extract_seed_handoff(
             details: format!(
                 "requirements run is in '{}' status, expected 'completed'",
                 run.status
+            ),
+        });
+    }
+
+    if run.output_kind != RequirementsOutputKind::ProjectSeed {
+        return Err(AppError::RequirementsHandoffFailed {
+            task_id: run_id.to_owned(),
+            details: format!(
+                "requirements run completed with '{}' output, not a project seed",
+                run.output_kind
             ),
         });
     }
@@ -2062,6 +2296,99 @@ pub fn extract_seed_handoff(
     })
 }
 
+/// Extract milestone bundle handoff data from a completed requirements run.
+pub fn extract_milestone_bundle_handoff(
+    store: &dyn RequirementsStorePort,
+    base_dir: &Path,
+    run_id: &str,
+) -> AppResult<MilestoneBundleHandoff> {
+    let run = store.read_run(base_dir, run_id)?;
+    if run.status != RequirementsStatus::Completed {
+        return Err(AppError::RequirementsHandoffFailed {
+            task_id: run_id.to_owned(),
+            details: format!(
+                "requirements run is in '{}' status, expected 'completed'",
+                run.status
+            ),
+        });
+    }
+
+    if run.output_kind != RequirementsOutputKind::MilestoneBundle {
+        return Err(AppError::RequirementsHandoffFailed {
+            task_id: run_id.to_owned(),
+            details: format!(
+                "requirements run completed with '{}' output, not a milestone bundle",
+                run.output_kind
+            ),
+        });
+    }
+
+    let embedded_bundle = run.milestone_bundle.clone().map(|bundle| {
+        bundle
+            .validate()
+            .map(|_| bundle)
+            .map_err(|errors| AppError::RequirementsHandoffFailed {
+                task_id: run_id.to_owned(),
+                details: format!(
+                    "embedded milestone bundle failed validation: {}",
+                    errors.join("; ")
+                ),
+            })
+    });
+
+    let payload_bundle =
+        run.latest_milestone_bundle_id
+            .as_deref()
+            .map(|payload_id| -> AppResult<MilestoneBundle> {
+                let payload_json = store.read_payload(base_dir, run_id, payload_id)?;
+                let payload_bundle: MilestoneBundle = serde_json::from_value(payload_json)
+                    .map_err(|e| AppError::RequirementsHandoffFailed {
+                        task_id: run_id.to_owned(),
+                        details: format!("failed to parse milestone bundle payload: {e}"),
+                    })?;
+                payload_bundle.validate().map_err(|errors| {
+                    AppError::RequirementsHandoffFailed {
+                        task_id: run_id.to_owned(),
+                        details: format!(
+                            "payload milestone bundle failed validation: {}",
+                            errors.join("; ")
+                        ),
+                    }
+                })?;
+                Ok(payload_bundle)
+            });
+
+    let bundle = match (payload_bundle, embedded_bundle) {
+        (Some(Ok(payload_bundle)), _) => payload_bundle,
+        (Some(Err(_)), Some(Ok(bundle))) => bundle,
+        (Some(Err(payload_error)), Some(Err(embedded_error))) => {
+            return Err(AppError::RequirementsHandoffFailed {
+                task_id: run_id.to_owned(),
+                details: format!(
+                    "{}; {}",
+                    payload_error.to_string(),
+                    embedded_error.to_string()
+                ),
+            });
+        }
+        (Some(Err(payload_error)), None) => return Err(payload_error),
+        (None, Some(Ok(bundle))) => bundle,
+        (None, Some(Err(error))) => return Err(error),
+        (None, None) => {
+            return Err(AppError::RequirementsHandoffFailed {
+                task_id: run_id.to_owned(),
+                details: "completed milestone requirements run has no milestone_bundle_id"
+                    .to_owned(),
+            });
+        }
+    };
+
+    Ok(MilestoneBundleHandoff {
+        requirements_run_id: run_id.to_owned(),
+        bundle,
+    })
+}
+
 /// Seed handoff data extracted from a completed requirements run.
 #[derive(Debug, Clone)]
 pub struct SeedHandoff {
@@ -2072,6 +2399,13 @@ pub struct SeedHandoff {
     pub prompt_body: String,
     pub prompt_path: std::path::PathBuf,
     pub recommended_flow: Option<FlowPreset>,
+}
+
+/// Milestone bundle handoff data extracted from a completed requirements run.
+#[derive(Debug, Clone)]
+pub struct MilestoneBundleHandoff {
+    pub requirements_run_id: String,
+    pub bundle: crate::contexts::milestone_record::bundle::MilestoneBundle,
 }
 
 // ── Show result ─────────────────────────────────────────────────────────────

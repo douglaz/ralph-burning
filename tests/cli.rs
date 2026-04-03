@@ -414,6 +414,85 @@ created_at = "2026-04-01T10:00:00Z"
     fs::write(milestone_root.join("plan.json"), plan_json).expect("write plan json");
 }
 
+fn write_requirements_milestone_run_fixture(
+    base_dir: &std::path::Path,
+    run_id: &str,
+    milestone_id: &str,
+) {
+    let run_root = base_dir.join(".ralph-burning/requirements").join(run_id);
+    fs::create_dir_all(run_root.join("payloads")).expect("create requirements payload dir");
+    fs::create_dir_all(run_root.join("artifacts")).expect("create requirements artifact dir");
+
+    let bundle = MilestoneBundle {
+        schema_version: 1,
+        identity: MilestoneIdentity {
+            id: milestone_id.to_owned(),
+            name: "Planned Milestone".to_owned(),
+        },
+        executive_summary: "Generate a durable milestone planning bundle.".to_owned(),
+        goals: vec!["Persist the milestone bundle".to_owned()],
+        non_goals: vec![],
+        constraints: vec!["Keep the handoff deterministic".to_owned()],
+        acceptance_map: vec![AcceptanceCriterion {
+            id: "AC-1".to_owned(),
+            description: "Milestone plan is materialized".to_owned(),
+            covered_by: vec!["bead-1".to_owned()],
+        }],
+        workstreams: vec![Workstream {
+            name: "Planning".to_owned(),
+            description: Some("Create the milestone plan.".to_owned()),
+            beads: vec![BeadProposal {
+                bead_id: Some("bead-1".to_owned()),
+                title: "Persist milestone bundle".to_owned(),
+                description: Some("Write plan.json and plan.md".to_owned()),
+                bead_type: Some("task".to_owned()),
+                priority: Some(1),
+                labels: vec!["planning".to_owned()],
+                depends_on: vec![],
+                acceptance_criteria: vec!["AC-1".to_owned()],
+                flow_override: Some(FlowPreset::Standard),
+            }],
+        }],
+        default_flow: FlowPreset::Standard,
+        agents_guidance: Some("Preserve the bundle structure.".to_owned()),
+    };
+    let payload_id = format!("{run_id}-milestone-bundle-1");
+    fs::write(
+        run_root.join("run.json"),
+        serde_json::json!({
+            "run_id": run_id,
+            "idea": "Plan milestone",
+            "mode": "milestone",
+            "status": "completed",
+            "question_round": 1,
+            "latest_question_set_id": null,
+            "latest_draft_id": null,
+            "latest_review_id": null,
+            "latest_seed_id": null,
+            "latest_milestone_bundle_id": payload_id,
+            "milestone_bundle": bundle,
+            "output_kind": "milestone_bundle",
+            "pending_question_count": null,
+            "recommended_flow": "standard",
+            "created_at": "2026-04-02T10:00:00Z",
+            "updated_at": "2026-04-02T10:05:00Z",
+            "status_summary": "completed",
+            "current_stage": "milestone_bundle",
+            "committed_stages": {
+                "milestone_bundle": {
+                    "payload_id": format!("{run_id}-milestone-bundle-1"),
+                    "artifact_id": format!("{run_id}-milestone-bundle-art-1"),
+                    "cache_key": null
+                }
+            },
+            "quick_revision_count": 0,
+            "last_transition_cached": false
+        })
+        .to_string(),
+    )
+    .expect("write milestone run.json");
+}
+
 fn milestone_plan_hash(base_dir: &std::path::Path, milestone_id: &str) -> String {
     let plan_path = base_dir
         .join(".ralph-burning/milestones")
@@ -2796,6 +2875,39 @@ fn project_create_from_requirements_creates_project_and_selects_it() {
     .expect("read project journal");
     assert!(journal.contains("\"source\":\"requirements\""));
     assert!(journal.contains(&format!("\"requirements_run_id\":\"{run_id}\"")));
+}
+
+#[test]
+fn project_create_from_requirements_materializes_milestone_bundle_output() {
+    let temp_dir = initialize_workspace_fixture();
+    let run_id = "req-milestone";
+    write_requirements_milestone_run_fixture(temp_dir.path(), run_id, "ms-planned");
+
+    let output = Command::new(binary())
+        .args(["project", "create", "--from-requirements", run_id])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project create from milestone requirements");
+
+    assert!(
+        output.status.success(),
+        "create from requirements milestone should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Created milestone 'ms-planned'"));
+
+    let milestone_root = temp_dir.path().join(".ralph-burning/milestones/ms-planned");
+    assert!(milestone_root.join("milestone.toml").is_file());
+    assert!(milestone_root.join("status.json").is_file());
+    assert!(milestone_root.join("plan.json").is_file());
+    assert!(milestone_root.join("plan.md").is_file());
+
+    let status = fs::read_to_string(milestone_root.join("status.json")).expect("read status.json");
+    assert!(status.contains("\"status\": \"ready\""));
+    let plan = fs::read_to_string(milestone_root.join("plan.json")).expect("read plan.json");
+    assert!(plan.contains("\"id\": \"ms-planned\""));
 }
 
 #[test]
@@ -6965,6 +7077,43 @@ fn requirements_quick_creates_completed_run() {
         run_dir.join("run.json").exists(),
         "quick run must have run.json"
     );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn requirements_milestone_creates_completed_milestone_run() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "requirements",
+            "milestone",
+            "--idea",
+            "Plan the alpha milestone",
+        ])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run requirements milestone");
+
+    assert!(
+        output.status.success(),
+        "requirements milestone should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let run_id = only_requirements_run_id(temp_dir.path());
+    let run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(run_id)
+            .join("run.json"),
+    )
+    .expect("read run.json");
+    assert!(run_json.contains("\"mode\": \"milestone\""));
+    assert!(run_json.contains("\"output_kind\": \"milestone_bundle\""));
+    assert!(run_json.contains("\"status\": \"completed\""));
 }
 
 #[cfg(feature = "test-stub")]

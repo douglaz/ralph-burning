@@ -21,6 +21,7 @@ pub trait IssueWatcherPort {
 /// - `/rb requirements` (defaults to `RequirementsDraft`)
 /// - `/rb requirements draft`
 /// - `/rb requirements quick`
+/// - `/rb requirements milestone`
 ///
 /// Returns `None` if the text does not contain a requirements command,
 /// allowing the caller to default to `DispatchMode::Workflow`.
@@ -40,10 +41,11 @@ pub fn parse_requirements_command(text: &str) -> AppResult<Option<DispatchMode>>
                 return match tokens[2] {
                     "draft" => Ok(Some(DispatchMode::RequirementsDraft)),
                     "quick" => Ok(Some(DispatchMode::RequirementsQuick)),
+                    "milestone" => Ok(Some(DispatchMode::RequirementsMilestone)),
                     other => Err(AppError::WatcherIngestionFailed {
                         issue_ref: trimmed.to_owned(),
                         details: format!(
-                            "unknown requirements subcommand '{}'; expected 'draft' or 'quick'",
+                            "unknown requirements subcommand '{}'; expected 'draft', 'quick', or 'milestone'",
                             other
                         ),
                     }),
@@ -53,7 +55,7 @@ pub fn parse_requirements_command(text: &str) -> AppResult<Option<DispatchMode>>
             return Err(AppError::WatcherIngestionFailed {
                 issue_ref: trimmed.to_owned(),
                 details:
-                    "malformed requirements command; expected '/rb requirements [draft|quick]'"
+                    "malformed requirements command; expected '/rb requirements [draft|quick|milestone]'"
                         .to_owned(),
             });
         }

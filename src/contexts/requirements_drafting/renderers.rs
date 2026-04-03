@@ -7,6 +7,8 @@
 
 use std::fmt::Write;
 
+use crate::contexts::milestone_record::bundle::{render_plan_md, MilestoneBundle};
+
 use super::model::{
     GapAnalysisPayload, IdeationPayload, ImplementationSpecPayload, ProjectSeedPayload,
     QuestionSetPayload, RequirementsDraftPayload, RequirementsReviewPayload, ResearchPayload,
@@ -206,6 +208,11 @@ pub fn render_project_seed(payload: &ProjectSeedPayload) -> String {
     .unwrap();
 
     out
+}
+
+/// Render a milestone bundle using the canonical plan renderer.
+pub fn render_milestone_bundle(bundle: &MilestoneBundle) -> String {
+    render_plan_md(bundle)
 }
 
 // ── Full-mode stage renderers ───────────────────────────────────────────────

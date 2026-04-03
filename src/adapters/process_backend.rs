@@ -12,6 +12,7 @@ use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
 use nix::unistd::Pid;
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -255,26 +256,41 @@ impl PreparedCommand {
             } => {
                 let session_resuming = *session_resuming;
                 let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
-                let last_message_text = match tokio::fs::read_to_string(message_path).await {
-                    Ok(text) => text,
+                let parsed_payload = match tokio::fs::read_to_string(message_path).await {
+                    Ok(last_message_text) => {
+                        match serde_json::from_str::<Value>(&last_message_text) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                self.cleanup_failed_invocation(request, &output).await;
+                                return Err(ProcessBackendAdapter::invocation_failed(
+                                    request,
+                                    FailureClass::SchemaValidationFailure,
+                                    format!("invalid Codex last-message JSON: {error}"),
+                                ));
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        match serde_json::from_str::<Value>(&stdout_text) {
+                            Ok(value) => value,
+                            Err(stdout_error) => {
+                                self.cleanup_failed_invocation(request, &output).await;
+                                return Err(ProcessBackendAdapter::invocation_failed(
+                                    request,
+                                    FailureClass::TransportFailure,
+                                    format!(
+                                        "failed to read codex last-message file: {error}; stdout fallback was not valid JSON: {stdout_error}"
+                                    ),
+                                ));
+                            }
+                        }
+                    }
                     Err(error) => {
                         self.cleanup_failed_invocation(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::TransportFailure,
                             format!("failed to read codex last-message file: {error}"),
-                        ));
-                    }
-                };
-
-                let parsed_payload = match serde_json::from_str(&last_message_text) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        self.cleanup_failed_invocation(request, &output).await;
-                        return Err(ProcessBackendAdapter::invocation_failed(
-                            request,
-                            FailureClass::SchemaValidationFailure,
-                            format!("invalid Codex last-message JSON: {error}"),
                         ));
                     }
                 };
@@ -2835,6 +2851,40 @@ mod tests {
 
         prepared.cleanup().await;
 
+        assert!(!schema_path.exists());
+        assert!(!message_path.exists());
+        assert!(!project_dir.path().join("runtime/failed").exists());
+    }
+
+    #[tokio::test]
+    async fn finish_codex_falls_back_to_stdout_json_when_last_message_is_missing() {
+        let project_dir = tempdir().unwrap();
+        let runtime_temp = project_dir.path().join("runtime/temp");
+        std::fs::create_dir_all(&runtime_temp).unwrap();
+
+        let schema_path = runtime_temp.join("test-inv-001.schema.json");
+        let message_path = runtime_temp.join("test-inv-001.last-message.json");
+        std::fs::write(&schema_path, "{\"type\":\"object\"}").unwrap();
+
+        let prepared = PreparedCommand {
+            binary: "codex".into(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Codex {
+                schema_path: schema_path.clone(),
+                message_path: message_path.clone(),
+                session_resuming: false,
+            },
+            env_overrides: Vec::new(),
+        };
+
+        let request = make_codex_test_request(project_dir.path().to_path_buf());
+        let output = make_child_output(r#"{"outcome":"approved","evidence":["stdout fallback"]}"#);
+
+        let result = prepared.finish(&request, output).await.unwrap();
+
+        assert_eq!(result.parsed_payload["outcome"], "approved");
+        assert_eq!(result.parsed_payload["evidence"][0], "stdout fallback");
         assert!(!schema_path.exists());
         assert!(!message_path.exists());
         assert!(!project_dir.path().join("runtime/failed").exists());

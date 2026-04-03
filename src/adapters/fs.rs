@@ -1104,6 +1104,12 @@ impl PayloadArtifactWritePort for FsPayloadArtifactWriteStore {
         let artifact_final = project_root
             .join("history/artifacts")
             .join(format!("{}.json", artifact.artifact_id));
+        if let Some(parent) = payload_final.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if let Some(parent) = artifact_final.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
         // Stage both files under runtime/temp/ first so that no canonical
         // history file exists until both writes succeed. This prevents
@@ -2172,6 +2178,19 @@ impl MilestoneStorePort for FsMilestoneStore {
             file: format!("milestones/{}/milestone.toml", milestone_id),
             details: e.to_string(),
         })
+    }
+
+    fn write_milestone_record(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        record: &MilestoneRecord,
+    ) -> AppResult<()> {
+        let root = FileSystem::milestone_root(base_dir, milestone_id);
+        let path = root.join(MILESTONE_CONFIG_FILE);
+        let raw = toml::to_string_pretty(record)?;
+        FileSystem::write_atomic(&path, &raw)?;
+        Ok(())
     }
 
     fn list_milestone_ids(&self, base_dir: &Path) -> AppResult<Vec<MilestoneId>> {
@@ -3802,6 +3821,12 @@ impl RequirementsStorePort for FsRequirementsStore {
         let artifact_final = run_root
             .join("history/artifacts")
             .join(format!("{artifact_id}.md"));
+        if let Some(parent) = payload_final.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if let Some(parent) = artifact_final.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
         let payload_staging = staging_dir.join(format!(".{payload_id}.payload.staging"));
         let artifact_staging = staging_dir.join(format!(".{artifact_id}.artifact.staging"));

@@ -4,9 +4,10 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
+use crate::adapters::fs::FileSystem;
 use crate::shared::error::{AppError, AppResult};
 
-use super::bundle::{render_plan_json, render_plan_md, MilestoneBundle};
+use super::bundle::{progress_shape_signature, render_plan_json, render_plan_md, MilestoneBundle};
 use super::model::{
     collapse_task_run_attempts, latest_task_runs_per_bead, MilestoneEventType, MilestoneId,
     MilestoneJournalEvent, MilestoneProgress, MilestoneRecord, MilestoneSnapshot, MilestoneStatus,
@@ -23,6 +24,12 @@ pub trait MilestoneStorePort {
         base_dir: &Path,
         milestone_id: &MilestoneId,
     ) -> AppResult<MilestoneRecord>;
+    fn write_milestone_record(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        record: &MilestoneRecord,
+    ) -> AppResult<()>;
     fn list_milestone_ids(&self, base_dir: &Path) -> AppResult<Vec<MilestoneId>>;
     fn create_milestone_atomic(
         &self,
@@ -327,6 +334,127 @@ pub fn create_milestone(
     Ok(record)
 }
 
+/// Materialize a milestone bundle into milestone record + plan files.
+///
+/// This is retry-safe for planning/ready milestones: an existing milestone with
+/// the same ID can be re-used to finish a partial handoff or refresh the plan.
+pub fn materialize_bundle(
+    store: &impl MilestoneStorePort,
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    plan_store: &impl MilestonePlanPort,
+    base_dir: &Path,
+    bundle: &MilestoneBundle,
+    now: DateTime<Utc>,
+) -> AppResult<MilestoneRecord> {
+    let milestone_id = MilestoneId::new(bundle.identity.id.clone())?;
+    let expected_plan_json = render_plan_json(bundle).map_err(AppError::SerdeJson)?;
+    let expected_plan_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(expected_plan_json.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
+
+    let mut record = if store.milestone_exists(base_dir, &milestone_id)? {
+        let existing_record = store.read_milestone_record(base_dir, &milestone_id)?;
+        if existing_record.name != bundle.identity.name {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/milestone.toml", milestone_id),
+                details: format!(
+                    "existing milestone name '{}' does not match bundle identity '{}'",
+                    existing_record.name, bundle.identity.name
+                ),
+            });
+        }
+
+        existing_record
+    } else {
+        create_milestone(
+            store,
+            base_dir,
+            CreateMilestoneInput {
+                id: milestone_id.to_string(),
+                name: bundle.identity.name.clone(),
+                description: bundle.executive_summary.clone(),
+            },
+            now,
+        )?
+    };
+
+    snapshot_store.with_milestone_write_lock(base_dir, &milestone_id, || {
+        let mut snapshot = snapshot_store.read_snapshot(base_dir, &milestone_id)?;
+        if matches!(
+            snapshot.status,
+            MilestoneStatus::Active
+                | MilestoneStatus::Paused
+                | MilestoneStatus::Completed
+                | MilestoneStatus::Abandoned
+        ) {
+            return Err(AppError::InvalidConfigValue {
+                key: "milestone_status".to_owned(),
+                value: snapshot.status.to_string(),
+                reason: format!(
+                    "cannot materialize milestone bundle into milestone '{}'",
+                    milestone_id
+                ),
+            });
+        }
+
+        if snapshot.plan_hash.as_deref() != Some(expected_plan_hash.as_str()) {
+            persist_plan_locked(
+                snapshot_store,
+                journal_store,
+                plan_store,
+                base_dir,
+                &milestone_id,
+                bundle,
+                &mut snapshot,
+                now,
+            )?;
+        }
+
+        reconcile_record_description(
+            store,
+            base_dir,
+            &milestone_id,
+            &mut record,
+            &bundle.executive_summary,
+        )?;
+
+        if snapshot.status != MilestoneStatus::Ready {
+            update_status_locked(
+                snapshot_store,
+                journal_store,
+                base_dir,
+                &milestone_id,
+                &mut snapshot,
+                MilestoneStatus::Ready,
+                now,
+            )?;
+        }
+
+        Ok(record)
+    })
+}
+
+fn reconcile_record_description(
+    store: &impl MilestoneStorePort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    record: &mut MilestoneRecord,
+    expected_description: &str,
+) -> AppResult<()> {
+    if record.description == expected_description {
+        return Ok(());
+    }
+
+    let mut updated_record = record.clone();
+    updated_record.description = expected_description.to_owned();
+    store.write_milestone_record(base_dir, milestone_id, &updated_record)?;
+    *record = updated_record;
+    Ok(())
+}
+
 /// Load a milestone record by ID.
 pub fn load_milestone(
     store: &impl MilestoneStorePort,
@@ -364,24 +492,15 @@ pub fn update_status(
 ) -> AppResult<MilestoneSnapshot> {
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
-        let old_status = snapshot.status;
-        snapshot.status = new_status;
-
-        if new_status.is_terminal() {
-            snapshot.active_bead = None;
-        }
-
-        snapshot.updated_at = now;
-
-        validate_snapshot(&snapshot, milestone_id)?;
-
-        snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
-
-        let event = MilestoneJournalEvent::new(MilestoneEventType::StatusChanged, now)
-            .with_details(format!("{old_status} -> {new_status}"));
-        let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-        journal_store.append_event(base_dir, milestone_id, &line)?;
-
+        update_status_locked(
+            snapshot_store,
+            journal_store,
+            base_dir,
+            milestone_id,
+            &mut snapshot,
+            new_status,
+            now,
+        )?;
         Ok(snapshot)
     })
 }
@@ -396,47 +515,155 @@ pub fn persist_plan(
     bundle: &MilestoneBundle,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneSnapshot> {
+    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, move || {
+        let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+        persist_plan_locked(
+            snapshot_store,
+            journal_store,
+            plan_store,
+            base_dir,
+            milestone_id,
+            bundle,
+            &mut snapshot,
+            now,
+        )?;
+        Ok(snapshot)
+    })
+}
+
+fn update_status_locked(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    snapshot: &mut MilestoneSnapshot,
+    new_status: MilestoneStatus,
+    now: DateTime<Utc>,
+) -> AppResult<()> {
+    let old_status = snapshot.status;
+    snapshot.status = new_status;
+
+    if new_status.is_terminal() {
+        snapshot.active_bead = None;
+    }
+
+    snapshot.updated_at = now;
+
+    validate_snapshot(snapshot, milestone_id)?;
+    snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
+
+    let event = MilestoneJournalEvent::new(MilestoneEventType::StatusChanged, now)
+        .with_details(format!("{old_status} -> {new_status}"));
+    let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
+    journal_store.append_event(base_dir, milestone_id, &line)?;
+    Ok(())
+}
+
+fn persist_plan_locked(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    plan_store: &impl MilestonePlanPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bundle: &MilestoneBundle,
+    snapshot: &mut MilestoneSnapshot,
+    now: DateTime<Utc>,
+) -> AppResult<()> {
     let plan_json = render_plan_json(bundle).map_err(AppError::SerdeJson)?;
     let plan_md = render_plan_md(bundle);
-
     let plan_hash = {
         let mut hasher = Sha256::new();
         hasher.update(plan_json.as_bytes());
         format!("{:x}", hasher.finalize())
     };
+    let shape_matches = plan_shape_matches(plan_store, base_dir, milestone_id, bundle)?;
 
-    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, move || {
-        let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
-        plan_store.write_plan_json(base_dir, milestone_id, &plan_json)?;
-        plan_store.write_plan_md(base_dir, milestone_id, &plan_md)?;
+    if !shape_matches {
+        clear_task_run_lineage(base_dir, milestone_id)?;
+    }
 
-        snapshot.plan_hash = Some(plan_hash);
-        snapshot.plan_version = snapshot.plan_version.saturating_add(1);
-        snapshot.progress = MilestoneProgress {
-            total_beads: bundle.bead_count() as u32,
-            ..MilestoneProgress::default()
-        };
-        snapshot.updated_at = now;
+    let mut progress = reconcile_progress_for_new_plan(shape_matches, bundle, snapshot);
+    progress.total_beads = bundle.bead_count() as u32;
 
-        let event_type = if snapshot.plan_version == 1 {
-            MilestoneEventType::PlanDrafted
-        } else {
-            MilestoneEventType::PlanUpdated
-        };
+    plan_store.write_plan_json(base_dir, milestone_id, &plan_json)?;
+    plan_store.write_plan_md(base_dir, milestone_id, &plan_md)?;
 
-        validate_snapshot(&snapshot, milestone_id)?;
-        snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
+    snapshot.plan_hash = Some(plan_hash);
+    snapshot.plan_version = snapshot.plan_version.saturating_add(1);
+    snapshot.progress = progress;
+    snapshot.updated_at = now;
 
-        let event = MilestoneJournalEvent::new(event_type, now).with_details(format!(
-            "Plan v{} with {} beads",
-            snapshot.plan_version,
-            bundle.bead_count()
-        ));
-        let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-        journal_store.append_event(base_dir, milestone_id, &line)?;
+    let event_type = if snapshot.plan_version == 1 {
+        MilestoneEventType::PlanDrafted
+    } else {
+        MilestoneEventType::PlanUpdated
+    };
 
-        Ok(snapshot)
-    })
+    validate_snapshot(snapshot, milestone_id)?;
+    snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
+
+    let event = MilestoneJournalEvent::new(event_type, now).with_details(format!(
+        "Plan v{} with {} beads",
+        snapshot.plan_version,
+        bundle.bead_count()
+    ));
+    let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
+    journal_store.append_event(base_dir, milestone_id, &line)?;
+    Ok(())
+}
+
+fn reconcile_progress_for_new_plan(
+    shape_matches: bool,
+    bundle: &MilestoneBundle,
+    snapshot: &MilestoneSnapshot,
+) -> MilestoneProgress {
+    let mut progress = if shape_matches {
+        snapshot.progress.clone()
+    } else {
+        MilestoneProgress::default()
+    };
+
+    let completed_or_terminal = progress
+        .completed_beads
+        .saturating_add(progress.failed_beads)
+        .saturating_add(progress.skipped_beads)
+        .saturating_add(progress.in_progress_beads);
+    let total_beads = bundle.bead_count() as u32;
+    if completed_or_terminal > total_beads {
+        progress = MilestoneProgress::default();
+    }
+
+    progress
+}
+
+fn plan_shape_matches(
+    plan_store: &impl MilestonePlanPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bundle: &MilestoneBundle,
+) -> AppResult<bool> {
+    let Ok(existing_plan_json) = plan_store.read_plan_json(base_dir, milestone_id) else {
+        return Ok(false);
+    };
+    let Ok(existing_bundle) = serde_json::from_str::<MilestoneBundle>(&existing_plan_json) else {
+        return Ok(false);
+    };
+    let Ok(existing_shape) = progress_shape_signature(&existing_bundle) else {
+        return Ok(false);
+    };
+    let current_shape = progress_shape_signature(bundle)
+        .map_err(|errors| snapshot_corrupt_record(milestone_id, errors.join("; ")))?;
+    Ok(existing_shape == current_shape)
+}
+
+fn clear_task_run_lineage(base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<()> {
+    let task_runs_path =
+        FileSystem::milestone_root(base_dir, milestone_id).join("task-runs.ndjson");
+    if !task_runs_path.exists() {
+        return Ok(());
+    }
+
+    FileSystem::write_atomic(&task_runs_path, "")
 }
 
 /// Record the start of a bead task run.
@@ -701,6 +928,7 @@ pub fn repair_task_run(
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::time::Duration;
 
@@ -1149,6 +1377,724 @@ mod tests {
             now,
         )?;
         assert_eq!(created.id, missing_id);
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_refreshes_record_description_on_rematerialize(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("materialize-refresh", "Materialize Refresh");
+        let initial = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+        assert_eq!(initial.description, "Test plan.");
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &initial.id,
+            MilestoneStatus::Planning,
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        let refreshed = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        assert_eq!(refreshed.description, "Updated milestone summary.");
+        let loaded = load_milestone(&store, base, &initial.id)?;
+        assert_eq!(loaded.description, "Updated milestone summary.");
+        Ok(())
+    }
+
+    struct FailOnceRecordWriteStore {
+        fail_next_record_write: AtomicBool,
+    }
+
+    impl FailOnceRecordWriteStore {
+        fn new() -> Self {
+            Self {
+                fail_next_record_write: AtomicBool::new(true),
+            }
+        }
+    }
+
+    struct BlockingRecordWriteStore {
+        entered_tx: Mutex<Option<mpsc::Sender<()>>>,
+        release_rx: Mutex<Option<mpsc::Receiver<()>>>,
+    }
+
+    impl BlockingRecordWriteStore {
+        fn new(entered_tx: mpsc::Sender<()>, release_rx: mpsc::Receiver<()>) -> Self {
+            Self {
+                entered_tx: Mutex::new(Some(entered_tx)),
+                release_rx: Mutex::new(Some(release_rx)),
+            }
+        }
+    }
+
+    impl MilestoneStorePort for BlockingRecordWriteStore {
+        fn milestone_exists(&self, base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<bool> {
+            FsMilestoneStore.milestone_exists(base_dir, milestone_id)
+        }
+
+        fn read_milestone_record(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+        ) -> AppResult<MilestoneRecord> {
+            FsMilestoneStore.read_milestone_record(base_dir, milestone_id)
+        }
+
+        fn write_milestone_record(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            record: &MilestoneRecord,
+        ) -> AppResult<()> {
+            if let Some(entered_tx) = self.entered_tx.lock().expect("lock entered_tx").take() {
+                entered_tx.send(()).expect("signal blocked record write");
+            }
+            if let Some(release_rx) = self.release_rx.lock().expect("lock release_rx").take() {
+                release_rx.recv().expect("release blocked record write");
+            }
+
+            FsMilestoneStore.write_milestone_record(base_dir, milestone_id, record)
+        }
+
+        fn list_milestone_ids(&self, base_dir: &Path) -> AppResult<Vec<MilestoneId>> {
+            FsMilestoneStore.list_milestone_ids(base_dir)
+        }
+
+        fn create_milestone_atomic(
+            &self,
+            base_dir: &Path,
+            record: &MilestoneRecord,
+            snapshot: &MilestoneSnapshot,
+            initial_journal_line: &str,
+        ) -> AppResult<()> {
+            FsMilestoneStore.create_milestone_atomic(
+                base_dir,
+                record,
+                snapshot,
+                initial_journal_line,
+            )
+        }
+    }
+
+    impl MilestoneStorePort for FailOnceRecordWriteStore {
+        fn milestone_exists(&self, base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<bool> {
+            FsMilestoneStore.milestone_exists(base_dir, milestone_id)
+        }
+
+        fn read_milestone_record(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+        ) -> AppResult<MilestoneRecord> {
+            FsMilestoneStore.read_milestone_record(base_dir, milestone_id)
+        }
+
+        fn write_milestone_record(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            record: &MilestoneRecord,
+        ) -> AppResult<()> {
+            if self.fail_next_record_write.swap(false, Ordering::SeqCst) {
+                return Err(AppError::Io(std::io::Error::other(
+                    "simulated milestone record write failure",
+                )));
+            }
+
+            FsMilestoneStore.write_milestone_record(base_dir, milestone_id, record)
+        }
+
+        fn list_milestone_ids(&self, base_dir: &Path) -> AppResult<Vec<MilestoneId>> {
+            FsMilestoneStore.list_milestone_ids(base_dir)
+        }
+
+        fn create_milestone_atomic(
+            &self,
+            base_dir: &Path,
+            record: &MilestoneRecord,
+            snapshot: &MilestoneSnapshot,
+            initial_journal_line: &str,
+        ) -> AppResult<()> {
+            FsMilestoneStore.create_milestone_atomic(
+                base_dir,
+                record,
+                snapshot,
+                initial_journal_line,
+            )
+        }
+    }
+
+    #[test]
+    fn materialize_bundle_retry_repairs_description_after_record_write_failure(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let failing_store = FailOnceRecordWriteStore::new();
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("materialize-retry", "Materialize Retry");
+        let initial = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+        assert_eq!(initial.description, "Test plan.");
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &initial.id,
+            MilestoneStatus::Planning,
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.executive_summary = "Retried summary repair.".to_owned();
+        let error = materialize_bundle(
+            &failing_store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(2),
+        )
+        .expect_err("first rematerialize should fail during milestone.toml rewrite");
+        assert!(error
+            .to_string()
+            .contains("simulated milestone record write failure"));
+
+        let stale_record = load_milestone(&store, base, &initial.id)?;
+        assert_eq!(stale_record.description, "Test plan.");
+
+        let repaired = materialize_bundle(
+            &failing_store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+        assert_eq!(repaired.description, "Retried summary repair.");
+
+        let loaded = load_milestone(&store, base, &initial.id)?;
+        assert_eq!(loaded.description, "Retried summary repair.");
+
+        let snapshot = load_snapshot(&snapshot_store, base, &initial.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_holds_write_lock_while_repairing_record_description(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("materialize-lock", "Materialize Lock");
+        let initial = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+        assert_eq!(initial.description, "Test plan.");
+
+        let mut first_update = bundle.clone();
+        first_update.executive_summary = "First rematerialized summary.".to_owned();
+        let mut second_update = bundle.clone();
+        second_update.executive_summary = "Second rematerialized summary.".to_owned();
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let blocking_store = Arc::new(BlockingRecordWriteStore::new(entered_tx, release_rx));
+        let base_dir = base.to_path_buf();
+
+        let first_store = Arc::clone(&blocking_store);
+        let first_snapshot_store = snapshot_store;
+        let first_journal_store = journal_store;
+        let first_plan_store = plan_store;
+        let first_handle = std::thread::spawn(move || -> AppResult<MilestoneRecord> {
+            materialize_bundle(
+                first_store.as_ref(),
+                &first_snapshot_store,
+                &first_journal_store,
+                &first_plan_store,
+                &base_dir,
+                &first_update,
+                now + chrono::Duration::seconds(1),
+            )
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first rematerialization should block while rewriting milestone.toml");
+
+        let base_dir = base.to_path_buf();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let second_handle = std::thread::spawn(move || -> AppResult<MilestoneRecord> {
+            let result = materialize_bundle(
+                &FsMilestoneStore,
+                &FsMilestoneSnapshotStore,
+                &FsMilestoneJournalStore,
+                &FsMilestonePlanStore,
+                &base_dir,
+                &second_update,
+                now + chrono::Duration::seconds(2),
+            );
+            let _ = finished_tx.send(());
+            result
+        });
+
+        assert!(
+            finished_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "concurrent rematerialization should wait for the in-flight record repair lock"
+        );
+
+        release_tx
+            .send(())
+            .expect("release blocked record write under the lock");
+
+        let first_record = first_handle
+            .join()
+            .expect("first rematerialization thread should join")?;
+        assert_eq!(first_record.description, "First rematerialized summary.");
+
+        let second_record = second_handle
+            .join()
+            .expect("second rematerialization thread should join")?;
+        assert_eq!(second_record.description, "Second rematerialized summary.");
+
+        let final_record = load_milestone(&store, base, &initial.id)?;
+        assert_eq!(final_record.description, "Second rematerialized summary.");
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_preserves_lineage_progress_on_rematerialize(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle("materialize-progress", "Materialize Progress");
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            title: "Handle retry flow".to_owned(),
+            description: None,
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec![],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            title: "Document skip path".to_owned(),
+            description: None,
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec![],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("first bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-2",
+            "project-2",
+            "run-2",
+            "plan-v1",
+            now + chrono::Duration::seconds(3),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-2",
+            "project-2",
+            "run-2",
+            Some("plan-v1"),
+            TaskRunOutcome::Failed,
+            Some("second bead failed"),
+            now + chrono::Duration::seconds(3),
+            now + chrono::Duration::seconds(4),
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-3",
+            "project-3",
+            "run-3",
+            "plan-v1",
+            now + chrono::Duration::seconds(5),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-3",
+            "project-3",
+            "run-3",
+            Some("plan-v1"),
+            TaskRunOutcome::Skipped,
+            Some("third bead skipped"),
+            now + chrono::Duration::seconds(5),
+            now + chrono::Duration::seconds(6),
+        )?;
+
+        let snapshot_before = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_before.progress.total_beads, 3);
+        assert_eq!(snapshot_before.progress.completed_beads, 1);
+        assert_eq!(snapshot_before.progress.failed_beads, 1);
+        assert_eq!(snapshot_before.progress.skipped_beads, 1);
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(7),
+        )?;
+
+        let snapshot_after = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_after.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot_after.progress.total_beads, 3);
+        assert_eq!(snapshot_after.progress.completed_beads, 1);
+        assert_eq!(snapshot_after.progress.failed_beads, 1);
+        assert_eq!(snapshot_after.progress.skipped_beads, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_resets_progress_when_plan_shape_changes_and_clears_old_lineage(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle("materialize-progress-reset", "Materialize Progress Reset");
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            title: "Handle retry flow".to_owned(),
+            description: None,
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec![],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("first bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut updated_bundle = bundle.clone();
+        updated_bundle.workstreams[0].beads.remove(0);
+        updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &updated_bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot_after = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_after.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot_after.progress.total_beads, 1);
+        assert_eq!(snapshot_after.progress.completed_beads, 0);
+        assert_eq!(snapshot_after.progress.failed_beads, 0);
+        assert_eq!(snapshot_after.progress.skipped_beads, 0);
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-2",
+            "run-2",
+            "plan-v2",
+            now + chrono::Duration::seconds(4),
+        )?;
+        let snapshot_during_retry = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_during_retry.progress.completed_beads, 0);
+        assert_eq!(snapshot_during_retry.progress.in_progress_beads, 1);
+
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-2",
+            "run-2",
+            Some("plan-v2"),
+            TaskRunOutcome::Succeeded,
+            Some("replacement bead completed"),
+            now + chrono::Duration::seconds(4),
+            now + chrono::Duration::seconds(5),
+        )?;
+
+        let snapshot_after_retry = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_after_retry.progress.total_beads, 1);
+        assert_eq!(snapshot_after_retry.progress.completed_beads, 1);
+        assert_eq!(snapshot_after_retry.progress.failed_beads, 0);
+        assert_eq!(snapshot_after_retry.progress.skipped_beads, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_resets_progress_when_implicit_beads_reorder(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let mut bundle = sample_bundle(
+            "materialize-progress-reorder",
+            "Materialize Progress Reorder",
+        );
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            title: "Second implicit bead".to_owned(),
+            description: Some("Runs after the first bead.".to_owned()),
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec!["second".to_owned()],
+            depends_on: vec!["bead-1".to_owned()],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("first implicit bead completed"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut reordered_bundle = bundle.clone();
+        reordered_bundle.workstreams[0].beads.swap(0, 1);
+        reordered_bundle.executive_summary = "Reordered milestone summary.".to_owned();
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &reordered_bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot_after = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot_after.progress.total_beads, 2);
+        assert_eq!(snapshot_after.progress.completed_beads, 0);
+        assert_eq!(snapshot_after.progress.failed_beads, 0);
+        assert_eq!(snapshot_after.progress.skipped_beads, 0);
         Ok(())
     }
 

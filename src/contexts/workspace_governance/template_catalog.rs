@@ -58,6 +58,7 @@ pub const REQUIREMENTS_TEMPLATE_IDS: &[&str] = &[
     "requirements_review",
     "requirements_question_set",
     "requirements_project_seed",
+    "requirements_milestone_bundle",
     "requirements_ideation",
     "requirements_research",
     "requirements_synthesis",
@@ -324,6 +325,21 @@ Generate a project seed from the following requirements:
 
 Follow-ups: {{follow_ups}}";
 
+const REQUIREMENTS_MILESTONE_BUNDLE_DEFAULT: &str = "\
+Generate a milestone bundle from the validated planning artifacts:
+
+Synthesis:
+{{synthesis_artifact}}
+
+Implementation Spec:
+{{impl_spec_artifact}}
+
+Gap Analysis:
+{{gap_artifact}}
+
+Validation:
+{{validation_artifact}}";
+
 const REQUIREMENTS_IDEATION_DEFAULT: &str = "\
 Explore themes and initial scope for the following idea:
 
@@ -467,6 +483,17 @@ pub fn manifest_for(template_id: &str) -> Option<TemplateManifest> {
             optional_placeholders: &[],
             built_in_default: REQUIREMENTS_PROJECT_SEED_DEFAULT,
         }),
+        "requirements_milestone_bundle" => Some(TemplateManifest {
+            template_id: "requirements_milestone_bundle",
+            required_placeholders: &[
+                "synthesis_artifact",
+                "impl_spec_artifact",
+                "gap_artifact",
+                "validation_artifact",
+            ],
+            optional_placeholders: &[],
+            built_in_default: REQUIREMENTS_MILESTONE_BUNDLE_DEFAULT,
+        }),
         "requirements_ideation" => Some(TemplateManifest {
             template_id: "requirements_ideation",
             required_placeholders: &["base_context"],
@@ -527,6 +554,7 @@ pub fn requirements_template_id(stage_id_str: &str) -> String {
         "requirements_draft" | "requirements_review" => stage_id_str.to_owned(),
         "question_set" => "requirements_question_set".to_owned(),
         "project_seed" => "requirements_project_seed".to_owned(),
+        "milestone_bundle" => "requirements_milestone_bundle".to_owned(),
         other => format!("requirements_{other}"),
     }
 }

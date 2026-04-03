@@ -5,7 +5,10 @@ use std::time::Duration;
 use chrono::Utc;
 use serde_json::json;
 
-use crate::adapters::fs::FileSystem;
+use crate::adapters::fs::{
+    FileSystem, FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
+    FsMilestoneStore,
+};
 use crate::adapters::github::GithubPort;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
@@ -30,6 +33,7 @@ use crate::contexts::automation_runtime::{
     github_intake, DaemonStorePort, RebaseConflictRequest, RebaseConflictResolution,
     RebaseConflictResolver, WorktreePort,
 };
+use crate::contexts::milestone_record::service as milestone_service;
 use crate::contexts::project_run_record::model::RunStatus;
 use crate::contexts::project_run_record::service::{
     create_project, AmendmentQueuePort, ArtifactStorePort, JournalStorePort,
@@ -37,6 +41,7 @@ use crate::contexts::project_run_record::service::{
     RuntimeLogWritePort,
 };
 use crate::contexts::project_run_record::CreateProjectInput;
+use crate::contexts::requirements_drafting::model::{RequirementsOutputKind, RequirementsStatus};
 use crate::contexts::requirements_drafting::service::{self as req_service, RequirementsStorePort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
@@ -486,7 +491,7 @@ where
             }
 
             // Phase 2: Check waiting tasks for completed requirements runs
-            let resumed_task_ids = match self.check_waiting_tasks(&daemon_dir, checkout) {
+            let changed_task_ids = match self.check_waiting_tasks(&daemon_dir, checkout) {
                 Ok(ids) => ids,
                 Err(e) => {
                     eprintln!(
@@ -498,18 +503,16 @@ where
                 }
             };
 
-            // Sync labels for resumed tasks: WaitingForRequirements -> Pending
-            // means the issue should now be labeled rb:ready instead of rb:waiting-feedback.
-            // A label sync failure quarantines this repo for the rest of the cycle
-            // (multi-repo failure isolation: no further task/lease/worktree mutation).
-            // Mark label_dirty so reconcile can repair the mismatch later.
+            // Sync labels for tasks changed by requirements completion.
+            // A label sync failure quarantines this repo for the rest of the
+            // cycle and marks the task label_dirty for later repair.
             let mut label_sync_failed = false;
-            for task_id in &resumed_task_ids {
+            for task_id in &changed_task_ids {
                 if let Ok(resumed_task) = self.store.read_task(&daemon_dir, task_id) {
                     if let Err(e) = github_intake::sync_label_for_task(github, &resumed_task).await
                     {
                         eprintln!(
-                            "daemon: failed to sync label for resumed task '{}' in {}: {e}",
+                            "daemon: failed to sync label for updated task '{}' in {}: {e}",
                             task_id, reg.repo_slug
                         );
                         let _ =
@@ -627,9 +630,9 @@ where
                     return Err(e);
                 }
             }
-            DispatchMode::RequirementsDraft => {
+            DispatchMode::RequirementsDraft | DispatchMode::RequirementsMilestone => {
                 return self
-                    .handle_requirements_draft(
+                    .handle_requirements_full_mode(
                         store_dir,
                         repo_root,
                         task,
@@ -974,7 +977,7 @@ where
 
         // Phase 2: Check waiting tasks for completed requirements runs
         // In single-repo mode, no GitHub labels to sync — just check and resume.
-        let _resumed = self.check_waiting_tasks(base_dir, base_dir)?;
+        let _updated = self.check_waiting_tasks(base_dir, base_dir)?;
 
         // Phase 3: Process all pending tasks in this cycle. A per-task claim
         // failure or writer-lock contention does not stop the scan; the daemon
@@ -999,7 +1002,7 @@ where
         Ok(true)
     }
 
-    /// Label sync after a task state mutation inside `handle_requirements_draft`.
+    /// Label sync after a task state mutation inside full-mode requirements handling.
     /// On failure, marks the task `label_dirty` so `reconcile` can repair, and
     /// returns the error so the caller can decide whether to propagate it (for
     /// repo quarantine) or swallow it (when the task is already terminal).
@@ -1018,7 +1021,7 @@ where
         };
         if let Err(e) = github_intake::sync_label_for_task(github, &t).await {
             let _ = DaemonTaskService::mark_label_dirty(self.store, base_dir, task_id);
-            eprintln!("daemon: label sync failed for requirements_draft task '{task_id}': {e}");
+            eprintln!("daemon: label sync failed for requirements task '{task_id}': {e}");
             return Err(e);
         }
         Ok(())
@@ -1073,19 +1076,16 @@ where
         Ok(())
     }
 
-    /// Check tasks in WaitingForRequirements state and resume them if their
-    /// linked requirements run has completed. Before resuming, derive the seed
-    /// handoff and populate the task's project metadata so the next workflow
-    /// dispatch cycle can create/resume the project correctly.
-    /// Check waiting-for-requirements tasks and resume any whose requirements
-    /// run is complete. Returns a list of task IDs that were resumed to Pending
-    /// so callers can sync GitHub labels.
+    /// Check tasks in WaitingForRequirements state and advance any whose linked
+    /// requirements run has completed. Seed outputs resume into workflow;
+    /// milestone outputs materialize a milestone plan and complete the task.
+    /// Returns task IDs whose durable status changed so callers can sync labels.
     fn check_waiting_tasks(&self, base_dir: &Path, workspace_dir: &Path) -> AppResult<Vec<String>> {
         let Some(req_store) = self.requirements_store else {
             return Ok(vec![]);
         };
 
-        let mut resumed_task_ids = Vec::new();
+        let mut changed_task_ids = Vec::new();
         let tasks = DaemonTaskService::list_tasks(self.store, base_dir)?;
         for task in tasks {
             if task.status != TaskStatus::WaitingForRequirements {
@@ -1095,15 +1095,25 @@ where
                 continue;
             };
 
-            match req_service::is_requirements_run_complete(req_store, workspace_dir, run_id) {
-                Ok(true) => {
-                    // Derive seed handoff before resuming so task has project metadata
+            let run =
+                match req_service::read_requirements_run_status(req_store, workspace_dir, run_id) {
+                    Ok(run) => run,
+                    Err(e) => {
+                        println!(
+                            "daemon: error checking requirements run '{}' for task '{}': {}",
+                            run_id, task.task_id, e
+                        );
+                        continue;
+                    }
+                };
+            if run.status != RequirementsStatus::Completed {
+                continue;
+            }
+
+            match run.output_kind {
+                RequirementsOutputKind::ProjectSeed => {
                     match req_service::extract_seed_handoff(req_store, workspace_dir, run_id) {
                         Ok(handoff) => {
-                            // Populate task with seed-derived project metadata.
-                            // Guard: if any post-seed write fails, the task
-                            // transitions to `failed` while the requirements
-                            // run and seed remain addressable.
                             let routed_flow = task.resolved_flow.unwrap_or(handoff.flow);
                             let metadata_result: AppResult<()> = (|| {
                                 let mut t = self.store.read_task(base_dir, &task.task_id)?;
@@ -1114,7 +1124,6 @@ where
                                         routed_flow.as_str()
                                     );
                                     t.routing_warnings.push(warning.clone());
-                                    // Journal append is best-effort for warnings
                                     if let Err(je) = DaemonTaskService::append_journal_event(
                                         self.store,
                                         base_dir,
@@ -1139,13 +1148,17 @@ where
                                 Ok(())
                             })();
                             if let Err(e) = metadata_result {
-                                let _ = DaemonTaskService::mark_failed(
+                                if DaemonTaskService::mark_failed(
                                     self.store,
                                     base_dir,
                                     &task.task_id,
                                     "requirements_linking_failed",
                                     &format!("post-seed metadata update failed: {e}"),
-                                );
+                                )
+                                .is_ok()
+                                {
+                                    changed_task_ids.push(task.task_id.clone());
+                                }
                                 println!(
                                     "daemon: post-seed metadata update failed for task '{}': {e}",
                                     task.task_id
@@ -1163,7 +1176,7 @@ where
                                         "daemon: resumed task '{}' from waiting (requirements run '{}' complete)",
                                         task.task_id, run_id
                                     );
-                                    resumed_task_ids.push(task.task_id.clone());
+                                    changed_task_ids.push(task.task_id.clone());
                                 }
                                 Err(e) => {
                                     println!(
@@ -1174,14 +1187,17 @@ where
                             }
                         }
                         Err(e) => {
-                            // Seed extraction failed — fail the task but preserve the requirements run
-                            let _ = DaemonTaskService::mark_failed(
+                            if DaemonTaskService::mark_failed(
                                 self.store,
                                 base_dir,
                                 &task.task_id,
                                 "seed_handoff_failed",
                                 &e.to_string(),
-                            );
+                            )
+                            .is_ok()
+                            {
+                                changed_task_ids.push(task.task_id.clone());
+                            }
                             println!(
                                 "daemon: seed handoff failed for task '{}': {}",
                                 task.task_id, e
@@ -1189,19 +1205,84 @@ where
                         }
                     }
                 }
-                Ok(false) => {
-                    // Still waiting — no action
-                }
-                Err(e) => {
-                    println!(
-                        "daemon: error checking requirements run '{}' for task '{}': {}",
-                        run_id, task.task_id, e
-                    );
+                RequirementsOutputKind::MilestoneBundle => {
+                    match req_service::extract_milestone_bundle_handoff(
+                        req_store,
+                        workspace_dir,
+                        run_id,
+                    ) {
+                        Ok(handoff) => {
+                            let materialize_result = milestone_service::materialize_bundle(
+                                &FsMilestoneStore,
+                                &FsMilestoneSnapshotStore,
+                                &FsMilestoneJournalStore,
+                                &FsMilestonePlanStore,
+                                workspace_dir,
+                                &handoff.bundle,
+                                Utc::now(),
+                            );
+                            if let Err(e) = materialize_result {
+                                if DaemonTaskService::mark_failed(
+                                    self.store,
+                                    base_dir,
+                                    &task.task_id,
+                                    "milestone_handoff_failed",
+                                    &e.to_string(),
+                                )
+                                .is_ok()
+                                {
+                                    changed_task_ids.push(task.task_id.clone());
+                                }
+                                println!(
+                                    "daemon: milestone handoff failed for task '{}': {}",
+                                    task.task_id, e
+                                );
+                                continue;
+                            }
+
+                            match DaemonTaskService::mark_completed(
+                                self.store,
+                                base_dir,
+                                &task.task_id,
+                            ) {
+                                Ok(_) => {
+                                    println!(
+                                        "daemon: completed milestone task '{}' from requirements run '{}'",
+                                        task.task_id, run_id
+                                    );
+                                    changed_task_ids.push(task.task_id.clone());
+                                }
+                                Err(e) => {
+                                    println!(
+                                        "daemon: failed to complete milestone task '{}': {}",
+                                        task.task_id, e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if DaemonTaskService::mark_failed(
+                                self.store,
+                                base_dir,
+                                &task.task_id,
+                                "milestone_handoff_failed",
+                                &e.to_string(),
+                            )
+                            .is_ok()
+                            {
+                                changed_task_ids.push(task.task_id.clone());
+                            }
+                            println!(
+                                "daemon: milestone handoff failed for task '{}': {}",
+                                task.task_id, e
+                            );
+                        }
+                    }
                 }
             }
         }
 
-        Ok(resumed_task_ids)
+        Ok(changed_task_ids)
     }
 
     async fn process_task(
@@ -1219,7 +1300,7 @@ where
         // requirements_quick completes the requirements run, derives the seed,
         // updates the task to Workflow mode, then falls through to the standard
         // claim/project/dispatch path in the same cycle.
-        // requirements_draft enters WaitingForRequirements and returns immediately.
+        // full-mode requirements dispatch returns after waiting/completion handling.
         match task.dispatch_mode {
             DispatchMode::RequirementsQuick => {
                 self.handle_requirements_quick(base_dir, base_dir, task, &effective_config)
@@ -1227,13 +1308,13 @@ where
                 // Task is now Workflow mode with project metadata populated.
                 // Fall through to standard claim/dispatch below.
             }
-            DispatchMode::RequirementsDraft => {
+            DispatchMode::RequirementsDraft | DispatchMode::RequirementsMilestone => {
                 // Single-repo path is test-only; file-watcher tasks have no
                 // repo_slug so sync_label_for_task will no-op. Use a no-op
                 // in-memory GitHub client to satisfy the generic bound.
                 let noop_gh = crate::adapters::github::InMemoryGithubClient::new();
                 return self
-                    .handle_requirements_draft(
+                    .handle_requirements_full_mode(
                         base_dir,
                         base_dir,
                         task,
@@ -1540,12 +1621,8 @@ where
         Ok(())
     }
 
-    /// Handle requirements_draft dispatch: transition through Pending → Claimed
-    /// → Active, invoke requirements draft to generate questions, then either
-    /// transition to WaitingForRequirements (if questions need answers) or
-    /// extract the seed and switch to Workflow mode (if the run completed
-    /// directly with empty questions).
-    async fn handle_requirements_draft<G: GithubPort>(
+    /// Handle full-mode requirements dispatch (`draft` and `milestone`).
+    async fn handle_requirements_full_mode<G: GithubPort>(
         &self,
         base_dir: &Path,
         workspace_dir: &Path,
@@ -1559,10 +1636,15 @@ where
                     task_id: task.task_id.clone(),
                     details: "no requirements store configured for daemon".to_owned(),
                 })?;
+        let failure_class = match task.dispatch_mode {
+            DispatchMode::RequirementsDraft => "requirements_draft_failed",
+            DispatchMode::RequirementsMilestone => "requirements_milestone_failed",
+            _ => unreachable!("full-mode handler only supports draft/milestone dispatch"),
+        };
 
         // Transition through Pending → Claimed → Active without a worktree lease.
-        // The draft path only needs the agent to generate questions — no project,
-        // worktree, or writer lock is required.
+        // Full-mode requirements only need the agent to generate requirements
+        // artifacts, so no project, worktree, or writer lock is required.
         {
             let mut t = self.store.read_task(base_dir, &task.task_id)?;
             let now = Utc::now();
@@ -1570,13 +1652,13 @@ where
             t.transition_to(TaskStatus::Active, now)?;
             self.store.write_task(base_dir, &t)?;
 
-            // Sync label: Active → rb:in-progress immediately, so the issue
-            // reflects truthful durable state during the draft run rather than
-            // remaining on rb:ready until the draft completes.
+            // Sync label: Active → rb:in-progress immediately so durable task
+            // state matches the issue while requirements are being generated.
             if let Err(e) = github_intake::sync_label_for_task(github, &t).await {
                 let _ = DaemonTaskService::mark_label_dirty(self.store, base_dir, &task.task_id);
                 eprintln!(
-                    "daemon: label sync failed for requirements_draft task '{}', quarantining repo: {e}",
+                    "daemon: label sync failed for {} task '{}', quarantining repo: {e}",
+                    task.dispatch_mode.as_str(),
                     task.task_id
                 );
                 return Err(e);
@@ -1595,7 +1677,7 @@ where
                     self.store,
                     base_dir,
                     &task.task_id,
-                    "requirements_draft_failed",
+                    failure_class,
                     &format!("failed to build requirements service: {e}"),
                 );
                 let _ = self
@@ -1604,14 +1686,25 @@ where
                 return Err(e);
             }
         };
-        let run_id = match req_svc.draft(workspace_dir, &idea, Utc::now(), None).await {
+        let run_id = match task.dispatch_mode {
+            DispatchMode::RequirementsDraft => {
+                req_svc.draft(workspace_dir, &idea, Utc::now(), None).await
+            }
+            DispatchMode::RequirementsMilestone => {
+                req_svc
+                    .draft_milestone(workspace_dir, &idea, Utc::now(), None)
+                    .await
+            }
+            _ => unreachable!("full-mode handler only supports draft/milestone dispatch"),
+        };
+        let run_id = match run_id {
             Ok(run_id) => run_id,
             Err(e) => {
                 let _ = DaemonTaskService::mark_failed(
                     self.store,
                     base_dir,
                     &task.task_id,
-                    "requirements_draft_failed",
+                    failure_class,
                     &e.to_string(),
                 );
                 let _ = self
@@ -1621,21 +1714,9 @@ where
             }
         };
 
-        // Check the requirements run status after draft() completes.
-        // If the question set was empty, the run completes directly (no user
-        // answers needed). Only enter WaitingForRequirements when answers are
-        // actually pending.
-        let run_complete =
-            req_service::is_requirements_run_complete(req_store, workspace_dir, &run_id)?;
+        let run = req_service::read_requirements_run_status(req_store, workspace_dir, &run_id)?;
 
-        if run_complete {
-            // Empty-question draft: run already completed. Extract seed and
-            // switch to Workflow mode so the caller continues into the standard
-            // claim/project/dispatch path (same pattern as requirements_quick).
-            //
-            // Link write is guarded: if it fails, the task transitions to
-            // `failed` with an explicit linking failure class while the
-            // requirements run remains addressable via `requirements show`.
+        if run.status == RequirementsStatus::Completed {
             let link_result: AppResult<()> = (|| {
                 let mut current = self.store.read_task(base_dir, &task.task_id)?;
                 current.requirements_run_id = Some(run_id.clone());
@@ -1649,7 +1730,7 @@ where
                     json!({
                         "task_id": task.task_id,
                         "requirements_run_id": run_id,
-                        "dispatch_mode": "requirements_draft",
+                        "dispatch_mode": task.dispatch_mode.as_str(),
                         "empty_questions": true,
                     }),
                 )?;
@@ -1669,101 +1750,168 @@ where
                 return Err(e);
             }
 
-            let handoff = match req_service::extract_seed_handoff(req_store, workspace_dir, &run_id)
-            {
-                Ok(h) => h,
-                Err(e) => {
-                    let _ = DaemonTaskService::mark_failed(
-                        self.store,
-                        base_dir,
-                        &task.task_id,
-                        "seed_handoff_failed",
-                        &e.to_string(),
-                    );
-                    let _ = self
-                        .sync_label_after_mutation(github, base_dir, &task.task_id)
-                        .await;
-                    return Err(e);
-                }
-            };
-
-            let routed_flow = task.resolved_flow.unwrap_or(handoff.flow);
-
-            // Guard: if any post-link write fails, the task transitions to
-            // `failed` with an explicit failure class while the requirements
-            // run and seed remain addressable.
-            let metadata_result: AppResult<()> = (|| {
-                let mut updated = self.store.read_task(base_dir, &task.task_id)?;
-                if handoff.flow != routed_flow {
-                    let warning = format!(
-                        "seed suggests flow '{}' but routed flow '{}' is authoritative",
-                        handoff.flow.as_str(),
-                        routed_flow.as_str()
-                    );
-                    updated.routing_warnings.push(warning.clone());
-                    // Journal append is best-effort for warnings
-                    if let Err(je) = DaemonTaskService::append_journal_event(
-                        self.store,
-                        base_dir,
-                        super::model::DaemonJournalEventType::RoutingWarning,
-                        json!({
-                            "task_id": task.task_id,
-                            "warning": warning,
-                        }),
+            match run.output_kind {
+                RequirementsOutputKind::ProjectSeed => {
+                    let handoff = match req_service::extract_seed_handoff(
+                        req_store,
+                        workspace_dir,
+                        &run_id,
                     ) {
-                        eprintln!(
-                            "daemon: warning: failed to append RoutingWarning journal event for task '{}': {je}",
-                            task.task_id
+                        Ok(h) => h,
+                        Err(e) => {
+                            let _ = DaemonTaskService::mark_failed(
+                                self.store,
+                                base_dir,
+                                &task.task_id,
+                                "seed_handoff_failed",
+                                &e.to_string(),
+                            );
+                            let _ = self
+                                .sync_label_after_mutation(github, base_dir, &task.task_id)
+                                .await;
+                            return Err(e);
+                        }
+                    };
+
+                    let routed_flow = task.resolved_flow.unwrap_or(handoff.flow);
+                    let metadata_result: AppResult<()> = (|| {
+                        let mut updated = self.store.read_task(base_dir, &task.task_id)?;
+                        if handoff.flow != routed_flow {
+                            let warning = format!(
+                                "seed suggests flow '{}' but routed flow '{}' is authoritative",
+                                handoff.flow.as_str(),
+                                routed_flow.as_str()
+                            );
+                            updated.routing_warnings.push(warning.clone());
+                            if let Err(je) = DaemonTaskService::append_journal_event(
+                                self.store,
+                                base_dir,
+                                super::model::DaemonJournalEventType::RoutingWarning,
+                                json!({
+                                    "task_id": task.task_id,
+                                    "warning": warning,
+                                }),
+                            ) {
+                                eprintln!(
+                                    "daemon: warning: failed to append RoutingWarning journal event for task '{}': {je}",
+                                    task.task_id
+                                );
+                            }
+                            println!("daemon: {warning}");
+                        }
+                        updated.dispatch_mode = DispatchMode::Workflow;
+                        updated.resolved_flow = Some(routed_flow);
+                        updated.project_id = handoff.project_id.clone();
+                        updated.project_name = Some(handoff.project_name.clone());
+                        updated.prompt = Some(handoff.prompt_body.clone());
+                        self.store.write_task(base_dir, &updated)?;
+                        Ok(())
+                    })();
+                    if let Err(e) = metadata_result {
+                        let _ = DaemonTaskService::mark_failed(
+                            self.store,
+                            base_dir,
+                            &task.task_id,
+                            "requirements_linking_failed",
+                            &format!("post-link metadata update failed: {e}"),
                         );
+                        let _ = self
+                            .sync_label_after_mutation(github, base_dir, &task.task_id)
+                            .await;
+                        return Err(e);
                     }
-                    println!("daemon: {warning}");
+
+                    {
+                        let mut t = self.store.read_task(base_dir, &task.task_id)?;
+                        t.transition_to(TaskStatus::Pending, Utc::now())?;
+                        self.store.write_task(base_dir, &t)?;
+                    }
+
+                    self.sync_label_after_mutation(github, base_dir, &task.task_id)
+                        .await?;
+
+                    println!(
+                        "daemon: {} completed directly (empty questions) for task '{}', run_id='{}', requeued for workflow",
+                        task.dispatch_mode.as_str(),
+                        task.task_id,
+                        run_id
+                    );
+
+                    Ok(())
                 }
-                updated.dispatch_mode = DispatchMode::Workflow;
-                updated.resolved_flow = Some(routed_flow);
-                updated.project_id = handoff.project_id.clone();
-                updated.project_name = Some(handoff.project_name.clone());
-                updated.prompt = Some(handoff.prompt_body.clone());
-                self.store.write_task(base_dir, &updated)?;
-                Ok(())
-            })();
-            if let Err(e) = metadata_result {
-                let _ = DaemonTaskService::mark_failed(
-                    self.store,
-                    base_dir,
-                    &task.task_id,
-                    "requirements_linking_failed",
-                    &format!("post-link metadata update failed: {e}"),
-                );
-                let _ = self
-                    .sync_label_after_mutation(github, base_dir, &task.task_id)
-                    .await;
-                return Err(e);
+                RequirementsOutputKind::MilestoneBundle => {
+                    let handoff = match req_service::extract_milestone_bundle_handoff(
+                        req_store,
+                        workspace_dir,
+                        &run_id,
+                    ) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            let _ = DaemonTaskService::mark_failed(
+                                self.store,
+                                base_dir,
+                                &task.task_id,
+                                "milestone_handoff_failed",
+                                &e.to_string(),
+                            );
+                            let _ = self
+                                .sync_label_after_mutation(github, base_dir, &task.task_id)
+                                .await;
+                            return Err(e);
+                        }
+                    };
+
+                    if let Err(e) = milestone_service::materialize_bundle(
+                        &FsMilestoneStore,
+                        &FsMilestoneSnapshotStore,
+                        &FsMilestoneJournalStore,
+                        &FsMilestonePlanStore,
+                        workspace_dir,
+                        &handoff.bundle,
+                        Utc::now(),
+                    ) {
+                        let _ = DaemonTaskService::mark_failed(
+                            self.store,
+                            base_dir,
+                            &task.task_id,
+                            "milestone_handoff_failed",
+                            &e.to_string(),
+                        );
+                        let _ = self
+                            .sync_label_after_mutation(github, base_dir, &task.task_id)
+                            .await;
+                        return Err(e);
+                    }
+
+                    if let Err(e) =
+                        DaemonTaskService::mark_completed(self.store, base_dir, &task.task_id)
+                    {
+                        let _ = DaemonTaskService::mark_failed(
+                            self.store,
+                            base_dir,
+                            &task.task_id,
+                            "requirements_linking_failed",
+                            &format!("milestone completion update failed: {e}"),
+                        );
+                        let _ = self
+                            .sync_label_after_mutation(github, base_dir, &task.task_id)
+                            .await;
+                        return Err(e);
+                    }
+
+                    self.sync_label_after_mutation(github, base_dir, &task.task_id)
+                        .await?;
+
+                    println!(
+                        "daemon: milestone requirements completed for task '{}', run_id='{}'",
+                        task.task_id, run_id
+                    );
+
+                    Ok(())
+                }
             }
-
-            // Transition Active → Pending so the next daemon cycle picks this
-            // task up as a standard Workflow task with project metadata already
-            // populated. We cannot fall through to claim/dispatch in the same
-            // cycle because handle_requirements_draft returns (not falls through)
-            // and the task has no lease or worktree yet.
-            {
-                let mut t = self.store.read_task(base_dir, &task.task_id)?;
-                t.transition_to(TaskStatus::Pending, Utc::now())?;
-                self.store.write_task(base_dir, &t)?;
-            }
-
-            // Sync label: Pending → rb:ready (requeued for workflow dispatch).
-            // Propagate failure to quarantine the repo for the rest of the cycle.
-            self.sync_label_after_mutation(github, base_dir, &task.task_id)
-                .await?;
-
-            println!(
-                "daemon: requirements_draft completed directly (empty questions) for task '{}', run_id='{}', requeued for workflow",
-                task.task_id, run_id
-            );
-
-            Ok(())
         } else {
-            // Non-empty questions: transition Active → WaitingForRequirements
+            // Non-empty questions: transition Active → WaitingForRequirements.
             match DaemonTaskService::mark_waiting_for_requirements(
                 self.store,
                 base_dir,
@@ -1781,7 +1929,7 @@ where
                         json!({
                             "task_id": task.task_id,
                             "requirements_run_id": run_id,
-                            "dispatch_mode": "requirements_draft",
+                            "dispatch_mode": task.dispatch_mode.as_str(),
                         }),
                     ) {
                         eprintln!(
@@ -1795,8 +1943,10 @@ where
                         .await?;
 
                     println!(
-                        "daemon: requirements_draft started for task '{}', waiting for answers (run_id='{}')",
-                        task.task_id, run_id
+                        "daemon: {} started for task '{}', waiting for answers (run_id='{}')",
+                        task.dispatch_mode.as_str(),
+                        task.task_id,
+                        run_id
                     );
                 }
                 Err(e) => {
@@ -2748,6 +2898,464 @@ pub fn build_requirements_service_for_test(
     let requirements_store = FsRequirementsStore;
     Ok(RequirementsService::new(agent_service, requirements_store)
         .with_workspace_defaults(workspace_defaults))
+}
+
+#[cfg(all(test, feature = "test-stub"))]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use chrono::Utc;
+    use tempfile::tempdir;
+
+    use super::DaemonLoop;
+    use crate::adapters::fs::{
+        FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
+        FsMilestoneJournalStore, FsMilestoneSnapshotStore, FsMilestoneStore,
+        FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRequirementsStore,
+        FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
+    };
+    use crate::adapters::stub_backend::StubBackendAdapter;
+    use crate::adapters::worktree::WorktreeAdapter;
+    use crate::contexts::agent_execution::AgentExecutionService;
+    use crate::contexts::automation_runtime::model::{
+        DaemonJournalEvent, DaemonTask, DispatchMode, TaskStatus,
+    };
+    use crate::contexts::automation_runtime::{
+        DaemonStorePort, LeaseRecord, ResourceCleanupOutcome, WorktreeLease,
+        WriterLockReleaseOutcome,
+    };
+    use crate::contexts::milestone_record::service::{
+        create_milestone, update_status, CreateMilestoneInput,
+    };
+    use crate::contexts::requirements_drafting::service::{
+        RequirementsService, RequirementsStorePort,
+    };
+    use crate::shared::domain::FlowPreset;
+    use crate::shared::domain::ProjectId;
+    use crate::shared::error::{AppError, AppResult};
+
+    fn sample_waiting_task(task_id: &str, run_id: &str) -> DaemonTask {
+        let now = Utc::now();
+        DaemonTask {
+            task_id: task_id.to_owned(),
+            issue_ref: format!("acme/widgets#{}", task_id),
+            project_id: "demo".to_owned(),
+            project_name: Some("Demo".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: None,
+            routing_warnings: vec![],
+            status: TaskStatus::WaitingForRequirements,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::RequirementsDraft,
+            source_revision: None,
+            requirements_run_id: Some(run_id.to_owned()),
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        }
+    }
+
+    struct FailOnceWaitingTaskWriteStore {
+        fail_next_waiting_write: AtomicBool,
+    }
+
+    impl FailOnceWaitingTaskWriteStore {
+        fn new() -> Self {
+            Self {
+                fail_next_waiting_write: AtomicBool::new(true),
+            }
+        }
+    }
+
+    impl DaemonStorePort for FailOnceWaitingTaskWriteStore {
+        fn list_tasks(&self, base_dir: &std::path::Path) -> AppResult<Vec<DaemonTask>> {
+            FsDaemonStore.list_tasks(base_dir)
+        }
+
+        fn read_task(&self, base_dir: &std::path::Path, task_id: &str) -> AppResult<DaemonTask> {
+            FsDaemonStore.read_task(base_dir, task_id)
+        }
+
+        fn create_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            FsDaemonStore.create_task(base_dir, task)
+        }
+
+        fn write_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            if task.status == TaskStatus::WaitingForRequirements
+                && self.fail_next_waiting_write.swap(false, Ordering::SeqCst)
+            {
+                return Err(AppError::Io(std::io::Error::other(
+                    "simulated waiting-task metadata write failure",
+                )));
+            }
+
+            FsDaemonStore.write_task(base_dir, task)
+        }
+
+        fn list_leases(&self, base_dir: &std::path::Path) -> AppResult<Vec<WorktreeLease>> {
+            FsDaemonStore.list_leases(base_dir)
+        }
+
+        fn read_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<WorktreeLease> {
+            FsDaemonStore.read_lease(base_dir, lease_id)
+        }
+
+        fn write_lease(&self, base_dir: &std::path::Path, lease: &WorktreeLease) -> AppResult<()> {
+            FsDaemonStore.write_lease(base_dir, lease)
+        }
+
+        fn list_lease_records(&self, base_dir: &std::path::Path) -> AppResult<Vec<LeaseRecord>> {
+            FsDaemonStore.list_lease_records(base_dir)
+        }
+
+        fn read_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<LeaseRecord> {
+            FsDaemonStore.read_lease_record(base_dir, lease_id)
+        }
+
+        fn write_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease: &LeaseRecord,
+        ) -> AppResult<()> {
+            FsDaemonStore.write_lease_record(base_dir, lease)
+        }
+
+        fn remove_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<ResourceCleanupOutcome> {
+            FsDaemonStore.remove_lease(base_dir, lease_id)
+        }
+
+        fn read_daemon_journal(
+            &self,
+            base_dir: &std::path::Path,
+        ) -> AppResult<Vec<DaemonJournalEvent>> {
+            FsDaemonStore.read_daemon_journal(base_dir)
+        }
+
+        fn append_daemon_journal_event(
+            &self,
+            base_dir: &std::path::Path,
+            event: &DaemonJournalEvent,
+        ) -> AppResult<()> {
+            FsDaemonStore.append_daemon_journal_event(base_dir, event)
+        }
+
+        fn acquire_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            lease_id: &str,
+        ) -> AppResult<()> {
+            FsDaemonStore.acquire_writer_lock(base_dir, project_id, lease_id)
+        }
+
+        fn release_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            expected_owner: &str,
+        ) -> AppResult<WriterLockReleaseOutcome> {
+            FsDaemonStore.release_writer_lock(base_dir, project_id, expected_owner)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn check_waiting_tasks_reports_seed_handoff_failures_as_changed() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+
+        let requirements_service = RequirementsService::new(
+            AgentExecutionService::new(
+                StubBackendAdapter::default(),
+                FsRawOutputStore,
+                FsSessionStore,
+            ),
+            FsRequirementsStore,
+        );
+        let run_id = requirements_service
+            .draft(base, "seed validation failure", Utc::now(), None)
+            .await
+            .expect("draft seed");
+
+        let req_store = FsRequirementsStore;
+        let mut run = req_store.read_run(base, &run_id).expect("read run");
+        run.latest_seed_id = None;
+        req_store.write_run(base, &run_id, &run).expect("write run");
+
+        let daemon_store = FsDaemonStore;
+        daemon_store
+            .create_task(base, &sample_waiting_task("waiting-seed-invalid", &run_id))
+            .expect("create task");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &daemon_store,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        )
+        .with_requirements_store(&req_store);
+
+        let changed = daemon
+            .check_waiting_tasks(base, base)
+            .expect("check waiting tasks");
+        assert_eq!(changed, vec!["waiting-seed-invalid".to_owned()]);
+
+        let failed = daemon_store
+            .read_task(base, "waiting-seed-invalid")
+            .expect("read failed task");
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert_eq!(failed.failure_class.as_deref(), Some("seed_handoff_failed"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn check_waiting_tasks_reports_post_seed_metadata_failures_as_changed() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+
+        let requirements_service = RequirementsService::new(
+            AgentExecutionService::new(
+                StubBackendAdapter::default(),
+                FsRawOutputStore,
+                FsSessionStore,
+            ),
+            FsRequirementsStore,
+        );
+        let run_id = requirements_service
+            .draft(base, "seed metadata failure", Utc::now(), None)
+            .await
+            .expect("draft seed");
+        let req_store = FsRequirementsStore;
+
+        let daemon_store = FailOnceWaitingTaskWriteStore::new();
+        daemon_store
+            .create_task(
+                base,
+                &sample_waiting_task("waiting-seed-metadata-fail", &run_id),
+            )
+            .expect("create task");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &daemon_store,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        )
+        .with_requirements_store(&req_store);
+
+        let changed = daemon
+            .check_waiting_tasks(base, base)
+            .expect("check waiting tasks");
+        assert_eq!(changed, vec!["waiting-seed-metadata-fail".to_owned()]);
+
+        let failed = daemon_store
+            .read_task(base, "waiting-seed-metadata-fail")
+            .expect("read failed task");
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert_eq!(
+            failed.failure_class.as_deref(),
+            Some("requirements_linking_failed")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn check_waiting_tasks_reports_milestone_handoff_validation_failures_as_changed() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+
+        let requirements_service = RequirementsService::new(
+            AgentExecutionService::new(
+                StubBackendAdapter::default(),
+                FsRawOutputStore,
+                FsSessionStore,
+            ),
+            FsRequirementsStore,
+        );
+        let run_id = requirements_service
+            .draft_milestone(base, "validation failure", Utc::now(), None)
+            .await
+            .expect("draft milestone");
+
+        let req_store = FsRequirementsStore;
+        let mut run = req_store.read_run(base, &run_id).expect("read run");
+        let mut bundle = run.milestone_bundle.clone().expect("bundle");
+        bundle.schema_version += 1;
+        run.milestone_bundle = Some(bundle);
+        req_store.write_run(base, &run_id, &run).expect("write run");
+
+        let daemon_store = FsDaemonStore;
+        daemon_store
+            .create_task(
+                base,
+                &sample_waiting_task("waiting-invalid-bundle", &run_id),
+            )
+            .expect("create task");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &daemon_store,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        )
+        .with_requirements_store(&req_store);
+
+        let changed = daemon
+            .check_waiting_tasks(base, base)
+            .expect("check waiting tasks");
+        assert_eq!(changed, vec!["waiting-invalid-bundle".to_owned()]);
+
+        let failed = daemon_store
+            .read_task(base, "waiting-invalid-bundle")
+            .expect("read failed task");
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert_eq!(
+            failed.failure_class.as_deref(),
+            Some("milestone_handoff_failed")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn check_waiting_tasks_reports_milestone_materialize_failures_as_changed() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+
+        let requirements_service = RequirementsService::new(
+            AgentExecutionService::new(
+                StubBackendAdapter::default(),
+                FsRawOutputStore,
+                FsSessionStore,
+            ),
+            FsRequirementsStore,
+        );
+        let run_id = requirements_service
+            .draft_milestone(base, "materialize failure", Utc::now(), None)
+            .await
+            .expect("draft milestone");
+        let req_store = FsRequirementsStore;
+
+        let milestone_store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let existing = create_milestone(
+            &milestone_store,
+            base,
+            CreateMilestoneInput {
+                id: "ms-stub".to_owned(),
+                name: "Stub Milestone".to_owned(),
+                description: "existing completed milestone".to_owned(),
+            },
+            Utc::now(),
+        )
+        .expect("create existing milestone");
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &existing.id,
+            crate::contexts::milestone_record::model::MilestoneStatus::Completed,
+            Utc::now(),
+        )
+        .expect("complete milestone");
+
+        let daemon_store = FsDaemonStore;
+        daemon_store
+            .create_task(
+                base,
+                &sample_waiting_task("waiting-materialize-fail", &run_id),
+            )
+            .expect("create task");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &daemon_store,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        )
+        .with_requirements_store(&req_store);
+
+        let changed = daemon
+            .check_waiting_tasks(base, base)
+            .expect("check waiting tasks");
+        assert_eq!(changed, vec!["waiting-materialize-fail".to_owned()]);
+
+        let failed = daemon_store
+            .read_task(base, "waiting-materialize-fail")
+            .expect("read failed task");
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert_eq!(
+            failed.failure_class.as_deref(),
+            Some("milestone_handoff_failed")
+        );
+    }
 }
 
 async fn wait_for_shutdown_signal() -> AppResult<()> {
