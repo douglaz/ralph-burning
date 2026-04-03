@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::contexts::milestone_record::bundle::MilestoneBundle;
 use crate::shared::domain::FlowPreset;
 
 /// Current version of the ProjectSeed schema.
@@ -26,6 +27,7 @@ pub const SUPPORTED_SEED_VERSIONS: &[u32] = &[1, 2];
 pub enum RequirementsMode {
     Draft,
     Quick,
+    Milestone,
 }
 
 impl std::fmt::Display for RequirementsMode {
@@ -33,8 +35,30 @@ impl std::fmt::Display for RequirementsMode {
         match self {
             Self::Draft => f.write_str("draft"),
             Self::Quick => f.write_str("quick"),
+            Self::Milestone => f.write_str("milestone"),
         }
     }
+}
+
+/// Terminal output emitted by a requirements run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementsOutputKind {
+    ProjectSeed,
+    MilestoneBundle,
+}
+
+impl std::fmt::Display for RequirementsOutputKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ProjectSeed => f.write_str("project_seed"),
+            Self::MilestoneBundle => f.write_str("milestone_bundle"),
+        }
+    }
+}
+
+fn default_output_kind() -> RequirementsOutputKind {
+    RequirementsOutputKind::ProjectSeed
 }
 
 /// Requirements run status.
@@ -70,6 +94,12 @@ pub struct RequirementsRun {
     pub latest_draft_id: Option<String>,
     pub latest_review_id: Option<String>,
     pub latest_seed_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_milestone_bundle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub milestone_bundle: Option<MilestoneBundle>,
+    #[serde(default = "default_output_kind")]
+    pub output_kind: RequirementsOutputKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_question_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -118,6 +148,9 @@ impl RequirementsRun {
             latest_draft_id: None,
             latest_review_id: None,
             latest_seed_id: None,
+            latest_milestone_bundle_id: None,
+            milestone_bundle: None,
+            output_kind: RequirementsOutputKind::ProjectSeed,
             pending_question_count: None,
             recommended_flow: None,
             created_at: now,
@@ -142,11 +175,41 @@ impl RequirementsRun {
             latest_draft_id: None,
             latest_review_id: None,
             latest_seed_id: None,
+            latest_milestone_bundle_id: None,
+            milestone_bundle: None,
+            output_kind: RequirementsOutputKind::ProjectSeed,
             pending_question_count: None,
             recommended_flow: None,
             created_at: now,
             updated_at: now,
             status_summary: "drafting: generating requirements".to_owned(),
+            current_stage: None,
+            committed_stages: BTreeMap::new(),
+            quick_revision_count: 0,
+            last_transition_cached: false,
+        }
+    }
+
+    /// Create a new requirements run in milestone mode.
+    pub fn new_milestone(run_id: String, idea: String, now: DateTime<Utc>) -> Self {
+        Self {
+            run_id,
+            idea,
+            mode: RequirementsMode::Milestone,
+            status: RequirementsStatus::Drafting,
+            question_round: 0,
+            latest_question_set_id: None,
+            latest_draft_id: None,
+            latest_review_id: None,
+            latest_seed_id: None,
+            latest_milestone_bundle_id: None,
+            milestone_bundle: None,
+            output_kind: RequirementsOutputKind::MilestoneBundle,
+            pending_question_count: None,
+            recommended_flow: None,
+            created_at: now,
+            updated_at: now,
+            status_summary: "drafting: milestone planning".to_owned(),
             current_stage: None,
             committed_stages: BTreeMap::new(),
             quick_revision_count: 0,
@@ -160,6 +223,11 @@ impl RequirementsRun {
             self.status,
             RequirementsStatus::Completed | RequirementsStatus::Failed
         )
+    }
+
+    /// Whether this run uses the full multi-stage pipeline.
+    pub fn uses_full_mode_pipeline(&self) -> bool {
+        !matches!(self.mode, RequirementsMode::Quick)
     }
 }
 
@@ -176,6 +244,7 @@ pub enum FullModeStage {
     GapAnalysis,
     Validation,
     ProjectSeed,
+    MilestoneBundle,
 }
 
 impl FullModeStage {
@@ -188,6 +257,7 @@ impl FullModeStage {
             Self::GapAnalysis => "gap_analysis",
             Self::Validation => "validation",
             Self::ProjectSeed => "project_seed",
+            Self::MilestoneBundle => "milestone_bundle",
         }
     }
 
@@ -200,6 +270,7 @@ impl FullModeStage {
             Self::GapAnalysis => "Gap Analysis",
             Self::Validation => "Validation",
             Self::ProjectSeed => "Project Seed",
+            Self::MilestoneBundle => "Milestone Bundle",
         }
     }
 
@@ -213,6 +284,7 @@ impl FullModeStage {
             Self::GapAnalysis,
             Self::Validation,
             Self::ProjectSeed,
+            Self::MilestoneBundle,
         ]
     }
 
@@ -227,6 +299,7 @@ impl FullModeStage {
                 Self::GapAnalysis,
                 Self::Validation,
                 Self::ProjectSeed,
+                Self::MilestoneBundle,
             ],
             Self::Research => &[
                 Self::Synthesis,
@@ -234,17 +307,25 @@ impl FullModeStage {
                 Self::GapAnalysis,
                 Self::Validation,
                 Self::ProjectSeed,
+                Self::MilestoneBundle,
             ],
             Self::Synthesis => &[
                 Self::ImplementationSpec,
                 Self::GapAnalysis,
                 Self::Validation,
                 Self::ProjectSeed,
+                Self::MilestoneBundle,
             ],
-            Self::ImplementationSpec => &[Self::GapAnalysis, Self::Validation, Self::ProjectSeed],
-            Self::GapAnalysis => &[Self::Validation, Self::ProjectSeed],
-            Self::Validation => &[Self::ProjectSeed],
+            Self::ImplementationSpec => &[
+                Self::GapAnalysis,
+                Self::Validation,
+                Self::ProjectSeed,
+                Self::MilestoneBundle,
+            ],
+            Self::GapAnalysis => &[Self::Validation, Self::ProjectSeed, Self::MilestoneBundle],
+            Self::Validation => &[Self::ProjectSeed, Self::MilestoneBundle],
             Self::ProjectSeed => &[],
+            Self::MilestoneBundle => &[],
         }
     }
 
@@ -257,6 +338,7 @@ impl FullModeStage {
             Self::GapAnalysis,
             Self::Validation,
             Self::ProjectSeed,
+            Self::MilestoneBundle,
         ]
     }
 }
@@ -276,6 +358,7 @@ pub enum RequirementsStageId {
     RequirementsDraft,
     RequirementsReview,
     ProjectSeed,
+    MilestoneBundle,
     // Full-mode stages
     Ideation,
     Research,
@@ -292,6 +375,7 @@ impl RequirementsStageId {
             Self::RequirementsDraft => "requirements_draft",
             Self::RequirementsReview => "requirements_review",
             Self::ProjectSeed => "project_seed",
+            Self::MilestoneBundle => "milestone_bundle",
             Self::Ideation => "ideation",
             Self::Research => "research",
             Self::Synthesis => "synthesis",
@@ -307,6 +391,7 @@ impl RequirementsStageId {
             Self::RequirementsDraft => "Requirements Draft",
             Self::RequirementsReview => "Requirements Review",
             Self::ProjectSeed => "Project Seed",
+            Self::MilestoneBundle => "Milestone Bundle",
             Self::Ideation => "Ideation",
             Self::Research => "Research",
             Self::Synthesis => "Synthesis",
@@ -326,6 +411,7 @@ impl RequirementsStageId {
             FullModeStage::GapAnalysis => Self::GapAnalysis,
             FullModeStage::Validation => Self::Validation,
             FullModeStage::ProjectSeed => Self::ProjectSeed,
+            FullModeStage::MilestoneBundle => Self::MilestoneBundle,
         }
     }
 }

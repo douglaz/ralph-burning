@@ -108,8 +108,9 @@ impl FromStr for MilestoneStatus {
 
 // ── Immutable Record ──────────────────────────────────────────────────
 
-/// Immutable milestone metadata persisted in `milestone.toml`.
-/// Created once at milestone initialization and never modified.
+/// Milestone metadata persisted in `milestone.toml`.
+/// Created at milestone initialization and refreshed when rematerialized
+/// requirements change the milestone summary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MilestoneRecord {
     /// Schema version for forward compatibility.

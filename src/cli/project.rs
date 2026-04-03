@@ -10,9 +10,9 @@ use crate::adapters::br_models::{BeadDetail, BeadStatus, DependencyKind};
 use crate::adapters::br_process::{BrAdapter, BrCommand, BrError};
 use crate::adapters::fs::{
     FileSystem, FsActiveProjectStore, FsAmendmentQueueStore, FsDaemonStore, FsJournalStore,
-    FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore, FsPayloadArtifactWriteStore,
-    FsProjectStore, FsRequirementsStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
-    FsRuntimeLogWriteStore,
+    FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
+    FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore, FsRunSnapshotStore,
+    FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
 };
 use crate::composition::agent_execution_builder;
 use crate::contexts::automation_runtime::cli_writer_lease::{
@@ -21,7 +21,7 @@ use crate::contexts::automation_runtime::cli_writer_lease::{
 use crate::contexts::milestone_record::bundle::MilestoneBundle;
 use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus};
 use crate::contexts::milestone_record::service::{
-    MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
+    self as milestone_service, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
 };
 use crate::contexts::project_run_record::model::{ProjectDetail, ProjectStatusSummary, RunStatus};
 use crate::contexts::project_run_record::service::{
@@ -29,10 +29,10 @@ use crate::contexts::project_run_record::service::{
     ProjectStorePort, RunSnapshotPort,
 };
 use crate::contexts::requirements_drafting::model::{
-    ProjectSeedPayload, RequirementsStatus, SUPPORTED_SEED_VERSIONS,
+    ProjectSeedPayload, RequirementsOutputKind, RequirementsStatus, SUPPORTED_SEED_VERSIONS,
 };
 use crate::contexts::requirements_drafting::service::{
-    self as requirements_service, RequirementsStorePort,
+    self as requirements_service, MilestoneBundleHandoff, RequirementsStorePort, SeedHandoff,
 };
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
@@ -228,22 +228,52 @@ async fn handle_create_from_requirements(run_id: String) -> AppResult<()> {
     let config = workspace_governance::load_workspace_config(&current_dir)?;
     workspace_governance::ensure_supported_workspace_version(&config)?;
 
-    let handoff = load_seed_handoff(&current_dir, &run_id)?;
-    let store = FsProjectStore;
-    let journal_store = FsJournalStore;
-    let record = service::create_project_from_seed(
-        &store,
-        &journal_store,
-        &current_dir,
-        handoff,
-        None,
-        Utc::now(),
-    )
-    .map_err(|error| map_requirements_project_error(error, &run_id))?;
+    match load_requirements_handoff(&current_dir, &run_id)? {
+        RequirementsCreateHandoff::ProjectSeed(handoff) => {
+            let store = FsProjectStore;
+            let journal_store = FsJournalStore;
+            let record = service::create_project_from_seed(
+                &store,
+                &journal_store,
+                &current_dir,
+                handoff,
+                None,
+                Utc::now(),
+            )
+            .map_err(|error| map_requirements_project_error(error, &run_id))?;
 
-    set_active_project_after_create(&current_dir, &record.id)?;
-    let detail = load_project_detail(&current_dir, &record.id)?;
-    print_project_detail(&detail);
+            set_active_project_after_create(&current_dir, &record.id)?;
+            let detail = load_project_detail(&current_dir, &record.id)?;
+            print_project_detail(&detail);
+        }
+        RequirementsCreateHandoff::MilestoneBundle(handoff) => {
+            let milestone_store = FsMilestoneStore;
+            let snapshot_store = FsMilestoneSnapshotStore;
+            let journal_store = FsMilestoneJournalStore;
+            let plan_store = FsMilestonePlanStore;
+            let record = milestone_service::materialize_bundle(
+                &milestone_store,
+                &snapshot_store,
+                &journal_store,
+                &plan_store,
+                &current_dir,
+                &handoff.bundle,
+                Utc::now(),
+            )?;
+            println!(
+                "Created milestone '{}' from requirements run '{}'",
+                record.id, handoff.requirements_run_id
+            );
+            println!(
+                "Plan: {}",
+                current_dir
+                    .join(".ralph-burning/milestones")
+                    .join(record.id.as_str())
+                    .join("plan.json")
+                    .display()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -839,10 +869,15 @@ fn read_bootstrap_idea(base_dir: &Path, args: &BootstrapArgs) -> AppResult<Strin
     Ok(idea)
 }
 
-fn load_seed_handoff(
+enum RequirementsCreateHandoff {
+    ProjectSeed(SeedHandoff),
+    MilestoneBundle(MilestoneBundleHandoff),
+}
+
+fn load_requirements_handoff(
     base_dir: &Path,
     run_id: &str,
-) -> AppResult<requirements_service::SeedHandoff> {
+) -> AppResult<RequirementsCreateHandoff> {
     let store = FsRequirementsStore;
     let run_ids = store.list_requirements_run_ids(base_dir)?;
     if !run_ids.iter().any(|candidate| candidate == run_id) {
@@ -863,7 +898,16 @@ fn load_seed_handoff(
         });
     }
 
-    requirements_service::extract_seed_handoff(&store, base_dir, run_id)
+    match run.output_kind {
+        RequirementsOutputKind::ProjectSeed => {
+            requirements_service::extract_seed_handoff(&store, base_dir, run_id)
+                .map(RequirementsCreateHandoff::ProjectSeed)
+        }
+        RequirementsOutputKind::MilestoneBundle => {
+            requirements_service::extract_milestone_bundle_handoff(&store, base_dir, run_id)
+                .map(RequirementsCreateHandoff::MilestoneBundle)
+        }
+    }
 }
 
 /// Load a `SeedHandoff` directly from a JSON project seed file, bypassing the

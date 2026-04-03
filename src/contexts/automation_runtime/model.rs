@@ -14,6 +14,7 @@ pub enum DispatchMode {
     Workflow,
     RequirementsDraft,
     RequirementsQuick,
+    RequirementsMilestone,
 }
 
 impl DispatchMode {
@@ -22,6 +23,7 @@ impl DispatchMode {
             Self::Workflow => "workflow",
             Self::RequirementsDraft => "requirements_draft",
             Self::RequirementsQuick => "requirements_quick",
+            Self::RequirementsMilestone => "requirements_milestone",
         }
     }
 }
@@ -246,7 +248,10 @@ impl TaskStatus {
                 | Self::Aborted
                 | Self::WaitingForRequirements,
             ) => true,
-            (Self::WaitingForRequirements, Self::Pending | Self::Failed | Self::Aborted) => true,
+            (
+                Self::WaitingForRequirements,
+                Self::Pending | Self::Completed | Self::Failed | Self::Aborted,
+            ) => true,
             (Self::Failed | Self::Aborted, Self::Pending) => true,
             _ if self == next => true,
             _ => false,

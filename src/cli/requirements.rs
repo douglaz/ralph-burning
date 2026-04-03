@@ -1,6 +1,7 @@
 use clap::{Args, Subcommand};
 
 use crate::composition::agent_execution_builder;
+use crate::contexts::requirements_drafting::model::{RequirementsOutputKind, RequirementsStatus};
 use crate::contexts::workspace_governance::EffectiveConfig;
 use crate::shared::error::AppResult;
 
@@ -17,6 +18,10 @@ pub enum RequirementsSubcommand {
         idea: String,
     },
     Quick {
+        #[arg(long)]
+        idea: String,
+    },
+    Milestone {
         #[arg(long)]
         idea: String,
     },
@@ -50,11 +55,17 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
             let run_id = service.quick(&base_dir, &idea, now, None).await?;
             println!("Requirements run completed: {run_id}");
         }
+        RequirementsSubcommand::Milestone { idea } => {
+            let now = chrono::Utc::now();
+            let run_id = service.draft_milestone(&base_dir, &idea, now, None).await?;
+            println!("Requirements run created: {run_id}");
+        }
         RequirementsSubcommand::Show { run_id } => {
             let result = service.show(&base_dir, &run_id)?;
             println!("Run ID:           {}", result.run.run_id);
             println!("Mode:             {}", result.run.mode);
             println!("Status:           {}", result.run.status);
+            println!("Output Kind:      {}", result.run.output_kind);
             println!("Question Round:   {}", result.run.question_round);
 
             // Stage-aware progress for full mode
@@ -86,14 +97,31 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
             if let Some(flow) = result.recommended_flow {
                 println!("Recommended Flow: {flow}");
             }
-            if let Some(ref path) = result.seed_prompt_path {
-                println!("Seed Prompt:      {}", path.display());
-                println!();
-                println!("Suggested command:");
-                println!(
-                    "  ralph-burning project create --from-requirements {}",
-                    result.run.run_id
-                );
+            match result.run.output_kind {
+                RequirementsOutputKind::ProjectSeed => {
+                    if let Some(ref path) = result.seed_prompt_path {
+                        println!("Seed Prompt:      {}", path.display());
+                        println!();
+                        println!("Suggested command:");
+                        println!(
+                            "  ralph-burning project create --from-requirements {}",
+                            result.run.run_id
+                        );
+                    }
+                }
+                RequirementsOutputKind::MilestoneBundle => {
+                    if let Some(ref payload_id) = result.run.latest_milestone_bundle_id {
+                        println!("Milestone Bundle: {}", payload_id);
+                    }
+                    if result.run.status == RequirementsStatus::Completed {
+                        println!();
+                        println!("Suggested command:");
+                        println!(
+                            "  ralph-burning project create --from-requirements {}",
+                            result.run.run_id
+                        );
+                    }
+                }
             }
         }
         RequirementsSubcommand::Answer { run_id } => {

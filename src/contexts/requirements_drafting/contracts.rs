@@ -11,6 +11,7 @@
 
 use schemars::schema::RootSchema;
 
+use crate::contexts::milestone_record::bundle::MilestoneBundle;
 use crate::shared::domain::FlowPreset;
 use crate::shared::error::ContractError;
 
@@ -40,6 +41,7 @@ pub enum RequirementsPayload {
     Draft(RequirementsDraftPayload),
     Review(RequirementsReviewPayload),
     Seed(ProjectSeedPayload),
+    MilestoneBundle(MilestoneBundle),
     // Full-mode stage payloads
     Ideation(IdeationPayload),
     Research(ResearchPayload),
@@ -79,6 +81,12 @@ impl RequirementsContract {
     pub fn seed() -> Self {
         Self {
             stage_id: RequirementsStageId::ProjectSeed,
+        }
+    }
+
+    pub fn milestone_bundle() -> Self {
+        Self {
+            stage_id: RequirementsStageId::MilestoneBundle,
         }
     }
 
@@ -128,6 +136,7 @@ impl RequirementsContract {
                 schemars::schema_for!(RequirementsReviewPayload)
             }
             RequirementsStageId::ProjectSeed => schemars::schema_for!(ProjectSeedPayload),
+            RequirementsStageId::MilestoneBundle => schemars::schema_for!(MilestoneBundle),
             RequirementsStageId::Ideation => schemars::schema_for!(IdeationPayload),
             RequirementsStageId::Research => schemars::schema_for!(ResearchPayload),
             RequirementsStageId::Synthesis => schemars::schema_for!(SynthesisPayload),
@@ -193,6 +202,15 @@ impl RequirementsContract {
                     }
                 })?;
                 Ok(RequirementsPayload::Seed(p))
+            }
+            RequirementsStageId::MilestoneBundle => {
+                let p: MilestoneBundle = serde_json::from_value(raw.clone()).map_err(|e| {
+                    ContractError::SchemaValidation {
+                        stage_id: stage_str.to_owned(),
+                        details: format!("milestone_bundle: {e}"),
+                    }
+                })?;
+                Ok(RequirementsPayload::MilestoneBundle(p))
             }
             RequirementsStageId::Ideation => {
                 let p: IdeationPayload = serde_json::from_value(raw.clone()).map_err(|e| {
@@ -351,6 +369,14 @@ impl RequirementsContract {
                     });
                 }
             }
+            RequirementsPayload::MilestoneBundle(p) => {
+                if let Err(errors) = p.validate() {
+                    return Err(ContractError::DomainValidation {
+                        stage_id: self.stage_id.as_str().to_owned(),
+                        details: format!("milestone_bundle: {}", errors.join("; ")),
+                    });
+                }
+            }
             RequirementsPayload::Ideation(p) => {
                 let mut errors = Vec::new();
                 if p.themes.is_empty() {
@@ -466,6 +492,7 @@ impl RequirementsContract {
             RequirementsPayload::Draft(p) => renderers::render_requirements_draft(p),
             RequirementsPayload::Review(p) => renderers::render_requirements_review(p),
             RequirementsPayload::Seed(p) => renderers::render_project_seed(p),
+            RequirementsPayload::MilestoneBundle(p) => renderers::render_milestone_bundle(p),
             RequirementsPayload::Ideation(p) => renderers::render_ideation(p),
             RequirementsPayload::Research(p) => renderers::render_research(p),
             RequirementsPayload::Synthesis(p) => renderers::render_synthesis(p),

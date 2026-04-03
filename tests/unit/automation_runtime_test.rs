@@ -155,6 +155,16 @@ fn task_state_machine_waiting_to_pending() {
 }
 
 #[test]
+fn task_state_machine_waiting_to_completed() {
+    let mut task = sample_task();
+    task.status = TaskStatus::WaitingForRequirements;
+    task.transition_to(TaskStatus::Completed, Utc::now())
+        .expect("waiting -> completed");
+    assert_eq!(TaskStatus::Completed, task.status);
+    assert!(task.is_terminal());
+}
+
+#[test]
 fn task_state_machine_waiting_to_failed() {
     let mut task = sample_task();
     task.status = TaskStatus::WaitingForRequirements;
@@ -596,6 +606,60 @@ fn waiting_for_requirements_resume_transitions() {
     assert_eq!(DispatchMode::Workflow, resumed.dispatch_mode);
 }
 
+#[test]
+fn waiting_for_requirements_can_complete_without_resuming_workflow() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("persist task");
+
+    let waiting = DaemonTaskService::mark_waiting_for_requirements(
+        &store,
+        temp.path(),
+        &task.task_id,
+        "req-milestone-20260403",
+    )
+    .expect("mark waiting");
+    assert_eq!(TaskStatus::WaitingForRequirements, waiting.status);
+
+    let completed = DaemonTaskService::mark_completed(&store, temp.path(), &task.task_id)
+        .expect("waiting -> completed should be supported for milestone outputs");
+    assert_eq!(TaskStatus::Completed, completed.status);
+    assert_eq!(
+        Some("req-milestone-20260403".to_owned()),
+        completed.requirements_run_id
+    );
+}
+
+#[test]
+fn mark_completed_rolls_back_state_when_completion_journal_append_fails() {
+    let store = FailingJournalStore::new(0);
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.status = TaskStatus::WaitingForRequirements;
+    task.requirements_run_id = Some("req-milestone-journal-fail".to_owned());
+    store.create_task(temp.path(), &task).expect("persist task");
+
+    let error = DaemonTaskService::mark_completed(&store, temp.path(), &task.task_id)
+        .expect_err("mark_completed should fail when completion journal append fails");
+    assert!(error
+        .to_string()
+        .contains("simulated journal append failure"));
+
+    let persisted = store
+        .read_task(temp.path(), &task.task_id)
+        .expect("read task after rollback");
+    assert_eq!(
+        TaskStatus::WaitingForRequirements,
+        persisted.status,
+        "task should roll back to the pre-completion state when journaling fails"
+    );
+    assert_eq!(task.requirements_run_id, persisted.requirements_run_id);
+}
+
 // ── Requirements-link failure invariant tests ────────────────────────────────
 
 #[test]
@@ -736,6 +800,12 @@ fn parse_requirements_command_quick() {
 }
 
 #[test]
+fn parse_requirements_command_milestone() {
+    let result = parse_requirements_command("/rb requirements milestone").unwrap();
+    assert_eq!(Some(DispatchMode::RequirementsMilestone), result);
+}
+
+#[test]
 fn parse_requirements_command_unknown_fails() {
     let result = parse_requirements_command("/rb requirements bogus");
     assert!(result.is_err());
@@ -777,6 +847,7 @@ fn is_requirements_command_identifies_requirements_commands() {
     use ralph_burning::contexts::automation_runtime::watcher::is_requirements_command;
     assert!(is_requirements_command("/rb requirements draft"));
     assert!(is_requirements_command("/rb requirements quick"));
+    assert!(is_requirements_command("/rb requirements milestone"));
     assert!(is_requirements_command("/rb requirements"));
     assert!(is_requirements_command("rb requirements unknown"));
     assert!(!is_requirements_command("/rb flow standard"));
@@ -827,6 +898,10 @@ fn dispatch_mode_display() {
     assert_eq!(
         "requirements_quick",
         DispatchMode::RequirementsQuick.as_str()
+    );
+    assert_eq!(
+        "requirements_milestone",
+        DispatchMode::RequirementsMilestone.as_str()
     );
 }
 

@@ -1,9 +1,10 @@
 use serde_json::json;
 
+use ralph_burning::contexts::milestone_record::bundle::MILESTONE_BUNDLE_VERSION;
 use ralph_burning::contexts::requirements_drafting::contracts::RequirementsContract;
 use ralph_burning::contexts::requirements_drafting::model::{
-    RequirementsMode, RequirementsReviewOutcome, RequirementsRun, RequirementsStageId,
-    RequirementsStatus,
+    RequirementsMode, RequirementsOutputKind, RequirementsReviewOutcome, RequirementsRun,
+    RequirementsStageId, RequirementsStatus,
 };
 use ralph_burning::contexts::requirements_drafting::renderers;
 use ralph_burning::shared::domain::FlowPreset;
@@ -52,6 +53,30 @@ fn requirements_run_new_quick_creates_run_in_quick_mode_and_drafting_status() {
 }
 
 #[test]
+fn requirements_run_new_milestone_creates_run_in_milestone_mode_and_drafting_status() {
+    let now = Utc
+        .with_ymd_and_hms(2026, 3, 12, 10, 0, 0)
+        .single()
+        .expect("valid timestamp");
+    let run = RequirementsRun::new_milestone(
+        "req-003".to_owned(),
+        "Plan the alpha milestone".to_owned(),
+        now,
+    );
+
+    assert_eq!(run.run_id, "req-003");
+    assert_eq!(run.idea, "Plan the alpha milestone");
+    assert_eq!(run.mode, RequirementsMode::Milestone);
+    assert_eq!(run.output_kind, RequirementsOutputKind::MilestoneBundle);
+    assert_eq!(run.status, RequirementsStatus::Drafting);
+    assert!(run.latest_seed_id.is_none());
+    assert!(run.latest_milestone_bundle_id.is_none());
+    assert!(run.milestone_bundle.is_none());
+    assert_eq!(run.created_at, now);
+    assert_eq!(run.updated_at, now);
+}
+
+#[test]
 fn requirements_run_is_terminal_returns_true_for_completed_and_failed() {
     let now = Utc::now();
 
@@ -83,6 +108,7 @@ fn requirements_stage_id_as_str_round_trips_via_serde() {
         RequirementsStageId::RequirementsDraft,
         RequirementsStageId::RequirementsReview,
         RequirementsStageId::ProjectSeed,
+        RequirementsStageId::MilestoneBundle,
     ];
 
     for variant in all_variants {
@@ -614,8 +640,13 @@ mod service_integration {
     use ralph_burning::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
     use ralph_burning::adapters::stub_backend::StubBackendAdapter;
     use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
-    use ralph_burning::contexts::requirements_drafting::model::RequirementsStatus;
-    use ralph_burning::contexts::requirements_drafting::service::RequirementsService;
+    use ralph_burning::contexts::milestone_record::bundle::MILESTONE_BUNDLE_VERSION;
+    use ralph_burning::contexts::requirements_drafting::model::{
+        RequirementsMode, RequirementsOutputKind, RequirementsStatus,
+    };
+    use ralph_burning::contexts::requirements_drafting::service::{
+        extract_milestone_bundle_handoff, is_requirements_run_complete, RequirementsService,
+    };
 
     use crate::workspace_test::initialize_workspace_fixture;
 
@@ -1507,6 +1538,545 @@ mod service_integration {
         assert!(
             stage_completed_count >= 6,
             "journal should have StageCompleted events for ideation through validation, got {stage_completed_count}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn draft_milestone_full_mode_records_bundle_in_run_state_and_history() {
+        use ralph_burning::contexts::requirements_drafting::model::RequirementsJournalEventType;
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = deterministic_now();
+        let run_id = service
+            .draft_milestone(temp_dir.path(), "Milestone mode stages test", now, None)
+            .await
+            .expect("milestone draft should succeed");
+
+        let store = FsRequirementsStore;
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        let expected_bundle_id = format!("{run_id}-milestone-bundle-1");
+
+        assert_eq!(run.status, RequirementsStatus::Completed);
+        assert_eq!(run.mode, RequirementsMode::Milestone);
+        assert_eq!(run.output_kind, RequirementsOutputKind::MilestoneBundle);
+        assert_eq!(
+            run.current_stage,
+            Some(ralph_burning::contexts::requirements_drafting::model::FullModeStage::MilestoneBundle)
+        );
+        assert!(run.latest_seed_id.is_none());
+        assert_eq!(
+            run.latest_milestone_bundle_id.as_deref(),
+            Some(expected_bundle_id.as_str())
+        );
+        assert!(
+            run.milestone_bundle.is_some(),
+            "run state should embed the bundle"
+        );
+        assert!(
+            run.committed_stages.contains_key("milestone_bundle"),
+            "committed_stages should contain milestone_bundle"
+        );
+        assert!(
+            !run.committed_stages.contains_key("project_seed"),
+            "milestone mode should not commit project_seed"
+        );
+
+        let embedded = run.milestone_bundle.expect("embedded milestone bundle");
+        assert_eq!(embedded.identity.id, "ms-stub");
+        assert_eq!(embedded.schema_version, MILESTONE_BUNDLE_VERSION);
+
+        let payload_json = store
+            .read_payload(temp_dir.path(), &run_id, &expected_bundle_id)
+            .expect("read bundle payload");
+        assert_eq!(payload_json["identity"]["id"], "ms-stub");
+
+        let journal = store
+            .read_journal(temp_dir.path(), &run_id)
+            .expect("read journal");
+        assert!(
+            journal
+                .iter()
+                .any(|e| e.event_type == RequirementsJournalEventType::RunCompleted),
+            "journal should contain run_completed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn milestone_runs_do_not_report_seed_ready_completion() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft_milestone(
+                temp_dir.path(),
+                "Milestone handoff test",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("milestone draft should succeed");
+
+        let ready = is_requirements_run_complete(&FsRequirementsStore, temp_dir.path(), &run_id)
+            .expect("seed-ready check");
+        assert!(
+            !ready,
+            "milestone runs must not be reported as seed-ready by the seed handoff helper"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_milestone_bundle_handoff_reads_completed_bundle() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft_milestone(
+                temp_dir.path(),
+                "Milestone handoff extract",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("milestone draft should succeed");
+
+        let handoff =
+            extract_milestone_bundle_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+                .expect("extract milestone handoff");
+        assert_eq!(handoff.requirements_run_id, run_id);
+        assert_eq!(handoff.bundle.identity.id, "ms-stub");
+        assert_eq!(handoff.bundle.schema_version, MILESTONE_BUNDLE_VERSION);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_milestone_bundle_handoff_falls_back_to_payload_when_embedded_bundle_invalid() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft_milestone(
+                temp_dir.path(),
+                "Milestone schema validation",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("milestone draft should succeed");
+
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+        let store = FsRequirementsStore;
+        let mut run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        let mut bundle = run.milestone_bundle.clone().expect("milestone bundle");
+        bundle.schema_version = MILESTONE_BUNDLE_VERSION + 1;
+        run.milestone_bundle = Some(bundle);
+        store
+            .write_run(temp_dir.path(), &run_id, &run)
+            .expect("write mutated run");
+
+        let handoff =
+            extract_milestone_bundle_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+                .expect("valid payload artifact should be used as fallback");
+        assert_eq!(handoff.bundle.identity.id, "ms-stub");
+        assert_eq!(handoff.bundle.schema_version, MILESTONE_BUNDLE_VERSION);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_milestone_bundle_handoff_prefers_authoritative_payload_over_stale_embedded_bundle(
+    ) {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft_milestone(
+                temp_dir.path(),
+                "Milestone payload authority validation",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("milestone draft should succeed");
+
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+        let store = FsRequirementsStore;
+        let mut run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        let mut embedded = run.milestone_bundle.clone().expect("milestone bundle");
+        embedded.executive_summary = "stale embedded copy".to_owned();
+        run.milestone_bundle = Some(embedded);
+        store
+            .write_run(temp_dir.path(), &run_id, &run)
+            .expect("write stale embedded bundle");
+
+        let handoff =
+            extract_milestone_bundle_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+                .expect("payload history should remain authoritative");
+        assert_eq!(handoff.bundle.identity.id, "ms-stub");
+        assert_ne!(handoff.bundle.executive_summary, "stale embedded copy");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_milestone_bundle_handoff_falls_back_to_embedded_bundle_when_payload_invalid() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft_milestone(
+                temp_dir.path(),
+                "Milestone payload fallback validation",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("milestone draft should succeed");
+
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+        let store = FsRequirementsStore;
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        let payload_id = run
+            .latest_milestone_bundle_id
+            .clone()
+            .expect("payload id should exist");
+        let mut invalid_payload_bundle = run.milestone_bundle.clone().expect("milestone bundle");
+        invalid_payload_bundle.schema_version = MILESTONE_BUNDLE_VERSION + 1;
+        store
+            .write_payload(
+                temp_dir.path(),
+                &run_id,
+                &payload_id,
+                &serde_json::to_value(&invalid_payload_bundle).expect("serialize invalid bundle"),
+            )
+            .expect("overwrite payload with invalid bundle");
+
+        let handoff =
+            extract_milestone_bundle_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+                .expect("valid embedded bundle should be used as fallback");
+        assert_eq!(handoff.bundle.identity.id, "ms-stub");
+        assert_eq!(handoff.bundle.schema_version, MILESTONE_BUNDLE_VERSION);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_milestone_bundle_handoff_rejects_unsupported_schema_version() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft_milestone(
+                temp_dir.path(),
+                "Milestone schema validation",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("milestone draft should succeed");
+
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+        let store = FsRequirementsStore;
+        let mut run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        let payload_id = run
+            .latest_milestone_bundle_id
+            .clone()
+            .expect("payload id should exist");
+        let mut bundle = run.milestone_bundle.clone().expect("milestone bundle");
+        bundle.schema_version = MILESTONE_BUNDLE_VERSION + 1;
+        run.milestone_bundle = Some(bundle.clone());
+        store
+            .write_run(temp_dir.path(), &run_id, &run)
+            .expect("write mutated run");
+        store
+            .write_payload(
+                temp_dir.path(),
+                &run_id,
+                &payload_id,
+                &serde_json::to_value(&bundle).expect("serialize invalid bundle"),
+            )
+            .expect("overwrite payload with invalid bundle");
+
+        let error =
+            extract_milestone_bundle_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+                .expect_err(
+                    "unsupported schema version must be rejected when both copies are invalid",
+                );
+        assert!(error.to_string().contains("unsupported schema_version"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn draft_milestone_cleans_up_payloads_when_terminal_run_write_fails() {
+        use std::path::{Path, PathBuf};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use serde_json::Value;
+
+        use ralph_burning::contexts::requirements_drafting::model::{
+            PersistedAnswers, RequirementsJournalEvent, RequirementsRun,
+        };
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+        use ralph_burning::shared::error::{AppError, AppResult};
+
+        struct FailingMilestoneRunWriteStore {
+            did_fail: AtomicBool,
+        }
+
+        impl RequirementsStorePort for FailingMilestoneRunWriteStore {
+            fn create_run_dir(&self, base_dir: &Path, run_id: &str) -> AppResult<()> {
+                FsRequirementsStore.create_run_dir(base_dir, run_id)
+            }
+
+            fn write_run(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                run: &RequirementsRun,
+            ) -> AppResult<()> {
+                let payload_persisted = run
+                    .latest_milestone_bundle_id
+                    .as_ref()
+                    .map(|payload_id| {
+                        base_dir
+                            .join(".ralph-burning/requirements")
+                            .join(run_id)
+                            .join("history/payloads")
+                            .join(format!("{payload_id}.json"))
+                            .exists()
+                    })
+                    .unwrap_or(false);
+                let should_fail = run.status == RequirementsStatus::Completed
+                    && run.output_kind == RequirementsOutputKind::MilestoneBundle
+                    && payload_persisted
+                    && !self.did_fail.swap(true, Ordering::SeqCst);
+                if should_fail {
+                    return Err(AppError::Io(std::io::Error::other(
+                        "simulated milestone terminal write_run failure",
+                    )));
+                }
+                FsRequirementsStore.write_run(base_dir, run_id, run)
+            }
+
+            fn read_run(&self, base_dir: &Path, run_id: &str) -> AppResult<RequirementsRun> {
+                FsRequirementsStore.read_run(base_dir, run_id)
+            }
+
+            fn append_journal_event(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                event: &RequirementsJournalEvent,
+            ) -> AppResult<()> {
+                FsRequirementsStore.append_journal_event(base_dir, run_id, event)
+            }
+
+            fn read_journal(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+            ) -> AppResult<Vec<RequirementsJournalEvent>> {
+                FsRequirementsStore.read_journal(base_dir, run_id)
+            }
+
+            fn write_payload(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                payload_id: &str,
+                payload: &Value,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_payload(base_dir, run_id, payload_id, payload)
+            }
+
+            fn write_artifact(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                artifact_id: &str,
+                content: &str,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_artifact(base_dir, run_id, artifact_id, content)
+            }
+
+            fn read_payload(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                payload_id: &str,
+            ) -> AppResult<Value> {
+                FsRequirementsStore.read_payload(base_dir, run_id, payload_id)
+            }
+
+            fn write_payload_artifact_pair_atomic(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                payload_id: &str,
+                payload: &Value,
+                artifact_id: &str,
+                artifact: &str,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_payload_artifact_pair_atomic(
+                    base_dir,
+                    run_id,
+                    payload_id,
+                    payload,
+                    artifact_id,
+                    artifact,
+                )
+            }
+
+            fn write_answers_toml(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                template: &str,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_answers_toml(base_dir, run_id, template)
+            }
+
+            fn read_answers_toml(&self, base_dir: &Path, run_id: &str) -> AppResult<String> {
+                FsRequirementsStore.read_answers_toml(base_dir, run_id)
+            }
+
+            fn write_answers_json(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                answers: &PersistedAnswers,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_answers_json(base_dir, run_id, answers)
+            }
+
+            fn read_answers_json(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+            ) -> AppResult<PersistedAnswers> {
+                FsRequirementsStore.read_answers_json(base_dir, run_id)
+            }
+
+            fn write_seed_pair(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                project_json: &Value,
+                prompt_md: &str,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_seed_pair(base_dir, run_id, project_json, prompt_md)
+            }
+
+            fn remove_seed_pair(&self, base_dir: &Path, run_id: &str) -> AppResult<()> {
+                FsRequirementsStore.remove_seed_pair(base_dir, run_id)
+            }
+
+            fn remove_payload_artifact_pair(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                payload_id: &str,
+                artifact_id: &str,
+            ) -> AppResult<()> {
+                FsRequirementsStore.remove_payload_artifact_pair(
+                    base_dir,
+                    run_id,
+                    payload_id,
+                    artifact_id,
+                )
+            }
+
+            fn answers_toml_path(&self, base_dir: &Path, run_id: &str) -> PathBuf {
+                FsRequirementsStore.answers_toml_path(base_dir, run_id)
+            }
+
+            fn seed_prompt_path(&self, base_dir: &Path, run_id: &str) -> PathBuf {
+                FsRequirementsStore.seed_prompt_path(base_dir, run_id)
+            }
+        }
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let store = FailingMilestoneRunWriteStore {
+            did_fail: AtomicBool::new(false),
+        };
+        let service = RequirementsService::new(agent_service, store);
+
+        let error = service
+            .draft_milestone(
+                temp_dir.path(),
+                "Milestone write_run failure cleanup",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect_err("milestone write_run failure should surface");
+        assert!(error
+            .to_string()
+            .contains("simulated milestone terminal write_run failure"));
+
+        let run_id = std::fs::read_dir(temp_dir.path().join(".ralph-burning/requirements"))
+            .expect("read requirements dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .next()
+            .expect("single run id");
+        let run = FsRequirementsStore
+            .read_run(temp_dir.path(), &run_id)
+            .expect("read failed run");
+        assert_eq!(run.status, RequirementsStatus::Failed);
+        assert_eq!(
+            run.current_stage,
+            Some(ralph_burning::contexts::requirements_drafting::model::FullModeStage::Validation)
+        );
+        assert!(run.latest_milestone_bundle_id.is_none());
+        assert!(run.milestone_bundle.is_none());
+        assert!(!run.committed_stages.contains_key("milestone_bundle"));
+
+        let payload_path = temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id)
+            .join("history/payloads");
+        let artifact_path = temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id)
+            .join("history/artifacts");
+        let milestone_payload = payload_path.join(format!("{run_id}-milestone-bundle-1.json"));
+        let milestone_artifact = artifact_path.join(format!("{run_id}-milestone-bundle-art-1.md"));
+        assert!(
+            !milestone_payload.exists(),
+            "milestone payload should be removed after rollback"
+        );
+        assert!(
+            !milestone_artifact.exists(),
+            "milestone artifact should be removed after rollback"
         );
     }
 
@@ -3254,6 +3824,50 @@ fn parity_slice1_validation_fail_requires_blocking_issues() {
 }
 
 #[test]
+fn milestone_bundle_contract_validates_and_renders_plan_markdown() {
+    let raw = json!({
+        "schema_version": MILESTONE_BUNDLE_VERSION,
+        "identity": {
+            "id": "ms-alpha",
+            "name": "Alpha Milestone"
+        },
+        "executive_summary": "Deliver the alpha workflow.",
+        "goals": ["Ship milestone planning"],
+        "non_goals": ["Parallel execution"],
+        "constraints": ["Keep phase 1 sequential"],
+        "acceptance_map": [{
+            "id": "AC-1",
+            "description": "Planner produces a durable milestone bundle.",
+            "covered_by": ["ms-alpha.bead-1"]
+        }],
+        "workstreams": [{
+            "name": "Planning",
+            "description": "Define milestone output.",
+            "beads": [{
+                "bead_id": "ms-alpha.bead-1",
+                "title": "Wire milestone bundle output",
+                "description": "Carry bundle through requirements pipeline.",
+                "bead_type": "task",
+                "priority": 1,
+                "labels": ["phase1"],
+                "depends_on": [],
+                "acceptance_criteria": ["AC-1"]
+            }]
+        }],
+        "default_flow": "quick_dev",
+        "agents_guidance": "Stay within the milestone plan."
+    });
+
+    let contract = RequirementsContract::milestone_bundle();
+    let bundle = contract
+        .evaluate(&raw)
+        .expect("milestone bundle should validate");
+    assert!(bundle.artifact.contains("# Alpha Milestone"));
+    assert!(bundle.artifact.contains("## Acceptance Criteria"));
+    assert!(bundle.artifact.contains("Wire milestone bundle output"));
+}
+
+#[test]
 fn parity_slice1_versioned_seed_includes_version_and_source() {
     use ralph_burning::contexts::requirements_drafting::model::{
         ProjectSeedPayload, SeedSourceMetadata, PROJECT_SEED_VERSION,
@@ -3344,7 +3958,7 @@ fn parity_slice1_full_mode_stage_pipeline_order() {
     use ralph_burning::contexts::requirements_drafting::model::FullModeStage;
 
     let order = FullModeStage::pipeline_order();
-    assert_eq!(order.len(), 7);
+    assert_eq!(order.len(), 8);
     assert_eq!(order[0], FullModeStage::Ideation);
     assert_eq!(order[1], FullModeStage::Research);
     assert_eq!(order[2], FullModeStage::Synthesis);
@@ -3352,6 +3966,7 @@ fn parity_slice1_full_mode_stage_pipeline_order() {
     assert_eq!(order[4], FullModeStage::GapAnalysis);
     assert_eq!(order[5], FullModeStage::Validation);
     assert_eq!(order[6], FullModeStage::ProjectSeed);
+    assert_eq!(order[7], FullModeStage::MilestoneBundle);
 }
 
 #[test]
@@ -3368,6 +3983,7 @@ fn parity_slice1_question_round_invalidation_preserves_ideation_and_research() {
     assert!(invalidated.contains(&FullModeStage::GapAnalysis));
     assert!(invalidated.contains(&FullModeStage::Validation));
     assert!(invalidated.contains(&FullModeStage::ProjectSeed));
+    assert!(invalidated.contains(&FullModeStage::MilestoneBundle));
 }
 
 #[test]
@@ -3391,6 +4007,9 @@ fn parity_slice1_run_state_new_fields_default_correctly() {
     let run = RequirementsRun::new_draft("req-test".to_owned(), "idea".to_owned(), now);
     assert!(run.current_stage.is_none());
     assert!(run.committed_stages.is_empty());
+    assert_eq!(run.output_kind, RequirementsOutputKind::ProjectSeed);
+    assert!(run.latest_milestone_bundle_id.is_none());
+    assert!(run.milestone_bundle.is_none());
     assert_eq!(run.quick_revision_count, 0);
     assert!(!run.last_transition_cached);
 }
@@ -3405,6 +4024,9 @@ fn parity_slice1_run_state_new_fields_serialize_with_defaults() {
     let parsed: RequirementsRun = serde_json::from_str(&json).expect("deserialize");
     assert!(parsed.current_stage.is_none());
     assert!(parsed.committed_stages.is_empty());
+    assert_eq!(parsed.output_kind, RequirementsOutputKind::ProjectSeed);
+    assert!(parsed.latest_milestone_bundle_id.is_none());
+    assert!(parsed.milestone_bundle.is_none());
     assert_eq!(parsed.quick_revision_count, 0);
     assert!(!parsed.last_transition_cached);
 }
@@ -3431,6 +4053,9 @@ fn parity_slice1_backward_compat_run_json_without_new_fields() {
     let run: RequirementsRun = serde_json::from_value(old_json).expect("deserialize old format");
     assert!(run.current_stage.is_none());
     assert!(run.committed_stages.is_empty());
+    assert_eq!(run.output_kind, RequirementsOutputKind::ProjectSeed);
+    assert!(run.latest_milestone_bundle_id.is_none());
+    assert!(run.milestone_bundle.is_none());
     assert_eq!(run.quick_revision_count, 0);
     assert!(!run.last_transition_cached);
 }

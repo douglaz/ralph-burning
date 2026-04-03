@@ -10,11 +10,13 @@
 //! 3. Determine the default execution flow for each bead.
 //! 4. Generate AGENTS.md seed material for bead execution prompts.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::model::MilestoneId;
 use crate::shared::domain::FlowPreset;
 
 /// Current MilestoneBundle schema version.
@@ -24,7 +26,7 @@ pub const MILESTONE_BUNDLE_VERSION: u32 = 1;
 
 /// The complete output of milestone planning. Versioned for forward
 /// compatibility; consumers must check `schema_version` before processing.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MilestoneBundle {
     /// Schema version for forward compatibility.
     pub schema_version: u32,
@@ -79,9 +81,18 @@ impl MilestoneBundle {
     /// Validate the bundle's internal consistency.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
+        let milestone_id = self.identity.id.trim();
 
-        if self.schema_version == 0 {
-            errors.push("schema_version must be > 0".to_owned());
+        if self.schema_version != MILESTONE_BUNDLE_VERSION {
+            errors.push(format!(
+                "unsupported schema_version {} (expected {})",
+                self.schema_version, MILESTONE_BUNDLE_VERSION
+            ));
+        }
+        if self.identity.id != milestone_id {
+            errors.push("identity.id must not contain leading or trailing whitespace".to_owned());
+        } else if let Err(error) = MilestoneId::new(self.identity.id.clone()) {
+            errors.push(format!("identity.id is invalid: {error}"));
         }
         if self.identity.name.trim().is_empty() {
             errors.push("identity.name must not be empty".to_owned());
@@ -95,16 +106,29 @@ impl MilestoneBundle {
         if self.acceptance_map.is_empty() {
             errors.push("acceptance_map must contain at least one criterion".to_owned());
         }
+        if self.workstreams.is_empty() {
+            errors.push("workstreams must contain at least one workstream".to_owned());
+        }
 
+        let mut acceptance_ids = BTreeSet::new();
         for (i, ac) in self.acceptance_map.iter().enumerate() {
             if ac.id.trim().is_empty() {
                 errors.push(format!("acceptance_map[{i}].id must not be empty"));
+            } else if !acceptance_ids.insert(ac.id.trim().to_owned()) {
+                errors.push(format!(
+                    "acceptance_map[{i}].id '{}' is duplicate",
+                    ac.id.trim()
+                ));
             }
             if ac.description.trim().is_empty() {
                 errors.push(format!("acceptance_map[{i}].description must not be empty"));
             }
         }
 
+        let mut bead_ids = BTreeMap::new();
+        let mut bead_locations = BTreeMap::new();
+        let mut title_only_titles = BTreeMap::new();
+        let mut next_implicit_bead = 1usize;
         for (i, ws) in self.workstreams.iter().enumerate() {
             if ws.name.trim().is_empty() {
                 errors.push(format!("workstreams[{i}].name must not be empty"));
@@ -115,10 +139,105 @@ impl MilestoneBundle {
                 ));
             }
             for (j, bead) in ws.beads.iter().enumerate() {
+                let location = format!("workstreams[{i}].beads[{j}]");
                 if bead.title.trim().is_empty() {
+                    errors.push(format!("{location}.title must not be empty"));
+                }
+
+                let implicit_bead_id = format!("bead-{next_implicit_bead}");
+                next_implicit_bead += 1;
+
+                let canonical_bead_id = if let Some(bead_id) = bead.bead_id.as_deref() {
+                    match normalize_bead_reference(milestone_id, bead_id) {
+                        Ok(canonical) => canonical,
+                        Err(reason) => {
+                            errors.push(format!("{location}.bead_id {reason}"));
+                            implicit_bead_id
+                        }
+                    }
+                } else {
+                    if !bead.title.trim().is_empty() {
+                        if let Some(previous) =
+                            title_only_titles.insert(bead.title.trim().to_owned(), location.clone())
+                        {
+                            errors.push(format!(
+                                "{location}.title '{}' duplicates title-only proposal from {}",
+                                bead.title.trim(),
+                                previous
+                            ));
+                        }
+                    }
+                    implicit_bead_id
+                };
+
+                if let Some(previous) = bead_ids.insert(canonical_bead_id.clone(), location.clone())
+                {
                     errors.push(format!(
-                        "workstreams[{i}].beads[{j}].title must not be empty"
+                        "{location} resolves to duplicate bead identifier '{}' already used by {}",
+                        canonical_bead_id, previous
                     ));
+                }
+                bead_locations.insert((i, j), canonical_bead_id);
+            }
+        }
+
+        for (i, ws) in self.workstreams.iter().enumerate() {
+            for (j, bead) in ws.beads.iter().enumerate() {
+                let location = format!("workstreams[{i}].beads[{j}]");
+                let canonical_bead_id = bead_locations
+                    .get(&(i, j))
+                    .cloned()
+                    .expect("canonical bead id collected during first validation pass");
+
+                for (k, depends_on) in bead.depends_on.iter().enumerate() {
+                    match normalize_bead_reference(milestone_id, depends_on) {
+                        Ok(reference) => {
+                            if reference == canonical_bead_id {
+                                errors.push(format!(
+                                    "{location}.depends_on[{k}] must not reference the bead itself"
+                                ));
+                            } else if !bead_ids.contains_key(&reference) {
+                                errors.push(format!(
+                                    "{location}.depends_on[{k}] references unknown bead '{}'",
+                                    depends_on.trim()
+                                ));
+                            }
+                        }
+                        Err(reason) => {
+                            errors.push(format!("{location}.depends_on[{k}] {reason}"));
+                        }
+                    }
+                }
+
+                for (k, acceptance_id) in bead.acceptance_criteria.iter().enumerate() {
+                    if acceptance_id.trim().is_empty() {
+                        errors.push(format!(
+                            "{location}.acceptance_criteria[{k}] must not be empty"
+                        ));
+                    } else if !acceptance_ids.contains(acceptance_id.trim()) {
+                        errors.push(format!(
+                            "{location}.acceptance_criteria[{k}] references unknown acceptance criterion '{}'",
+                            acceptance_id.trim()
+                        ));
+                    }
+                }
+            }
+        }
+
+        for (i, ac) in self.acceptance_map.iter().enumerate() {
+            for (j, covered_by) in ac.covered_by.iter().enumerate() {
+                match normalize_bead_reference(milestone_id, covered_by) {
+                    Ok(reference) => {
+                        if !bead_ids.contains_key(&reference) {
+                            errors.push(format!(
+                                "acceptance_map[{i}].covered_by[{j}] references unknown bead '{}'",
+                                covered_by.trim()
+                            ));
+                        }
+                    }
+                    Err(reason) => {
+                        errors.push(format!("acceptance_map[{i}].covered_by[{j}] {reason}"));
+                    }
                 }
             }
         }
@@ -141,10 +260,124 @@ impl MilestoneBundle {
     }
 }
 
+pub(crate) fn progress_shape_signature(bundle: &MilestoneBundle) -> Result<String, Vec<String>> {
+    #[derive(Serialize)]
+    struct ProgressShapeSignature {
+        explicit_bead_ids: BTreeSet<String>,
+        implicit_beads: Vec<ImplicitBeadSignature>,
+    }
+
+    #[derive(Serialize)]
+    struct ImplicitBeadSignature {
+        workstream_name: String,
+        workstream_description: Option<String>,
+        title: String,
+        description: Option<String>,
+        bead_type: Option<String>,
+        priority: Option<u32>,
+        labels: Vec<String>,
+        depends_on: Vec<String>,
+        acceptance_criteria: Vec<String>,
+        flow_override: Option<FlowPreset>,
+    }
+
+    let mut errors = Vec::new();
+    let milestone_id = bundle.identity.id.trim();
+    let mut explicit_bead_ids = BTreeSet::new();
+    let mut implicit_beads = Vec::new();
+
+    for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
+        for (bead_index, bead) in workstream.beads.iter().enumerate() {
+            let location = format!("workstreams[{workstream_index}].beads[{bead_index}]");
+            if let Some(bead_id) = bead.bead_id.as_deref() {
+                match normalize_bead_reference(milestone_id, bead_id) {
+                    Ok(canonical) => {
+                        if !explicit_bead_ids.insert(canonical.clone()) {
+                            errors.push(format!(
+                                "{location} resolves to duplicate bead identifier '{}'",
+                                canonical
+                            ));
+                        }
+                    }
+                    Err(reason) => errors.push(format!("{location}.bead_id {reason}")),
+                }
+                continue;
+            }
+
+            let mut depends_on = Vec::with_capacity(bead.depends_on.len());
+            for (dependency_index, depends_on_ref) in bead.depends_on.iter().enumerate() {
+                match normalize_bead_reference(milestone_id, depends_on_ref) {
+                    Ok(reference) => depends_on.push(reference),
+                    Err(reason) => errors.push(format!(
+                        "{location}.depends_on[{dependency_index}] {reason}"
+                    )),
+                }
+            }
+
+            implicit_beads.push(ImplicitBeadSignature {
+                workstream_name: workstream.name.clone(),
+                workstream_description: workstream.description.clone(),
+                title: bead.title.clone(),
+                description: bead.description.clone(),
+                bead_type: bead.bead_type.clone(),
+                priority: bead.priority,
+                labels: bead.labels.clone(),
+                depends_on,
+                acceptance_criteria: bead.acceptance_criteria.clone(),
+                flow_override: bead.flow_override,
+            });
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    serde_json::to_string(&ProgressShapeSignature {
+        explicit_bead_ids,
+        implicit_beads,
+    })
+    .map_err(|error| {
+        vec![format!(
+            "failed to serialize progress shape signature: {error}"
+        )]
+    })
+}
+
+fn normalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if raw != trimmed {
+        return Err("must not contain leading or trailing whitespace".to_owned());
+    }
+    if trimmed.is_empty() {
+        return Err("must not be empty".to_owned());
+    }
+    if trimmed.starts_with('.') || trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(format!("'{}' is not a valid bead identifier", trimmed));
+    }
+
+    let qualified_prefix = format!("{milestone_id}.");
+    if let Some(suffix) = trimmed.strip_prefix(&qualified_prefix) {
+        if suffix.is_empty() {
+            return Err(format!("'{}' is not a valid bead identifier", trimmed));
+        }
+        return Ok(suffix.to_owned());
+    }
+
+    if trimmed.contains('.') {
+        return Err(format!(
+            "'{}' does not belong to milestone '{}'",
+            trimmed, milestone_id
+        ));
+    }
+
+    Ok(trimmed.to_owned())
+}
+
 // ── Sub-types ───────────────────────────────────────────────────────────────
 
 /// Milestone identity within the bundle.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MilestoneIdentity {
     /// Machine-readable milestone ID (matches MilestoneId).
     pub id: String,
@@ -153,7 +386,7 @@ pub struct MilestoneIdentity {
 }
 
 /// A single acceptance criterion for the milestone.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AcceptanceCriterion {
     /// Short identifier (e.g., "AC-1").
     pub id: String,
@@ -165,7 +398,7 @@ pub struct AcceptanceCriterion {
 }
 
 /// A logical grouping of related beads (epic/workstream).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Workstream {
     /// Human-readable workstream name.
     pub name: String,
@@ -177,7 +410,7 @@ pub struct Workstream {
 }
 
 /// A proposed bead for execution, with dependency hints.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BeadProposal {
     /// Optional stable bead ID or suffix (for example `bead-2`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -419,11 +652,119 @@ mod tests {
     }
 
     #[test]
+    fn bundle_validation_rejects_unsupported_schema_version(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.schema_version = MILESTONE_BUNDLE_VERSION + 1;
+        let errors = bundle.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("unsupported schema_version")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_invalid_identity_id() -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.identity.id = "../invalid".to_owned();
+        let errors = bundle.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("identity.id")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_noncanonical_identity_id() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut bundle = sample_bundle();
+        bundle.identity.id = " ms-alpha ".to_owned();
+        let errors = bundle.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("must not contain leading or trailing whitespace")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_catches_missing_workstreams() -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams.clear();
+        let errors = bundle.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("workstreams")));
+        Ok(())
+    }
+
+    #[test]
     fn bundle_validation_catches_empty_bead_title() -> Result<(), Box<dyn std::error::Error>> {
         let mut bundle = sample_bundle();
         bundle.workstreams[0].beads[0].title = "".to_owned();
         let errors = bundle.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("title")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_duplicate_bead_identifiers(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].bead_id = Some("ms-alpha.bead-1".to_owned());
+        bundle.workstreams[0].beads[1].bead_id = Some("bead-1".to_owned());
+
+        let errors = bundle.validate().unwrap_err();
+
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("duplicate bead identifier")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_duplicate_title_only_proposals(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[1].title = bundle.workstreams[0].beads[0].title.clone();
+
+        let errors = bundle.validate().unwrap_err();
+
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("duplicates title-only proposal")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_invalid_cross_references() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut bundle = sample_bundle();
+        bundle.acceptance_map[0].covered_by = vec!["other-ms.bead-1".to_owned()];
+        bundle.workstreams[0].beads[1].depends_on = vec!["bead-999".to_owned()];
+        bundle.workstreams[0].beads[2].acceptance_criteria = vec!["AC-404".to_owned()];
+
+        let errors = bundle.validate().unwrap_err();
+
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("does not belong to milestone")));
+        assert!(errors.iter().any(|e| e.contains("references unknown bead")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("references unknown acceptance criterion")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_noncanonical_bead_references(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].bead_id = Some(" bead-1 ".to_owned());
+        bundle.acceptance_map[0].covered_by = vec![" bead-1 ".to_owned()];
+
+        let errors = bundle.validate().unwrap_err();
+
+        assert!(errors.iter().any(|e| e.contains(".bead_id")));
+        assert!(errors.iter().any(|e| e.contains("covered_by[0]")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("must not contain leading or trailing whitespace")));
         Ok(())
     }
 
