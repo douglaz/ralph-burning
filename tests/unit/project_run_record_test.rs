@@ -775,6 +775,47 @@ fn render_bead_task_prompt_preserves_multiline_agents_guidance_verbatim() {
 }
 
 #[test]
+fn render_bead_task_prompt_extracts_bead_local_non_goals_and_strips_embedded_contract_sections() {
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Goal:\nKeep the task prompt contract explicit.\n\nScope:\n- update the canonical prompt generator\n- keep consumer behavior aligned\n\nNon-goals:\n- do not redesign unrelated workflow stages\n- do not broaden the bead scope\n\n## Acceptance Criteria\n\n- this embedded section should not stay in must-do scope\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+
+    assert!(must_do_section.contains("Goal:"));
+    assert!(must_do_section.contains("Scope:"));
+    assert!(!must_do_section.contains("Non-goals:"));
+    assert!(!must_do_section.contains("## Acceptance Criteria"));
+    assert!(prompt.contains("- do not redesign unrelated workflow stages"));
+    assert!(prompt.contains("- do not broaden the bead scope"));
+    assert!(prompt.contains("- Do not absorb unrelated future-bead work"));
+}
+
+#[test]
+fn rendered_bead_task_prompt_with_embedded_sections_still_satisfies_contract_shape() {
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Goal:\nKeep the task prompt contract explicit.\n\nNon-goals:\n- leave unrelated flows untouched\n\n## Acceptance Criteria\n\n- embedded duplicate heading\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    assert!(
+        ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
+            .is_ok()
+    );
+}
+
+#[test]
 fn create_project_from_bead_context_bootstraps_task_metadata_and_prompt() {
     let store = RecordingProjectStore::empty();
     let journal_store = FakeJournalStore;

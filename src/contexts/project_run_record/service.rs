@@ -455,6 +455,143 @@ pub fn create_project_from_bead_context(
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BeadDescriptionSectionKind {
+    AcceptanceCriteria,
+    NonGoals,
+}
+
+fn markdown_heading_title(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if hash_count < 2 {
+        return None;
+    }
+    Some(trimmed[hash_count..].trim())
+}
+
+fn normalized_section_label(label: &str) -> String {
+    label
+        .chars()
+        .filter(|ch| !matches!(ch, '-' | '_' | ' '))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn bead_description_section_kind_from_label(label: &str) -> Option<BeadDescriptionSectionKind> {
+    match normalized_section_label(label).as_str() {
+        "acceptancecriteria" => Some(BeadDescriptionSectionKind::AcceptanceCriteria),
+        "nongoals" => Some(BeadDescriptionSectionKind::NonGoals),
+        _ => None,
+    }
+}
+
+fn section_kind_for_bead_description_line(line: &str) -> Option<BeadDescriptionSectionKind> {
+    let trimmed = line.trim();
+    if let Some(title) = markdown_heading_title(trimmed) {
+        return bead_description_section_kind_from_label(title);
+    }
+
+    trimmed
+        .strip_suffix(':')
+        .and_then(bead_description_section_kind_from_label)
+}
+
+fn is_plain_section_label_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(label) = trimmed.strip_suffix(':') else {
+        return false;
+    };
+    !label.is_empty()
+        && label
+            .chars()
+            .all(|ch| ch.is_ascii_alphabetic() || matches!(ch, ' ' | '-' | '/'))
+}
+
+fn is_bead_description_section_boundary(line: &str) -> bool {
+    markdown_heading_title(line).is_some() || is_plain_section_label_line(line)
+}
+
+fn collect_non_goal_items(lines: &[String]) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut current = String::new();
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !current.is_empty() {
+                items.push(current.trim().to_owned());
+                current.clear();
+            }
+            continue;
+        }
+
+        let bullet = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "));
+        if let Some(item) = bullet {
+            if !current.is_empty() {
+                items.push(current.trim().to_owned());
+                current.clear();
+            }
+            current.push_str(item.trim());
+            continue;
+        }
+
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(trimmed);
+    }
+
+    if !current.is_empty() {
+        items.push(current.trim().to_owned());
+    }
+
+    items
+}
+
+fn merge_unique_lines(primary: &[String], secondary: &[String]) -> Vec<String> {
+    let mut merged = Vec::new();
+    for item in primary.iter().chain(secondary.iter()) {
+        if !merged.iter().any(|existing: &String| existing == item) {
+            merged.push(item.clone());
+        }
+    }
+    merged
+}
+
+fn split_bead_description_scope(description: &str) -> (String, Vec<String>) {
+    let mut must_do_lines = Vec::new();
+    let mut non_goal_lines = Vec::new();
+    let mut active_section = None;
+
+    for line in description.lines() {
+        if let Some(section_kind) = section_kind_for_bead_description_line(line) {
+            active_section = Some(section_kind);
+            continue;
+        }
+
+        if active_section.is_some() && is_bead_description_section_boundary(line) {
+            active_section = None;
+            if let Some(section_kind) = section_kind_for_bead_description_line(line) {
+                active_section = Some(section_kind);
+                continue;
+            }
+        }
+
+        match active_section {
+            Some(BeadDescriptionSectionKind::AcceptanceCriteria) => {}
+            Some(BeadDescriptionSectionKind::NonGoals) => non_goal_lines.push(line.to_owned()),
+            None => must_do_lines.push(line.to_owned()),
+        }
+    }
+
+    let must_do_scope = must_do_lines.join("\n").trim().to_owned();
+    let non_goals = collect_non_goal_items(&non_goal_lines);
+    (must_do_scope, non_goals)
+}
+
 pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
     fn bullet_lines(items: &[String]) -> String {
         items
@@ -471,6 +608,12 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
             bullet_lines(items)
         }
     }
+
+    let (bead_must_do_scope, bead_local_non_goals) = context
+        .bead_description
+        .as_deref()
+        .map(split_bead_description_scope)
+        .unwrap_or_else(|| (String::new(), Vec::new()));
 
     let milestone_summary = {
         let mut lines = vec![
@@ -537,14 +680,14 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         lines.join("\n")
     };
 
-    let must_do_scope = context
-        .bead_description
-        .clone()
-        .unwrap_or_else(|| "No explicit scope description was supplied. Use the bead title and acceptance criteria as the required scope boundary.".to_owned());
-    let non_goals = bullet_lines_or_default(
-        &context.milestone_non_goals,
-        "None captured in the milestone plan.",
-    );
+    let must_do_scope = if bead_must_do_scope.is_empty() {
+        "No explicit scope description was supplied. Use the bead title and acceptance criteria as the required scope boundary.".to_owned()
+    } else {
+        bead_must_do_scope
+    };
+    let merged_non_goals = merge_unique_lines(&bead_local_non_goals, &context.milestone_non_goals);
+    let non_goals =
+        bullet_lines_or_default(&merged_non_goals, "None captured in the milestone plan.");
     let acceptance_criteria = bullet_lines_or_default(
         &context.bead_acceptance_criteria,
         "No explicit acceptance criteria were supplied.",
