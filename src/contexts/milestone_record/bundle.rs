@@ -127,7 +127,7 @@ impl MilestoneBundle {
 
         let mut bead_ids = BTreeMap::new();
         let mut bead_locations = BTreeMap::new();
-        let mut title_only_titles = BTreeMap::new();
+        let mut non_explicit_titles = BTreeMap::new();
         let mut next_implicit_bead = 1usize;
         for (i, ws) in self.workstreams.iter().enumerate() {
             if ws.name.trim().is_empty() {
@@ -146,6 +146,28 @@ impl MilestoneBundle {
 
                 let implicit_bead_id = format!("bead-{next_implicit_bead}");
                 next_implicit_bead += 1;
+                let canonical_implicit_bead_id = format!("{milestone_id}.{implicit_bead_id}");
+                validate_bead_identity_metadata(
+                    &location,
+                    milestone_id,
+                    bead,
+                    &canonical_implicit_bead_id,
+                    &mut errors,
+                );
+                let has_explicit_id =
+                    infer_bead_explicit_id(milestone_id, bead, &canonical_implicit_bead_id);
+
+                if !has_explicit_id && !bead.title.trim().is_empty() {
+                    if let Some(previous) =
+                        non_explicit_titles.insert(bead.title.trim().to_owned(), location.clone())
+                    {
+                        errors.push(format!(
+                            "{location}.title '{}' duplicates non-explicit proposal from {}",
+                            bead.title.trim(),
+                            previous
+                        ));
+                    }
+                }
 
                 let canonical_bead_id = if let Some(bead_id) = bead.bead_id.as_deref() {
                     match normalize_bead_reference(milestone_id, bead_id) {
@@ -156,17 +178,6 @@ impl MilestoneBundle {
                         }
                     }
                 } else {
-                    if !bead.title.trim().is_empty() {
-                        if let Some(previous) =
-                            title_only_titles.insert(bead.title.trim().to_owned(), location.clone())
-                        {
-                            errors.push(format!(
-                                "{location}.title '{}' duplicates title-only proposal from {}",
-                                bead.title.trim(),
-                                previous
-                            ));
-                        }
-                    }
                     implicit_bead_id
                 };
 
@@ -219,6 +230,14 @@ impl MilestoneBundle {
                             "{location}.acceptance_criteria[{k}] references unknown acceptance criterion '{}'",
                             acceptance_id.trim()
                         ));
+                    } else if bead.acceptance_criteria[..k]
+                        .iter()
+                        .any(|previous| previous.trim() == acceptance_id.trim())
+                    {
+                        errors.push(format!(
+                            "{location}.acceptance_criteria[{k}] duplicates acceptance criterion '{}'",
+                            acceptance_id.trim()
+                        ));
                     }
                 }
             }
@@ -233,12 +252,73 @@ impl MilestoneBundle {
                                 "acceptance_map[{i}].covered_by[{j}] references unknown bead '{}'",
                                 covered_by.trim()
                             ));
+                        } else if ac.covered_by[..j].iter().any(|previous| {
+                            normalize_bead_reference(milestone_id, previous)
+                                .map(|normalized| normalized == reference)
+                                .unwrap_or(false)
+                        }) {
+                            errors.push(format!(
+                                "acceptance_map[{i}].covered_by[{j}] duplicates bead '{}'",
+                                covered_by.trim()
+                            ));
                         }
                     }
                     Err(reason) => {
                         errors.push(format!("acceptance_map[{i}].covered_by[{j}] {reason}"));
                     }
                 }
+            }
+        }
+
+        if errors.is_empty() {
+            match canonicalize_bundle(self) {
+                Ok(canonical) => {
+                    let covered_by_from_beads = derived_acceptance_coverage(&canonical);
+
+                    for (i, criterion) in canonical.acceptance_map.iter().enumerate() {
+                        let declared = criterion
+                            .covered_by
+                            .iter()
+                            .cloned()
+                            .collect::<BTreeSet<_>>();
+                        let derived = covered_by_from_beads
+                            .get(&criterion.id)
+                            .cloned()
+                            .unwrap_or_default();
+
+                        if declared.is_empty() {
+                            errors.push(format!(
+                                "acceptance_map[{i}].covered_by must contain at least one bead"
+                            ));
+                        }
+
+                        if declared != derived {
+                            let missing_from_map =
+                                derived.difference(&declared).cloned().collect::<Vec<_>>();
+                            let missing_from_beads =
+                                declared.difference(&derived).cloned().collect::<Vec<_>>();
+                            let mut mismatch_details = Vec::new();
+                            if !missing_from_map.is_empty() {
+                                mismatch_details.push(format!(
+                                    "missing from acceptance_map: {}",
+                                    missing_from_map.join(", ")
+                                ));
+                            }
+                            if !missing_from_beads.is_empty() {
+                                mismatch_details.push(format!(
+                                    "missing from bead.acceptance_criteria: {}",
+                                    missing_from_beads.join(", ")
+                                ));
+                            }
+                            errors.push(format!(
+                                "acceptance_map[{i}] coverage for '{}' must match bead.acceptance_criteria ({})",
+                                criterion.id,
+                                mismatch_details.join("; ")
+                            ));
+                        }
+                    }
+                }
+                Err(mut canonicalization_errors) => errors.append(&mut canonicalization_errors),
             }
         }
 
@@ -261,17 +341,25 @@ impl MilestoneBundle {
 }
 
 pub(crate) fn progress_shape_signature(bundle: &MilestoneBundle) -> Result<String, Vec<String>> {
+    progress_shape_signature_with_explicit_id_hints(bundle, None)
+}
+
+pub(crate) fn progress_shape_signature_with_explicit_id_hints(
+    bundle: &MilestoneBundle,
+    explicit_id_hints: Option<&BTreeMap<String, bool>>,
+) -> Result<String, Vec<String>> {
     #[derive(Serialize)]
     struct ProgressShapeSignature {
-        explicit_bead_ids: BTreeSet<String>,
-        implicit_beads: Vec<ImplicitBeadSignature>,
+        beads: Vec<CanonicalBeadSignature>,
     }
 
     #[derive(Serialize)]
-    struct ImplicitBeadSignature {
-        workstream_name: String,
+    struct CanonicalBeadSignature {
+        bead_id: String,
+        has_explicit_id: bool,
+        workstream_name: Option<String>,
         workstream_description: Option<String>,
-        title: String,
+        title: Option<String>,
         description: Option<String>,
         bead_type: Option<String>,
         priority: Option<u32>,
@@ -281,67 +369,159 @@ pub(crate) fn progress_shape_signature(bundle: &MilestoneBundle) -> Result<Strin
         flow_override: Option<FlowPreset>,
     }
 
-    let mut errors = Vec::new();
-    let milestone_id = bundle.identity.id.trim();
-    let mut explicit_bead_ids = BTreeSet::new();
-    let mut implicit_beads = Vec::new();
+    let canonical_input = if let Some(hints) = explicit_id_hints {
+        apply_explicit_id_hints(bundle, hints)?
+    } else {
+        bundle.clone()
+    };
+    let canonical = validated_canonical_bundle(&canonical_input)?;
+    let mut beads = Vec::new();
 
-    for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
-        for (bead_index, bead) in workstream.beads.iter().enumerate() {
-            let location = format!("workstreams[{workstream_index}].beads[{bead_index}]");
-            if let Some(bead_id) = bead.bead_id.as_deref() {
-                match normalize_bead_reference(milestone_id, bead_id) {
-                    Ok(canonical) => {
-                        if !explicit_bead_ids.insert(canonical.clone()) {
-                            errors.push(format!(
-                                "{location} resolves to duplicate bead identifier '{}'",
-                                canonical
-                            ));
-                        }
-                    }
-                    Err(reason) => errors.push(format!("{location}.bead_id {reason}")),
-                }
-                continue;
-            }
+    for workstream in &canonical.workstreams {
+        for bead in &workstream.beads {
+            let has_explicit_id = bead.explicit_id.unwrap_or(false);
+            let mut labels = bead.labels.clone();
+            labels.sort();
 
-            let mut depends_on = Vec::with_capacity(bead.depends_on.len());
-            for (dependency_index, depends_on_ref) in bead.depends_on.iter().enumerate() {
-                match normalize_bead_reference(milestone_id, depends_on_ref) {
-                    Ok(reference) => depends_on.push(reference),
-                    Err(reason) => errors.push(format!(
-                        "{location}.depends_on[{dependency_index}] {reason}"
-                    )),
-                }
-            }
+            let mut depends_on = bead.depends_on.clone();
+            depends_on.sort();
 
-            implicit_beads.push(ImplicitBeadSignature {
-                workstream_name: workstream.name.clone(),
-                workstream_description: workstream.description.clone(),
-                title: bead.title.clone(),
-                description: bead.description.clone(),
-                bead_type: bead.bead_type.clone(),
-                priority: bead.priority,
-                labels: bead.labels.clone(),
+            let mut acceptance_criteria = bead.acceptance_criteria.clone();
+            acceptance_criteria.sort();
+
+            beads.push(CanonicalBeadSignature {
+                bead_id: bead
+                    .bead_id
+                    .as_deref()
+                    .expect("canonicalized bundles assign every bead an id")
+                    .to_owned(),
+                has_explicit_id,
+                workstream_name: (!has_explicit_id).then(|| workstream.name.clone()),
+                workstream_description: (!has_explicit_id)
+                    .then(|| workstream.description.clone())
+                    .flatten(),
+                title: (!has_explicit_id).then(|| bead.title.clone()),
+                description: (!has_explicit_id)
+                    .then(|| bead.description.clone())
+                    .flatten(),
+                bead_type: (!has_explicit_id).then(|| bead.bead_type.clone()).flatten(),
+                priority: (!has_explicit_id).then_some(bead.priority).flatten(),
+                labels: if has_explicit_id { Vec::new() } else { labels },
                 depends_on,
-                acceptance_criteria: bead.acceptance_criteria.clone(),
+                acceptance_criteria,
                 flow_override: bead.flow_override,
             });
         }
     }
 
-    if !errors.is_empty() {
-        return Err(errors);
-    }
+    beads.sort_by(|left, right| left.bead_id.cmp(&right.bead_id));
 
-    serde_json::to_string(&ProgressShapeSignature {
-        explicit_bead_ids,
-        implicit_beads,
-    })
-    .map_err(|error| {
+    serde_json::to_string(&ProgressShapeSignature { beads }).map_err(|error| {
         vec![format!(
             "failed to serialize progress shape signature: {error}"
         )]
     })
+}
+
+fn infer_bead_explicit_id(milestone_id: &str, bead: &BeadProposal, implicit_bead_id: &str) -> bool {
+    bead.explicit_id.unwrap_or_else(|| {
+        bead.bead_id.as_deref().is_some_and(|candidate| {
+            !bead_matches_implicit_slot(candidate, milestone_id, implicit_bead_id)
+        })
+    })
+}
+
+fn validate_bead_identity_metadata(
+    location: &str,
+    milestone_id: &str,
+    bead: &BeadProposal,
+    implicit_bead_id: &str,
+    errors: &mut Vec<String>,
+) {
+    match bead.explicit_id {
+        Some(true) if bead.bead_id.is_none() => errors.push(format!(
+            "{location}.explicit_id cannot be true without bead_id"
+        )),
+        Some(false) => {
+            if let Some(candidate) = bead.bead_id.as_deref() {
+                if let Ok(canonical_candidate) = normalize_bead_reference(milestone_id, candidate) {
+                    if !bead_matches_implicit_slot(
+                        &canonical_candidate,
+                        milestone_id,
+                        implicit_bead_id,
+                    ) {
+                        errors.push(format!(
+                            "{location}.explicit_id cannot be false when bead_id '{}' does not match implicit slot '{}'",
+                            candidate.trim(),
+                            implicit_bead_id
+                        ));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn bead_matches_implicit_slot(
+    candidate: &str,
+    milestone_id: &str,
+    implicit_bead_id: &str,
+) -> bool {
+    candidate == implicit_bead_id
+        || candidate
+            == implicit_bead_id
+                .strip_prefix(&format!("{milestone_id}."))
+                .unwrap_or(implicit_bead_id)
+}
+
+pub(crate) fn explicit_id_hints(
+    bundle: &MilestoneBundle,
+) -> Result<BTreeMap<String, bool>, Vec<String>> {
+    let canonical = validated_canonical_bundle(bundle)?;
+    let mut hints = BTreeMap::new();
+    for workstream in canonical.workstreams {
+        for bead in workstream.beads {
+            let bead_id = bead
+                .bead_id
+                .expect("canonicalized bundles assign every bead an id");
+            hints.insert(bead_id, bead.explicit_id.unwrap_or(false));
+        }
+    }
+    Ok(hints)
+}
+
+fn apply_explicit_id_hints(
+    bundle: &MilestoneBundle,
+    hints: &BTreeMap<String, bool>,
+) -> Result<MilestoneBundle, Vec<String>> {
+    let milestone_id = bundle.identity.id.trim();
+    let mut with_hints = bundle.clone();
+    let mut next_implicit_bead = 1usize;
+
+    for workstream in &mut with_hints.workstreams {
+        for bead in &mut workstream.beads {
+            let implicit_bead_id = format!("{milestone_id}.bead-{next_implicit_bead}");
+            next_implicit_bead += 1;
+
+            if bead.explicit_id.is_some() {
+                continue;
+            }
+
+            let canonical_id = bead
+                .bead_id
+                .as_deref()
+                .map(|raw| canonicalize_bead_reference(milestone_id, raw))
+                .transpose()
+                .map_err(|error| vec![error])?
+                .unwrap_or(implicit_bead_id);
+            if let Some(explicit_id) = hints.get(&canonical_id) {
+                bead.explicit_id = Some(*explicit_id);
+            }
+        }
+    }
+
+    Ok(with_hints)
 }
 
 fn normalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, String> {
@@ -372,6 +552,142 @@ fn normalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, Str
     }
 
     Ok(trimmed.to_owned())
+}
+
+fn canonicalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, String> {
+    normalize_bead_reference(milestone_id, raw)
+        .map(|normalized| format!("{milestone_id}.{normalized}"))
+}
+
+fn derived_acceptance_coverage(bundle: &MilestoneBundle) -> BTreeMap<String, BTreeSet<String>> {
+    let mut covered_by_from_beads = bundle
+        .acceptance_map
+        .iter()
+        .map(|criterion| (criterion.id.clone(), BTreeSet::new()))
+        .collect::<BTreeMap<_, _>>();
+
+    for workstream in &bundle.workstreams {
+        for bead in &workstream.beads {
+            let bead_id = bead
+                .bead_id
+                .as_deref()
+                .expect("canonicalized bundles assign every bead an id")
+                .to_owned();
+            for acceptance_id in &bead.acceptance_criteria {
+                covered_by_from_beads
+                    .entry(acceptance_id.clone())
+                    .or_default()
+                    .insert(bead_id.clone());
+            }
+        }
+    }
+
+    covered_by_from_beads
+}
+
+fn render_workstream_labels(workstreams: &[Workstream]) -> Vec<String> {
+    let mut name_counts = BTreeMap::new();
+    for workstream in workstreams {
+        *name_counts
+            .entry(workstream.name.as_str())
+            .or_insert(0usize) += 1;
+    }
+
+    let mut name_ordinals = BTreeMap::new();
+    workstreams
+        .iter()
+        .map(|workstream| {
+            if name_counts
+                .get(workstream.name.as_str())
+                .copied()
+                .unwrap_or(0)
+                <= 1
+            {
+                return workstream.name.clone();
+            }
+
+            let ordinal = name_ordinals
+                .entry(workstream.name.as_str())
+                .and_modify(|count| *count += 1)
+                .or_insert(1usize);
+            format!("{} [{}]", workstream.name, ordinal)
+        })
+        .collect()
+}
+
+fn validated_canonical_bundle(bundle: &MilestoneBundle) -> Result<MilestoneBundle, Vec<String>> {
+    bundle.validate()?;
+    canonicalize_bundle(bundle)
+}
+
+fn canonicalize_bundle(bundle: &MilestoneBundle) -> Result<MilestoneBundle, Vec<String>> {
+    let milestone_id = bundle.identity.id.trim();
+    let mut canonical = bundle.clone();
+    let mut errors = Vec::new();
+    let mut next_implicit_bead = 1usize;
+
+    for (workstream_index, workstream) in canonical.workstreams.iter_mut().enumerate() {
+        for (bead_index, bead) in workstream.beads.iter_mut().enumerate() {
+            let implicit_bead_id = format!("{milestone_id}.bead-{next_implicit_bead}");
+            next_implicit_bead += 1;
+            let has_explicit_id = infer_bead_explicit_id(milestone_id, bead, &implicit_bead_id);
+
+            match bead
+                .bead_id
+                .as_deref()
+                .map(|raw| canonicalize_bead_reference(milestone_id, raw))
+                .transpose()
+            {
+                Ok(Some(canonical_id)) => bead.bead_id = Some(canonical_id),
+                Ok(None) => bead.bead_id = Some(implicit_bead_id),
+                Err(reason) => errors.push(format!(
+                    "workstreams[{workstream_index}].beads[{bead_index}].bead_id {reason}"
+                )),
+            }
+            bead.explicit_id = Some(has_explicit_id);
+
+            for (dependency_index, depends_on) in bead.depends_on.iter_mut().enumerate() {
+                match canonicalize_bead_reference(milestone_id, depends_on) {
+                    Ok(canonical_ref) => *depends_on = canonical_ref,
+                    Err(reason) => errors.push(format!(
+                        "workstreams[{workstream_index}].beads[{bead_index}].depends_on[{dependency_index}] {reason}"
+                    )),
+                }
+            }
+
+            for acceptance_id in &mut bead.acceptance_criteria {
+                *acceptance_id = acceptance_id.trim().to_owned();
+            }
+        }
+    }
+
+    for (criterion_index, criterion) in canonical.acceptance_map.iter_mut().enumerate() {
+        criterion.id = criterion.id.trim().to_owned();
+        for (covered_index, covered_by) in criterion.covered_by.iter_mut().enumerate() {
+            match canonicalize_bead_reference(milestone_id, covered_by) {
+                Ok(canonical_ref) => *covered_by = canonical_ref,
+                Err(reason) => errors.push(format!(
+                    "acceptance_map[{criterion_index}].covered_by[{covered_index}] {reason}"
+                )),
+            }
+        }
+    }
+
+    let derived_coverage = derived_acceptance_coverage(&canonical);
+    for criterion in &mut canonical.acceptance_map {
+        if criterion.covered_by.is_empty() {
+            criterion.covered_by = derived_coverage
+                .get(&criterion.id)
+                .map(|beads| beads.iter().cloned().collect())
+                .unwrap_or_default();
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(canonical)
+    } else {
+        Err(errors)
+    }
 }
 
 // ── Sub-types ───────────────────────────────────────────────────────────────
@@ -415,6 +731,9 @@ pub struct BeadProposal {
     /// Optional stable bead ID or suffix (for example `bead-2`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bead_id: Option<String>,
+    /// Whether the planner explicitly supplied `bead_id` before canonicalization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_id: Option<bool>,
     /// Proposed bead title (used as br title).
     pub title: String,
     /// Detailed description of what the bead should accomplish.
@@ -442,69 +761,148 @@ pub struct BeadProposal {
 
 // ── Renderers ───────────────────────────────────────────────────────────────
 
-/// Render a MilestoneBundle as deterministic `plan.md` content.
-pub fn render_plan_md(bundle: &MilestoneBundle) -> String {
+fn invalid_plan_render_error(errors: Vec<String>) -> serde_json::Error {
+    serde_json::Error::io(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        errors.join("; "),
+    ))
+}
+
+fn escape_markdown_table_cell(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace("\r\n", "<br>")
+        .replace(['\n', '\r'], "<br>")
+}
+
+pub(crate) fn render_plan_md_checked(bundle: &MilestoneBundle) -> Result<String, Vec<String>> {
+    let canonical = validated_canonical_bundle(bundle)?;
+    let workstream_labels = render_workstream_labels(&canonical.workstreams);
     let mut out = String::new();
 
-    writeln!(out, "# {}", bundle.identity.name).unwrap();
+    writeln!(out, "# {}", canonical.identity.name).unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "- **Milestone ID:** {}", canonical.identity.id).unwrap();
+    writeln!(out, "- **Schema Version:** {}", canonical.schema_version).unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "## Executive Summary").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "{}", bundle.executive_summary).unwrap();
+    writeln!(out, "{}", canonical.executive_summary).unwrap();
     writeln!(out).unwrap();
 
-    // Goals
     writeln!(out, "## Goals").unwrap();
     writeln!(out).unwrap();
-    for goal in &bundle.goals {
+    for goal in &canonical.goals {
         writeln!(out, "- {goal}").unwrap();
     }
     writeln!(out).unwrap();
 
-    // Non-goals
-    if !bundle.non_goals.is_empty() {
+    if !canonical.non_goals.is_empty() {
         writeln!(out, "## Non-Goals").unwrap();
         writeln!(out).unwrap();
-        for ng in &bundle.non_goals {
+        for ng in &canonical.non_goals {
             writeln!(out, "- {ng}").unwrap();
         }
         writeln!(out).unwrap();
     }
 
-    // Constraints
-    if !bundle.constraints.is_empty() {
+    if !canonical.constraints.is_empty() {
         writeln!(out, "## Constraints & Assumptions").unwrap();
         writeln!(out).unwrap();
-        for constraint in &bundle.constraints {
+        for constraint in &canonical.constraints {
             writeln!(out, "- {constraint}").unwrap();
         }
         writeln!(out).unwrap();
     }
 
-    // Acceptance map
+    let bead_lookup = canonical
+        .workstreams
+        .iter()
+        .zip(workstream_labels.iter())
+        .flat_map(|(workstream, workstream_label)| {
+            workstream.beads.iter().filter_map(move |bead| {
+                bead.bead_id.as_ref().map(|bead_id| {
+                    (
+                        bead_id.clone(),
+                        (workstream_label.as_str(), bead.title.as_str()),
+                    )
+                })
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+
     writeln!(out, "## Acceptance Criteria").unwrap();
     writeln!(out).unwrap();
-    for ac in &bundle.acceptance_map {
-        writeln!(out, "- **{}**: {}", ac.id, ac.description).unwrap();
-        if !ac.covered_by.is_empty() {
-            writeln!(out, "  - Covered by: {}", ac.covered_by.join(", ")).unwrap();
-        }
+    writeln!(out, "| ID | Criterion | Workstreams | Covered By Beads |").unwrap();
+    writeln!(out, "|----|-----------|-------------|------------------|").unwrap();
+    for ac in &canonical.acceptance_map {
+        let linked_beads = ac
+            .covered_by
+            .iter()
+            .filter_map(|bead_id| {
+                bead_lookup
+                    .get(bead_id)
+                    .map(|(workstream_name, bead_title)| {
+                        (
+                            (*workstream_name).to_owned(),
+                            format!("{bead_id} ({bead_title})"),
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+        let workstreams = linked_beads
+            .iter()
+            .map(|(workstream_name, _)| workstream_name.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let covered_by = linked_beads
+            .into_iter()
+            .map(|(_, bead_summary)| bead_summary)
+            .collect::<Vec<_>>();
+        let workstream_cell = if workstreams.is_empty() {
+            "-".to_owned()
+        } else {
+            workstreams.join(", ")
+        };
+        let covered_by_cell = if covered_by.is_empty() {
+            "-".to_owned()
+        } else {
+            covered_by.join("; ")
+        };
+        writeln!(
+            out,
+            "| {} | {} | {} | {} |",
+            escape_markdown_table_cell(&ac.id),
+            escape_markdown_table_cell(&ac.description),
+            escape_markdown_table_cell(&workstream_cell),
+            escape_markdown_table_cell(&covered_by_cell)
+        )
+        .unwrap();
     }
     writeln!(out).unwrap();
 
-    // Workstreams
     writeln!(out, "## Workstreams").unwrap();
     writeln!(out).unwrap();
-    for ws in &bundle.workstreams {
-        writeln!(out, "### {}", ws.name).unwrap();
+    for (ws, workstream_label) in canonical.workstreams.iter().zip(workstream_labels.iter()) {
+        writeln!(out, "### {}", workstream_label).unwrap();
         writeln!(out).unwrap();
         if let Some(desc) = &ws.description {
             writeln!(out, "{desc}").unwrap();
             writeln!(out).unwrap();
         }
-        writeln!(out, "| # | Title | Type | Priority | Dependencies |").unwrap();
-        writeln!(out, "|---|-------|------|----------|--------------|").unwrap();
+        writeln!(
+            out,
+            "| # | Bead ID | Title | Type | Priority | Acceptance | Dependencies | Flow |"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "|---|---------|-------|------|----------|------------|--------------|------|"
+        )
+        .unwrap();
         for (i, bead) in ws.beads.iter().enumerate() {
             let bead_type = bead.bead_type.as_deref().unwrap_or("task");
             let priority = bead
@@ -516,40 +914,72 @@ pub fn render_plan_md(bundle: &MilestoneBundle) -> String {
             } else {
                 bead.depends_on.join(", ")
             };
+            let acceptance = if bead.acceptance_criteria.is_empty() {
+                "-".to_owned()
+            } else {
+                bead.acceptance_criteria.join(", ")
+            };
+            let flow = bead
+                .flow_override
+                .unwrap_or(canonical.default_flow)
+                .to_string();
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} |",
                 i + 1,
-                bead.title,
-                bead_type,
-                priority,
-                deps
+                escape_markdown_table_cell(bead.bead_id.as_deref().unwrap_or("-")),
+                escape_markdown_table_cell(&bead.title),
+                escape_markdown_table_cell(bead_type),
+                escape_markdown_table_cell(&priority),
+                escape_markdown_table_cell(&acceptance),
+                escape_markdown_table_cell(&deps),
+                escape_markdown_table_cell(&flow)
             )
             .unwrap();
         }
         writeln!(out).unwrap();
     }
 
-    // Execution defaults
     writeln!(out, "## Execution Defaults").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "- **Default flow:** {}", bundle.default_flow).unwrap();
-    writeln!(out, "- **Total beads:** {}", bundle.bead_count()).unwrap();
+    writeln!(out, "- **Default flow:** {}", canonical.default_flow).unwrap();
+    writeln!(out, "- **Total beads:** {}", canonical.bead_count()).unwrap();
     writeln!(out).unwrap();
 
-    // AGENTS guidance
-    if let Some(guidance) = &bundle.agents_guidance {
+    if let Some(guidance) = &canonical.agents_guidance {
         writeln!(out, "## AGENTS Guidance").unwrap();
         writeln!(out).unwrap();
         writeln!(out, "{guidance}").unwrap();
     }
 
-    out
+    Ok(out)
+}
+
+/// Render a MilestoneBundle as deterministic `plan.md` content.
+pub fn render_plan_md(bundle: &MilestoneBundle) -> String {
+    render_plan_md_checked(bundle).unwrap_or_else(|errors| {
+        let mut out = String::new();
+        writeln!(out, "# {}", bundle.identity.name).unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "## Invalid Plan").unwrap();
+        writeln!(out).unwrap();
+        writeln!(
+            out,
+            "The milestone bundle is invalid and cannot be rendered authoritatively."
+        )
+        .unwrap();
+        writeln!(out).unwrap();
+        for error in errors {
+            writeln!(out, "- {error}").unwrap();
+        }
+        out
+    })
 }
 
 /// Render a MilestoneBundle as deterministic `plan.json` content.
 pub fn render_plan_json(bundle: &MilestoneBundle) -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(bundle)
+    let canonical = validated_canonical_bundle(bundle).map_err(invalid_plan_render_error)?;
+    serde_json::to_string_pretty(&canonical)
 }
 
 #[cfg(test)]
@@ -588,6 +1018,7 @@ mod tests {
                 beads: vec![
                     BeadProposal {
                         bead_id: None,
+                        explicit_id: None,
                         title: "Implement data model".to_owned(),
                         description: Some("Define schema and types".to_owned()),
                         bead_type: Some("task".to_owned()),
@@ -599,6 +1030,7 @@ mod tests {
                     },
                     BeadProposal {
                         bead_id: None,
+                        explicit_id: None,
                         title: "Build API endpoints".to_owned(),
                         description: Some("REST API for feature A".to_owned()),
                         bead_type: Some("feature".to_owned()),
@@ -610,6 +1042,7 @@ mod tests {
                     },
                     BeadProposal {
                         bead_id: None,
+                        explicit_id: None,
                         title: "Write integration tests".to_owned(),
                         description: None,
                         bead_type: Some("task".to_owned()),
@@ -727,7 +1160,39 @@ mod tests {
 
         assert!(errors
             .iter()
-            .any(|e| e.contains("duplicates title-only proposal")));
+            .any(|e| e.contains("duplicates non-explicit proposal")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_duplicate_titles_for_canonicalized_implicit_beads(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let bundle = sample_bundle();
+        let rendered = render_plan_json(&bundle)?;
+        let mut canonical: MilestoneBundle = serde_json::from_str(&rendered)?;
+        canonical.workstreams[0].beads[1].title = canonical.workstreams[0].beads[0].title.clone();
+
+        let errors = canonical.validate().unwrap_err();
+
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("duplicates non-explicit proposal")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_duplicate_titles_for_slot_matching_bead_ids(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].bead_id = Some("bead-1".to_owned());
+        bundle.workstreams[0].beads[1].bead_id = Some("ms-alpha.bead-2".to_owned());
+        bundle.workstreams[0].beads[1].title = bundle.workstreams[0].beads[0].title.clone();
+
+        let errors = bundle.validate().unwrap_err();
+
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("duplicates non-explicit proposal")));
         Ok(())
     }
 
@@ -752,6 +1217,20 @@ mod tests {
     }
 
     #[test]
+    fn bundle_validation_rejects_acceptance_map_mismatches(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned()];
+
+        let errors = bundle.validate().unwrap_err();
+
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("must match bead.acceptance_criteria")));
+        Ok(())
+    }
+
+    #[test]
     fn bundle_validation_rejects_noncanonical_bead_references(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut bundle = sample_bundle();
@@ -765,6 +1244,119 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| e.contains("must not contain leading or trailing whitespace")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_duplicate_acceptance_coverage_entries(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].acceptance_criteria =
+            vec!["AC-1".to_owned(), "AC-1".to_owned()];
+        bundle.acceptance_map[0].covered_by =
+            vec!["bead-1".to_owned(), "ms-alpha.bead-1".to_owned()];
+
+        let errors = bundle.validate().unwrap_err();
+
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("duplicates acceptance criterion")));
+        assert!(errors.iter().any(|e| e.contains("duplicates bead")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_accepts_legacy_missing_covered_by_and_renders_it(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.acceptance_map[0].covered_by.clear();
+        bundle.acceptance_map[1].covered_by.clear();
+
+        bundle.validate().map_err(|errors| errors.join("; "))?;
+
+        let rendered = render_plan_json(&bundle)?;
+        let parsed: MilestoneBundle = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed.acceptance_map[0].covered_by,
+            vec!["ms-alpha.bead-1".to_owned(), "ms-alpha.bead-2".to_owned()]
+        );
+        assert_eq!(
+            parsed.acceptance_map[1].covered_by,
+            vec!["ms-alpha.bead-3".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn render_plan_json_trims_acceptance_identifiers_during_canonicalization(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.acceptance_map[0].id = " AC-1 ".to_owned();
+        bundle.acceptance_map[0].covered_by.clear();
+        bundle.workstreams[0].beads[0].acceptance_criteria = vec![" AC-1 ".to_owned()];
+        bundle.workstreams[0].beads[1].acceptance_criteria = vec!["AC-1".to_owned()];
+
+        let rendered = render_plan_json(&bundle)?;
+        let parsed: MilestoneBundle = serde_json::from_str(&rendered)?;
+
+        assert_eq!(parsed.acceptance_map[0].id, "AC-1");
+        assert_eq!(
+            parsed.workstreams[0].beads[0].acceptance_criteria,
+            vec!["AC-1".to_owned()]
+        );
+        assert_eq!(
+            parsed.acceptance_map[0].covered_by,
+            vec!["ms-alpha.bead-1".to_owned(), "ms-alpha.bead-2".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn render_plan_json_rejects_invalid_bundle_before_canonicalizing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].bead_id = Some("bead-2".to_owned());
+
+        let error = render_plan_json(&bundle).unwrap_err();
+
+        assert!(error.to_string().contains("duplicate bead identifier"));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_explicit_id_true_without_bead_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+
+        let errors = bundle
+            .validate()
+            .expect_err("invalid explicit id should fail");
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("explicit_id cannot be true without bead_id")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_explicit_id_false_with_custom_bead_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].bead_id = Some("custom-bead".to_owned());
+        bundle.workstreams[0].beads[0].explicit_id = Some(false);
+        bundle.workstreams[0].beads[1].depends_on = vec!["custom-bead".to_owned()];
+        bundle.acceptance_map[0].covered_by = vec!["custom-bead".to_owned(), "bead-2".to_owned()];
+
+        let errors = bundle
+            .validate()
+            .expect_err("contradictory explicit id should fail");
+
+        assert!(errors.iter().any(|error| {
+            error.contains("explicit_id cannot be false")
+                && error.contains("custom-bead")
+                && error.contains("ms-alpha.bead-1")
+        }));
         Ok(())
     }
 
@@ -792,6 +1384,47 @@ mod tests {
         assert_eq!(parsed.schema_version, MILESTONE_BUNDLE_VERSION);
         assert_eq!(parsed.identity.id, "ms-alpha");
         assert_eq!(parsed.bead_count(), 3);
+        assert_eq!(
+            parsed.workstreams[0].beads[0].bead_id.as_deref(),
+            Some("ms-alpha.bead-1")
+        );
+        assert_eq!(parsed.acceptance_map[0].covered_by[0], "ms-alpha.bead-1");
+        Ok(())
+    }
+
+    #[test]
+    fn progress_shape_signature_accepts_legacy_plan_json_without_explicit_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let bundle = sample_bundle();
+        let expected_shape =
+            progress_shape_signature(&bundle).map_err(|errors| errors.join("; "))?;
+        let hints = explicit_id_hints(&bundle).map_err(|errors| errors.join("; "))?;
+
+        let mut legacy_json: serde_json::Value = serde_json::from_str(&render_plan_json(&bundle)?)?;
+        let legacy_beads = legacy_json["workstreams"][0]["beads"]
+            .as_array_mut()
+            .expect("canonical plan has bead array");
+        for bead in legacy_beads {
+            bead.as_object_mut()
+                .expect("canonical bead is an object")
+                .remove("explicit_id");
+        }
+
+        let legacy_bundle: MilestoneBundle = serde_json::from_value(legacy_json)?;
+        let legacy_shape =
+            progress_shape_signature_with_explicit_id_hints(&legacy_bundle, Some(&hints))
+                .map_err(|errors| errors.join("; "))?;
+
+        assert_eq!(legacy_shape, expected_shape);
+        Ok(())
+    }
+
+    #[test]
+    fn render_plan_json_is_deterministic() -> Result<(), Box<dyn std::error::Error>> {
+        let bundle = sample_bundle();
+        let json1 = render_plan_json(&bundle)?;
+        let json2 = render_plan_json(&bundle)?;
+        assert_eq!(json1, json2, "plan.json must be deterministic");
         Ok(())
     }
 
@@ -801,6 +1434,65 @@ mod tests {
         let md1 = render_plan_md(&bundle);
         let md2 = render_plan_md(&bundle);
         assert_eq!(md1, md2, "plan.md must be deterministic");
+        Ok(())
+    }
+
+    #[test]
+    fn slot_matching_bead_ids_without_explicit_flag_stay_implicit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let bundle = MilestoneBundle {
+            schema_version: MILESTONE_BUNDLE_VERSION,
+            identity: MilestoneIdentity {
+                id: "ms-qualified".to_owned(),
+                name: "Qualified".to_owned(),
+            },
+            executive_summary: "Check qualified ids.".to_owned(),
+            goals: vec!["Preserve explicit bead identity".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Qualified explicit ids remain explicit.".to_owned(),
+                covered_by: vec!["ms-qualified.bead-1".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Planning".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    bead_id: Some("ms-qualified.bead-1".to_owned()),
+                    explicit_id: None,
+                    title: "Preserve explicit id".to_owned(),
+                    description: Some("Planner supplied a fully-qualified bead id.".to_owned()),
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec!["planning".to_owned()],
+                    depends_on: vec![],
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: None,
+                }],
+            }],
+            default_flow: FlowPreset::Standard,
+            agents_guidance: None,
+        };
+
+        let rendered = render_plan_json(&bundle)?;
+        let parsed: MilestoneBundle = serde_json::from_str(&rendered)?;
+        assert_eq!(parsed.workstreams[0].beads[0].explicit_id, Some(false));
+        Ok(())
+    }
+
+    #[test]
+    fn non_slot_matching_bead_ids_without_explicit_flag_stay_explicit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].bead_id = Some("custom-bead".to_owned());
+        bundle.workstreams[0].beads[1].depends_on = vec!["custom-bead".to_owned()];
+        bundle.acceptance_map[0].covered_by = vec!["custom-bead".to_owned(), "bead-2".to_owned()];
+
+        let rendered = render_plan_json(&bundle)?;
+        let parsed: MilestoneBundle = serde_json::from_str(&rendered)?;
+
+        assert_eq!(parsed.workstreams[0].beads[0].explicit_id, Some(true));
         Ok(())
     }
 
@@ -818,6 +1510,7 @@ mod tests {
         assert!(md.contains("### Core Feature"));
         assert!(md.contains("## Execution Defaults"));
         assert!(md.contains("## AGENTS Guidance"));
+        assert!(md.contains("- **Milestone ID:** ms-alpha"));
         assert!(md.contains("quick_dev"));
         Ok(())
     }
@@ -826,9 +1519,61 @@ mod tests {
     fn plan_md_contains_bead_table() -> Result<(), Box<dyn std::error::Error>> {
         let bundle = sample_bundle();
         let md = render_plan_md(&bundle);
-        assert!(md.contains("| # | Title | Type | Priority | Dependencies |"));
+        assert!(md.contains("| ID | Criterion | Workstreams | Covered By Beads |"));
+        assert!(md.contains(
+            "| # | Bead ID | Title | Type | Priority | Acceptance | Dependencies | Flow |"
+        ));
+        assert!(md.contains("ms-alpha.bead-1"));
+        assert!(md.contains("AC-1"));
         assert!(md.contains("Implement data model"));
         assert!(md.contains("Build API endpoints"));
+        Ok(())
+    }
+
+    #[test]
+    fn plan_md_escapes_table_cells() -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.acceptance_map[0].description = "Criterion with |\nand newline".to_owned();
+        bundle.workstreams[0].name = "Core | Stream".to_owned();
+        bundle.workstreams[0].beads[0].title = "Implement |\nmodel".to_owned();
+        bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned(), "bead-2".to_owned()];
+
+        let md = render_plan_md(&bundle);
+
+        assert!(md.contains("Criterion with \\|<br>and newline"));
+        assert!(md.contains("Core \\| Stream"));
+        assert!(md.contains("Implement \\|<br>model"));
+        assert!(md.contains("ms-alpha.bead-1 (Implement \\|<br>model)"));
+        Ok(())
+    }
+
+    #[test]
+    fn plan_md_disambiguates_duplicate_workstream_names() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut bundle = sample_bundle();
+        bundle.workstreams.push(Workstream {
+            name: "Core Feature".to_owned(),
+            description: Some("Follow-up workstream".to_owned()),
+            beads: vec![BeadProposal {
+                bead_id: Some("bead-4".to_owned()),
+                explicit_id: None,
+                title: "Ship polish".to_owned(),
+                description: None,
+                bead_type: Some("task".to_owned()),
+                priority: Some(2),
+                labels: vec![],
+                depends_on: vec!["bead-3".to_owned()],
+                acceptance_criteria: vec!["AC-2".to_owned()],
+                flow_override: None,
+            }],
+        });
+        bundle.acceptance_map[1].covered_by = vec!["bead-3".to_owned(), "bead-4".to_owned()];
+
+        let md = render_plan_md(&bundle);
+
+        assert!(md.contains("### Core Feature [1]"));
+        assert!(md.contains("### Core Feature [2]"));
+        assert!(md.contains("Core Feature [1], Core Feature [2]"));
         Ok(())
     }
 

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-vote-0-c1-a1-cr13-artifact",
+  "payload_id": "run-20260403141819-final_review-vote-0-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T21:20:57.204381161Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments are verified and warranted. Amendment fr-13-2750eecc addresses confirmed code duplication: `bead_matches_implicit_slot` (bundle.rs:429) and `implicit_slot_matches` (project.rs:899) implement identical matching logic differing only in parameter type (`&str` vs `&MilestoneId`). Amendment fr-13-c3a7e775 addresses confirmed validation gaps: `explicit_id=true` with no `bead_id` and `explicit_id=false` with a non-slot custom `bead_id` both pass validation, while downstream code in `resolve_bead_plan` and progress-shape generation treats these flags as authoritative without re-checking consistency, leading to silent resolution failures and incorrect metadata stripping.\n\n## Votes\n\n- `fr-13-2750eecc`: Accept\n  Confirmed: `bead_matches_implicit_slot` (bundle.rs:429-435) and `implicit_slot_matches` (project.rs:899-909) implement identical logic — both check whether a candidate equals the implicit bead ID or equals the suffix after stripping a milestone-prefixed dot. The only difference is `&str` vs `&MilestoneId` (with `.as_str()`). These functions feed canonicalization and runtime resolution respectively, exercised by different test suites. If one is changed without the other, bead identity classification silently diverges. Extracting a single shared function is low-risk and eliminates a real maintainability hazard.\n- `fr-13-c3a7e775`: Accept\n  Confirmed: `MilestoneBundle::validate` has no check that rejects `explicit_id=true` with `bead_id=None`, nor `explicit_id=false` with a non-slot custom `bead_id`. The `infer_bead_explicit_id` function (bundle.rs:421-427) passes through whatever `explicit_id` value is set without consistency validation. Downstream, `proposal_matches_bead_id` (project.rs:863-879) gates on `explicit_id == Some(true)` and silently returns false when `bead_id` is None; `proposal_is_title_fallback_candidate` (project.rs:881-897) trusts `explicit_id=false` and fails to match custom non-slot IDs. Progress-shape generation (bundle.rs:393-404) unconditionally strips title, workstream, and label metadata for any bead with `has_explicit_id=true` regardless of whether it actually has a valid explicit ID. These are real correctness bugs that can cause silent resolution failures and incorrect signature generation from malformed planner output.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 13
+}

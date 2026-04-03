@@ -8,10 +8,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::adapters::fs::{
-    FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore, FsMilestoneJournalStore,
-    FsMilestoneSnapshotStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRollbackPointStore,
-    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore,
-    FsTaskRunLineageStore,
+    FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
+    FsMilestoneJournalStore, FsMilestoneSnapshotStore, FsPayloadArtifactWriteStore, FsProjectStore,
+    FsRollbackPointStore, FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore,
+    FsRuntimeLogWriteStore, FsTaskRunLineageStore,
 };
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::composition::agent_execution_builder;
@@ -554,10 +554,9 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     // Test-only injection seam: delete the writer lock file before close()
     // to exercise close-failure handling at the CLI level.
     if std::env::var("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE").is_ok() {
-        let lock_path = current_dir.join(format!(
-            ".ralph-burning/daemon/leases/writer-{}.lock",
-            project_id.as_str()
-        ));
+        let lock_path = FileSystem::live_workspace_root_path(&current_dir)
+            .join("daemon/leases")
+            .join(format!("writer-{}.lock", project_id.as_str()));
         let _ = std::fs::remove_file(&lock_path);
     }
 
@@ -2412,9 +2411,7 @@ fn build_follow_watcher(
     current_dir: &std::path::Path,
     project_id: &crate::shared::domain::ProjectId,
 ) -> AppResult<Option<FollowWatcher>> {
-    let project_root = current_dir
-        .join(".ralph-burning/projects")
-        .join(project_id.as_str());
+    let project_root = FileSystem::project_root(current_dir, project_id);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let callback = move |result: Result<notify::Event, notify::Error>| {
         if let Ok(event) = result {
@@ -2765,9 +2762,7 @@ fn list_history_record_files(
     current_dir: &std::path::Path,
     project_id: &crate::shared::domain::ProjectId,
 ) -> AppResult<(HashSet<String>, HashSet<String>)> {
-    let project_root = current_dir
-        .join(".ralph-burning/projects")
-        .join(project_id.as_str());
+    let project_root = FileSystem::project_root(current_dir, project_id);
     Ok((
         list_json_file_stems(&project_root.join("history/payloads"))?,
         list_json_file_stems(&project_root.join("history/artifacts"))?,

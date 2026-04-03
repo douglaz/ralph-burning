@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-planner-positions-c1-a1-cr10-artifact",
+  "payload_id": "run-20260403141819-final_review-planner-positions-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T19:59:46.772541400Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nThree amendments identify real correctness/consistency defects in plan canonicalization and milestone persistence. One amendment is a legitimate optimization opportunity, but it does not by itself establish a correctness or safety issue.\n\n## Votes\n\n- `fr-10-094418b7`: Accept\n  `validate()` treats bead `acceptance_criteria` references as trimmed identifiers, but canonicalization and `derived_acceptance_coverage()` preserve the raw strings. That lets logically equivalent input pass validation and then fail the later declared-vs-derived coverage check. The representation needs to be normalized consistently, or whitespace must be rejected up front.\n- `fr-10-6ca308fe`: Accept\n  `infer_bead_explicit_id()` currently ignores the implicit-slot context and classifies any provided `bead_id` as explicit, while the legacy backfill path treats slot-matching IDs as implicit. That means fresh canonicalization and reload/backfill can disagree on the same logical plan, which is a real consistency bug and can suppress duplicate-title validation for beads that should still behave as implicit proposals.\n- `fr-10-3fe7c2b2`: Reject\n  The repeated validation/canonicalization work is real, but the amendment describes a performance inefficiency rather than a demonstrated correctness, safety, or robustness defect. The current behavior is deterministic and functionally consistent; refactoring to cache or thread canonical bundles through more call sites may be worthwhile later, but it is not a bug that needs planner-level acceptance on technical-merit grounds alone.\n- `fr-10-3f236433`: Accept\n  `persist_plan_locked()` can durably write the new plan artifacts, snapshot, and journal entry before `clear_task_run_lineage()` runs. If lineage clearing then fails, the retry path can skip `persist_plan_locked()` because the snapshot hash and plan artifacts already match, leaving stale task-run lineage in place permanently. Since snapshot reconciliation derives progress from lineage without plan-shape filtering, that is a real recoverability and correctness defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 10
+}

@@ -21,6 +21,36 @@ fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_ralph-burning")
 }
 
+fn live_workspace_root(base_dir: &std::path::Path) -> std::path::PathBuf {
+    base_dir.join(".git/ralph-burning-live")
+}
+
+fn audit_workspace_root(base_dir: &std::path::Path) -> std::path::PathBuf {
+    base_dir.join(".ralph-burning")
+}
+
+fn workspace_config_path(base_dir: &std::path::Path) -> std::path::PathBuf {
+    live_workspace_root(base_dir).join("workspace.toml")
+}
+
+fn active_project_path(base_dir: &std::path::Path) -> std::path::PathBuf {
+    live_workspace_root(base_dir).join("active-project")
+}
+
+fn daemon_root(base_dir: &std::path::Path) -> std::path::PathBuf {
+    live_workspace_root(base_dir).join("daemon")
+}
+
+fn requirements_root(base_dir: &std::path::Path) -> std::path::PathBuf {
+    audit_workspace_root(base_dir).join("requirements")
+}
+
+fn milestone_root(base_dir: &std::path::Path, milestone_id: &str) -> std::path::PathBuf {
+    audit_workspace_root(base_dir)
+        .join("milestones")
+        .join(milestone_id)
+}
+
 fn initialize_workspace_fixture() -> tempfile::TempDir {
     let temp_dir = tempdir().expect("create temp dir");
     let output = Command::new(binary())
@@ -77,7 +107,9 @@ status_summary = "created"
 }
 
 fn project_root(base_dir: &std::path::Path, project_id: &str) -> std::path::PathBuf {
-    base_dir.join(".ralph-burning/projects").join(project_id)
+    live_workspace_root(base_dir)
+        .join("projects")
+        .join(project_id)
 }
 
 fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str) {
@@ -154,7 +186,7 @@ fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str)
 }
 
 fn set_workspace_stream_output(base_dir: &std::path::Path, enabled: bool) {
-    let workspace_toml = base_dir.join(".ralph-burning/workspace.toml");
+    let workspace_toml = workspace_config_path(base_dir);
     let mut workspace: ralph_burning::shared::domain::WorkspaceConfig =
         toml::from_str(&fs::read_to_string(&workspace_toml).expect("read workspace.toml"))
             .expect("parse workspace.toml");
@@ -281,16 +313,13 @@ fn write_rollback_targets_fixture(base_dir: &std::path::Path, project_id: &str) 
 }
 
 fn select_active_project_fixture(base_dir: &std::path::Path, project_id: &str) {
-    fs::write(
-        base_dir.join(".ralph-burning/active-project"),
-        format!("{project_id}\n"),
-    )
-    .expect("write active-project");
+    fs::write(active_project_path(base_dir), format!("{project_id}\n"))
+        .expect("write active-project");
 }
 
 #[cfg(feature = "test-stub")]
 fn requirements_run_ids(base_dir: &std::path::Path) -> Vec<String> {
-    let req_dir = base_dir.join(".ralph-burning/requirements");
+    let req_dir = requirements_root(base_dir);
     let mut run_ids: Vec<String> = fs::read_dir(&req_dir)
         .expect("read requirements dir")
         .filter_map(|entry| entry.ok())
@@ -370,19 +399,34 @@ created_at = "2026-04-01T10:00:00Z"
         workstreams: vec![Workstream {
             name: "Task Substrate".to_owned(),
             description: Some("Wire milestone beads into Ralph projects.".to_owned()),
-            beads: vec![BeadProposal {
-                bead_id: None,
-                title: "Bootstrap bead-backed task creation".to_owned(),
-                description: Some(
-                    "Create a Ralph project directly from milestone + bead context.".to_owned(),
-                ),
-                bead_type: Some("feature".to_owned()),
-                priority: Some(1),
-                labels: vec!["creation".to_owned()],
-                depends_on: vec!["bead-1".to_owned()],
-                acceptance_criteria: vec!["AC-1".to_owned()],
-                flow_override: Some(FlowPreset::DocsChange),
-            }],
+            beads: vec![
+                BeadProposal {
+                    bead_id: None,
+                    explicit_id: None,
+                    title: "Define task-source metadata".to_owned(),
+                    description: Some("Persist bead lineage and task-source metadata.".to_owned()),
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec!["creation".to_owned()],
+                    depends_on: vec![],
+                    acceptance_criteria: vec![],
+                    flow_override: None,
+                },
+                BeadProposal {
+                    bead_id: None,
+                    explicit_id: None,
+                    title: "Bootstrap bead-backed task creation".to_owned(),
+                    description: Some(
+                        "Create a Ralph project directly from milestone + bead context.".to_owned(),
+                    ),
+                    bead_type: Some("feature".to_owned()),
+                    priority: Some(1),
+                    labels: vec!["creation".to_owned()],
+                    depends_on: vec!["bead-1".to_owned()],
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: Some(FlowPreset::DocsChange),
+                },
+            ],
         }],
         default_flow: FlowPreset::QuickDev,
         agents_guidance: Some("Keep changes inspectable and deterministic.".to_owned()),
@@ -419,7 +463,7 @@ fn write_requirements_milestone_run_fixture(
     run_id: &str,
     milestone_id: &str,
 ) {
-    let run_root = base_dir.join(".ralph-burning/requirements").join(run_id);
+    let run_root = requirements_root(base_dir).join(run_id);
     fs::create_dir_all(run_root.join("payloads")).expect("create requirements payload dir");
     fs::create_dir_all(run_root.join("artifacts")).expect("create requirements artifact dir");
 
@@ -443,6 +487,7 @@ fn write_requirements_milestone_run_fixture(
             description: Some("Create the milestone plan.".to_owned()),
             beads: vec![BeadProposal {
                 bead_id: Some("bead-1".to_owned()),
+                explicit_id: None,
                 title: "Persist milestone bundle".to_owned(),
                 description: Some("Write plan.json and plan.md".to_owned()),
                 bead_type: Some("task".to_owned()),
@@ -494,10 +539,7 @@ fn write_requirements_milestone_run_fixture(
 }
 
 fn milestone_plan_hash(base_dir: &std::path::Path, milestone_id: &str) -> String {
-    let plan_path = base_dir
-        .join(".ralph-burning/milestones")
-        .join(milestone_id)
-        .join("plan.json");
+    let plan_path = milestone_root(base_dir, milestone_id).join("plan.json");
     let plan_json = fs::read_to_string(plan_path).expect("read plan json");
     let mut hasher = Sha256::new();
     hasher.update(plan_json.as_bytes());
@@ -506,8 +548,8 @@ fn milestone_plan_hash(base_dir: &std::path::Path, milestone_id: &str) -> String
 
 #[cfg(feature = "test-stub")]
 fn write_daemon_task(base_dir: &std::path::Path, task: &DaemonTask) {
-    let path = base_dir
-        .join(".ralph-burning/daemon/tasks")
+    let path = daemon_root(base_dir)
+        .join("tasks")
         .join(format!("{}.json", task.task_id));
     fs::create_dir_all(path.parent().expect("task parent")).expect("create task dir");
     fs::write(
@@ -759,17 +801,11 @@ fn init_creates_workspace_layout() {
         .expect("run init");
 
     assert!(output.status.success());
-    assert!(temp_dir
-        .path()
-        .join(".ralph-burning/workspace.toml")
-        .is_file());
+    assert!(workspace_config_path(temp_dir.path()).is_file());
     assert!(temp_dir.path().join(".ralph-burning/projects").is_dir());
-    assert!(temp_dir.path().join(".ralph-burning/requirements").is_dir());
-    assert!(temp_dir.path().join(".ralph-burning/daemon/tasks").is_dir());
-    assert!(temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases")
-        .is_dir());
+    assert!(requirements_root(temp_dir.path()).is_dir());
+    assert!(daemon_root(temp_dir.path()).join("tasks").is_dir());
+    assert!(daemon_root(temp_dir.path()).join("leases").is_dir());
 }
 
 #[test]
@@ -1321,9 +1357,9 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
     // directly so it processes pre-seeded tasks without GitHub.
     run_daemon_iteration_in_process(temp_dir.path());
 
-    let task_path = temp_dir
-        .path()
-        .join(".ralph-burning/daemon/tasks/task-conflict.json");
+    let task_path = daemon_root(temp_dir.path())
+        .join("tasks")
+        .join("task-conflict.json");
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Failed, task.status);
@@ -1332,13 +1368,13 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
         task.failure_class.as_deref()
     );
     assert!(task.lease_id.is_none());
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases/lease-task-conflict.json")
+    assert!(!daemon_root(temp_dir.path())
+        .join("leases")
+        .join("lease-task-conflict.json")
         .exists());
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases/writer-demo-conflict.lock")
+    assert!(!daemon_root(temp_dir.path())
+        .join("leases")
+        .join("writer-demo-conflict.lock")
         .exists());
     assert!(!temp_dir.path().join("worktrees/task-conflict").exists());
 }
@@ -1385,16 +1421,16 @@ fn daemon_start_single_iteration_processes_pending_task() {
     // Run daemon in-process (test-only) instead of spawning the CLI binary.
     run_daemon_iteration_in_process(temp_dir.path());
 
-    let task_path = temp_dir
-        .path()
-        .join(".ralph-burning/daemon/tasks/task-run.json");
+    let task_path = daemon_root(temp_dir.path())
+        .join("tasks")
+        .join("task-run.json");
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Completed, task.status);
     assert!(task.lease_id.is_none());
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases/lease-task-run.json")
+    assert!(!daemon_root(temp_dir.path())
+        .join("leases")
+        .join("lease-task-run.json")
         .exists());
 }
 
@@ -1432,8 +1468,7 @@ fn config_set_updates_valid_keys_and_rejects_invalid_values() {
     assert!(String::from_utf8_lossy(&valid.stdout).contains("Updated default_flow = quick_dev"));
 
     let workspace_config =
-        fs::read_to_string(temp_dir.path().join(".ralph-burning/workspace.toml"))
-            .expect("read workspace config");
+        fs::read_to_string(workspace_config_path(temp_dir.path())).expect("read workspace config");
     assert!(workspace_config.contains("default_flow = \"quick_dev\""));
 
     let invalid_value = Command::new(binary())
@@ -1477,12 +1512,9 @@ fn config_get_and_set_support_project_level_policy() {
     );
     assert!(String::from_utf8_lossy(&set_output.stdout).contains("project config.toml"));
 
-    let project_config = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/alpha/config.toml"),
-    )
-    .expect("read project config");
+    let project_config =
+        fs::read_to_string(project_root(temp_dir.path(), "alpha").join("config.toml"))
+            .expect("read project config");
     assert!(project_config.contains("reviewer_backend = \"codex\""));
 
     let get_output = Command::new(binary())
@@ -1540,8 +1572,7 @@ fn config_edit_prefers_editor_over_visual() {
     assert!(output.status.success());
 
     let workspace_config =
-        fs::read_to_string(temp_dir.path().join(".ralph-burning/workspace.toml"))
-            .expect("read workspace config");
+        fs::read_to_string(workspace_config_path(temp_dir.path())).expect("read workspace config");
     assert!(workspace_config.contains("default_backend = \"codex\""));
     assert!(!workspace_config.contains("default_backend = \"openrouter\""));
 }
@@ -1583,8 +1614,7 @@ fn project_select_sets_active_project_and_rejects_missing_projects() {
     assert!(String::from_utf8_lossy(&existing.stdout).contains("Selected project alpha"));
     assert_eq!(
         "alpha",
-        fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
-            .expect("read active project")
+        fs::read_to_string(active_project_path(temp_dir.path())).expect("read active project")
     );
 
     let missing = Command::new(binary())
@@ -1608,10 +1638,7 @@ fn project_select_rejects_path_like_ids_before_writing_active_project() {
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("invalid identifier"));
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/active-project")
-        .exists());
+    assert!(!active_project_path(temp_dir.path()).exists());
 }
 
 // ── Project Create ──
@@ -1654,7 +1681,7 @@ fn project_create_succeeds_and_writes_all_canonical_files() {
     assert!(stdout.contains("Created project 'alpha'"));
     assert!(stdout.contains("standard"));
 
-    let project_root = temp_dir.path().join(".ralph-burning/projects/alpha");
+    let project_root = project_root(temp_dir.path(), "alpha");
     assert!(project_root.join("project.toml").is_file());
     assert!(project_root.join("prompt.md").is_file());
     assert!(project_root.join("run.json").is_file());
@@ -1692,12 +1719,8 @@ fn project_create_initializes_journal_with_project_created_event() {
         .expect("run project create");
     assert!(output.status.success());
 
-    let journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/beta/journal.ndjson"),
-    )
-    .expect("read journal");
+    let journal = fs::read_to_string(project_root(temp_dir.path(), "beta").join("journal.ndjson"))
+        .expect("read journal");
 
     assert!(journal.contains("\"project_created\""));
     assert!(journal.contains("\"sequence\":1"));
@@ -1725,12 +1748,8 @@ fn project_create_run_json_shows_not_started() {
         .output()
         .expect("run project create");
 
-    let run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/gamma/run.json"),
-    )
-    .expect("read run.json");
+    let run_json = fs::read_to_string(project_root(temp_dir.path(), "gamma").join("run.json"))
+        .expect("read run.json");
 
     assert!(run_json.contains("\"not_started\""));
     assert!(run_json.contains("\"active_run\": null"));
@@ -1761,12 +1780,9 @@ fn project_create_records_canonical_prompt_reference_not_source_path() {
         .expect("run project create");
     assert!(output.status.success());
 
-    let project_toml = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/reftest/project.toml"),
-    )
-    .expect("read project.toml");
+    let project_toml =
+        fs::read_to_string(project_root(temp_dir.path(), "reftest").join("project.toml"))
+            .expect("read project.toml");
 
     // prompt_reference should be the canonical copied path, not the source path
     assert!(
@@ -1850,9 +1866,7 @@ exit 1
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let project_root = temp_dir
-        .path()
-        .join(".ralph-burning/projects/task-ms-alpha-bead-2");
+    let project_root = project_root(temp_dir.path(), "task-ms-alpha-bead-2");
     assert!(project_root.join("project.toml").is_file());
     let project_toml = fs::read_to_string(project_root.join("project.toml")).expect("read project");
     assert!(project_toml.contains("flow = \"docs_change\""));
@@ -1870,8 +1884,8 @@ exit 1
     assert!(!prompt.contains("- ms-alpha.epic-1 (Task Substrate)"));
     assert!(!prompt.contains("Parent epic: `ms-alpha.bead-3`"));
 
-    let active = fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
-        .expect("read active project");
+    let active =
+        fs::read_to_string(active_project_path(temp_dir.path())).expect("read active project");
     assert_eq!(active.trim(), "task-ms-alpha-bead-2");
 }
 
@@ -1879,9 +1893,7 @@ exit 1
 fn project_create_from_bead_rejects_stale_milestone_plan_metadata() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
-    let status_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    let status_path = milestone_root(temp_dir.path(), "ms-alpha").join("status.json");
     let stale_status = fs::read_to_string(&status_path)
         .expect("read status")
         .replace("\"plan_hash\": \"", "\"plan_hash\": \"stale-");
@@ -1930,10 +1942,7 @@ exit 1
     assert!(!output.status.success(), "command unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("plan metadata is stale"));
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/projects/task-ms-alpha-bead-2")
-        .exists());
+    assert!(!project_root(temp_dir.path(), "task-ms-alpha-bead-2").exists());
 }
 
 #[test]
@@ -1941,9 +1950,7 @@ fn project_create_from_bead_accepts_legacy_milestone_status_without_plan_metadat
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
-    let status_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    let status_path = milestone_root(temp_dir.path(), "ms-alpha").join("status.json");
     fs::write(
         &status_path,
         r#"{
@@ -2011,12 +2018,323 @@ exit 1
     );
 
     let project_toml = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/legacy-status-project/project.toml"),
+        project_root(temp_dir.path(), "legacy-status-project").join("project.toml"),
     )
     .expect("read project.toml");
     assert!(project_toml.contains(&format!("plan_hash = \"{plan_hash}\"")));
+    assert!(!project_toml.contains("plan_version = "));
+}
+
+#[test]
+fn project_create_from_bead_preserves_metadata_for_legacy_plan_json_without_explicit_id() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_path = milestone_root(temp_dir.path(), "ms-alpha").join("plan.json");
+    let mut legacy_plan: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&plan_path).expect("read plan"))
+            .expect("parse plan");
+    for workstream in legacy_plan["workstreams"]
+        .as_array_mut()
+        .expect("workstreams array")
+    {
+        for bead in workstream["beads"].as_array_mut().expect("beads array") {
+            bead.as_object_mut()
+                .expect("bead object")
+                .remove("explicit_id");
+        }
+    }
+    fs::write(
+        &plan_path,
+        serde_json::to_string_pretty(&legacy_plan).expect("serialize legacy plan"),
+    )
+    .expect("write legacy plan");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    fs::write(
+        milestone_root(temp_dir.path(), "ms-alpha").join("status.json"),
+        format!(
+            r#"{{
+  "status": "ready",
+  "plan_hash": "{plan_hash}",
+  "plan_version": 2,
+  "progress": {{
+    "total_beads": 2,
+    "completed_beads": 0,
+    "in_progress_beads": 0,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 0
+  }},
+  "updated_at": "2026-04-01T10:05:00Z"
+}}"#
+        ),
+    )
+    .expect("rewrite status for legacy plan hash");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "legacy-plan-json-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        project_root(temp_dir.path(), "legacy-plan-json-project").join("project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"docs_change\""));
+    assert!(project_toml.contains(&format!("plan_hash = \"{plan_hash}\"")));
+    assert!(project_toml.contains("plan_version = 2"));
+}
+
+#[test]
+fn project_create_from_bead_treats_legacy_qualified_canonical_slot_ids_as_unconfirmed_when_title_drifted(
+) {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_path = milestone_root(temp_dir.path(), "ms-alpha").join("plan.json");
+    let mut legacy_plan: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&plan_path).expect("read plan"))
+            .expect("parse plan");
+    for workstream in legacy_plan["workstreams"]
+        .as_array_mut()
+        .expect("workstreams array")
+    {
+        for bead in workstream["beads"].as_array_mut().expect("beads array") {
+            bead.as_object_mut()
+                .expect("bead object")
+                .remove("explicit_id");
+        }
+    }
+    fs::write(
+        &plan_path,
+        serde_json::to_string_pretty(&legacy_plan).expect("serialize legacy plan"),
+    )
+    .expect("write legacy plan");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    fs::write(
+        milestone_root(temp_dir.path(), "ms-alpha").join("status.json"),
+        format!(
+            r#"{{
+  "status": "ready",
+  "plan_hash": "{plan_hash}",
+  "plan_version": 2,
+  "progress": {{
+    "total_beads": 2,
+    "completed_beads": 0,
+    "in_progress_beads": 0,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 0
+  }},
+  "updated_at": "2026-04-01T10:05:00Z"
+}}"#
+        ),
+    )
+    .expect("rewrite status for legacy plan hash");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Renamed live bead",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "legacy-qualified-slot-id-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        project_root(temp_dir.path(), "legacy-qualified-slot-id-project").join("project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"quick_dev\""));
+    assert!(!project_toml.contains(&format!("plan_hash = \"{plan_hash}\"")));
+    assert!(!project_toml.contains("plan_version = "));
+}
+
+#[test]
+fn project_create_from_bead_treats_legacy_short_canonical_slot_ids_as_unconfirmed_when_title_drifted(
+) {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_path = milestone_root(temp_dir.path(), "ms-alpha").join("plan.json");
+    let mut legacy_plan: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&plan_path).expect("read plan"))
+            .expect("parse plan");
+    for workstream in legacy_plan["workstreams"]
+        .as_array_mut()
+        .expect("workstreams array")
+    {
+        for bead in workstream["beads"].as_array_mut().expect("beads array") {
+            let bead = bead.as_object_mut().expect("bead object");
+            bead.remove("explicit_id");
+            if bead.get("bead_id").and_then(serde_json::Value::as_str) == Some("ms-alpha.bead-2") {
+                bead.insert(
+                    "bead_id".to_owned(),
+                    serde_json::Value::String("bead-2".to_owned()),
+                );
+            }
+        }
+    }
+    fs::write(
+        &plan_path,
+        serde_json::to_string_pretty(&legacy_plan).expect("serialize legacy plan"),
+    )
+    .expect("write legacy plan");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    fs::write(
+        milestone_root(temp_dir.path(), "ms-alpha").join("status.json"),
+        format!(
+            r#"{{
+  "status": "ready",
+  "plan_hash": "{plan_hash}",
+  "plan_version": 2,
+  "progress": {{
+    "total_beads": 2,
+    "completed_beads": 0,
+    "in_progress_beads": 0,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 0
+  }},
+  "updated_at": "2026-04-01T10:05:00Z"
+}}"#
+        ),
+    )
+    .expect("rewrite status for legacy plan hash");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Renamed live bead",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "legacy-short-bead-id-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        project_root(temp_dir.path(), "legacy-short-bead-id-project").join("project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"quick_dev\""));
+    assert!(!project_toml.contains(&format!("plan_hash = \"{plan_hash}\"")));
     assert!(!project_toml.contains("plan_version = "));
 }
 
@@ -2025,9 +2343,7 @@ fn project_create_from_bead_rejects_status_hash_without_plan_version() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
-    let status_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    let status_path = milestone_root(temp_dir.path(), "ms-alpha").join("status.json");
     fs::write(
         &status_path,
         format!(
@@ -2094,19 +2410,14 @@ exit 1
     assert!(!output.status.success(), "command unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("plan_hash but plan_version is 0"));
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/projects/corrupt-status-project")
-        .exists());
+    assert!(!project_root(temp_dir.path(), "corrupt-status-project").exists());
 }
 
 #[test]
 fn project_create_from_bead_rejects_completed_milestone() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
-    let status_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    let status_path = milestone_root(temp_dir.path(), "ms-alpha").join("status.json");
     let completed_status = fs::read_to_string(&status_path)
         .expect("read status")
         .replace("\"status\": \"ready\"", "\"status\": \"completed\"");
@@ -2157,10 +2468,7 @@ exit 1
     assert!(!output.status.success(), "command unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("milestone 'ms-alpha' is already completed"));
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/projects/completed-milestone-project")
-        .exists());
+    assert!(!project_root(temp_dir.path(), "completed-milestone-project").exists());
 }
 
 #[test]
@@ -2213,19 +2521,14 @@ exit 1
     assert!(!output.status.success(), "command unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("bead is already closed"));
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/projects/closed-bead-project")
-        .exists());
+    assert!(!project_root(temp_dir.path(), "closed-bead-project").exists());
 }
 
 #[test]
 fn project_create_from_bead_allows_unconfirmed_fallback_when_status_metadata_is_stale() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
-    let status_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    let status_path = milestone_root(temp_dir.path(), "ms-alpha").join("status.json");
     let stale_status = fs::read_to_string(&status_path)
         .expect("read status")
         .replace("\"plan_hash\": \"", "\"plan_hash\": \"stale-");
@@ -2280,9 +2583,7 @@ exit 1
     );
 
     let project_toml = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/stale-status-unconfirmed-fallback/project.toml"),
+        project_root(temp_dir.path(), "stale-status-unconfirmed-fallback").join("project.toml"),
     )
     .expect("read project.toml");
     assert!(project_toml.contains("flow = \"quick_dev\""));
@@ -2294,9 +2595,7 @@ exit 1
 fn project_create_from_bead_rejects_plan_json_hash_drift_from_unknown_fields() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
-    let plan_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/plan.json");
+    let plan_path = milestone_root(temp_dir.path(), "ms-alpha").join("plan.json");
     let mut plan_value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&plan_path).expect("read plan"))
             .expect("parse plan");
@@ -2354,10 +2653,7 @@ exit 1
     assert!(!output.status.success(), "command unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("plan metadata is stale"));
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/projects/task-ms-alpha-bead-2")
-        .exists());
+    assert!(!project_root(temp_dir.path(), "task-ms-alpha-bead-2").exists());
 }
 
 #[test]
@@ -2408,10 +2704,7 @@ exit 1
     assert!(!output.status.success(), "command unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("expected bead id to belong to milestone 'ms-alpha'"));
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/projects/task-other-ms-bead-2")
-        .exists());
+    assert!(!project_root(temp_dir.path(), "task-other-ms-bead-2").exists());
 }
 
 #[test]
@@ -2515,12 +2808,9 @@ exit 1
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let project_toml = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/renamed-live-bead/project.toml"),
-    )
-    .expect("read project.toml");
+    let project_toml =
+        fs::read_to_string(project_root(temp_dir.path(), "renamed-live-bead").join("project.toml"))
+            .expect("read project.toml");
     assert!(project_toml.contains("flow = \"standard\""));
     assert!(!project_toml.contains("plan_version = "));
     assert!(!project_toml.contains("plan_hash = "));
@@ -2580,9 +2870,7 @@ exit 1
     );
 
     let project_toml = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/renamed-live-bead-default-flow/project.toml"),
+        project_root(temp_dir.path(), "renamed-live-bead-default-flow").join("project.toml"),
     )
     .expect("read project.toml");
     assert!(project_toml.contains("flow = \"quick_dev\""));
@@ -2594,21 +2882,19 @@ exit 1
 fn project_create_from_bead_does_not_confirm_title_fallback_against_mismatched_explicit_bead_id() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
-    let milestone_plan = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/plan.json");
+    let milestone_plan = milestone_root(temp_dir.path(), "ms-alpha").join("plan.json");
     let mut bundle: MilestoneBundle =
         serde_json::from_str(&fs::read_to_string(&milestone_plan).expect("read plan"))
             .expect("parse plan");
-    bundle.workstreams[0].beads[0].bead_id = Some("ms-alpha.bead-200".to_owned());
+    bundle.workstreams[0].beads[1].bead_id = Some("ms-alpha.bead-200".to_owned());
+    bundle.workstreams[0].beads[1].explicit_id = Some(true);
+    bundle.acceptance_map[0].covered_by = vec!["ms-alpha.bead-200".to_owned()];
     fs::write(
         &milestone_plan,
         serde_json::to_string_pretty(&bundle).expect("serialize plan"),
     )
     .expect("write plan");
-    let status_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    let status_path = milestone_root(temp_dir.path(), "ms-alpha").join("status.json");
     let updated_plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
     fs::write(
         &status_path,
@@ -2681,9 +2967,7 @@ exit 1
     );
 
     let project_toml = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/mismatched-explicit-bead-id/project.toml"),
+        project_root(temp_dir.path(), "mismatched-explicit-bead-id").join("project.toml"),
     )
     .expect("read project.toml");
     assert!(project_toml.contains("flow = \"quick_dev\""));
@@ -2812,10 +3096,7 @@ fn project_create_does_not_set_active_project() {
         .expect("run project create");
 
     // active-project should not exist (create does not set it)
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/active-project")
-        .exists());
+    assert!(!active_project_path(temp_dir.path()).exists());
 }
 
 #[cfg(feature = "test-stub")]
@@ -2852,27 +3133,20 @@ fn project_create_from_requirements_creates_project_and_selects_it() {
     assert!(stdout.contains("Project: stub-project (active)"));
     assert!(stdout.contains("Flow: standard"));
     assert_eq!(
-        fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
+        fs::read_to_string(active_project_path(temp_dir.path()))
             .expect("read active-project")
             .trim(),
         "stub-project"
     );
     assert_eq!(
-        fs::read_to_string(
-            temp_dir
-                .path()
-                .join(".ralph-burning/projects/stub-project/prompt.md")
-        )
-        .expect("read project prompt"),
+        fs::read_to_string(project_root(temp_dir.path(), "stub-project").join("prompt.md"))
+            .expect("read project prompt"),
         "Stub prompt body for the project."
     );
 
-    let journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/stub-project/journal.ndjson"),
-    )
-    .expect("read project journal");
+    let journal =
+        fs::read_to_string(project_root(temp_dir.path(), "stub-project").join("journal.ndjson"))
+            .expect("read project journal");
     assert!(journal.contains("\"source\":\"requirements\""));
     assert!(journal.contains(&format!("\"requirements_run_id\":\"{run_id}\"")));
 }
@@ -2898,7 +3172,7 @@ fn project_create_from_requirements_materializes_milestone_bundle_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Created milestone 'ms-planned'"));
 
-    let milestone_root = temp_dir.path().join(".ralph-burning/milestones/ms-planned");
+    let milestone_root = milestone_root(temp_dir.path(), "ms-planned");
     assert!(milestone_root.join("milestone.toml").is_file());
     assert!(milestone_root.join("status.json").is_file());
     assert!(milestone_root.join("plan.json").is_file());
@@ -2923,20 +3197,14 @@ fn project_create_from_requirements_fails_for_missing_run() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("requirements run not found"));
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/projects/missing-run")
-        .exists());
+    assert!(!project_root(temp_dir.path(), "missing-run").exists());
 }
 
 #[test]
 fn project_create_from_requirements_fails_for_incomplete_run() {
     let temp_dir = initialize_workspace_fixture();
     let run_id = "req-incomplete";
-    let run_root = temp_dir
-        .path()
-        .join(".ralph-burning/requirements")
-        .join(run_id);
+    let run_root = requirements_root(temp_dir.path()).join(run_id);
     fs::create_dir_all(&run_root).expect("create requirements run dir");
     fs::write(
         run_root.join("run.json"),
@@ -2978,13 +3246,13 @@ fn project_create_from_requirements_fails_for_incomplete_run() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("expected 'completed'"));
     assert_eq!(
-        fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
+        fs::read_to_string(active_project_path(temp_dir.path()))
             .expect("read active-project")
             .trim(),
         "existing"
     );
     assert_eq!(
-        fs::read_dir(temp_dir.path().join(".ralph-burning/projects"))
+        fs::read_dir(live_workspace_root(temp_dir.path()).join("projects"))
             .expect("read projects dir")
             .count(),
         1
@@ -3016,17 +3284,14 @@ fn project_bootstrap_from_idea_creates_project_and_selects_it() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
+        fs::read_to_string(active_project_path(temp_dir.path()))
             .expect("read active-project")
             .trim(),
         "stub-project"
     );
-    let project_toml = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/stub-project/project.toml"),
-    )
-    .expect("read project.toml");
+    let project_toml =
+        fs::read_to_string(project_root(temp_dir.path(), "stub-project").join("project.toml"))
+            .expect("read project.toml");
     assert!(project_toml.contains("flow = \"standard\""));
     assert_eq!(requirements_run_ids(temp_dir.path()).len(), 1);
 }
@@ -3058,20 +3323,14 @@ fn project_bootstrap_from_file_quick_dev_start_runs_created_project() {
         "bootstrap --from-file --start should succeed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let project_toml = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/stub-project/project.toml"),
-    )
-    .expect("read project.toml");
+    let project_toml =
+        fs::read_to_string(project_root(temp_dir.path(), "stub-project").join("project.toml"))
+            .expect("read project.toml");
     assert!(project_toml.contains("flow = \"quick_dev\""));
 
-    let run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/stub-project/run.json"),
-    )
-    .expect("read run.json");
+    let run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "stub-project").join("run.json"))
+            .expect("read run.json");
     assert!(
         !run_json.contains("\"status\":\"not_started\""),
         "bootstrap --start should advance the run, got: {run_json}"
@@ -3079,9 +3338,7 @@ fn project_bootstrap_from_file_quick_dev_start_runs_created_project() {
 
     let run_id = only_requirements_run_id(temp_dir.path());
     let requirements_run = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/requirements")
+        requirements_root(temp_dir.path())
             .join(run_id)
             .join("run.json"),
     )
@@ -3110,7 +3367,7 @@ fn project_bootstrap_fails_for_invalid_flow_before_creating_requirements_run() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unknown flow preset"));
 
-    let requirements_dir = temp_dir.path().join(".ralph-burning/requirements");
+    let requirements_dir = requirements_root(temp_dir.path());
     assert_eq!(
         fs::read_dir(&requirements_dir)
             .expect("read requirements dir")
@@ -3159,12 +3416,9 @@ fn project_bootstrap_from_seed_creates_project_directly() {
         "bootstrap --from-seed should succeed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let project_toml = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/seed-test-project/project.toml"),
-    )
-    .expect("read project.toml");
+    let project_toml =
+        fs::read_to_string(project_root(temp_dir.path(), "seed-test-project").join("project.toml"))
+            .expect("read project.toml");
     assert!(project_toml.contains("flow = \"standard\""));
     assert!(project_toml.contains("seed-test-project"));
 }
@@ -3213,7 +3467,7 @@ fn project_bootstrap_from_seed_rejects_invalid_seed_json() {
         "should report invalid seed JSON, got: {stderr}"
     );
     // No project directory should be created
-    let projects_dir = temp_dir.path().join(".ralph-burning/projects");
+    let projects_dir = live_workspace_root(temp_dir.path()).join("projects");
     let project_count = fs::read_dir(&projects_dir)
         .map(|rd| rd.count())
         .unwrap_or(0);
@@ -3413,10 +3667,7 @@ fn project_delete_removes_project_directory() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Deleted project 'deleteme'"));
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/projects/deleteme")
-        .exists());
+    assert!(!project_root(temp_dir.path(), "deleteme").exists());
 }
 
 #[test]
@@ -3447,10 +3698,7 @@ fn project_delete_clears_active_project_if_selected() {
         .output()
         .expect("select project");
 
-    assert!(temp_dir
-        .path()
-        .join(".ralph-burning/active-project")
-        .exists());
+    assert!(active_project_path(temp_dir.path()).exists());
 
     let output = Command::new(binary())
         .args(["project", "delete", "active-del"])
@@ -3459,10 +3707,7 @@ fn project_delete_clears_active_project_if_selected() {
         .expect("run project delete");
 
     assert!(output.status.success());
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/active-project")
-        .exists());
+    assert!(!active_project_path(temp_dir.path()).exists());
 }
 
 #[test]
@@ -3532,9 +3777,7 @@ fn run_status_does_not_rewrite_legacy_run_snapshot() {
         .output()
         .expect("select project");
 
-    let run_json_path = temp_dir
-        .path()
-        .join(".ralph-burning/projects/alpha/run.json");
+    let run_json_path = project_root(temp_dir.path(), "alpha").join("run.json");
     let legacy_snapshot = serde_json::json!({
         "active_run": null,
         "status": "not_started",
@@ -3610,7 +3853,7 @@ fn run_rollback_soft_updates_snapshot_and_hides_rolled_back_history() {
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
 
-    let project_root = temp_dir.path().join(".ralph-burning/projects/alpha");
+    let project_root = project_root(temp_dir.path(), "alpha");
     fs::write(
         project_root.join("run.json"),
         r#"{
@@ -3720,7 +3963,7 @@ fn run_rollback_hard_failure_keeps_logical_rollback_durable() {
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
 
-    let project_root = temp_dir.path().join(".ralph-burning/projects/alpha");
+    let project_root = project_root(temp_dir.path(), "alpha");
     fs::write(
         project_root.join("run.json"),
         r#"{
@@ -3959,9 +4202,7 @@ fn run_tail_with_logs_shows_only_newest_log_file() {
         .expect("select project");
 
     // Write two runtime log files: old and new
-    let logs_dir = temp_dir
-        .path()
-        .join(".ralph-burning/projects/tail-multi/runtime/logs");
+    let logs_dir = project_root(temp_dir.path(), "tail-multi").join("runtime/logs");
     fs::write(
         logs_dir.join("001.ndjson"),
         r#"{"timestamp":"2026-03-11T18:00:00Z","level":"info","source":"agent","message":"old log entry"}"#.to_owned() + "\n",
@@ -4479,12 +4720,8 @@ fn run_status_fails_fast_when_run_json_is_missing() {
         .expect("select project");
 
     // Delete run.json to simulate corruption
-    fs::remove_file(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/broken/run.json"),
-    )
-    .expect("remove run.json");
+    fs::remove_file(project_root(temp_dir.path(), "broken").join("run.json"))
+        .expect("remove run.json");
 
     let output = Command::new(binary())
         .args(["run", "status"])
@@ -4527,12 +4764,8 @@ fn run_history_fails_fast_when_journal_is_missing() {
         .expect("select project");
 
     // Delete journal.ndjson to simulate corruption
-    fs::remove_file(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/nojrnl/journal.ndjson"),
-    )
-    .expect("remove journal");
+    fs::remove_file(project_root(temp_dir.path(), "nojrnl").join("journal.ndjson"))
+        .expect("remove journal");
 
     let output = Command::new(binary())
         .args(["run", "history"])
@@ -4576,9 +4809,7 @@ fn run_status_fails_fast_when_run_json_is_corrupt() {
 
     // Write corrupt JSON to run.json
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/corrupt/run.json"),
+        project_root(temp_dir.path(), "corrupt").join("run.json"),
         "{invalid json}",
     )
     .expect("corrupt run.json");
@@ -4619,12 +4850,8 @@ fn project_show_fails_fast_when_project_toml_is_missing() {
         .expect("create project");
 
     // Delete project.toml to simulate corruption
-    fs::remove_file(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/corrupt-proj/project.toml"),
-    )
-    .expect("remove project.toml");
+    fs::remove_file(project_root(temp_dir.path(), "corrupt-proj").join("project.toml"))
+        .expect("remove project.toml");
 
     let output = Command::new(binary())
         .args(["project", "show", "corrupt-proj"])
@@ -4661,12 +4888,8 @@ fn project_list_fails_fast_when_project_toml_is_missing() {
         .expect("create project");
 
     // Delete project.toml to simulate corruption
-    fs::remove_file(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/good-proj/project.toml"),
-    )
-    .expect("remove project.toml");
+    fs::remove_file(project_root(temp_dir.path(), "good-proj").join("project.toml"))
+        .expect("remove project.toml");
 
     let output = Command::new(binary())
         .args(["project", "list"])
@@ -4685,7 +4908,7 @@ fn project_delete_fails_fast_when_project_toml_is_missing() {
     let temp_dir = initialize_workspace_fixture();
 
     // Create a bare directory without project.toml (simulates corruption)
-    let corrupt_dir = temp_dir.path().join(".ralph-burning/projects/bare-proj");
+    let corrupt_dir = project_root(temp_dir.path(), "bare-proj");
     fs::create_dir_all(&corrupt_dir).expect("create bare project dir");
 
     let output = Command::new(binary())
@@ -4741,9 +4964,7 @@ fn run_status_reports_completed_for_terminal_run_snapshot() {
   "status_summary": "completed after 3 rounds"
 }"#;
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/terminal/run.json"),
+        project_root(temp_dir.path(), "terminal").join("run.json"),
         completed_snapshot,
     )
     .expect("write completed snapshot");
@@ -4799,9 +5020,7 @@ fn run_status_fails_for_semantically_inconsistent_snapshot() {
   "status_summary": "running"
 }"#;
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/inconsist/run.json"),
+        project_root(temp_dir.path(), "inconsist").join("run.json"),
         bad_snapshot,
     )
     .expect("write inconsistent snapshot");
@@ -4860,9 +5079,7 @@ fn project_delete_fails_for_semantically_inconsistent_active_run() {
   "status_summary": "paused"
 }"#;
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/bad-state/run.json"),
+        project_root(temp_dir.path(), "bad-state").join("run.json"),
         bad_snapshot,
     )
     .expect("write inconsistent snapshot");
@@ -4911,9 +5128,7 @@ fn run_status_fails_fast_when_active_project_toml_is_corrupt() {
 
     // Corrupt project.toml content (file exists but is malformed)
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/corrupt-active/project.toml"),
+        project_root(temp_dir.path(), "corrupt-active").join("project.toml"),
         "this is {{ not valid toml",
     )
     .expect("corrupt project.toml");
@@ -4959,9 +5174,7 @@ fn run_history_fails_fast_when_active_project_toml_is_corrupt() {
 
     // Corrupt project.toml content
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/corrupt-hist/project.toml"),
+        project_root(temp_dir.path(), "corrupt-hist").join("project.toml"),
         "not valid toml {{{",
     )
     .expect("corrupt project.toml");
@@ -5007,9 +5220,7 @@ fn run_tail_fails_fast_when_active_project_toml_is_corrupt() {
 
     // Corrupt project.toml content
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/corrupt-tail/project.toml"),
+        project_root(temp_dir.path(), "corrupt-tail").join("project.toml"),
         "{invalid toml}",
     )
     .expect("corrupt project.toml");
@@ -5055,9 +5266,7 @@ fn project_show_no_id_fails_fast_when_active_project_toml_is_corrupt() {
 
     // Corrupt project.toml content
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/corrupt-show/project.toml"),
+        project_root(temp_dir.path(), "corrupt-show").join("project.toml"),
         "garbled content }{{}",
     )
     .expect("corrupt project.toml");
@@ -5102,12 +5311,8 @@ fn run_status_fails_fast_when_active_project_toml_is_missing() {
         .expect("select project");
 
     // Delete project.toml
-    fs::remove_file(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/missing-toml/project.toml"),
-    )
-    .expect("remove project.toml");
+    fs::remove_file(project_root(temp_dir.path(), "missing-toml").join("project.toml"))
+        .expect("remove project.toml");
 
     let output = Command::new(binary())
         .args(["run", "status"])
@@ -5145,12 +5350,8 @@ fn project_create_run_json_contains_all_canonical_fields() {
         .output()
         .expect("create project");
 
-    let run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/schema/run.json"),
-    )
-    .expect("read run.json");
+    let run_json = fs::read_to_string(project_root(temp_dir.path(), "schema").join("run.json"))
+        .expect("read run.json");
 
     assert!(run_json.contains("\"cycle_history\""));
     assert!(run_json.contains("\"completion_rounds\""));
@@ -5169,7 +5370,7 @@ fn project_select_rejects_syntactically_valid_but_schema_invalid_project_toml() 
 
     // Create a project directory with a syntactically valid TOML that is missing
     // required canonical fields (only has 'id', no name/flow/prompt_reference/etc.)
-    let project_root = temp_dir.path().join(".ralph-burning/projects/partial");
+    let project_root = project_root(temp_dir.path(), "partial");
     fs::create_dir_all(&project_root).expect("create project directory");
     fs::write(project_root.join("project.toml"), "id = \"partial\"\n")
         .expect("write incomplete project.toml");
@@ -5224,8 +5425,8 @@ fn project_delete_clears_active_pointer_transactionally() {
         .expect("select project");
 
     // Verify it's the active project
-    let active = fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
-        .expect("read active-project");
+    let active =
+        fs::read_to_string(active_project_path(temp_dir.path())).expect("read active-project");
     assert_eq!(active, "txn-del");
 
     // Delete the project
@@ -5238,19 +5439,13 @@ fn project_delete_clears_active_pointer_transactionally() {
 
     // Active-project pointer should be cleared
     assert!(
-        !temp_dir
-            .path()
-            .join(".ralph-burning/active-project")
-            .exists(),
+        !active_project_path(temp_dir.path()).exists(),
         "active-project pointer should be cleared after delete"
     );
 
     // Project directory should be gone
     assert!(
-        !temp_dir
-            .path()
-            .join(".ralph-burning/projects/txn-del")
-            .exists(),
+        !project_root(temp_dir.path(), "txn-del").exists(),
         "project directory should be removed"
     );
 }
@@ -5262,9 +5457,7 @@ fn empty_journal_fails_fast_on_project_show() {
 
     // Truncate journal to empty
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/alpha/journal.ndjson"),
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
         "",
     )
     .expect("truncate journal");
@@ -5292,9 +5485,7 @@ fn project_show_does_not_rewrite_legacy_run_snapshot() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
 
-    let run_json_path = temp_dir
-        .path()
-        .join(".ralph-burning/projects/alpha/run.json");
+    let run_json_path = project_root(temp_dir.path(), "alpha").join("run.json");
     let legacy_snapshot = serde_json::json!({
         "active_run": null,
         "status": "not_started",
@@ -5338,9 +5529,7 @@ fn empty_journal_fails_fast_on_run_history() {
         .expect("select project");
 
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/alpha/journal.ndjson"),
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
         "",
     )
     .expect("truncate journal");
@@ -5371,9 +5560,7 @@ fn empty_journal_fails_fast_on_run_tail() {
         .expect("select project");
 
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/alpha/journal.ndjson"),
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
         "",
     )
     .expect("truncate journal");
@@ -5422,7 +5609,7 @@ fn delete_with_unremovable_active_pointer_restores_project() {
         .expect("select project");
 
     // Replace active-project file with a directory to make remove_file fail
-    let ap_path = temp_dir.path().join(".ralph-burning/active-project");
+    let ap_path = active_project_path(temp_dir.path());
     fs::remove_file(&ap_path).expect("remove active-project file");
     fs::create_dir_all(ap_path.join("blocker")).expect("create blocking dir");
 
@@ -5440,9 +5627,8 @@ fn delete_with_unremovable_active_pointer_restores_project() {
 
     // Project must still be addressable at its canonical path
     assert!(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/restore-me/project.toml")
+        project_root(temp_dir.path(), "restore-me")
+            .join("project.toml")
             .exists(),
         "project should be restored after failed pointer clear"
     );
@@ -5531,23 +5717,17 @@ fn run_start_completes_docs_change_flow_end_to_end() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let payload_files: Vec<_> = fs::read_dir(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/docs-run/history/payloads"),
-    )
-    .expect("read payloads dir")
-    .filter_map(|e| e.ok())
-    .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-    .collect();
+    let payload_files: Vec<_> =
+        fs::read_dir(project_root(temp_dir.path(), "docs-run").join("history/payloads"))
+            .expect("read payloads dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+            .collect();
     assert_eq!(payload_files.len(), 5);
 
-    let journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/docs-run/journal.ndjson"),
-    )
-    .expect("read journal");
+    let journal =
+        fs::read_to_string(project_root(temp_dir.path(), "docs-run").join("journal.ndjson"))
+            .expect("read journal");
     assert!(journal.contains("\"docs_plan\""));
     assert!(journal.contains("\"docs_update\""));
     assert!(journal.contains("\"docs_validation\""));
@@ -5572,23 +5752,17 @@ fn run_start_completes_ci_improvement_flow_end_to_end() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let payload_files: Vec<_> = fs::read_dir(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/ci-run/history/payloads"),
-    )
-    .expect("read payloads dir")
-    .filter_map(|e| e.ok())
-    .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-    .collect();
+    let payload_files: Vec<_> =
+        fs::read_dir(project_root(temp_dir.path(), "ci-run").join("history/payloads"))
+            .expect("read payloads dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+            .collect();
     assert_eq!(payload_files.len(), 5);
 
-    let journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/ci-run/journal.ndjson"),
-    )
-    .expect("read journal");
+    let journal =
+        fs::read_to_string(project_root(temp_dir.path(), "ci-run").join("journal.ndjson"))
+            .expect("read journal");
     assert!(journal.contains("\"ci_plan\""));
     assert!(journal.contains("\"ci_update\""));
     assert!(journal.contains("\"ci_validation\""));
@@ -5613,12 +5787,8 @@ fn run_start_produces_completed_snapshot() {
     );
 
     // Verify run.json shows completed
-    let run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/run-snap/run.json"),
-    )
-    .expect("read run.json");
+    let run_json = fs::read_to_string(project_root(temp_dir.path(), "run-snap").join("run.json"))
+        .expect("read run.json");
     assert!(
         run_json.contains("\"completed\""),
         "run.json should contain completed status, got: {run_json}"
@@ -5643,12 +5813,9 @@ fn run_start_persists_journal_events() {
         .expect("run start");
     assert!(start.status.success());
 
-    let journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/run-journal/journal.ndjson"),
-    )
-    .expect("read journal");
+    let journal =
+        fs::read_to_string(project_root(temp_dir.path(), "run-journal").join("journal.ndjson"))
+            .expect("read journal");
 
     // Should have project_created + run_started + stage events + run_completed
     assert!(
@@ -5738,23 +5905,17 @@ exit 1
         String::from_utf8_lossy(&start.stderr)
     );
 
-    let task_runs = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson"),
-    )
-    .expect("read milestone task-runs");
+    let task_runs =
+        fs::read_to_string(milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson"))
+            .expect("read milestone task-runs");
     assert!(task_runs.contains("\"bead_id\":\"ms-alpha.bead-2\""));
     assert!(task_runs.contains("\"project_id\":\"bead-run\""));
     assert!(task_runs.contains(&format!("\"plan_hash\":\"{plan_hash}\"")));
     assert!(task_runs.contains("\"outcome\":\"succeeded\""));
 
-    let milestone_journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/milestones/ms-alpha/journal.ndjson"),
-    )
-    .expect("read milestone journal");
+    let milestone_journal =
+        fs::read_to_string(milestone_root(temp_dir.path(), "ms-alpha").join("journal.ndjson"))
+            .expect("read milestone journal");
     assert!(milestone_journal.contains("\"bead_started\""));
     assert!(milestone_journal.contains("\"bead_completed\""));
 }
@@ -5812,9 +5973,7 @@ exit 1
         String::from_utf8_lossy(&create.stderr)
     );
 
-    let project_root = temp_dir
-        .path()
-        .join(".ralph-burning/projects/bead-sync-repair");
+    let project_root = project_root(temp_dir.path(), "bead-sync-repair");
     fs::write(
         project_root.join("run.json"),
         r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
@@ -5830,9 +5989,7 @@ exit 1
     )
     .expect("write journal");
 
-    let task_runs_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    let task_runs_path = milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson");
     fs::write(
         &task_runs_path,
         format!(
@@ -5910,9 +6067,7 @@ exit 1
         String::from_utf8_lossy(&create.stderr)
     );
 
-    let project_root = temp_dir
-        .path()
-        .join(".ralph-burning/projects/bead-sync-terminal-repair");
+    let project_root = project_root(temp_dir.path(), "bead-sync-terminal-repair");
     fs::write(
         project_root.join("run.json"),
         r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
@@ -5929,9 +6084,7 @@ exit 1
     )
     .expect("write journal");
 
-    let task_runs_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    let task_runs_path = milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson");
     fs::write(
         &task_runs_path,
         format!(
@@ -5940,9 +6093,7 @@ exit 1
     )
     .expect("write stale task-runs");
 
-    let milestone_journal_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/journal.ndjson");
+    let milestone_journal_path = milestone_root(temp_dir.path(), "ms-alpha").join("journal.ndjson");
     fs::write(
         &milestone_journal_path,
         format!(
@@ -6028,9 +6179,7 @@ exit 1
         String::from_utf8_lossy(&create.stderr)
     );
 
-    let project_root = temp_dir
-        .path()
-        .join(".ralph-burning/projects/bead-sync-reconstruct");
+    let project_root = project_root(temp_dir.path(), "bead-sync-reconstruct");
     fs::write(
         project_root.join("run.json"),
         r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
@@ -6046,9 +6195,7 @@ exit 1
     )
     .expect("write journal");
 
-    let task_runs_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    let task_runs_path = milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson");
     if task_runs_path.exists() {
         fs::remove_file(&task_runs_path).expect("remove task-runs");
     }
@@ -6125,9 +6272,7 @@ exit 1
         String::from_utf8_lossy(&create.stderr)
     );
 
-    let project_root = temp_dir
-        .path()
-        .join(".ralph-burning/projects/bead-sync-ambiguous");
+    let project_root = project_root(temp_dir.path(), "bead-sync-ambiguous");
     fs::write(
         project_root.join("run.json"),
         r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after ambiguous lineage drift"}"#,
@@ -6143,9 +6288,7 @@ exit 1
     )
     .expect("write journal");
 
-    let task_runs_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    let task_runs_path = milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson");
     fs::write(
         &task_runs_path,
         format!(
@@ -6234,9 +6377,7 @@ exit 1
         String::from_utf8_lossy(&create.stderr)
     );
 
-    let project_root = temp_dir
-        .path()
-        .join(".ralph-burning/projects/bead-sync-missing-run-completed");
+    let project_root = project_root(temp_dir.path(), "bead-sync-missing-run-completed");
     fs::write(
         project_root.join("run.json"),
         r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
@@ -6251,9 +6392,7 @@ exit 1
     )
     .expect("write journal");
 
-    let task_runs_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    let task_runs_path = milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson");
     fs::write(
         &task_runs_path,
         format!(
@@ -6332,9 +6471,7 @@ exit 1
         String::from_utf8_lossy(&create.stderr)
     );
 
-    let project_root = temp_dir
-        .path()
-        .join(".ralph-burning/projects/bead-sync-missing-run-failed");
+    let project_root = project_root(temp_dir.path(), "bead-sync-missing-run-failed");
     fs::write(
         project_root.join("run.json"),
         r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed without durable run_failed event"}"#,
@@ -6349,9 +6486,7 @@ exit 1
     )
     .expect("write journal");
 
-    let task_runs_path = temp_dir
-        .path()
-        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    let task_runs_path = milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson");
     fs::write(
         &task_runs_path,
         format!(
@@ -6391,12 +6526,8 @@ fn run_start_persists_payload_and_artifact_records() {
         .expect("run start");
     assert!(start.status.success());
 
-    let payloads_dir = temp_dir
-        .path()
-        .join(".ralph-burning/projects/run-artifacts/history/payloads");
-    let artifacts_dir = temp_dir
-        .path()
-        .join(".ralph-burning/projects/run-artifacts/history/artifacts");
+    let payloads_dir = project_root(temp_dir.path(), "run-artifacts").join("history/payloads");
+    let artifacts_dir = project_root(temp_dir.path(), "run-artifacts").join("history/artifacts");
 
     // Standard flow has 8 stages. Panel stages produce multiple records:
     // prompt_review: 1 refiner + 2 validators + 1 primary = 4
@@ -6476,23 +6607,17 @@ fn run_start_completes_quick_dev_flow_end_to_end() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let payload_files: Vec<_> = fs::read_dir(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/qd-run/history/payloads"),
-    )
-    .expect("read payloads dir")
-    .filter_map(|e| e.ok())
-    .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-    .collect();
+    let payload_files: Vec<_> =
+        fs::read_dir(project_root(temp_dir.path(), "qd-run").join("history/payloads"))
+            .expect("read payloads dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+            .collect();
     assert_eq!(payload_files.len(), 6);
 
-    let journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/qd-run/journal.ndjson"),
-    )
-    .expect("read journal");
+    let journal =
+        fs::read_to_string(project_root(temp_dir.path(), "qd-run").join("journal.ndjson"))
+            .expect("read journal");
     assert!(journal.contains("\"plan_and_implement\""));
     assert!(journal.contains("\"review\""));
     assert!(journal.contains("\"apply_fixes\""));
@@ -6518,23 +6643,17 @@ fn run_start_completes_minimal_flow_end_to_end() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let payload_files: Vec<_> = fs::read_dir(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/minimal-run/history/payloads"),
-    )
-    .expect("read payloads dir")
-    .filter_map(|e| e.ok())
-    .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-    .collect();
+    let payload_files: Vec<_> =
+        fs::read_dir(project_root(temp_dir.path(), "minimal-run").join("history/payloads"))
+            .expect("read payloads dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+            .collect();
     assert_eq!(payload_files.len(), 4);
 
-    let journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/minimal-run/journal.ndjson"),
-    )
-    .expect("read journal");
+    let journal =
+        fs::read_to_string(project_root(temp_dir.path(), "minimal-run").join("journal.ndjson"))
+            .expect("read journal");
     assert!(journal.contains("\"stage_id\":\"plan_and_implement\""));
     assert!(journal.contains("\"stage_id\":\"final_review\""));
     assert!(!journal.contains("\"stage_id\":\"review\""));
@@ -6601,12 +6720,8 @@ fn run_resume_quick_dev_from_failed_state() {
         String::from_utf8_lossy(&resume.stderr)
     );
 
-    let run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/qd-resume/run.json"),
-    )
-    .expect("read run.json");
+    let run_json = fs::read_to_string(project_root(temp_dir.path(), "qd-resume").join("run.json"))
+        .expect("read run.json");
     assert!(
         run_json.contains("\"completed\""),
         "quick_dev run should be completed after resume, got: {run_json}"
@@ -6653,9 +6768,7 @@ fn run_start_rejects_already_running_project() {
     // Write a running snapshot to simulate an active run
     let running_snapshot = r#"{"active_run":{"run_id":"run-test","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":0},"started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running: Planning"}"#;
     fs::write(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/run-running/run.json"),
+        project_root(temp_dir.path(), "run-running").join("run.json"),
         running_snapshot,
     )
     .expect("write running snapshot");
@@ -6730,9 +6843,7 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
     // both persist panel records).
     // 5 single-agent stages + completion_panel (2 completers + 1 aggregate)
     // + final_review (2 reviewers + 1 aggregate) = 11
-    let payloads_dir = temp_dir
-        .path()
-        .join(".ralph-burning/projects/no-pr-cli/history/payloads");
+    let payloads_dir = project_root(temp_dir.path(), "no-pr-cli").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir)
         .expect("read payloads dir")
         .filter_map(|e| e.ok())
@@ -6744,24 +6855,17 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
     );
 
     // Verify no prompt_review stage in journal
-    let journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/no-pr-cli/journal.ndjson"),
-    )
-    .expect("read journal");
+    let journal =
+        fs::read_to_string(project_root(temp_dir.path(), "no-pr-cli").join("journal.ndjson"))
+            .expect("read journal");
     assert!(
         !journal.contains("\"prompt_review\""),
         "journal should not contain prompt_review stage when disabled"
     );
 
     // Verify completed status
-    let run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/no-pr-cli/run.json"),
-    )
-    .expect("read run.json");
+    let run_json = fs::read_to_string(project_root(temp_dir.path(), "no-pr-cli").join("run.json"))
+        .expect("read run.json");
     assert!(
         run_json.contains("\"completed\""),
         "run should be completed, got: {run_json}"
@@ -6781,24 +6885,18 @@ fn run_start_preflight_failure_leaves_state_unchanged() {
     // The stub backend always passes preflight, so we verify the no-mutation
     // invariant via the workspace-version validation path: an unsupported
     // workspace version must leave all project state unchanged.
-    let ws_toml_path = temp_dir.path().join(".ralph-burning/workspace.toml");
+    let ws_toml_path = workspace_config_path(temp_dir.path());
     let ws_toml = fs::read_to_string(&ws_toml_path).expect("read workspace.toml");
     let corrupted = ws_toml.replace("version = 1", "version = 999");
     fs::write(&ws_toml_path, corrupted).expect("write corrupted workspace.toml");
 
     // Capture pre-run state
-    let pre_run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/preflight-cli/run.json"),
-    )
-    .expect("read run.json before");
-    let pre_journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/preflight-cli/journal.ndjson"),
-    )
-    .expect("read journal before");
+    let pre_run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "preflight-cli").join("run.json"))
+            .expect("read run.json before");
+    let pre_journal =
+        fs::read_to_string(project_root(temp_dir.path(), "preflight-cli").join("journal.ndjson"))
+            .expect("read journal before");
 
     let output = Command::new(binary())
         .args(["run", "start"])
@@ -6813,18 +6911,12 @@ fn run_start_preflight_failure_leaves_state_unchanged() {
     );
 
     // Verify NO state mutation occurred
-    let post_run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/preflight-cli/run.json"),
-    )
-    .expect("read run.json after");
-    let post_journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/preflight-cli/journal.ndjson"),
-    )
-    .expect("read journal after");
+    let post_run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "preflight-cli").join("run.json"))
+            .expect("read run.json after");
+    let post_journal =
+        fs::read_to_string(project_root(temp_dir.path(), "preflight-cli").join("journal.ndjson"))
+            .expect("read journal after");
 
     assert_eq!(
         pre_run_json, post_run_json,
@@ -6835,9 +6927,7 @@ fn run_start_preflight_failure_leaves_state_unchanged() {
         "journal must not change on pre-engine failure"
     );
 
-    let payloads_dir = temp_dir
-        .path()
-        .join(".ralph-burning/projects/preflight-cli/history/payloads");
+    let payloads_dir = project_root(temp_dir.path(), "preflight-cli").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir)
         .expect("read payloads dir")
         .filter_map(|e| e.ok())
@@ -6855,16 +6945,11 @@ fn run_start_backend_preflight_failure_leaves_state_unchanged() {
     setup_standard_project(&temp_dir, "preflight-backend");
 
     // Capture pre-run state
-    let pre_run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/preflight-backend/run.json"),
-    )
-    .expect("read run.json before");
+    let pre_run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "preflight-backend").join("run.json"))
+            .expect("read run.json before");
     let pre_journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/preflight-backend/journal.ndjson"),
+        project_root(temp_dir.path(), "preflight-backend").join("journal.ndjson"),
     )
     .expect("read journal before");
 
@@ -6888,16 +6973,11 @@ fn run_start_backend_preflight_failure_leaves_state_unchanged() {
     );
 
     // Verify NO state mutation occurred — byte-identical
-    let post_run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/preflight-backend/run.json"),
-    )
-    .expect("read run.json after");
+    let post_run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "preflight-backend").join("run.json"))
+            .expect("read run.json after");
     let post_journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/preflight-backend/journal.ndjson"),
+        project_root(temp_dir.path(), "preflight-backend").join("journal.ndjson"),
     )
     .expect("read journal after");
 
@@ -6910,9 +6990,7 @@ fn run_start_backend_preflight_failure_leaves_state_unchanged() {
         "journal must be byte-identical after preflight failure"
     );
 
-    let payloads_dir = temp_dir
-        .path()
-        .join(".ralph-burning/projects/preflight-backend/history/payloads");
+    let payloads_dir = project_root(temp_dir.path(), "preflight-backend").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir)
         .expect("read payloads dir")
         .filter_map(|e| e.ok())
@@ -6922,9 +7000,8 @@ fn run_start_backend_preflight_failure_leaves_state_unchanged() {
         "no payloads should exist after preflight failure"
     );
 
-    let artifacts_dir = temp_dir
-        .path()
-        .join(".ralph-burning/projects/preflight-backend/history/artifacts");
+    let artifacts_dir =
+        project_root(temp_dir.path(), "preflight-backend").join("history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir)
         .expect("read artifacts dir")
         .filter_map(|e| e.ok())
@@ -6957,12 +7034,9 @@ fn run_start_mid_stage_failure_no_partial_durable_history() {
     );
 
     // Run snapshot must be failed, not running
-    let run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/midstage-fail/run.json"),
-    )
-    .expect("read run.json");
+    let run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "midstage-fail").join("run.json"))
+            .expect("read run.json");
     assert!(
         run_json.contains("\"failed\""),
         "run.json should show failed status, got: {run_json}"
@@ -6973,9 +7047,7 @@ fn run_start_mid_stage_failure_no_partial_durable_history() {
     );
 
     // No payload or artifact files should exist — no partial durable history
-    let payloads_dir = temp_dir
-        .path()
-        .join(".ralph-burning/projects/midstage-fail/history/payloads");
+    let payloads_dir = project_root(temp_dir.path(), "midstage-fail").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir)
         .expect("read payloads dir")
         .filter_map(|e| e.ok())
@@ -6986,9 +7058,7 @@ fn run_start_mid_stage_failure_no_partial_durable_history() {
         "no payloads should exist after mid-stage failure"
     );
 
-    let artifacts_dir = temp_dir
-        .path()
-        .join(".ralph-burning/projects/midstage-fail/history/artifacts");
+    let artifacts_dir = project_root(temp_dir.path(), "midstage-fail").join("history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir)
         .expect("read artifacts dir")
         .filter_map(|e| e.ok())
@@ -7000,12 +7070,9 @@ fn run_start_mid_stage_failure_no_partial_durable_history() {
     );
 
     // No stage_completed event should exist in the journal
-    let journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/midstage-fail/journal.ndjson"),
-    )
-    .expect("read journal");
+    let journal =
+        fs::read_to_string(project_root(temp_dir.path(), "midstage-fail").join("journal.ndjson"))
+            .expect("read journal");
     assert!(
         !journal.contains("\"stage_completed\""),
         "no stage_completed event should exist after mid-stage failure"
@@ -7050,7 +7117,7 @@ fn requirements_quick_creates_completed_run() {
     );
 
     // Verify run directory exists
-    let req_dir = temp_dir.path().join(".ralph-burning/requirements");
+    let req_dir = requirements_root(temp_dir.path());
     assert!(req_dir.is_dir(), "requirements directory should exist");
     let entries: Vec<_> = fs::read_dir(&req_dir)
         .unwrap()
@@ -7104,9 +7171,7 @@ fn requirements_milestone_creates_completed_milestone_run() {
 
     let run_id = only_requirements_run_id(temp_dir.path());
     let run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/requirements")
+        requirements_root(temp_dir.path())
             .join(run_id)
             .join("run.json"),
     )
@@ -7131,7 +7196,7 @@ fn requirements_show_displays_completed_run() {
     assert!(output.status.success());
 
     // Find the run ID from the requirements directory
-    let req_dir = temp_dir.path().join(".ralph-burning/requirements");
+    let req_dir = requirements_root(temp_dir.path());
     let run_id = fs::read_dir(&req_dir)
         .unwrap()
         .filter_map(|e| e.ok())
@@ -7226,10 +7291,7 @@ fn requirements_show_on_nonexistent_run_fails() {
 fn requirements_answer_happy_path_completes_run() {
     let temp_dir = initialize_workspace_fixture();
     let run_id = "req-20260312-120000";
-    let run_dir = temp_dir
-        .path()
-        .join(".ralph-burning/requirements")
-        .join(run_id);
+    let run_dir = requirements_root(temp_dir.path()).join(run_id);
 
     // Create required directory structure
     for subdir in &[
@@ -7826,16 +7888,16 @@ fn cli_run_start_acquires_and_releases_writer_lock() {
         .expect("run start");
     assert!(output.status.success(), "run start should succeed");
 
-    let lock_path = temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases/writer-lock-start.lock");
+    let lock_path = daemon_root(temp_dir.path())
+        .join("leases")
+        .join("writer-lock-start.lock");
     assert!(
         !lock_path.exists(),
         "writer lock file should be released after run start completes"
     );
 
     // No CLI lease files should remain after successful run
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
     let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
         .into_iter()
         .flatten()
@@ -7861,7 +7923,7 @@ fn cli_run_start_fails_when_writer_lock_held() {
     select_active_project_fixture(temp_dir.path(), "lock-held");
 
     // Pre-create the writer lock file
-    let lock_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let lock_dir = daemon_root(temp_dir.path()).join("leases");
     fs::create_dir_all(&lock_dir).expect("create lease dir");
     fs::write(lock_dir.join("writer-lock-held.lock"), "held-by-test").expect("write lock");
 
@@ -7882,12 +7944,8 @@ fn cli_run_start_fails_when_writer_lock_held() {
     );
 
     // Verify no run-state mutation occurred
-    let run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/lock-held/run.json"),
-    )
-    .expect("read run.json");
+    let run_json = fs::read_to_string(project_root(temp_dir.path(), "lock-held").join("run.json"))
+        .expect("read run.json");
     assert!(
         run_json.contains("\"not_started\""),
         "run state should remain not_started"
@@ -7920,16 +7978,16 @@ fn cli_run_resume_acquires_and_releases_writer_lock() {
         .expect("run resume");
     assert!(output.status.success(), "run resume should succeed");
 
-    let lock_path = temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases/writer-lock-resume.lock");
+    let lock_path = daemon_root(temp_dir.path())
+        .join("leases")
+        .join("writer-lock-resume.lock");
     assert!(
         !lock_path.exists(),
         "writer lock file should be released after run resume completes"
     );
 
     // No CLI lease files should remain after successful resume
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
     let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
         .into_iter()
         .flatten()
@@ -7964,16 +8022,16 @@ fn cli_run_start_releases_lock_on_error() {
         .expect("run start");
     assert!(!output.status.success(), "run start should fail");
 
-    let lock_path = temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases/writer-lock-err.lock");
+    let lock_path = daemon_root(temp_dir.path())
+        .join("leases")
+        .join("writer-lock-err.lock");
     assert!(
         !lock_path.exists(),
         "writer lock file should be released even when run fails"
     );
 
     // No CLI lease files should remain after failed run
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
     let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
         .into_iter()
         .flatten()
@@ -8027,7 +8085,7 @@ fn cli_run_start_close_failure_exits_nonzero() {
 
     // CLI lease record must remain durable (close did not delete it
     // because lock release failed).
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
     let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
         .into_iter()
         .flatten()
@@ -8677,7 +8735,7 @@ fn project_amend_add_reopens_completed_project() {
     select_active_project_fixture(temp_dir.path(), "alpha");
 
     // Set project to completed state
-    let project_root = temp_dir.path().join(".ralph-burning/projects/alpha");
+    let project_root = project_root(temp_dir.path(), "alpha");
     fs::write(
         project_root.join("run.json"),
         r#"{"active_run":null,"status":"completed","cycle_history":[{"cycle":1,"stage_id":"planning","started_at":"2026-03-11T19:00:00Z","completed_at":"2026-03-11T19:10:00Z"}],"completion_rounds":1,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
@@ -8726,12 +8784,8 @@ fn project_amend_add_journal_records_event() {
         .expect("run amend add");
     assert!(output.status.success());
 
-    let journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/alpha/journal.ndjson"),
-    )
-    .expect("read journal");
+    let journal = fs::read_to_string(project_root(temp_dir.path(), "alpha").join("journal.ndjson"))
+        .expect("read journal");
     let last_line = journal.lines().last().expect("journal has lines");
     let event: serde_json::Value = serde_json::from_str(last_line).expect("parse event");
     assert_eq!(event["event_type"], "amendment_queued");
@@ -8753,7 +8807,7 @@ fn project_amend_add_lease_conflict_rejects() {
     select_active_project_fixture(temp_dir.path(), "alpha");
 
     // Create a writer lock file to simulate an active lease.
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
     fs::write(leases_dir.join("writer-alpha.lock"), "fake-lease-id").expect("write lock");
 
@@ -8791,7 +8845,7 @@ fn project_amend_remove_lease_conflict_rejects() {
         .to_owned();
 
     // Create a writer lock file to simulate an active lease.
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
     fs::write(leases_dir.join("writer-alpha.lock"), "fake-lease-id").expect("write lock");
 
@@ -8836,7 +8890,7 @@ fn project_amend_clear_lease_conflict_rejects() {
     assert!(add_output.status.success());
 
     // Create a writer lock file to simulate an active lease.
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
     fs::write(leases_dir.join("writer-alpha.lock"), "fake-lease-id").expect("write lock");
 
@@ -9329,11 +9383,8 @@ default_backend = "openrouter"
 [backends.openrouter]
 enabled = false
 "#;
-    fs::write(
-        temp_dir.path().join(".ralph-burning/workspace.toml"),
-        workspace_toml,
-    )
-    .expect("write workspace.toml");
+    fs::write(workspace_config_path(temp_dir.path()), workspace_toml)
+        .expect("write workspace.toml");
 
     let output = Command::new(binary())
         .args(["backend", "check"])
@@ -9389,11 +9440,8 @@ default_backend = "openrouter"
 [backends.openrouter]
 enabled = false
 "#;
-    fs::write(
-        temp_dir.path().join(".ralph-burning/workspace.toml"),
-        workspace_toml,
-    )
-    .expect("write workspace.toml");
+    fs::write(workspace_config_path(temp_dir.path()), workspace_toml)
+        .expect("write workspace.toml");
 
     let output = Command::new(binary())
         .args([
@@ -9426,11 +9474,8 @@ backends = ["claude", "?openrouter"]
 min_completers = 2
 consensus_threshold = 0.66
 "#;
-    fs::write(
-        temp_dir.path().join(".ralph-burning/workspace.toml"),
-        workspace_toml,
-    )
-    .expect("write workspace.toml");
+    fs::write(workspace_config_path(temp_dir.path()), workspace_toml)
+        .expect("write workspace.toml");
 
     let output = Command::new(binary())
         .args([
@@ -9472,11 +9517,8 @@ default_backend = "openrouter"
 [backends.openrouter]
 enabled = false
 "#;
-    fs::write(
-        temp_dir.path().join(".ralph-burning/workspace.toml"),
-        workspace_toml,
-    )
-    .expect("write workspace.toml");
+    fs::write(workspace_config_path(temp_dir.path()), workspace_toml)
+        .expect("write workspace.toml");
 
     let output = Command::new(binary())
         .args(["backend", "check", "--json"])
@@ -9557,7 +9599,7 @@ fn backend_list_nonzero_exit_with_corrupt_config() {
 
     // Corrupt the workspace.toml
     fs::write(
-        temp_dir.path().join(".ralph-burning/workspace.toml"),
+        workspace_config_path(temp_dir.path()),
         "this is not valid toml {{{",
     )
     .expect("write corrupt config");
@@ -9614,12 +9656,9 @@ fn run_start_malformed_template_override_exits_nonzero_with_no_durable_state_cha
     .expect("write malformed override");
 
     // Capture pre-run state
-    let pre_run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/tpl-malformed/run.json"),
-    )
-    .expect("read run.json before");
+    let pre_run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "tpl-malformed").join("run.json"))
+            .expect("read run.json before");
     let output = Command::new(binary())
         .args(["run", "start"])
         .env("RALPH_BURNING_BACKEND", "stub")
@@ -9638,18 +9677,12 @@ fn run_start_malformed_template_override_exits_nonzero_with_no_durable_state_cha
     );
 
     // Verify no durable state was mutated beyond run_started
-    let post_run_json = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/tpl-malformed/run.json"),
-    )
-    .expect("read run.json after");
-    let post_journal = fs::read_to_string(
-        temp_dir
-            .path()
-            .join(".ralph-burning/projects/tpl-malformed/journal.ndjson"),
-    )
-    .expect("read journal after");
+    let post_run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "tpl-malformed").join("run.json"))
+            .expect("read run.json after");
+    let post_journal =
+        fs::read_to_string(project_root(temp_dir.path(), "tpl-malformed").join("journal.ndjson"))
+            .expect("read journal after");
 
     // The journal must not contain a stage_entered event for "planning"
     // (the stage whose template was malformed). Earlier stages like
@@ -9672,9 +9705,7 @@ fn run_start_malformed_template_override_exits_nonzero_with_no_durable_state_cha
 
     // No payloads should exist for the planning stage specifically.
     // Earlier stages like prompt_review may legitimately write payloads.
-    let payloads_dir = temp_dir
-        .path()
-        .join(".ralph-burning/projects/tpl-malformed/history/payloads");
+    let payloads_dir = project_root(temp_dir.path(), "tpl-malformed").join("history/payloads");
     if payloads_dir.exists() {
         let planning_payloads: Vec<_> = fs::read_dir(&payloads_dir)
             .expect("read payloads dir")
@@ -9708,9 +9739,7 @@ fn run_start_malformed_project_override_does_not_fall_back_to_workspace() {
     .expect("write valid workspace override");
 
     // Install a MALFORMED project override (should NOT fall back to workspace)
-    let proj_templates = temp_dir
-        .path()
-        .join(".ralph-burning/projects/tpl-no-fallback/templates");
+    let proj_templates = project_root(temp_dir.path(), "tpl-no-fallback").join("templates");
     fs::create_dir_all(&proj_templates).expect("create project templates dir");
     fs::write(
         proj_templates.join("planning.md"),

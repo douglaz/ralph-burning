@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-plan_and_implement-c1-a1-cr13-artifact",
+  "payload_id": "run-20260403141819-plan_and_implement-c1-a1-cr13",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-03T21:09:05.993828882Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAmended `src/cli/project.rs` so `resolve_bead_plan()` only treats implicit title matches as authoritative when the live bead id still matches that proposal's current implicit slot. Title-only fallback now remains non-authoritative, which prevents stale reordered beads from inheriting the current `plan_hash`/`plan_version`, while still using the current implicit slot id to disambiguate duplicate implicit titles. Added deterministic regressions covering reordered implicit proposals and duplicate-title tie-breaking, and updated the existing flow-override unit to use a slot-consistent fixture.\n\n## Steps\n\n1. [Completed] Inspect `resolve_bead_plan` and the plan-metadata stamping path to confirm how implicit title fallback was still setting `membership_confirmed` after reorder-sensitive backfill.\n2. [Completed] Patch `resolve_bead_plan` so implicit proposals only confirm membership when the matched title also lines up with the proposal's current implicit slot id; otherwise keep the title fallback non-authoritative.\n3. [Completed] Add deterministic regressions for reordered implicit proposals and duplicate implicit titles resolved by the current slot id, then run focused formatting and validation.\n\n## Validation Evidence\n\n- Ran `cargo fmt --all`.\n- Ran `cargo test resolve_bead_plan_ -- --nocapture` and all 9 targeted bead-resolution unit tests passed.\n- Ran `cargo test project_create_from_bead_ -- --nocapture` and all 16 targeted create-from-bead CLI integration tests passed.\n\n## Outstanding Risks\n\n- Did not run the full repository test suite beyond the targeted bead-resolution and `project create-from-bead` coverage.\n- The unrelated untracked `.ralph-burning/` workspace directory was left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 13
+}

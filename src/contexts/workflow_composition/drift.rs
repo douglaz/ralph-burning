@@ -239,10 +239,7 @@ fn sync_project_prompt_hash(
     project_id: &ProjectId,
     prompt_hash: &str,
 ) -> AppResult<()> {
-    let project_dir = base_dir
-        .join(".ralph-burning")
-        .join("projects")
-        .join(project_id.as_str());
+    let project_dir = FileSystem::project_root(base_dir, project_id);
     let project_toml = project_dir.join("project.toml");
     let content = fs::read_to_string(&project_toml).map_err(|error| AppError::CorruptRecord {
         file: project_toml.display().to_string(),
@@ -259,7 +256,9 @@ fn sync_project_prompt_hash(
         AppError::PromptReplacementFailed {
             details: format!("failed to persist updated prompt hash: {error}"),
         }
-    })
+    })?;
+    FileSystem::mirror_project_file(base_dir, project_id, "project.toml", &updated);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -332,6 +331,13 @@ mod tests {
         FsProjectStore
             .read_project_record(base_dir, project_id)
             .expect("project record")
+    }
+
+    fn read_audit_project_record(base_dir: &Path, project_id: &ProjectId) -> ProjectRecord {
+        let project_toml =
+            FileSystem::audit_project_root(base_dir, project_id).join("project.toml");
+        let raw = std::fs::read_to_string(project_toml).expect("audit project record");
+        toml::from_str(&raw).expect("parse audit project record")
     }
 
     fn project_root(base_dir: &Path, project_id: &ProjectId) -> std::path::PathBuf {
@@ -556,6 +562,10 @@ mod tests {
         assert_eq!(remaining_artifacts.len(), 1);
         assert_eq!(
             read_project_record(base_dir, &project_id).prompt_hash,
+            FileSystem::prompt_hash("# Prompt\n\nChanged prompt.\n")
+        );
+        assert_eq!(
+            read_audit_project_record(base_dir, &project_id).prompt_hash,
             FileSystem::prompt_hash("# Prompt\n\nChanged prompt.\n")
         );
     }

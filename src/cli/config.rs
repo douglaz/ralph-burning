@@ -101,8 +101,7 @@ pub async fn handle(command: ConfigCommand) -> AppResult<()> {
                     &project_id,
                 )
             } else {
-                current_dir
-                    .join(workspace_governance::WORKSPACE_DIR)
+                FileSystem::live_workspace_root_path(&current_dir)
                     .join(workspace_governance::WORKSPACE_CONFIG_FILE)
             };
             FileSystem::open_editor(&config_path)?;

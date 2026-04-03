@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-planner-positions-c1-a1-cr8-artifact",
+  "payload_id": "run-20260403141819-final_review-planner-positions-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T19:14:59.996799171Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nThe amendment identifies a real compatibility regression in legacy `plan.json` handling: backfilling `explicit_id=true` for every missing-flag proposal with a `bead_id` collapses the distinction between canonicalized implicit slot ids and truly explicit ids, which can cause stale metadata to be bound to the wrong live bead after title drift.\n\n## Votes\n\n- `fr-8-aacc0cb9`: Accept\n  `backfill_legacy_explicit_bead_flags` currently promotes any legacy proposal with `bead_id` into the explicit-id path, and `proposal_matches_bead_id` then treats that proposal as identity-pinned. For canonical plans rendered from implicit beads, `plan.json` legitimately contains populated canonical slot ids while `explicit_id` is `false`; if older tooling strips only `explicit_id`, the current backfill changes semantics on reload. That means a renamed live bead can now match by id and incorrectly retain `flow_override`/plan metadata even though the original proposal was only title-matched. This is a real correctness and backward-compatibility bug, and adding a regression test for the stripped-`explicit_id` canonical-plan + title-drift case is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 8
+}

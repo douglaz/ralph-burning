@@ -6331,10 +6331,7 @@ fn snapshot_started_at(snapshot: &RunSnapshot) -> AppResult<DateTime<Utc>> {
 
 /// Helper to get project root path.
 fn project_root_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
-    base_dir
-        .join(".ralph-burning")
-        .join("projects")
-        .join(project_id.as_str())
+    FileSystem::project_root(base_dir, project_id)
 }
 
 // ── Panel Dispatch ────────────────────────────────────────────────────────
@@ -7592,6 +7589,7 @@ mod tests {
                 description: Some("Project bootstrap flow.".to_owned()),
                 beads: vec![BeadProposal {
                     bead_id: Some(format!("{milestone_id}.bead-2")),
+                    explicit_id: None,
                     title: "Bootstrap bead-backed task creation".to_owned(),
                     description: Some("Create a project from milestone context.".to_owned()),
                     bead_type: Some("feature".to_owned()),
