@@ -73,11 +73,6 @@ fn markdown_canonical_section_heading(line: &str) -> Option<(usize, usize)> {
     Some((section_index, leading_spaces))
 }
 
-fn canonical_section_heading_index(line: &str) -> Option<usize> {
-    let (section_index, leading_spaces) = markdown_canonical_section_heading(line)?;
-    (leading_spaces == 0).then_some(section_index)
-}
-
 fn consumer_guidance_body() -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -126,25 +121,7 @@ pub fn prompt_declares_contract(prompt: &str) -> bool {
 
 /// Return whether the prompt declares the canonical bead task prompt contract.
 pub fn prompt_uses_contract(prompt: &str) -> bool {
-    let marker = contract_marker();
-    let mut saw_marker = false;
-
-    for line in top_level_lines(prompt) {
-        if line.trim_start() == line && line.trim_end() == marker {
-            saw_marker = true;
-            continue;
-        }
-
-        let Some(section_index) = canonical_section_heading_index(line) else {
-            continue;
-        };
-
-        if saw_marker && section_index <= 1 {
-            return true;
-        }
-    }
-
-    false
+    has_top_level_contract_marker(prompt)
 }
 
 /// Guidance injected into workflow stage prompts when the project prompt uses
@@ -336,12 +313,24 @@ mod tests {
     }
 
     #[test]
-    fn prompt_detection_ignores_marker_after_nonblank_preamble() {
+    fn prompt_detection_treats_any_top_level_marker_as_contract_opt_in() {
         let prompt = format!(
             "# Generic Prompt\n\n## AGENTS / Repo Guidance\n\n{}",
             contract_marker()
         );
-        assert!(!prompt_uses_contract(&prompt));
+        assert!(prompt_uses_contract(&prompt));
+    }
+
+    #[test]
+    fn stage_guidance_is_still_injected_for_marker_only_drifted_prompts() {
+        let prompt = format!(
+            "# Drifted Prompt\n\n{}\n\n## Acceptance Criteria\n\nLater sections only.",
+            contract_marker()
+        );
+        let guidance = stage_consumer_guidance_for_prompt(&prompt);
+
+        assert!(guidance.contains("## Task Prompt Contract"));
+        assert!(guidance.contains("`Milestone Summary`"));
     }
 
     #[test]

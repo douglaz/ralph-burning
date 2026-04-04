@@ -1358,8 +1358,9 @@ where
         )? {
             PromptChangeResumeDecision::NoChange {
                 current_prompt_hash,
-            }
-            | PromptChangeResumeDecision::Continue {
+                prompt_hash_at_cycle_start,
+            } => (current_prompt_hash, prompt_hash_at_cycle_start),
+            PromptChangeResumeDecision::Continue {
                 current_prompt_hash,
             } => (current_prompt_hash, prompt_change_baseline.clone()),
             PromptChangeResumeDecision::RestartCycle {

@@ -58,7 +58,9 @@ fn workspace_config_path(base_dir: &Path) -> PathBuf {
 }
 
 fn project_root(base_dir: &Path, project_id: &str) -> PathBuf {
-    live_workspace_root(base_dir).join("projects").join(project_id)
+    live_workspace_root(base_dir)
+        .join("projects")
+        .join(project_id)
 }
 
 fn create_project_with_flow(base_dir: &Path, project_id: &str, flow: FlowPreset) -> ProjectId {
@@ -738,10 +740,9 @@ async fn happy_path_docs_change_run_completes() {
         entered
     );
 
-    let payload_count =
-        fs::read_dir(project_root(base_dir, "docs-happy").join("history/payloads"))
-            .unwrap()
-            .count();
+    let payload_count = fs::read_dir(project_root(base_dir, "docs-happy").join("history/payloads"))
+        .unwrap()
+        .count();
     let artifact_count =
         fs::read_dir(project_root(base_dir, "docs-happy").join("history/artifacts"))
             .unwrap()
@@ -850,14 +851,12 @@ async fn happy_path_ci_improvement_run_completes() {
         entered
     );
 
-    let payload_count =
-        fs::read_dir(project_root(base_dir, "ci-happy").join("history/payloads"))
-            .unwrap()
-            .count();
-    let artifact_count =
-        fs::read_dir(project_root(base_dir, "ci-happy").join("history/artifacts"))
-            .unwrap()
-            .count();
+    let payload_count = fs::read_dir(project_root(base_dir, "ci-happy").join("history/payloads"))
+        .unwrap()
+        .count();
+    let artifact_count = fs::read_dir(project_root(base_dir, "ci-happy").join("history/artifacts"))
+        .unwrap()
+        .count();
     // 4 primary stage records + 1 local validation supporting record
     assert_eq!(payload_count, 5);
     assert_eq!(artifact_count, 5);
@@ -1304,14 +1303,12 @@ async fn happy_path_quick_dev_run_completes() {
         entered
     );
 
-    let payload_count =
-        fs::read_dir(project_root(base_dir, "qd-happy").join("history/payloads"))
-            .unwrap()
-            .count();
-    let artifact_count =
-        fs::read_dir(project_root(base_dir, "qd-happy").join("history/artifacts"))
-            .unwrap()
-            .count();
+    let payload_count = fs::read_dir(project_root(base_dir, "qd-happy").join("history/payloads"))
+        .unwrap()
+        .count();
+    let artifact_count = fs::read_dir(project_root(base_dir, "qd-happy").join("history/artifacts"))
+        .unwrap()
+        .count();
     assert_eq!(payload_count, 6);
     assert_eq!(artifact_count, 6);
 }
@@ -5712,8 +5709,7 @@ async fn completion_stage_completed_append_failure_leaves_supporting_records() {
     assert_eq!(failed_snapshot.status, RunStatus::Failed);
 
     // Supporting records from the completion panel execution should be durable.
-    let payloads_dir =
-        project_root(base_dir, "cr-stage-completed-fail").join("history/payloads");
+    let payloads_dir = project_root(base_dir, "cr-stage-completed-fail").join("history/payloads");
     let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -6340,8 +6336,7 @@ async fn completion_panel_continue_then_complete_success() {
     );
 
     // Verify supporting and aggregate records exist.
-    let payloads_dir =
-        project_root(base_dir, "cr-full-batch-success").join("history/payloads");
+    let payloads_dir = project_root(base_dir, "cr-full-batch-success").join("history/payloads");
     let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())

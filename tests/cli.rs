@@ -7679,7 +7679,7 @@ fn conformance_run_fail_fast_stops_and_reports_not_run() {
     let output = Command::new(binary())
         .env(
             "RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR",
-            "workspace-init-fresh",
+            "active-project-select-existing",
         )
         .args(["conformance", "run"])
         .output()

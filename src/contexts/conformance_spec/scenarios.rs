@@ -8446,9 +8446,10 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("requirements quick did not use file contents as idea input".into());
         }
 
-        let project_toml =
-            std::fs::read_to_string(conformance_project_root(&ws, "stub-project").join("project.toml"))
-                .map_err(|e| format!("read project.toml: {e}"))?;
+        let project_toml = std::fs::read_to_string(
+            conformance_project_root(&ws, "stub-project").join("project.toml"),
+        )
+        .map_err(|e| format!("read project.toml: {e}"))?;
         assert_contains(&project_toml, "flow = \"quick_dev\"", "project.toml")?;
 
         Ok(())
@@ -8459,7 +8460,7 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "keep-active", "standard");
         std::fs::write(active_project_path(ws.path()), "keep-active\n")
-        .map_err(|e| format!("write active-project: {e}"))?;
+            .map_err(|e| format!("write active-project: {e}"))?;
 
         let run_id = "req-awaiting";
         let run_root = ws.path().join(".ralph-burning/requirements").join(run_id);
@@ -17929,7 +17930,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             init_workspace(&ws)?;
             create_project_fixture(ws.path(), "proj-review-3", "standard");
             std::fs::write(
-            ws.path().join(".ralph-burning/projects/proj-review-3/run.json"),
+            conformance_project_root(&ws, "proj-review-3").join("run.json"),
             r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[{"cycle":1,"stage_id":"final_review","started_at":"2026-03-17T00:00:00Z","completed_at":"2026-03-17T00:01:00Z"}],"completion_rounds":1,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed","last_stage_resolution_snapshot":null}"#,
         )
         .map_err(|e| e.to_string())?;
@@ -18040,7 +18041,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             init_workspace(&ws)?;
             create_project_fixture(ws.path(), "proj-review-4", "standard");
             std::fs::write(
-            ws.path().join(".ralph-burning/projects/proj-review-4/run.json"),
+            conformance_project_root(&ws, "proj-review-4").join("run.json"),
             r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[{"cycle":2,"stage_id":"final_review","started_at":"2026-03-17T00:00:00Z","completed_at":"2026-03-17T00:01:00Z"}],"completion_rounds":2,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed","last_stage_resolution_snapshot":null}"#,
         )
         .map_err(|e| e.to_string())?;

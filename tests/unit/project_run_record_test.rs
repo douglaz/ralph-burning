@@ -1076,6 +1076,38 @@ fn render_bead_task_prompt_preserves_nested_list_indentation_in_extracted_sectio
 }
 
 #[test]
+fn render_bead_task_prompt_preserves_blank_line_continuations_inside_extracted_items() {
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the contract explicit\n\nNon-goals:\n- do not broaden the bead scope\n\n  Additional rationale stays attached to the same non-goal.\n\n## Acceptance Criteria:\n- preserve the canonical contract shape\n\n  Supporting explanation stays attached to the same criterion.\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let acceptance_start = prompt
+        .find("## Acceptance Criteria")
+        .expect("acceptance section should exist");
+    let planned_start = prompt
+        .find("## Already Planned Elsewhere")
+        .expect("planned elsewhere section should exist");
+    let non_goals_section = &prompt[non_goals_start..acceptance_start];
+    let acceptance_section = &prompt[acceptance_start..planned_start];
+
+    assert!(non_goals_section.contains("Additional rationale stays attached to the same non-goal."));
+    assert!(!non_goals_section
+        .contains("\n- Additional rationale stays attached to the same non-goal."));
+    assert!(
+        acceptance_section.contains("Supporting explanation stays attached to the same criterion.")
+    );
+    assert!(!acceptance_section
+        .contains("\n- Supporting explanation stays attached to the same criterion."));
+}
+
+#[test]
 fn render_bead_task_prompt_ignores_embedded_section_labels_inside_fenced_code_blocks() {
     let mut context = sample_bead_context();
     context.bead_description = Some(
@@ -1466,6 +1498,45 @@ fn create_project_from_bead_context_preserves_nested_list_indentation_in_extract
     assert!(!captured
         .prompt_contents
         .contains("\n- keep supporting rationale nested under the primary criterion"));
+}
+
+#[test]
+fn create_project_from_bead_context_preserves_blank_line_continuations_inside_extracted_items() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the task scoped to the active bead\n\n## Non-goals:\n- do not broaden the active bead\n\n  Additional rationale stays attached to the same non-goal.\n\n## Acceptance Criteria:\n- preserve the canonical contract shape\n\n  Supporting explanation stays attached to the same criterion.\n".to_owned(),
+    );
+
+    let record = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: None,
+            prompt_override: None,
+            created_at: test_timestamp(),
+            context,
+        },
+    )
+    .expect("blank-line continuations should stay within the same extracted item");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
+    assert!(captured
+        .prompt_contents
+        .contains("Additional rationale stays attached to the same non-goal."));
+    assert!(!captured
+        .prompt_contents
+        .contains("\n- Additional rationale stays attached to the same non-goal."));
+    assert!(captured
+        .prompt_contents
+        .contains("Supporting explanation stays attached to the same criterion."));
+    assert!(!captured
+        .prompt_contents
+        .contains("\n- Supporting explanation stays attached to the same criterion."));
 }
 
 #[test]

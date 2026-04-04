@@ -557,12 +557,18 @@ fn append_section_item_line(current: &mut String, line: &str) {
     }
 }
 
+fn is_indented_continuation_line(line: &str) -> bool {
+    !line.trim().is_empty() && line.trim_start() != line
+}
+
 fn collect_section_items(lines: &[String]) -> Vec<String> {
     let mut items = Vec::new();
     let mut current = String::new();
     let mut active_fence = None;
+    let mut index = 0usize;
 
-    for line in lines {
+    while index < lines.len() {
+        let line = &lines[index];
         if let Some(opening) = active_fence {
             if !current.is_empty() {
                 current.push('\n');
@@ -571,6 +577,7 @@ fn collect_section_items(lines: &[String]) -> Vec<String> {
             if closes_fence(line, opening) {
                 active_fence = None;
             }
+            index += 1;
             continue;
         }
 
@@ -580,21 +587,34 @@ fn collect_section_items(lines: &[String]) -> Vec<String> {
             }
             current.push_str(line);
             active_fence = Some(opening);
+            index += 1;
             continue;
         }
 
         let trimmed_end = line.trim_end();
         if trimmed_end.trim().is_empty() {
+            let preserves_current_item = !current.is_empty()
+                && lines
+                    .get(index + 1)
+                    .map(|next| is_indented_continuation_line(next))
+                    .unwrap_or(false);
+            if preserves_current_item {
+                current.push('\n');
+                index += 1;
+                continue;
+            }
             if !current.is_empty() {
                 items.push(current.trim().to_owned());
                 current.clear();
             }
+            index += 1;
             continue;
         }
 
         if let Some((leading_indent, item)) = strip_markdown_list_marker(trimmed_end) {
             if leading_indent > 0 {
                 append_section_item_line(&mut current, trimmed_end);
+                index += 1;
                 continue;
             }
             if !current.is_empty() {
@@ -602,10 +622,12 @@ fn collect_section_items(lines: &[String]) -> Vec<String> {
                 current.clear();
             }
             current.push_str(item.trim_end());
+            index += 1;
             continue;
         }
 
         append_section_item_line(&mut current, trimmed_end);
+        index += 1;
     }
 
     if !current.is_empty() {

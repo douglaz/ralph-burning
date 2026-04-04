@@ -602,6 +602,18 @@ mod tests {
     }
 
     #[test]
+    fn canonical_contract_drift_still_applies_when_original_prompt_keeps_only_marker() {
+        let concerns = canonical_contract_drift_concerns(
+            "# Drifted Prompt\n\n<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n\n## Acceptance Criteria\n\nLater section only.",
+            "# Refined Prompt\n\nNo canonical marker here.",
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("Preserve the canonical bead task prompt contract exactly"));
+        assert!(concerns[0].contains("missing exact contract marker"));
+    }
+
+    #[test]
     fn canonical_contract_drift_flags_misplaced_top_level_marker() {
         let concerns = canonical_contract_drift_concerns(
             CANONICAL_PROMPT,

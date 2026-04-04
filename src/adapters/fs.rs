@@ -256,10 +256,13 @@ impl FileSystem {
     /// Legacy 64-bit prompt hash retained only for resume compatibility with
     /// snapshots and project metadata written before the SHA-256 migration.
     pub(crate) fn legacy_prompt_hash(contents: &str) -> String {
-        use std::collections::hash_map::DefaultHasher;
+        use siphasher::sip::SipHasher13;
         use std::hash::{Hash, Hasher};
 
-        let mut hasher = DefaultHasher::new();
+        // Use an explicit SipHash 1-3 implementation so the compatibility path
+        // stays stable across Rust/std upgrades instead of inheriting
+        // `DefaultHasher` algorithm changes.
+        let mut hasher = SipHasher13::new();
         contents.hash(&mut hasher);
         format!("{:016x}", hasher.finish())
     }
