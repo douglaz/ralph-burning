@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260404151517-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260404151517-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T18:48:28.642722380Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 9/20\n\n## Accepted\n\n- `fr-9-db1bb842`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-db1bb842`\n\nTighten the `br list` fallback in `project create-from-bead`. In `src/cli/project.rs:321-325`, every `AppError::Io` from `load_bead_summaries()` is treated as recoverable and replaced with an empty summary map. That is too broad because `DependencyRef.status` is optional (`src/adapters/br_models.rs:228-235`), and `prompt_bead_status` / `prompt_bead_outcome` fall back to `\"unknown\"` when both the summary map and relation status are missing (`src/cli/project.rs:1164-1177`). A transient or version-skew `br list --json` failure can therefore still create `prompt.md` with `unknown` dependency status/outcome, which violates the bead contract's requirement that dependency status be rendered. Narrow the fallback to the explicitly supported unsupported-list case, or refuse to continue unless every dependency/dependent already carries a status; add a regression test for `br list` failure with `br show` responses that omit relation statuses (the current fallback test at `tests/cli.rs:2039-2071` only covers status-rich `show` payloads).\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}

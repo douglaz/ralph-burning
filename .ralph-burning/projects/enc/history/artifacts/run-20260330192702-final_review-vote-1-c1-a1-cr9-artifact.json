@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330192702-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260330192702-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T22:43:08.964275145Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the cited code in src/adapters/fs.rs and src/contexts/milestone_record/model.rs. The first amendment identifies a real helper-contract gap worth hardening, the second identifies a real but mostly future-facing serialization invariant that should be made more explicit, and the third is based on a non-issue because completion outcomes are already emitted canonically.\n\n## Votes\n\n- `fr-9-ed4ab282`: Accept\n  `unique_terminal_replay_match` is only called safely today, but its signature still permits `(Some(run_id), None)`. In that state, a runless terminal candidate skips the `started_at` check and could be matched as the wrong legacy terminal row. Adding an assertion or unconditional reject for that impossible combination is a sound robustness improvement.\n- `fr-9-b6508003`: Accept\n  The amendment describes a real contract: `json_fill_none` only fills absent keys, so it depends on `Option::None` being omitted rather than serialized as `null`. The current structs are annotated correctly and existing regression coverage protects current fields, but that serde requirement is still subtle and easy to violate when future optional fields are added. Making the invariant more explicit with targeted documentation and coverage is a maintainability win.\n- `fr-9-05edcb4b`: Reject\n  This concern does not correspond to a real defect in the current code. Completion journal `outcome` values are rendered from `TaskRunOutcome`, whose `Display` implementation emits fixed canonical lowercase strings, and the enum also uses canonical snake_case serde naming; existing tests already assert the rendered value (`\"succeeded\"`). Simple string equality is therefore the correct merge check here.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 9
+}

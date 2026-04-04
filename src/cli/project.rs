@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -6,7 +7,7 @@ use clap::{ArgGroup, Args, Subcommand};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::adapters::br_models::{BeadDetail, BeadStatus, DependencyKind};
+use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary, DependencyKind};
 use crate::adapters::br_process::{BrAdapter, BrCommand, BrError};
 use crate::adapters::fs::{
     FileSystem, FsActiveProjectStore, FsAmendmentQueueStore, FsDaemonStore, FsJournalStore,
@@ -25,8 +26,8 @@ use crate::contexts::milestone_record::service::{
 };
 use crate::contexts::project_run_record::model::{ProjectDetail, ProjectStatusSummary, RunStatus};
 use crate::contexts::project_run_record::service::{
-    self, BeadProjectContext, CreateProjectFromBeadContextInput, CreateProjectInput,
-    ProjectStorePort, RunSnapshotPort,
+    self, BeadDependencyPromptContext, BeadProjectContext, CreateProjectFromBeadContextInput,
+    CreateProjectInput, PlannedElsewherePromptContext, ProjectStorePort, RunSnapshotPort,
 };
 use crate::contexts::requirements_drafting::model::{
     ProjectSeedPayload, RequirementsOutputKind, RequirementsStatus, SUPPORTED_SEED_VERSIONS,
@@ -39,6 +40,11 @@ use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
 use crate::shared::domain::{FlowPreset, ProjectId};
 use crate::shared::error::{AppError, AppResult};
+use crate::shared::text::truncate_with_ascii_ellipsis;
+
+const PLANNED_ELSEWHERE_MAX_ITEMS: usize = 6;
+const PLANNED_ELSEWHERE_MAX_BYTES: usize = 1536;
+const PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES: usize = 240;
 
 #[derive(Debug, Args)]
 pub struct ProjectCommand {
@@ -317,12 +323,37 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         .membership_confirmed
         .then_some(confirmed_plan_version)
         .flatten();
+    let (upstream_dependencies, downstream_dependents, planned_elsewhere) =
+        if prompt_override.is_some() {
+            (Vec::new(), Vec::new(), Vec::new())
+        } else {
+            let bead_summaries = match load_bead_summaries(&current_dir).await {
+                Ok(summaries) => summaries,
+                Err(error @ AppError::CorruptRecord { .. }) => return Err(error),
+                Err(AppError::Io(_)) => BTreeMap::new(),
+                Err(other) => return Err(other),
+            };
+
+            (
+                build_dependency_prompt_context(&bead.dependencies, &bead_summaries),
+                build_dependent_prompt_context(&bead.dependents, &bead_summaries),
+                build_planned_elsewhere_context(
+                    &milestone_bundle.bundle,
+                    &milestone_id,
+                    &bead,
+                    &bead_plan,
+                    &bead_summaries,
+                ),
+            )
+        };
 
     let context = BeadProjectContext {
         milestone_id: milestone.id.to_string(),
         milestone_name: milestone.name.clone(),
         milestone_description: milestone.description.clone(),
         milestone_summary: Some(milestone_bundle.bundle.executive_summary.clone()),
+        milestone_status: milestone_snapshot.status,
+        milestone_progress: milestone_snapshot.progress.clone(),
         milestone_goals: milestone_bundle.bundle.goals.clone(),
         milestone_non_goals: milestone_bundle.bundle.non_goals.clone(),
         milestone_constraints: milestone_bundle.bundle.constraints.clone(),
@@ -331,17 +362,9 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         bead_title: bead.title.clone(),
         bead_description: bead.description.clone(),
         bead_acceptance_criteria: bead.acceptance_criteria.clone(),
-        bead_dependencies: bead
-            .dependencies
-            .iter()
-            .filter(|dependency| dependency.kind == DependencyKind::Blocks)
-            .map(format_dependency_reference)
-            .collect(),
-        already_planned_elsewhere: bead
-            .dependents
-            .iter()
-            .map(format_dependency_reference)
-            .collect(),
+        upstream_dependencies,
+        downstream_dependents,
+        planned_elsewhere,
         review_policy:
             crate::contexts::project_run_record::task_prompt_contract::default_review_policy(),
         parent_epic_id: infer_parent_epic_id(&bead),
@@ -694,6 +717,13 @@ enum BrShowResponse {
     Many(Vec<BeadDetail>),
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BrListResponse {
+    Envelope { issues: Vec<BeadSummary> },
+    Many(Vec<BeadSummary>),
+}
+
 async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetail> {
     let response: BrShowResponse = BrAdapter::new()
         .with_working_dir(base_dir.to_path_buf())
@@ -735,6 +765,64 @@ async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetai
     }
 }
 
+async fn load_bead_summaries(base_dir: &Path) -> AppResult<BTreeMap<String, BeadSummary>> {
+    let response: BrListResponse = BrAdapter::new()
+        .with_working_dir(base_dir.to_path_buf())
+        .exec_json(&BrCommand::list_all())
+        .await
+        .map_err(map_br_list_error)?;
+    let summaries = match response {
+        BrListResponse::Envelope { issues } => issues,
+        BrListResponse::Many(issues) => issues,
+    };
+
+    Ok(BTreeMap::from_iter(
+        summaries
+            .into_iter()
+            .map(|summary| (summary.id.clone(), summary)),
+    ))
+}
+
+fn map_br_list_error(error: BrError) -> AppError {
+    match error {
+        BrError::BrExitError { stderr, .. } if br_list_exit_error_looks_corrupt(&stderr) => {
+            AppError::CorruptRecord {
+                file: ".beads/issues.jsonl".to_owned(),
+                details: format!(
+                    "`br list --all --deferred --limit=0 --json` reported corrupt bead data: {stderr}"
+                ),
+            }
+        }
+        BrError::BrExitError { stderr, .. } => AppError::Io(std::io::Error::other(format!(
+            "failed to load bead summaries: {stderr}"
+        ))),
+        BrError::BrParseError { details, .. } => AppError::CorruptRecord {
+            file: ".beads/issues.jsonl".to_owned(),
+            details: format!(
+                "failed to parse `br list --all --deferred --limit=0 --json` output: {details}"
+            ),
+        },
+        other => AppError::Io(std::io::Error::other(format!(
+            "failed to load bead summaries: {other}"
+        ))),
+    }
+}
+
+fn br_list_exit_error_looks_corrupt(stderr: &str) -> bool {
+    let normalized = stderr.to_ascii_lowercase();
+    [
+        "corrupt",
+        "failed to parse",
+        "parse error",
+        "invalid json",
+        "malformed json",
+        "json parse",
+        "decode error",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
 fn load_optional_prompt_override(
     base_dir: &Path,
     path: Option<&Path>,
@@ -771,6 +859,22 @@ fn infer_parent_epic_id(bead: &BeadDetail) -> Option<String> {
 struct ResolvedBeadPlan {
     flow_override: Option<FlowPreset>,
     membership_confirmed: bool,
+    matched_workstream_index: Option<usize>,
+    matched_bead_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PlannedElsewherePriority {
+    DirectDependent,
+    SharedAcceptance,
+    AdjacentNeighbor,
+    UpstreamNeighbor,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedElsewhereCandidate {
+    item: PlannedElsewherePromptContext,
+    priority: PlannedElsewherePriority,
 }
 
 fn ensure_bead_belongs_to_milestone(
@@ -804,30 +908,32 @@ fn resolve_bead_plan(
     let mut matching_by_title = Vec::new();
     let mut authoritative_implicit_match = None;
 
-    for workstream in &bundle.workstreams {
-        for proposal in &workstream.beads {
+    for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
+        for (bead_index, proposal) in workstream.beads.iter().enumerate() {
             let implicit_bead_id = format!("{}.bead-{}", milestone_id.as_str(), next_implicit_bead);
             next_implicit_bead += 1;
 
             if proposal_matches_bead_id(proposal, milestone_id, bead) {
-                matching_by_id.push(proposal);
+                matching_by_id.push((workstream_index, bead_index, proposal));
             }
             if proposal_is_title_fallback_candidate(proposal, milestone_id, &implicit_bead_id)
                 && proposal.title == bead.title
             {
                 if bead_matches_implicit_slot(&bead.id, milestone_id.as_str(), &implicit_bead_id) {
-                    authoritative_implicit_match = Some(proposal);
+                    authoritative_implicit_match = Some((workstream_index, bead_index, proposal));
                 }
-                matching_by_title.push(proposal);
+                matching_by_title.push((workstream_index, bead_index, proposal));
             }
         }
     }
 
     match matching_by_id.as_slice() {
-        [proposal] => {
+        [(workstream_index, bead_index, proposal)] => {
             return Ok(ResolvedBeadPlan {
                 flow_override: proposal.flow_override,
                 membership_confirmed: true,
+                matched_workstream_index: Some(*workstream_index),
+                matched_bead_index: Some(*bead_index),
             });
         }
         [] => {}
@@ -842,21 +948,27 @@ fn resolve_bead_plan(
         }
     }
 
-    if let Some(proposal) = authoritative_implicit_match {
+    if let Some((workstream_index, bead_index, proposal)) = authoritative_implicit_match {
         return Ok(ResolvedBeadPlan {
             flow_override: proposal.flow_override,
             membership_confirmed: true,
+            matched_workstream_index: Some(workstream_index),
+            matched_bead_index: Some(bead_index),
         });
     }
 
     match matching_by_title.as_slice() {
-        [proposal] => Ok(ResolvedBeadPlan {
+        [(workstream_index, bead_index, proposal)] => Ok(ResolvedBeadPlan {
             flow_override: proposal.flow_override,
             membership_confirmed: false,
+            matched_workstream_index: Some(*workstream_index),
+            matched_bead_index: Some(*bead_index),
         }),
         [] => Ok(ResolvedBeadPlan {
             flow_override: None,
             membership_confirmed: false,
+            matched_workstream_index: None,
+            matched_bead_index: None,
         }),
         _ => Err(AppError::CorruptRecord {
             file: format!("milestones/{}/plan.json", milestone_id),
@@ -906,11 +1018,690 @@ fn proposal_is_title_fallback_candidate(
         })
 }
 
-fn format_dependency_reference(dependency: &crate::adapters::br_models::DependencyRef) -> String {
-    match dependency.title.as_deref() {
-        Some(title) if !title.trim().is_empty() => format!("{} ({title})", dependency.id),
-        _ => dependency.id.clone(),
+fn canonical_proposal_id(
+    milestone_id: &MilestoneId,
+    proposal: &crate::contexts::milestone_record::bundle::BeadProposal,
+    implicit_index: usize,
+) -> String {
+    match proposal.bead_id.as_deref() {
+        Some(candidate) if candidate.starts_with(&format!("{}.", milestone_id.as_str())) => {
+            candidate.to_owned()
+        }
+        Some(candidate) => format!("{}.{}", milestone_id.as_str(), candidate),
+        None => format!("{}.bead-{}", milestone_id.as_str(), implicit_index),
     }
+}
+
+fn canonicalize_bundle_bead_ref(milestone_id: &MilestoneId, raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with(&format!("{}.", milestone_id.as_str())) {
+        trimmed.to_owned()
+    } else {
+        format!("{}.{}", milestone_id.as_str(), trimmed)
+    }
+}
+
+fn opening_fence_delimiter(line: &str) -> Option<(char, usize)> {
+    let trimmed = line.trim();
+    let marker = trimmed.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+
+    let count = trimmed.chars().take_while(|ch| *ch == marker).count();
+    if count < 3 {
+        return None;
+    }
+
+    Some((marker, count))
+}
+
+fn closes_fence(line: &str, opening: (char, usize)) -> bool {
+    let Some(candidate) = opening_fence_delimiter(line) else {
+        return false;
+    };
+
+    if candidate.0 != opening.0 || candidate.1 < opening.1 {
+        return false;
+    }
+
+    let trimmed = line.trim();
+    trimmed[candidate.1..].trim().is_empty()
+}
+
+fn markdown_heading_title(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if !(1..=6).contains(&hash_count) {
+        return None;
+    }
+    let rest = &trimmed[hash_count..];
+    if !rest.is_empty()
+        && !rest
+            .chars()
+            .next()
+            .map(char::is_whitespace)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    Some(rest.trim().trim_end_matches('#').trim())
+}
+
+fn normalized_summary_label(label: &str) -> String {
+    label
+        .trim()
+        .trim_end_matches(':')
+        .chars()
+        .filter(|ch| !matches!(ch, '-' | '_' | ' '))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn is_planned_elsewhere_scope_label(label: &str) -> bool {
+    matches!(
+        normalized_summary_label(label).as_str(),
+        "goal"
+            | "goals"
+            | "scope"
+            | "summary"
+            | "details"
+            | "detail"
+            | "overview"
+            | "context"
+            | "objective"
+            | "objectives"
+            | "description"
+            | "nongoals"
+            | "acceptancecriteria"
+    )
+}
+
+fn strip_markdown_list_marker(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if let Some(item) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+    {
+        return Some(item);
+    }
+
+    let bytes = trimmed.as_bytes();
+    let mut marker_len = 0usize;
+    while marker_len < bytes.len() && bytes[marker_len].is_ascii_digit() {
+        marker_len += 1;
+    }
+
+    if marker_len == 0 || marker_len + 1 >= bytes.len() {
+        return None;
+    }
+
+    if matches!(bytes[marker_len], b'.' | b')') && bytes[marker_len + 1] == b' ' {
+        Some(&trimmed[marker_len + 2..])
+    } else {
+        None
+    }
+}
+
+fn compact_planned_elsewhere_summary(value: Option<&str>) -> Option<String> {
+    value.and_then(|raw| {
+        let mut active_fence = None;
+        let mut lines = Vec::new();
+
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                if lines.is_empty() {
+                    continue;
+                }
+                break;
+            }
+
+            if let Some(opening) = active_fence {
+                if closes_fence(trimmed, opening) {
+                    active_fence = None;
+                }
+                continue;
+            }
+
+            if let Some(opening) = opening_fence_delimiter(trimmed) {
+                if lines.is_empty() {
+                    active_fence = Some(opening);
+                    continue;
+                }
+                break;
+            }
+
+            if markdown_heading_title(trimmed).is_some() {
+                if lines.is_empty() {
+                    continue;
+                }
+                break;
+            }
+
+            if let Some((label, rest)) = trimmed.split_once(':') {
+                if is_planned_elsewhere_scope_label(label) {
+                    if !rest.trim().is_empty() {
+                        lines.push(rest.trim().to_owned());
+                    }
+                    continue;
+                }
+            }
+
+            if let Some(item) = strip_markdown_list_marker(trimmed) {
+                if lines.is_empty() {
+                    lines.push(item.trim().to_owned());
+                    continue;
+                }
+                break;
+            }
+
+            lines.push(trimmed.to_owned());
+        }
+
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
+    })
+}
+
+fn bead_status_label(status: &BeadStatus) -> &'static str {
+    match status {
+        BeadStatus::Open => "open",
+        BeadStatus::InProgress => "in_progress",
+        BeadStatus::Closed => "closed",
+        BeadStatus::Deferred => "deferred",
+    }
+}
+
+fn bead_status_outcome(status: &BeadStatus) -> &'static str {
+    match status {
+        BeadStatus::Open => "pending",
+        BeadStatus::InProgress => "active",
+        BeadStatus::Closed => "completed",
+        BeadStatus::Deferred => "deferred",
+    }
+}
+
+fn prompt_bead_status(summary: Option<&BeadSummary>, fallback: Option<&BeadStatus>) -> String {
+    summary
+        .map(|entry| &entry.status)
+        .or(fallback)
+        .map(|status| bead_status_label(status).to_owned())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn prompt_bead_outcome(summary: Option<&BeadSummary>, fallback: Option<&BeadStatus>) -> String {
+    summary
+        .map(|entry| &entry.status)
+        .or(fallback)
+        .map(|status| bead_status_outcome(status).to_owned())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn relationship_label(kind: &DependencyKind, upstream: bool) -> &'static str {
+    match (kind, upstream) {
+        (DependencyKind::Blocks, true) => "blocking dependency",
+        (DependencyKind::Blocks, false) => "downstream dependent",
+        (DependencyKind::ParentChild, true) => "parent epic",
+        (DependencyKind::ParentChild, false) => "child bead",
+    }
+}
+
+fn build_dependency_prompt_context(
+    relations: &[crate::adapters::br_models::DependencyRef],
+    bead_summaries: &BTreeMap<String, BeadSummary>,
+) -> Vec<BeadDependencyPromptContext> {
+    let mut items: Vec<_> = relations
+        .iter()
+        .map(|relation| {
+            let summary = bead_summaries.get(&relation.id);
+            BeadDependencyPromptContext {
+                id: relation.id.clone(),
+                title: summary
+                    .map(|entry| entry.title.clone())
+                    .or_else(|| relation.title.clone()),
+                relationship: relationship_label(&relation.kind, true).to_owned(),
+                status: Some(prompt_bead_status(summary, relation.status.as_ref())),
+                outcome: Some(prompt_bead_outcome(summary, relation.status.as_ref())),
+            }
+        })
+        .collect();
+    items.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    items
+}
+
+fn build_dependent_prompt_context(
+    relations: &[crate::adapters::br_models::DependencyRef],
+    bead_summaries: &BTreeMap<String, BeadSummary>,
+) -> Vec<BeadDependencyPromptContext> {
+    let mut items: Vec<_> = relations
+        .iter()
+        .map(|relation| {
+            let summary = bead_summaries.get(&relation.id);
+            BeadDependencyPromptContext {
+                id: relation.id.clone(),
+                title: summary
+                    .map(|entry| entry.title.clone())
+                    .or_else(|| relation.title.clone()),
+                relationship: relationship_label(&relation.kind, false).to_owned(),
+                status: Some(prompt_bead_status(summary, relation.status.as_ref())),
+                outcome: Some(prompt_bead_outcome(summary, relation.status.as_ref())),
+            }
+        })
+        .collect();
+    items.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    items
+}
+
+fn infer_implicit_slot_hint(
+    bundle: &MilestoneBundle,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> Option<(usize, usize)> {
+    let mut next_implicit_bead = 1usize;
+    for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
+        for (bead_index, proposal) in workstream.beads.iter().enumerate() {
+            let implicit_bead_id = format!("{}.bead-{}", milestone_id.as_str(), next_implicit_bead);
+            next_implicit_bead += 1;
+            if bead_matches_implicit_slot(bead_id, milestone_id.as_str(), &implicit_bead_id)
+                && proposal_is_title_fallback_candidate(proposal, milestone_id, &implicit_bead_id)
+            {
+                return Some((workstream_index, bead_index));
+            }
+        }
+    }
+    None
+}
+
+fn build_planned_elsewhere_context(
+    bundle: &MilestoneBundle,
+    milestone_id: &MilestoneId,
+    bead: &BeadDetail,
+    bead_plan: &ResolvedBeadPlan,
+    bead_summaries: &BTreeMap<String, BeadSummary>,
+) -> Vec<PlannedElsewherePromptContext> {
+    let allow_plan_derived_enrichment = bead_plan.membership_confirmed;
+    let dependent_ids = BTreeSet::from_iter(bead.dependents.iter().map(|item| item.id.clone()));
+    let upstream_ids = BTreeSet::from_iter(bead.dependencies.iter().map(|item| item.id.clone()));
+    let mut items = BTreeMap::new();
+
+    let mut add_item = |item: PlannedElsewherePromptContext, priority: PlannedElsewherePriority| {
+        items
+            .entry(item.id.clone())
+            .or_insert(PlannedElsewhereCandidate { item, priority });
+    };
+
+    let mut next_implicit_bead = 1usize;
+    let mut proposal_lookup = BTreeMap::new();
+    for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
+        for (bead_index, proposal) in workstream.beads.iter().enumerate() {
+            let proposal_id = canonical_proposal_id(milestone_id, proposal, next_implicit_bead);
+            next_implicit_bead += 1;
+            proposal_lookup.insert(
+                proposal_id,
+                (
+                    workstream_index,
+                    bead_index,
+                    workstream.name.as_str(),
+                    proposal,
+                ),
+            );
+        }
+    }
+
+    let mut shared_acceptance_owners = BTreeMap::<String, Vec<String>>::new();
+    if allow_plan_derived_enrichment {
+        for criterion in &bundle.acceptance_map {
+            let covered_by = criterion
+                .covered_by
+                .iter()
+                .map(|bead_ref| canonicalize_bundle_bead_ref(milestone_id, bead_ref))
+                .collect::<Vec<_>>();
+            if !covered_by.iter().any(|covered_id| covered_id == &bead.id) {
+                continue;
+            }
+
+            for related_bead_id in covered_by {
+                if related_bead_id == bead.id
+                    || upstream_ids.contains(&related_bead_id)
+                    || dependent_ids.contains(&related_bead_id)
+                {
+                    continue;
+                }
+
+                shared_acceptance_owners
+                    .entry(related_bead_id)
+                    .or_default()
+                    .push(criterion.id.clone());
+            }
+        }
+    }
+
+    for dependent in &bead.dependents {
+        let summary = bead_summaries.get(&dependent.id);
+        let plan_summary = allow_plan_derived_enrichment
+            .then(|| proposal_lookup.get(&dependent.id))
+            .flatten()
+            .and_then(|(_, _, _, proposal)| {
+                compact_planned_elsewhere_summary(proposal.description.as_deref())
+            });
+        add_item(
+            PlannedElsewherePromptContext {
+                id: dependent.id.clone(),
+                title: summary
+                    .map(|entry| entry.title.clone())
+                    .or_else(|| dependent.title.clone())
+                    .unwrap_or_else(|| dependent.id.clone()),
+                relationship: relationship_label(&dependent.kind, false).to_owned(),
+                status: Some(prompt_bead_status(summary, dependent.status.as_ref())),
+                summary: plan_summary,
+            },
+            PlannedElsewherePriority::DirectDependent,
+        );
+    }
+
+    for (related_bead_id, mut criterion_ids) in shared_acceptance_owners {
+        criterion_ids.sort();
+        criterion_ids.dedup();
+        let summary = bead_summaries.get(&related_bead_id);
+        let proposal_entry = proposal_lookup.get(&related_bead_id);
+        let plan_summary = proposal_entry.and_then(|(_, _, _, proposal)| {
+            compact_planned_elsewhere_summary(proposal.description.as_deref())
+        });
+        let workstream_name = proposal_entry.map(|(_, _, workstream_name, _)| *workstream_name);
+        let criteria_label = criterion_ids.join(", ");
+        let relationship = match workstream_name {
+            Some(workstream_name) => format!(
+                "shared milestone acceptance ownership in {workstream_name} ({criteria_label})"
+            ),
+            None => format!("shared milestone acceptance ownership ({criteria_label})"),
+        };
+        add_item(
+            PlannedElsewherePromptContext {
+                id: related_bead_id.clone(),
+                title: summary
+                    .map(|entry| entry.title.clone())
+                    .or_else(|| proposal_entry.map(|(_, _, _, proposal)| proposal.title.clone()))
+                    .unwrap_or_else(|| related_bead_id.clone()),
+                relationship,
+                status: Some(prompt_bead_status(summary, None)),
+                summary: plan_summary,
+            },
+            PlannedElsewherePriority::SharedAcceptance,
+        );
+    }
+
+    let location_hint = bead_plan
+        .membership_confirmed
+        .then_some(())
+        .and(
+            bead_plan
+                .matched_workstream_index
+                .zip(bead_plan.matched_bead_index),
+        )
+        .or_else(|| {
+            bead_plan
+                .membership_confirmed
+                .then(|| infer_implicit_slot_hint(bundle, milestone_id, &bead.id))
+                .flatten()
+        });
+    let Some((workstream_index, current_bead_index)) = location_hint else {
+        return apply_planned_elsewhere_budget(items.into_values().collect());
+    };
+
+    let workstream = &bundle.workstreams[workstream_index];
+    let neighbor_range_start = current_bead_index.saturating_sub(1);
+    let neighbor_range_end = usize::min(workstream.beads.len(), current_bead_index + 2);
+
+    let mut implicit_index = 1usize;
+    for (candidate_workstream_index, candidate_workstream) in bundle.workstreams.iter().enumerate()
+    {
+        for (candidate_bead_index, proposal) in candidate_workstream.beads.iter().enumerate() {
+            let proposal_id = canonical_proposal_id(milestone_id, proposal, implicit_index);
+            implicit_index += 1;
+
+            if candidate_workstream_index != workstream_index
+                || candidate_bead_index == current_bead_index
+                || candidate_bead_index < neighbor_range_start
+                || candidate_bead_index >= neighbor_range_end
+                || proposal_id == bead.id
+            {
+                continue;
+            }
+
+            let (relation, priority) = if dependent_ids.contains(&proposal_id) {
+                (
+                    "downstream dependent already planned elsewhere",
+                    PlannedElsewherePriority::DirectDependent,
+                )
+            } else if upstream_ids.contains(&proposal_id) {
+                (
+                    "upstream dependency already planned elsewhere",
+                    PlannedElsewherePriority::UpstreamNeighbor,
+                )
+            } else {
+                (
+                    "adjacent same-workstream bead",
+                    PlannedElsewherePriority::AdjacentNeighbor,
+                )
+            };
+            let summary = bead_summaries.get(&proposal_id);
+            add_item(
+                PlannedElsewherePromptContext {
+                    id: proposal_id.clone(),
+                    title: summary
+                        .map(|entry| entry.title.clone())
+                        .unwrap_or_else(|| proposal.title.clone()),
+                    relationship: format!("{relation} in {}", workstream.name),
+                    status: Some(prompt_bead_status(summary, None)),
+                    summary: compact_planned_elsewhere_summary(proposal.description.as_deref()),
+                },
+                priority,
+            );
+        }
+    }
+
+    apply_planned_elsewhere_budget(items.into_values().collect())
+}
+
+fn apply_planned_elsewhere_budget(
+    items: Vec<PlannedElsewhereCandidate>,
+) -> Vec<PlannedElsewherePromptContext> {
+    let mut ranked_items = items;
+    ranked_items.sort_by(|left, right| {
+        left.priority
+            .cmp(&right.priority)
+            .then_with(|| left.item.id.cmp(&right.item.id))
+            .then_with(|| left.item.title.cmp(&right.item.title))
+    });
+
+    let mut selected = Vec::new();
+    let mut used_bytes = 0usize;
+    for item in ranked_items {
+        if selected.len() >= PLANNED_ELSEWHERE_MAX_ITEMS
+            || used_bytes >= PLANNED_ELSEWHERE_MAX_BYTES
+        {
+            break;
+        }
+
+        let separator_bytes = usize::from(!selected.is_empty());
+        let remaining_bytes = PLANNED_ELSEWHERE_MAX_BYTES
+            .saturating_sub(used_bytes)
+            .saturating_sub(separator_bytes);
+        let Some(item) = fit_planned_elsewhere_item_to_budget(&item.item, remaining_bytes) else {
+            continue;
+        };
+        used_bytes += separator_bytes + planned_elsewhere_serialized_bytes(&item);
+        selected.push(item);
+    }
+
+    selected.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    selected
+}
+
+fn fit_planned_elsewhere_item_to_budget(
+    item: &PlannedElsewherePromptContext,
+    remaining_bytes: usize,
+) -> Option<PlannedElsewherePromptContext> {
+    let mut fitted = item.clone();
+    fitted.summary = fitted.summary.as_deref().and_then(|summary| {
+        truncate_with_ascii_ellipsis(summary, PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES)
+    });
+
+    let mut fitted = fit_planned_elsewhere_base_to_budget(&fitted, remaining_bytes)?;
+    let Some(summary) = fitted.summary.clone() else {
+        return Some(fitted);
+    };
+
+    if planned_elsewhere_serialized_bytes(&fitted) <= remaining_bytes {
+        return Some(fitted);
+    }
+
+    let mut best_fit = None;
+    let mut low = 0usize;
+    let mut high = summary.len();
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let mut candidate = fitted.clone();
+        candidate.summary = truncate_with_ascii_ellipsis(&summary, mid);
+        if planned_elsewhere_serialized_bytes(&candidate) <= remaining_bytes {
+            best_fit = Some(candidate);
+            low = mid.saturating_add(1);
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    best_fit.or_else(|| {
+        fitted.summary = None;
+        (planned_elsewhere_serialized_bytes(&fitted) <= remaining_bytes).then_some(fitted)
+    })
+}
+
+fn fit_planned_elsewhere_base_to_budget(
+    item: &PlannedElsewherePromptContext,
+    remaining_bytes: usize,
+) -> Option<PlannedElsewherePromptContext> {
+    let mut base_only = PlannedElsewherePromptContext {
+        summary: None,
+        ..item.clone()
+    };
+    if planned_elsewhere_serialized_bytes_without_summary(&base_only) <= remaining_bytes {
+        return Some(item.clone());
+    }
+
+    let mut best_fit = base_only.clone();
+    best_fit.title = "...".to_owned();
+    best_fit.relationship = "...".to_owned();
+    if planned_elsewhere_serialized_bytes_without_summary(&best_fit) > remaining_bytes {
+        return None;
+    }
+
+    let mut low = 1usize;
+    let mut high = item.relationship.len();
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let Some(truncated_relationship) = truncate_with_ascii_ellipsis(&item.relationship, mid)
+        else {
+            break;
+        };
+        let mut candidate = best_fit.clone();
+        candidate.relationship = truncated_relationship;
+        if planned_elsewhere_serialized_bytes_without_summary(&candidate) <= remaining_bytes {
+            best_fit = candidate;
+            low = mid.saturating_add(1);
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    base_only = best_fit.clone();
+    let mut low = 1usize;
+    let mut high = item.title.len();
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let Some(truncated_title) = truncate_with_ascii_ellipsis(&item.title, mid) else {
+            break;
+        };
+        let mut candidate = base_only.clone();
+        candidate.title = truncated_title;
+        if planned_elsewhere_serialized_bytes_without_summary(&candidate) <= remaining_bytes {
+            best_fit = candidate;
+            low = mid.saturating_add(1);
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    let mut output = item.clone();
+    output.title = best_fit.title;
+    output.relationship = best_fit.relationship;
+    Some(output)
+}
+
+fn planned_elsewhere_serialized_bytes(item: &PlannedElsewherePromptContext) -> usize {
+    planned_elsewhere_rendered_bytes(&planned_elsewhere_item_body(item))
+}
+
+fn planned_elsewhere_serialized_bytes_without_summary(
+    item: &PlannedElsewherePromptContext,
+) -> usize {
+    planned_elsewhere_rendered_bytes(&planned_elsewhere_item_body_without_summary(item))
+}
+
+fn planned_elsewhere_item_body(item: &PlannedElsewherePromptContext) -> String {
+    let mut line = planned_elsewhere_item_body_without_summary(item);
+    if let Some(summary) = item.summary.as_deref() {
+        line.push_str("\nSummary:\n");
+        line.push_str(summary);
+    }
+    line
+}
+
+fn planned_elsewhere_item_body_without_summary(item: &PlannedElsewherePromptContext) -> String {
+    let mut line = format!("{} ({}) - {}", item.id, item.title, item.relationship);
+    if let Some(status) = item.status.as_deref() {
+        line.push_str(&format!("; status: {status}"));
+    }
+    line
+}
+
+fn planned_elsewhere_rendered_bytes(item_body: &str) -> usize {
+    let mut lines = item_body.lines();
+    let first_line = lines.next().unwrap_or_default();
+    let continuation_indent = "- ".len().max(4);
+    let mut bytes = if !first_line.is_empty() && opening_fence_delimiter(first_line).is_some() {
+        "-".len() + 1 + continuation_indent + first_line.len()
+    } else {
+        "- ".len() + first_line.len()
+    };
+
+    for line in lines {
+        bytes += 1 + continuation_indent + line.len();
+    }
+
+    bytes
 }
 
 fn parse_flow_override(raw: Option<&str>) -> AppResult<Option<FlowPreset>> {
@@ -1469,20 +2260,28 @@ fn truncate_utf8(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        backfill_legacy_explicit_bead_flags, ensure_bead_belongs_to_milestone,
-        ensure_bead_creation_targets_are_actionable, infer_parent_epic_id, load_milestone_bundle,
-        resolve_bead_plan, validate_milestone_plan_snapshot,
+        apply_planned_elsewhere_budget, backfill_legacy_explicit_bead_flags,
+        build_dependency_prompt_context, build_dependent_prompt_context,
+        build_planned_elsewhere_context, compact_planned_elsewhere_summary,
+        ensure_bead_belongs_to_milestone, ensure_bead_creation_targets_are_actionable,
+        infer_parent_epic_id, load_milestone_bundle, map_br_list_error,
+        planned_elsewhere_serialized_bytes, planned_elsewhere_serialized_bytes_without_summary,
+        resolve_bead_plan, validate_milestone_plan_snapshot, PlannedElsewhereCandidate,
+        PlannedElsewherePriority, PLANNED_ELSEWHERE_MAX_BYTES, PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES,
     };
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     use crate::adapters::br_models::{
-        BeadDetail, BeadPriority, BeadStatus, BeadType, DependencyKind, DependencyRef,
+        BeadDetail, BeadPriority, BeadStatus, BeadSummary, BeadType, DependencyKind, DependencyRef,
     };
+    use crate::adapters::br_process::BrError;
     use crate::adapters::fs::FsMilestonePlanStore;
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
     };
     use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus};
+    use crate::contexts::project_run_record::service::PlannedElsewherePromptContext;
     use crate::shared::domain::FlowPreset;
     use crate::shared::error::AppError;
 
@@ -1548,6 +2347,25 @@ mod tests {
         bundle
     }
 
+    fn sample_three_bead_bundle() -> MilestoneBundle {
+        let mut bundle = sample_two_bead_bundle();
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Document task bootstrap follow-up".to_owned(),
+            description: Some(
+                "Capture the operator-facing workflow once project creation is stable.".to_owned(),
+            ),
+            bead_type: Some("docs".to_owned()),
+            priority: Some(2),
+            labels: Vec::new(),
+            depends_on: vec!["bead-2".to_owned()],
+            acceptance_criteria: Vec::new(),
+            flow_override: None,
+        });
+        bundle
+    }
+
     #[test]
     fn load_milestone_bundle_rejects_invalid_bundle_semantics() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1587,12 +2405,41 @@ mod tests {
                 id: "ms-alpha.epic-1".to_owned(),
                 kind: DependencyKind::ParentChild,
                 title: Some("Parent".to_owned()),
+                status: None,
             }],
             dependents: Vec::new(),
             owner: None,
             created_at: None,
             updated_at: None,
         }
+    }
+
+    fn render_planned_elsewhere_item(item: &PlannedElsewherePromptContext) -> String {
+        let mut line = format!("{} ({}) - {}", item.id, item.title, item.relationship);
+        if let Some(status) = item.status.as_deref() {
+            line.push_str(&format!("; status: {status}"));
+        }
+        if let Some(summary) = item.summary.as_deref() {
+            line.push_str("\nSummary:\n");
+            line.push_str(summary);
+        }
+        let mut lines = line.lines();
+        let first_line = lines.next().unwrap_or_default();
+        let mut rendered = format!("- {first_line}");
+        for continuation in lines {
+            rendered.push('\n');
+            rendered.push_str("    ");
+            rendered.push_str(continuation);
+        }
+        rendered
+    }
+
+    fn render_planned_elsewhere_block(items: &[PlannedElsewherePromptContext]) -> String {
+        items
+            .iter()
+            .map(render_planned_elsewhere_item)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -1603,6 +2450,7 @@ mod tests {
             id: "ms-alpha.bead-3".to_owned(),
             kind: DependencyKind::ParentChild,
             title: Some("Child bead".to_owned()),
+            status: None,
         });
 
         assert_eq!(infer_parent_epic_id(&bead), None);
@@ -1732,6 +2580,771 @@ mod tests {
             .expect_err("cross-milestone bead should fail");
 
         assert!(matches!(error, AppError::InvalidConfigValue { .. }));
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_skips_neighbors_when_membership_is_unconfirmed() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.workstreams[0].beads[0].description =
+            Some("Define metadata before project creation.".to_owned());
+        let mut bead = sample_bead();
+        bead.title = "Renamed live bead".to_owned();
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &BTreeMap::new(),
+        );
+
+        assert!(planned_elsewhere.is_empty());
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_skips_shared_acceptance_owners_when_membership_is_unconfirmed(
+    ) {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.acceptance_map[0].covered_by = vec!["bead-2".to_owned(), "bead-4".to_owned()];
+        bundle.workstreams.push(Workstream {
+            name: "Validation".to_owned(),
+            description: Some("Confirm task bootstrap behavior.".to_owned()),
+            beads: vec![BeadProposal {
+                bead_id: Some("bead-4".to_owned()),
+                explicit_id: Some(true),
+                title: "Validate task bootstrap follow-up".to_owned(),
+                description: Some(
+                    "Confirm the shared acceptance outcome without expanding the current bead."
+                        .to_owned(),
+                ),
+                bead_type: Some("task".to_owned()),
+                priority: Some(1),
+                labels: Vec::new(),
+                depends_on: Vec::new(),
+                acceptance_criteria: vec!["AC-1".to_owned()],
+                flow_override: None,
+            }],
+        });
+        let mut bead = sample_bead();
+        bead.title = "Renamed live bead".to_owned();
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+        let bead_summaries = BTreeMap::from([(
+            "ms-alpha.bead-4".to_owned(),
+            BeadSummary {
+                id: "ms-alpha.bead-4".to_owned(),
+                title: "Validate task bootstrap follow-up".to_owned(),
+                status: BeadStatus::Open,
+                priority: BeadPriority::new(1),
+                bead_type: BeadType::Task,
+                labels: Vec::new(),
+            },
+        )]);
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &bead_summaries,
+        );
+
+        assert!(planned_elsewhere.is_empty());
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_ignores_unconfirmed_title_fallback_location() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.workstreams[0].beads.swap(0, 1);
+        bundle.workstreams[0].beads[0].description =
+            Some("This proposal title still matches the live bead.".to_owned());
+        bundle.workstreams[0].beads[1].description =
+            Some("This is the real adjacent slot neighbor.".to_owned());
+        let bead = sample_bead();
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &BTreeMap::new(),
+        );
+
+        assert!(planned_elsewhere.is_empty());
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_drops_implicit_slot_hint_when_slot_was_reassigned() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_three_bead_bundle();
+        bundle.workstreams[0].beads[1].bead_id = Some("ms-alpha.bead-200".to_owned());
+        bundle.workstreams[0].beads[1].explicit_id = Some(true);
+        let bead = sample_bead();
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &BTreeMap::new(),
+        );
+
+        assert!(planned_elsewhere.is_empty());
+    }
+
+    #[test]
+    fn build_dependency_prompt_context_sorts_items_by_id_and_title() {
+        let relations = vec![
+            DependencyRef {
+                id: "ms-alpha.bead-20".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Zulu".to_owned()),
+                status: None,
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-3".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Bravo".to_owned()),
+                status: None,
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-11".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Alpha".to_owned()),
+                status: None,
+            },
+        ];
+
+        let prompt_context = build_dependency_prompt_context(&relations, &BTreeMap::new());
+
+        assert_eq!(
+            prompt_context
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ms-alpha.bead-11", "ms-alpha.bead-20", "ms-alpha.bead-3"]
+        );
+    }
+
+    #[test]
+    fn build_dependent_prompt_context_sorts_items_by_id_and_title() {
+        let relations = vec![
+            DependencyRef {
+                id: "ms-alpha.bead-9".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Zulu".to_owned()),
+                status: None,
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-1".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Alpha".to_owned()),
+                status: None,
+            },
+        ];
+
+        let prompt_context = build_dependent_prompt_context(&relations, &BTreeMap::new());
+
+        assert_eq!(
+            prompt_context
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ms-alpha.bead-1", "ms-alpha.bead-9"]
+        );
+    }
+
+    #[test]
+    fn build_dependency_prompt_context_uses_relation_status_when_summary_missing() {
+        let relations = vec![DependencyRef {
+            id: "ms-alpha.bead-1".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Define task-source metadata".to_owned()),
+            status: Some(BeadStatus::Closed),
+        }];
+
+        let prompt_context = build_dependency_prompt_context(&relations, &BTreeMap::new());
+
+        assert_eq!(prompt_context[0].status.as_deref(), Some("closed"));
+        assert_eq!(prompt_context[0].outcome.as_deref(), Some("completed"));
+    }
+
+    #[test]
+    fn build_dependent_prompt_context_uses_relation_status_when_summary_missing() {
+        let relations = vec![DependencyRef {
+            id: "ms-alpha.bead-3".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Document task bootstrap follow-up".to_owned()),
+            status: Some(BeadStatus::InProgress),
+        }];
+
+        let prompt_context = build_dependent_prompt_context(&relations, &BTreeMap::new());
+
+        assert_eq!(prompt_context[0].status.as_deref(), Some("in_progress"));
+        assert_eq!(prompt_context[0].outcome.as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn build_dependency_prompt_context_uses_unknown_status_when_all_status_sources_are_missing() {
+        let relations = vec![DependencyRef {
+            id: "ms-alpha.bead-1".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Define task-source metadata".to_owned()),
+            status: None,
+        }];
+
+        let prompt_context = build_dependency_prompt_context(&relations, &BTreeMap::new());
+
+        assert_eq!(prompt_context[0].status.as_deref(), Some("unknown"));
+        assert_eq!(prompt_context[0].outcome.as_deref(), Some("unknown"));
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_sorts_explicit_and_neighbor_items_by_id() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let bundle = sample_three_bead_bundle();
+        let mut bead = sample_bead();
+        bead.dependencies = vec![
+            DependencyRef {
+                id: "ms-alpha.bead-3".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Document task bootstrap follow-up".to_owned()),
+                status: None,
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-1".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Define task-source metadata".to_owned()),
+                status: None,
+            },
+        ];
+        bead.dependents = vec![
+            DependencyRef {
+                id: "ms-alpha.bead-9".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Later dependent".to_owned()),
+                status: None,
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-4".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Sooner dependent".to_owned()),
+                status: None,
+            },
+        ];
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(
+            planned_elsewhere
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ms-alpha.bead-1",
+                "ms-alpha.bead-3",
+                "ms-alpha.bead-4",
+                "ms-alpha.bead-9",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_includes_shared_acceptance_owners_from_other_workstreams() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.acceptance_map[0].covered_by = vec![
+            "bead-2".to_owned(),
+            "bead-4".to_owned(),
+            "bead-4".to_owned(),
+        ];
+        bundle.workstreams.push(Workstream {
+            name: "Validation".to_owned(),
+            description: Some("Confirm task bootstrap behavior.".to_owned()),
+            beads: vec![BeadProposal {
+                bead_id: Some("bead-4".to_owned()),
+                explicit_id: Some(true),
+                title: "Validate task bootstrap follow-up".to_owned(),
+                description: Some(
+                    "Confirm the shared acceptance outcome without expanding the current bead."
+                        .to_owned(),
+                ),
+                bead_type: Some("task".to_owned()),
+                priority: Some(1),
+                labels: Vec::new(),
+                depends_on: Vec::new(),
+                acceptance_criteria: vec!["AC-1".to_owned()],
+                flow_override: None,
+            }],
+        });
+        let resolved =
+            resolve_bead_plan(&bundle, &milestone_id, &sample_bead()).expect("resolve bead");
+        let bead_summaries = BTreeMap::from([(
+            "ms-alpha.bead-4".to_owned(),
+            BeadSummary {
+                id: "ms-alpha.bead-4".to_owned(),
+                title: "Validate task bootstrap follow-up".to_owned(),
+                status: BeadStatus::Open,
+                priority: BeadPriority::new(1),
+                bead_type: BeadType::Task,
+                labels: Vec::new(),
+            },
+        )]);
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &sample_bead(),
+            &resolved,
+            &bead_summaries,
+        );
+
+        assert!(planned_elsewhere.iter().any(|item| {
+            item.id == "ms-alpha.bead-4"
+                && item
+                    .relationship
+                    .contains("shared milestone acceptance ownership in Validation (AC-1)")
+                && item.status.as_deref() == Some("open")
+                && item.summary.as_deref()
+                    == Some(
+                        "Confirm the shared acceptance outcome without expanding the current bead.",
+                    )
+        }));
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_excludes_upstream_dependencies_from_shared_acceptance_owners(
+    ) {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned(), "bead-2".to_owned()];
+        let resolved =
+            resolve_bead_plan(&bundle, &milestone_id, &sample_bead()).expect("resolve bead");
+        let bead_summaries = BTreeMap::from([(
+            "ms-alpha.bead-1".to_owned(),
+            BeadSummary {
+                id: "ms-alpha.bead-1".to_owned(),
+                title: "Define task-source metadata".to_owned(),
+                status: BeadStatus::Closed,
+                priority: BeadPriority::new(1),
+                bead_type: BeadType::Task,
+                labels: Vec::new(),
+            },
+        )]);
+        let mut bead = sample_bead();
+        bead.dependencies.push(DependencyRef {
+            id: "ms-alpha.bead-1".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Define task-source metadata".to_owned()),
+            status: Some(BeadStatus::Closed),
+        });
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &bead_summaries,
+        );
+
+        assert!(planned_elsewhere.iter().all(|item| {
+            item.id != "ms-alpha.bead-1"
+                || !item
+                    .relationship
+                    .contains("shared milestone acceptance ownership")
+        }));
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_prefers_downstream_dependent_relationship_over_shared_acceptance_ownership(
+    ) {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_three_bead_bundle();
+        bundle.acceptance_map[0].covered_by = vec!["bead-2".to_owned(), "bead-3".to_owned()];
+        let resolved =
+            resolve_bead_plan(&bundle, &milestone_id, &sample_bead()).expect("resolve bead");
+        let bead_summaries = BTreeMap::from([(
+            "ms-alpha.bead-3".to_owned(),
+            BeadSummary {
+                id: "ms-alpha.bead-3".to_owned(),
+                title: "Document task bootstrap follow-up".to_owned(),
+                status: BeadStatus::Open,
+                priority: BeadPriority::new(2),
+                bead_type: BeadType::Docs,
+                labels: Vec::new(),
+            },
+        )]);
+        let mut bead = sample_bead();
+        bead.dependents.push(DependencyRef {
+            id: "ms-alpha.bead-3".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Document task bootstrap follow-up".to_owned()),
+            status: Some(BeadStatus::Open),
+        });
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &bead_summaries,
+        );
+
+        let matching = planned_elsewhere
+            .iter()
+            .filter(|item| item.id == "ms-alpha.bead-3")
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].relationship, "downstream dependent");
+        assert!(!matching[0]
+            .relationship
+            .contains("shared milestone acceptance ownership"));
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_skips_fenced_openers() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "```md\n## Review Policy\nKeep this example fenced.\n```\nCapture the real follow-up text.",
+        ));
+
+        assert_eq!(summary.as_deref(), Some("Capture the real follow-up text."));
+    }
+
+    #[test]
+    fn apply_planned_elsewhere_budget_prefers_high_priority_items_and_caps_bytes() {
+        let long_summary = "Capture deterministic scope context. ".repeat(32);
+        let budgeted = apply_planned_elsewhere_budget(vec![
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-10".to_owned(),
+                    title: "Direct dependent follow-up alpha".to_owned(),
+                    relationship: "downstream dependent".to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(long_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::DirectDependent,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-11".to_owned(),
+                    title: "Direct dependent follow-up beta".to_owned(),
+                    relationship: "downstream dependent".to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(long_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::DirectDependent,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-20".to_owned(),
+                    title: "Shared acceptance validation alpha".to_owned(),
+                    relationship:
+                        "shared milestone acceptance ownership in Validation (AC-1, AC-2)"
+                            .to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(long_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::SharedAcceptance,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-21".to_owned(),
+                    title: "Shared acceptance validation beta".to_owned(),
+                    relationship:
+                        "shared milestone acceptance ownership in Validation (AC-3, AC-4)"
+                            .to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(long_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::SharedAcceptance,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-30".to_owned(),
+                    title: "Adjacent same-workstream follow-up".to_owned(),
+                    relationship: "adjacent same-workstream bead in Task Substrate".to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(long_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::AdjacentNeighbor,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-40".to_owned(),
+                    title: "Upstream blocker context".to_owned(),
+                    relationship: "upstream dependency already planned elsewhere in Task Substrate"
+                        .to_owned(),
+                    status: Some("closed".to_owned()),
+                    summary: Some(long_summary),
+                },
+                priority: PlannedElsewherePriority::UpstreamNeighbor,
+            },
+        ]);
+
+        assert_eq!(
+            budgeted
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item.id.as_str(),
+                        "ms-alpha.bead-10"
+                            | "ms-alpha.bead-11"
+                            | "ms-alpha.bead-20"
+                            | "ms-alpha.bead-21"
+                    )
+                })
+                .count(),
+            4
+        );
+        assert!(budgeted.iter().all(|item| {
+            item.summary
+                .as_ref()
+                .map(|summary| summary.len() <= PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES)
+                .unwrap_or(true)
+        }));
+        assert!(
+            budgeted
+                .iter()
+                .map(planned_elsewhere_serialized_bytes)
+                .sum::<usize>()
+                <= PLANNED_ELSEWHERE_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_skips_scope_labels_and_returns_body_text() {
+        let summary =
+            compact_planned_elsewhere_summary(Some("Goal:\nKeep project creation deterministic."));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("Keep project creation deterministic.")
+        );
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_preserves_continuation_lines_in_same_paragraph() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "Goal:\nCapture the operator-facing workflow once project creation is stable,\nincluding the follow-up validation handoff.\n\nNon-goals:\nLeave execution wiring unchanged.",
+        ));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some(
+                "Capture the operator-facing workflow once project creation is stable,\nincluding the follow-up validation handoff."
+            )
+        );
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_uses_inline_scope_label_body() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "Scope: Capture the operator-facing workflow once project creation is stable.",
+        ));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("Capture the operator-facing workflow once project creation is stable.")
+        );
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_skips_level_one_heading() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "# Planned Follow-up\nCapture the operator-facing workflow once project creation is stable.",
+        ));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("Capture the operator-facing workflow once project creation is stable.")
+        );
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_skips_non_goal_section_labels() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "Non-goals:\nLeave the current bead scoped to prompt generation.",
+        ));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("Leave the current bead scoped to prompt generation.")
+        );
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_skips_acceptance_criteria_labels() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "Acceptance Criteria:\nCapture the operator-facing handoff after prompt generation lands.",
+        ));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("Capture the operator-facing handoff after prompt generation lands.")
+        );
+    }
+
+    #[test]
+    fn planned_elsewhere_serialized_bytes_match_rendered_bullet_output() {
+        let item = PlannedElsewherePromptContext {
+            id: "ms-alpha.bead-3".to_owned(),
+            title: "Document milestone bootstrap flow".to_owned(),
+            relationship: "adjacent same-workstream bead in Task Substrate".to_owned(),
+            status: Some("open".to_owned()),
+            summary: Some(
+                "Capture the operator-facing workflow once project creation is stable,\nincluding the follow-up validation handoff.".to_owned(),
+            ),
+        };
+
+        let without_summary = PlannedElsewherePromptContext {
+            summary: None,
+            ..item.clone()
+        };
+
+        assert_eq!(
+            planned_elsewhere_serialized_bytes_without_summary(&item),
+            render_planned_elsewhere_item(&without_summary).len()
+        );
+        assert_eq!(
+            planned_elsewhere_serialized_bytes(&item),
+            render_planned_elsewhere_item(&item).len()
+        );
+    }
+
+    #[test]
+    fn apply_planned_elsewhere_budget_accounts_for_rendered_multiline_overhead() {
+        let multiline_summary =
+            "Capture deterministic scope context for execution.\nKeep the related validation handoff nearby without absorbing it."
+                .repeat(8);
+        let budgeted = apply_planned_elsewhere_budget(vec![
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-10".to_owned(),
+                    title: "Direct dependent follow-up alpha".to_owned(),
+                    relationship: "downstream dependent".to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(multiline_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::DirectDependent,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-11".to_owned(),
+                    title: "Direct dependent follow-up beta".to_owned(),
+                    relationship: "downstream dependent".to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(multiline_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::DirectDependent,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-20".to_owned(),
+                    title: "Shared acceptance validation alpha".to_owned(),
+                    relationship:
+                        "shared milestone acceptance ownership in Validation (AC-1, AC-2)"
+                            .to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(multiline_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::SharedAcceptance,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-21".to_owned(),
+                    title: "Shared acceptance validation beta".to_owned(),
+                    relationship:
+                        "shared milestone acceptance ownership in Validation (AC-3, AC-4)"
+                            .to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(multiline_summary),
+                },
+                priority: PlannedElsewherePriority::SharedAcceptance,
+            },
+        ]);
+
+        assert!(
+            render_planned_elsewhere_block(&budgeted).len() <= PLANNED_ELSEWHERE_MAX_BYTES,
+            "rendered bytes: {}",
+            render_planned_elsewhere_block(&budgeted).len()
+        );
+    }
+
+    #[test]
+    fn apply_planned_elsewhere_budget_keeps_truncated_base_line_when_item_exceeds_budget() {
+        let oversized = "oversized context ".repeat(220);
+        let budgeted = apply_planned_elsewhere_budget(vec![PlannedElsewhereCandidate {
+            item: PlannedElsewherePromptContext {
+                id: "ms-alpha.bead-10".to_owned(),
+                title: format!("Direct dependent {oversized}"),
+                relationship: format!(
+                    "shared milestone acceptance ownership in Validation ({oversized})"
+                ),
+                status: Some("open".to_owned()),
+                summary: Some(oversized),
+            },
+            priority: PlannedElsewherePriority::DirectDependent,
+        }]);
+
+        assert_eq!(budgeted.len(), 1);
+        assert_eq!(budgeted[0].id, "ms-alpha.bead-10");
+        assert_eq!(budgeted[0].status.as_deref(), Some("open"));
+        assert!(render_planned_elsewhere_block(&budgeted).contains("ms-alpha.bead-10"));
+        assert!(render_planned_elsewhere_block(&budgeted).contains("status: open"));
+        assert!(
+            render_planned_elsewhere_block(&budgeted).len() <= PLANNED_ELSEWHERE_MAX_BYTES,
+            "rendered bytes: {}",
+            render_planned_elsewhere_block(&budgeted).len()
+        );
+    }
+
+    #[test]
+    fn map_br_list_error_marks_corrupt_exit_output_as_corrupt_record() {
+        let error = map_br_list_error(BrError::BrExitError {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "failed to parse .beads/issues.jsonl: corrupt json".to_owned(),
+            command: "br list --json".to_owned(),
+        });
+
+        assert!(matches!(error, AppError::CorruptRecord { .. }));
+        assert!(error.to_string().contains(".beads/issues.jsonl"));
+    }
+
+    #[test]
+    fn map_br_list_error_keeps_missing_issues_file_failures_degradable() {
+        let error = map_br_list_error(BrError::BrExitError {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "failed to read .beads/issues.jsonl: No such file or directory".to_owned(),
+            command: "br list --json".to_owned(),
+        });
+
+        assert!(matches!(error, AppError::Io(_)));
+    }
+
+    #[test]
+    fn map_br_list_error_keeps_generic_exit_failures_degradable() {
+        let error = map_br_list_error(BrError::BrExitError {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "simulated br list failure".to_owned(),
+            command: "br list --json".to_owned(),
+        });
+
+        assert!(matches!(error, AppError::Io(_)));
     }
 
     #[test]

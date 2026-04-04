@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr3-artifact",
+  "payload_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T16:32:05.130467368Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nThe amendment identifies a real prompt-context correctness bug: once explicit-ID resolution fails, reusing implicit-slot inference can fabricate adjacent plan neighbors from a slot the live bead no longer owns. Preventing that fallback in unconfirmed membership cases improves prompt accuracy and avoids misleading scope guidance.\n\n## Votes\n\n- `fr-3-6b46ccc3`: Accept\n  `resolve_bead_plan` already distinguishes confirmed membership from weaker fallbacks, but `build_planned_elsewhere_context` currently bypasses that distinction by calling `infer_implicit_slot_hint` even after membership was not confirmed. In the explicit-ID-reassigned case, that lets a stale live bead inherit the old slot’s neighborhood and inject incorrect adjacent summaries into `prompt.md`. That is a real correctness defect, not just cosmetic output, because the generated execution prompt gives false scope cues while simultaneously saying the plan metadata is untrusted. Gating the fallback to still-implicit/title-fallback-safe slots, or suppressing adjacent neighbors when membership is unconfirmed, is the safer behavior. A regression test asserting the prompt omits those adjacent beads is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 3
+}

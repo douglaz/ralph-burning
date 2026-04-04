@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330192702-final_review-vote-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260330192702-final_review-vote-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-31T03:34:50.055800911Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments have technical merit. Three identify real code or upgrade-path issues; the remaining one is primarily a maintainability/documentation fix for intentionally retained legacy-read behavior.\n\n## Votes\n\n- `fr-20-2f99f9e1`: Accept\n  `find_matching_running_task_run` and `matching_finalized_task_runs` both ignore `_started_at` and match only on bead/project state plus exact `run_id`. Keeping an unused timestamp parameter misstates the contract and invites callers to assume timestamp affects matching. Removing it from the signatures and call sites is a low-risk maintainability improvement.\n- `fr-20-33568ff5`: Accept\n  `collapse_task_run_attempts` still contains deliberate runless legacy grouping through `unique_open_legacy_group_index` and `legacy_group_accepts_completion`, and the repo’s tests show that backward-compatible reads of old `run_id: null` rows are still supported. That makes the remaining legacy path easy to misread as an accidental gap unless it is explicitly documented. A comment explaining that this is retained read-only compatibility logic is warranted; removal should happen only if legacy data support is intentionally dropped.\n- `fr-20-6b16d921`: Accept\n  In `update_task_run`, the fallback `open_matches` search intentionally looks at open rows without filtering by `run_id`, but only the single-match branch reports the conflicting run identifier. The multi-match branch drops that context and emits a generic ambiguity error. Including the conflicting run IDs there would materially improve diagnosis of corrupted or mixed-version task-run state with negligible risk.\n- `fr-20-dfd9659f`: Accept\n  The current write path cannot finalize an in-flight legacy running row with `run_id: null`: exact matching requires `Some(run_id)`, and the replay path also requires an exact `run_id`. As a result, a pre-upgrade running attempt cannot complete normally after upgrade, and a retry start will instead mark that legacy row failed via `fail_superseded_running_attempt`. That is a real persisted-state compatibility defect and merits a migration or one-time repair path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 20
+}

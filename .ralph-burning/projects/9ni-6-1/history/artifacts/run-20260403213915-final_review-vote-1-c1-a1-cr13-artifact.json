@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-vote-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260403213915-final_review-vote-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T02:03:05.355002164Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real prompt-contract robustness issues: one misleading validator diagnostic, one renderer/validator mismatch around Markdown heading semantics, and one semantics-changing flattening of nested list content.\n\n## Votes\n\n- `fr-13-7cb89c72`: Accept\n  `validate_canonical_prompt_shape()` currently uses `prompt_uses_contract()` to infer marker placement, but `prompt_uses_contract()` also requires seeing an early canonical heading after the marker. If the marker is correctly placed and the first one or two sections are simply missing, the validator emits a false placement error in addition to the real missing-section errors. That is a genuine diagnostics defect and makes failures harder to interpret.\n- `fr-13-7b70e4e8`: Accept\n  The renderer escapes embedded body lines with only two leading spaces in paths that feed `Must-Do Scope` and multiline bullet bodies, while the validator only treats column-1 `## ...` lines as canonical headings. In Markdown, ATX headings remain valid with up to three leading spaces, so contract validation can approve prompts whose rendered structure exposes extra heading nodes to readers. That renderer/validator mismatch is a real correctness hole, even if the exact fix needs to preserve intentional verbatim cases carefully.\n- `fr-13-4c0192fe`: Accept\n  `collect_section_items()` removes indentation before list detection, so nested bullets or numbered sub-items are promoted into separate top-level acceptance criteria or non-goals. That is not a harmless formatting change; it changes the meaning of the source description by turning supporting notes into independent scope boundaries. Preserving indentation context or limiting item starts to top-level markers is the correct direction.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

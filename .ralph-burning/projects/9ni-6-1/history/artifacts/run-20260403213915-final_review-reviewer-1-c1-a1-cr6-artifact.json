@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T23:52:09.670608694Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 correctness gaps in the prompt-contract changes: prompt-review contract violations bypass the retry loop, and the new renderer is not robust to multiline milestone/bundle text.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/prompt_review.rs:184-191`, `src/contexts/workflow_composition/prompt_review.rs:245-253`, and `src/contexts/workflow_composition/prompt_review.rs:319-320` make canonical-contract drift a hard terminal failure instead of a retryable prompt-review concern. Validators are rendered from `refinement.refined_prompt`, so if the refiner drops or reorders the contract marker/headings they stop receiving the contract-preservation instructions on that round. If those validators still accept, the post-acceptance `validate_canonical_prompt_shape` check immediately returns `PromptReviewRejected`, bypassing the existing `prior_concerns` retry path even when `max_refinement_retries > 0`. A transient formatting miss on a bead-backed prompt can therefore abort prompt review instead of being fed back to the refiner.\n   Rationale: This is a workflow correctness regression: bead-backed prompts can fail prompt review permanently on the first contract-formatting mistake, despite the existing retry loop.\n2. `src/contexts/project_run_record/service.rs:612-617`, `src/contexts/project_run_record/service.rs:634-661`, and `src/contexts/project_run_record/service.rs:699-718` render free-form summary/description/list values by prefixing them with `- ` but do not indent or escape continuation lines. `MilestoneBundle.executive_summary` is only required to be non-empty (`src/contexts/milestone_record/bundle.rs:100-101`), so perfectly valid multiline milestone text can inject raw top-level lines or `## ...` headings into the generated prompt. Because `create_project_from_bead_context` now validates the canonical shape (`src/contexts/project_run_record/service.rs:384-393`), that multiline content can corrupt the contract or make `project create-from-bead` fail outright. The renderer needs to preserve multiline fields as blocks or indent continuation lines before validation.\n   Rationale: The new prompt contract assumes single-line metadata where the upstream milestone bundle does not, so normal multiline bundle content can now break bead-backed project creation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

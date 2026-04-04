@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T05:14:48.798087509Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the diff end-to-end and ran `cargo test process_backend -- --nocapture` successfully. One correctness issue remains: workflow prompt generation still emits raw schemas while `ProcessBackendAdapter` now appends backend-processed schemas, so process-backed prompts contain conflicting authoritative contracts.\n\n## Amendments\n\n1. Blocking: `src/adapters/process_backend.rs:668-752` now normalizes and, for Claude, wraps the transport schema before it is appended to stdin, but the workflow prompt builders still render the raw schema into the prompt body via `src/contexts/workflow_composition/engine.rs:107-108` and `src/contexts/workflow_composition/engine.rs:159-168`, `src/contexts/workflow_composition/prompt_review.rs:396-405`, `src/contexts/workflow_composition/completion.rs:269-272`, and `src/contexts/workflow_composition/final_review.rs:1583-1594`; that block is still presented to the model as authoritative by `src/contexts/workspace_governance/template_catalog.rs:112-118`. As a result, every process-backed invocation now carries two different “authoritative” schemas. For Claude this is still a real correctness bug, because the adapter schema is now `{ \"__rb_wrapped\": true, \"data\": ... }` while the workflow prompt still shows the unwrapped payload shape, so the model is being given incompatible top-level contracts in the same request. Update the prompt generators/panel consumers to use the same backend-processed schema (or remove the duplicate schema block entirely), and add an end-to-end test that exercises a built stage/panel prompt through `ProcessBackendAdapter` for Claude.\n   Rationale: The adapter-side fix only aligned the schema appended by `assemble_stdin`. The earlier schema block produced by the workflow layer still disagrees with it, which can still trigger Claude structured-output retries or make other process-backed invocations follow the wrong contract.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 20
+}

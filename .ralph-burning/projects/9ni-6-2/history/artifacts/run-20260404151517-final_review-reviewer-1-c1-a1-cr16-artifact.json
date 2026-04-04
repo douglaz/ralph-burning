@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T21:01:44.710733195Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the 9ni.6.2 changes in the prompt-generation path and its tests. I found two real robustness issues: dependency context is currently unbounded despite the prompt-size requirement, and planned-elsewhere summary extraction truncates multi-line prose at the first line break.\n\n## Amendments\n\n1. Cap or summarize the dependency section before rendering `prompt.md`. Right now `render_bead_task_prompt` prints every upstream dependency and downstream dependent verbatim (`src/contexts/project_run_record/service.rs:867-893`, `src/contexts/project_run_record/service.rs:991-1001`), while only planned-elsewhere items are budgeted (`src/cli/project.rs:1499-1525`). For beads with large fan-in/fan-out or epic-style child relationships, the generated prompt can grow without bound and violate the bead's explicit context-budget requirement.\n   Rationale: This is a robustness gap against valid inputs, not a cosmetic issue: prompt generation can become arbitrarily large for heavily connected beads.\n2. Make `compact_planned_elsewhere_summary` preserve continuation lines from the same paragraph instead of returning only the first non-empty line (`src/cli/project.rs:1145-1184`). As written, any hard-wrapped milestone-plan description is truncated at the first newline, so nearby-bead summaries can lose the qualifying text that tells the agent what is actually planned elsewhere.\n   Rationale: Milestone and bead descriptions are commonly wrapped across multiple lines. Dropping everything after the first line makes the planned-elsewhere context incomplete and can mis-scope the task.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}

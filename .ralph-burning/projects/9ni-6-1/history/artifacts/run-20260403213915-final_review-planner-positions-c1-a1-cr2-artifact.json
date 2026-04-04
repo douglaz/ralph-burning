@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr2-artifact",
+  "payload_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T22:22:35.168470858Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nThe contract-shape and scope-separation amendments identify real maintainability and correctness issues in the prompt contract path. The naming amendment is minor but technically sound; the other two expose concrete cases where current prompt generation and validation can misclassify or reject valid bead prompts.\n\n## Votes\n\n- `fr-2-a9bceba3`: Accept\n  `headings` is inaccurate because the collection contains every trimmed line, not just section headings. Renaming it to `trimmed_lines` or similar improves local correctness and maintainability with essentially no risk.\n- `fr-2-8377bd8d`: Accept\n  This is a real contract bug. `validate_canonical_prompt_shape` uses the first matching line anywhere in the prompt, while `render_bead_task_prompt` embeds raw bead description inside `Must-Do Scope`. Since real bead descriptions contain `## Acceptance Criteria`, the validator can select the embedded heading and falsely report the canonical sections out of order. The validator must restrict itself to top-level contract sections, or generation must sanitize embedded headings.\n- `fr-2-4a73bd87`: Accept\n  The current generator contradicts its own contract guidance by placing bead-local `Non-goals:` text inside `Must-Do Scope`, which downstream consumers are told to treat as in-scope. That is a robustness and maintainability problem because it mixes in-scope and out-of-scope instructions in the authoritative section. The generator should separate bead-local non-goals from required scope before rendering.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

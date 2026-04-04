@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-planner-positions-c1-a1-cr5-artifact",
+  "payload_id": "run-20260403141819-final_review-planner-positions-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T17:37:05.536565096Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAll six amendments describe plausible correctness or robustness defects, and each proposed fix improves behavior or test coverage without introducing obvious architectural risk. The strongest items are the persistence/path regressions and crash-safety issue; the remaining test and cleanup amendments are also technically sound and improve maintainability.\n\n## Votes\n\n- `fr-5-917aec5e`: Accept\n  The test suite should write fixtures through the same workspace root abstraction the application reads from. Leaving tests hardcoded to the audit path after the live/audit split creates systematic false failures and ongoing drift, so updating helpers to target the live project root is the correct and maintainable fix.\n- `fr-5-4975a044`: Accept\n  A branch whose return value is identical to the fallthrough is dead logic, and an input parameter that cannot affect the result is misleading API surface. Clarifying the intended semantics and either removing the guard/parameter or implementing the intended optimization improves correctness reasoning and maintainability.\n- `fr-5-8c707347`: Accept\n  Deterministic serialized output is a real contract for generated artifacts, and parity between `plan.md` and `plan.json` coverage is worthwhile. Adding a byte-for-byte determinism test is low risk and useful for catching nondeterministic ordering regressions.\n- `fr-5-519b4659`: Accept\n  Using a copied file as a completeness sentinel is unsafe when copy order is nondeterministic. A crash after the sentinel lands but before the tree is fully copied can permanently strand the live workspace in a partial state, so seeding must become atomic or ensure the sentinel is written last.\n- `fr-5-dc11c68a`: Accept\n  If `init` switches reads to the live root without seeding or mirroring requirements and milestone data, existing persisted artifacts become invisible and new writes bypass the audited tree. That is a real storage-contract regression, so those paths need to stay on the audit root or gain the same live/audit synchronization model as projects.\n- `fr-5-79e73d0c`: Accept\n  Treating planner-supplied fully qualified bead ids as implicit when they happen to match the canonical slot collapses an important identity distinction. If that causes metadata-only rematerialization to clear lineage or completion state, it is a serious persistence bug; preserving explicit ids and adding a regression test is the right fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 5
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr12-artifact",
+  "payload_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T19:42:54.949691561Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAccepted the three amendments that identify concrete behavioral defects or misleading prompt output, and rejected the dead-API amendment because it is cleanup without demonstrated correctness or safety impact and may be an intentional public constructor.\n\n## Votes\n\n- `fr-12-eda794b4`: Reject\n  `BrCommand::list()` is unused inside this crate, but it lives in a public module of a library crate, so lack of internal callers does not establish that it is dead API. Removing or deprecating it would be a maintenance choice, not a demonstrated correctness, safety, or robustness fix. I do not see a concrete defect here.\n- `fr-12-cfce6e58`: Accept\n  The fallback path explicitly treats `AppError::Io` from `load_bead_summaries` as degradable when direct relation statuses are available. `br_list_exit_error_looks_corrupt()` currently flags any stderr containing `.beads/issues.jsonl` or `issues.jsonl` as corruption, which will misclassify ordinary filesystem failures such as missing-file or permission errors and incorrectly bypass the fallback. That changes behavior from deterministic degradation to hard failure, so this is a real robustness bug.\n- `fr-12-34a52c7a`: Accept\n  `compact_planned_elsewhere_summary()` only recognizes a narrow label whitelist. If the description starts with supported section labels like `Non-goals:` or `Acceptance Criteria:`, it returns the label line itself when the label has no inline body, producing a misleading or content-free summary. Since the prompt system already treats those labels as structural boundaries elsewhere, this mismatch is a real prompt-quality defect and should be fixed.\n- `fr-12-b874e72f`: Accept\n  `MilestoneProgress::remaining()` excludes only completed, failed, and skipped beads, so it still includes blocked and in-progress items. `format_milestone_progress()` then reports `in progress`, `blocked`, and `remaining` side by side as if they were disjoint categories. That can produce internally inconsistent text and misstate milestone state to the agent consuming the prompt. This is a real correctness issue in the rendered progress summary.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 12
+}

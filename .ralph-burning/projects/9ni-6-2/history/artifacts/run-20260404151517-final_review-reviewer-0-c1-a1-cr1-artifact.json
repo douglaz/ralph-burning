@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T15:33:28.389354887Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is solid and well-structured. It correctly enriches prompt.md with milestone context (status, progress, goal), structured dependency context (upstream/downstream with status and outcome), planned-elsewhere context (dependents + same-workstream neighbors with summaries), and milestone plan constraints under review policy. The rendering is deterministic (BTreeMap/BTreeSet for ordering, consistent implicit index counting). All 903 tests pass (748 unit + 155 CLI integration). I found two issues: (1) milestone constraints are rendered in both the Milestone Summary section and the Review Policy section, wasting context budget; (2) the CLI test fixture has a duplicate unreachable `list --json` handler that is dead code.\n\n## Amendments\n\n1. Milestone constraints are rendered twice in the prompt: once under '## Milestone Summary' (as '- Constraints: ...') and again under '## Review Policy' (as '### Milestone Plan Constraints ...'). This violates the acceptance criterion that the prompt stays concise enough for a reasonable context budget. Remove the constraints sub-list from the Milestone Summary section, keeping only the '### Milestone Plan Constraints' block under Review Policy where they serve as actionable guardrails.\n   Rationale: Duplicating constraints wastes context tokens and risks confusing the executing agent about whether the two copies carry different authority. The Review Policy placement is more actionable since that section defines what the agent must comply with during implementation.\n2. In tests/cli.rs, the `project_create_from_bead_populates_prompt_with_bead_dependencies` test fixture contains two identical `if [ \"$1\" = \"list\" ] && [ \"$2\" = \"--json\" ]` blocks (lines ~1858 and ~1897). The second block is unreachable dead code because the first block exits before it. The two blocks contain different data (first includes ms-alpha.epic-1, second does not; bead-3 titles differ). Remove the second unreachable block to prevent confusion about which fixture data is actually under test.\n   Rationale: Dead test fixture code with divergent data creates a false impression that both data variants are exercised. If the first block's data is later changed, the second block would still silently remain, making it easy to miss during future maintenance.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

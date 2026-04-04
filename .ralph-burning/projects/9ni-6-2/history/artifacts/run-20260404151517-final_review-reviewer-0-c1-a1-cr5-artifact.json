@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T16:58:51.449788109Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the full diff across src/cli/project.rs, src/contexts/project_run_record/service.rs, tests/cli.rs, and tests/unit/project_run_record_test.rs. The implementation correctly: (1) enriches BeadProjectContext with structured dependency/planned-elsewhere context via new BeadDependencyPromptContext and PlannedElsewherePromptContext types, (2) adds milestone status and progress to prompt rendering, (3) builds planned-elsewhere context from dependents + adjacent workstream neighbors with deduplication and deterministic sorting, (4) gracefully degrades when `br list` fails by falling back to empty summaries with 'unknown' status, (5) moves milestone constraints into the review policy section, (6) uses compact_planned_elsewhere_summary to extract meaningful first-line summaries while skipping fenced code blocks. All new behavior is covered by unit tests in project.rs and integration tests in cli.rs including edge cases for br-list failure, fenced descriptions, unconfirmed membership, and slot reassignment. The one failing test (checkpoint_test::worktree_adapter_excludes_tracked_runtime_workspace_from_checkpoint_commits) is pre-existing and unrelated. Determinism is maintained through BTreeMap/BTreeSet usage and stable sort-by-id ordering. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}

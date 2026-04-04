@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-vote-0-c1-a1-cr15-artifact",
+  "payload_id": "run-20260403213915-final_review-vote-0-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T02:39:13.581426157Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll three amendments identify genuine correctness issues confirmed by code inspection. (1) `DefaultHasher` is used for persisted prompt-drift hashes — its instability across Rust versions is a real risk for false drift detection. (2) The validator is fence-aware but the renderer is not, creating an asymmetry that can corrupt AGENTS guidance containing canonical headings inside fenced blocks. (3) Test helpers hardcode `.git/ralph-burning-live` instead of routing through the production `resolve_git_dir` which handles worktree `.git` files, leaving a real coverage gap.\n\n## Votes\n\n- `fr-15-f523861e`: Accept\n  Confirmed at fs.rs:248-255: `DefaultHasher` is used, and the resulting hash is persisted in project.toml and compared across runs in drift.rs:62-64. Rust's documentation explicitly states DefaultHasher may change between releases. A toolchain upgrade could produce different hashes for identical prompts, triggering false abort/restart decisions. Replacing with a pinned stable digest and adding a golden-value test is the correct fix.\n- `fr-15-4826f568`: Accept\n  Confirmed asymmetry: `validate_canonical_prompt_shape` (task_prompt_contract.rs:199-212) tracks `active_fence` and correctly skips fenced content, but `escape_canonical_heading_lines` (service.rs:707-728) does line-by-line heading rewriting with no fence awareness. If milestone AGENTS guidance includes a fenced block containing canonical headings like `## Acceptance Criteria`, those lines get indented by 4 spaces, corrupting the verbatim content the contract explicitly requires to be preserved (task_prompt_contract.rs:167). This is a real bug where two related functions disagree on fence handling.\n- `fr-15-a83f6d94`: Accept\n  Confirmed across four test files: helpers like `live_workspace_root` hardcode `base_dir.join(\".git/ralph-burning-live\")`, while the production code in `FileSystem::resolve_git_dir` (fs.rs:382-398) handles both `.git` directories and `.git` files containing gitdir pointers for worktrees/submodules. Tests that bypass this resolution can't catch regressions in the worktree/submodule path. Routing through the production helper or a shared wrapper would close this coverage gap without much added complexity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 15
+}

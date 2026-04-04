@@ -82,6 +82,15 @@ fn assert_no_ref_keys(value: &serde_json::Value, path: &str) {
     }
 }
 
+fn parse_schema_from_stdin(stdin_text: &str) -> serde_json::Value {
+    let marker = "Return ONLY valid JSON matching the following schema:\n";
+    let schema_text = stdin_text
+        .split_once(marker)
+        .map(|(_, tail)| tail.trim())
+        .expect("stdin should contain schema marker");
+    serde_json::from_str(schema_text).expect("stdin schema should be valid JSON")
+}
+
 fn process_exists(pid: u32) -> bool {
     Command::new("kill")
         .arg("-0")
@@ -572,6 +581,20 @@ async fn claude_command_construction_and_double_parse() {
         stdin_text.contains("Return ONLY valid JSON"),
         "stdin should contain schema instruction"
     );
+    let stdin_schema = parse_schema_from_stdin(&stdin_text);
+    assert_eq!(
+        stdin_schema, schema,
+        "Claude stdin schema should match the wrapped transport schema exactly"
+    );
+    assert_eq!(
+        stdin_schema.pointer("/properties/__rb_wrapped/const"),
+        Some(&serde_json::json!(true)),
+        "Claude stdin schema should include the explicit wrapper sentinel"
+    );
+    assert!(
+        stdin_schema.pointer("/properties/data").is_some(),
+        "Claude stdin schema should include the top-level data wrapper"
+    );
 }
 
 // ── Claude resume flag ──────────────────────────────────────────────────────
@@ -708,6 +731,21 @@ async fn codex_command_construction_and_temp_files() {
         "schema should not have top-level definitions key"
     );
     assert_no_ref_keys(&schema, "schema");
+    let stdin_file = request.working_dir.join("codex-stdin.txt");
+    let stdin_text = fs::read_to_string(&stdin_file).expect("read stdin");
+    let stdin_schema = parse_schema_from_stdin(&stdin_text);
+    assert_eq!(
+        stdin_schema, schema,
+        "Codex stdin schema should match the processed transport schema exactly"
+    );
+    assert!(
+        stdin_schema.pointer("/properties/data").is_none(),
+        "Non-Claude stdin schema should not include Claude's data wrapper"
+    );
+    assert!(
+        stdin_schema.pointer("/properties/__rb_wrapped").is_none(),
+        "Non-Claude stdin schema should not include Claude's wrapper sentinel"
+    );
 
     assert!(
         !schema_path.exists(),
@@ -1730,6 +1768,16 @@ async fn stdin_payload_includes_contract_role_prompt_context_and_schema() {
     assert!(
         stdin_text.contains("Return ONLY valid JSON"),
         "should contain schema instruction"
+    );
+    let stdin_schema = parse_schema_from_stdin(&stdin_text);
+    assert_eq!(
+        stdin_schema.pointer("/properties/__rb_wrapped/const"),
+        Some(&serde_json::json!(true)),
+        "Claude stdin schema should include the wrapper sentinel"
+    );
+    assert!(
+        stdin_schema.pointer("/properties/data").is_some(),
+        "Claude stdin schema should describe the same wrapped data contract as transport"
     );
 }
 

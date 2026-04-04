@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-0-c1-a1-cr10-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-0-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T00:55:00.769085713Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the changes to split_bead_description_scope (now returns 3 values including acceptance criteria), is_bead_description_subsection_boundary, collect_section_items rename, and the acceptance criteria merging in render_bead_task_prompt. All relevant tests pass (13 unit tests + 17 CLI tests). The logic is correct: section reset only fires after a blank line, known section kinds are caught before the boundary check, fenced code blocks are properly guarded, and the push_line closure correctly routes lines. Three new tests adequately cover the new behaviors. One minor concern about the overly broad colon-ending heuristic in boundary detection.\n\n## Amendments\n\n1. In `is_bead_description_subsection_boundary` (service.rs:589-591), `line.trim().ends_with(':')` is overly broad — it matches any line ending in a colon, including things like `Example usage:` or `Note:` inside a Non-Goals or Acceptance Criteria section. While the `previous_line_blank` guard prevents most false positives, a non-goal section containing a blank line followed by a line like `Details:` or `Context:` would be incorrectly treated as a subsection boundary, prematurely ending the section and routing subsequent lines into must-do scope. Consider requiring the line to be a standalone label (e.g., no leading bullet prefix, not indented, maybe at least 2 words or matching a stricter pattern) to reduce false-positive risk.\n   Rationale: The current heuristic is fragile for descriptions that contain explanatory sub-paragraphs in their Non-Goals or Acceptance Criteria sections separated by blank lines. A more precise boundary detection (e.g., checking the line is not a bullet continuation and looks like a prose label) would be more robust.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 10
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260404151517-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T19:26:34.205323023Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept: the current prompt-enrichment path relies on a paginated, open-only `br list --json` result, so it can silently drop valid bead metadata and produce incorrect `planned elsewhere` context.\n\n## Votes\n\n- `fr-11-e98a2d5f`: Accept\n  `load_bead_summaries()` calls `BrCommand::list()`, which is just bare `br list --json`. In this repo, `br list --help` shows that `list` defaults to 50 results and excludes closed issues unless `--all` is passed; an actual `br list --json` here returns 50 items, while `br list --all --deferred --limit=0 --json` returns 111. `build_planned_elsewhere_context()` then uses `bead_summaries` to populate titles and statuses for shared-acceptance and adjacent-workstream items, and those call sites pass no fallback status, so `prompt_bead_status()` degrades to `unknown` when the summary is missing. That is a real correctness defect in the self-contained prompt context, not a theoretical concern. Fetching an exhaustive set or querying the needed IDs would both address it, and a regression test covering a closed related bead beyond the first page is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

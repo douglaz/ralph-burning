@@ -476,6 +476,15 @@ fn sample_bead_context() -> BeadProjectContext {
         milestone_name: "Alpha Milestone".to_owned(),
         milestone_description: "Deliver the alpha milestone.".to_owned(),
         milestone_summary: Some("Ship milestone-aware task execution.".to_owned()),
+        milestone_status: ralph_burning::contexts::milestone_record::model::MilestoneStatus::Ready,
+        milestone_progress: ralph_burning::contexts::milestone_record::model::MilestoneProgress {
+            total_beads: 4,
+            completed_beads: 1,
+            in_progress_beads: 1,
+            failed_beads: 0,
+            skipped_beads: 0,
+            blocked_beads: 1,
+        },
         milestone_goals: vec![
             "Create bead-backed tasks without manual setup".to_owned(),
             "Keep run start compatibility intact".to_owned(),
@@ -492,12 +501,48 @@ fn sample_bead_context() -> BeadProjectContext {
             "Controller can create the project without manual setup".to_owned(),
             "Created task remains compatible with run start".to_owned(),
         ],
-        bead_dependencies: vec![
-            "ms-alpha.bead-1 (Define task-source metadata)".to_owned(),
-            "ms-alpha.epic-1 (Task substrate epic)".to_owned(),
+        upstream_dependencies: vec![
+            BeadDependencyPromptContext {
+                id: "ms-alpha.bead-1".to_owned(),
+                title: Some("Define task-source metadata".to_owned()),
+                relationship: "blocking dependency".to_owned(),
+                status: Some("closed".to_owned()),
+                outcome: Some("completed".to_owned()),
+            },
+            BeadDependencyPromptContext {
+                id: "ms-alpha.epic-1".to_owned(),
+                title: Some("Task substrate epic".to_owned()),
+                relationship: "parent epic".to_owned(),
+                status: Some("in_progress".to_owned()),
+                outcome: Some("active".to_owned()),
+            },
         ],
-        already_planned_elsewhere: vec![
-            "ms-alpha.bead-4 handles dependency-driven follow-up work.".to_owned(),
+        downstream_dependents: vec![BeadDependencyPromptContext {
+            id: "ms-alpha.bead-4".to_owned(),
+            title: Some("Review downstream task creation follow-up".to_owned()),
+            relationship: "downstream dependent".to_owned(),
+            status: Some("open".to_owned()),
+            outcome: Some("pending".to_owned()),
+        }],
+        planned_elsewhere: vec![
+            PlannedElsewherePromptContext {
+                id: "ms-alpha.bead-4".to_owned(),
+                title: "Review downstream task creation follow-up".to_owned(),
+                relationship: "downstream dependent".to_owned(),
+                status: Some("open".to_owned()),
+                summary: Some(
+                    "Validate follow-up automation after task creation lands.".to_owned(),
+                ),
+            },
+            PlannedElsewherePromptContext {
+                id: "ms-alpha.bead-3".to_owned(),
+                title: "Document milestone bootstrap flow".to_owned(),
+                relationship: "adjacent same-workstream bead in Task Substrate".to_owned(),
+                status: Some("open".to_owned()),
+                summary: Some(
+                    "Capture operator-facing workflow once creation is stable.".to_owned(),
+                ),
+            },
         ],
         review_policy:
             ralph_burning::contexts::project_run_record::task_prompt_contract::default_review_policy(
@@ -739,7 +784,107 @@ fn render_bead_task_prompt_includes_milestone_scope_and_agents_guidance() {
     assert!(prompt.contains("## Already Planned Elsewhere"));
     assert!(prompt.contains("## Review Policy"));
     assert!(prompt.contains("## AGENTS / Repo Guidance"));
+    assert!(prompt.contains("- Status: `ready`"));
+    assert!(prompt.contains(
+        "- Progress: 1/4 completed; 1 in progress; 0 failed; 1 blocked; 0 skipped; 1 remaining"
+    ));
+    assert!(prompt.contains("ms-alpha.bead-1 (Define task-source metadata) - blocking dependency; status: closed; outcome: completed"));
+    assert!(prompt.contains(
+        "ms-alpha.bead-4 (Review downstream task creation follow-up) - downstream dependent"
+    ));
+    assert!(prompt.contains("### Milestone Plan Constraints"));
+    assert_eq!(
+        prompt
+            .matches("Reuse the current project substrate")
+            .count(),
+        1
+    );
     assert!(prompt.contains("Follow AGENTS.md and keep changes inspectable."));
+}
+
+#[test]
+fn render_bead_task_prompt_caps_dependency_sections_for_prompt_budget() {
+    let mut context = sample_bead_context();
+    context.upstream_dependencies = (1..=20)
+        .map(|index| BeadDependencyPromptContext {
+            id: format!("ms-alpha.bead-{index:02}"),
+            title: Some(format!("Long upstream dependency title {index}")),
+            relationship: "blocking dependency".to_owned(),
+            status: Some("closed".to_owned()),
+            outcome: Some("completed".to_owned()),
+        })
+        .collect();
+    context.downstream_dependents = (21..=40)
+        .map(|index| BeadDependencyPromptContext {
+            id: format!("ms-alpha.bead-{index:02}"),
+            title: Some(format!("Long downstream dependent title {index}")),
+            relationship: "downstream dependent".to_owned(),
+            status: Some("open".to_owned()),
+            outcome: Some("pending".to_owned()),
+        })
+        .collect();
+
+    let prompt = render_bead_task_prompt(&context);
+
+    assert!(prompt.contains("additional upstream dependencies omitted for prompt budget."));
+    assert!(prompt.contains("additional downstream dependents omitted for prompt budget."));
+    assert!(!prompt.contains("ms-alpha.bead-20 (Long upstream dependency title 20)"));
+    assert!(!prompt.contains("ms-alpha.bead-40 (Long downstream dependent title 40)"));
+}
+
+#[test]
+fn render_bead_task_prompt_keeps_single_long_dependency_visible_under_budget() {
+    let mut context = sample_bead_context();
+    context.upstream_dependencies = vec![BeadDependencyPromptContext {
+        id: "ms-alpha.long-upstream".to_owned(),
+        title: Some(format!(
+            "Long upstream dependency title {}",
+            "x".repeat(2200)
+        )),
+        relationship: format!("blocking dependency {}", "relationship detail ".repeat(120)),
+        status: Some("closed".to_owned()),
+        outcome: Some("completed".to_owned()),
+    }];
+    context.downstream_dependents.clear();
+
+    let prompt = render_bead_task_prompt(&context);
+
+    assert!(prompt.contains("ms-alpha.long-upstream"));
+    assert!(prompt.contains("status: closed"));
+    assert!(prompt.contains("outcome: completed"));
+    assert!(!prompt.contains("1 additional upstream dependencies omitted for prompt budget."));
+}
+
+#[test]
+fn render_bead_task_prompt_reports_exact_omitted_dependency_count() {
+    let mut context = sample_bead_context();
+    context.upstream_dependencies = (1..=20)
+        .map(|index| BeadDependencyPromptContext {
+            id: format!("ms-alpha.upstream-{index:02}"),
+            title: Some(format!(
+                "Long upstream dependency title {index} {}",
+                "detail ".repeat(18)
+            )),
+            relationship: "blocking dependency".to_owned(),
+            status: Some("closed".to_owned()),
+            outcome: Some("completed".to_owned()),
+        })
+        .collect();
+    context.downstream_dependents.clear();
+
+    let prompt = render_bead_task_prompt(&context);
+    let included_count = (1..=20)
+        .filter(|index| prompt.contains(&format!("ms-alpha.upstream-{index:02}")))
+        .count();
+    let omitted_count = 20usize.saturating_sub(included_count);
+
+    assert!(
+        omitted_count > 0,
+        "prompt should omit some upstream dependencies"
+    );
+    assert!(prompt.contains(&format!(
+        "{omitted_count} additional upstream dependencies omitted for prompt budget."
+    )));
 }
 
 #[test]
@@ -1046,6 +1191,39 @@ fn render_bead_task_prompt_extracts_numbered_lists_from_colon_suffixed_markdown_
 }
 
 #[test]
+fn render_bead_task_prompt_extracts_level_one_markdown_section_headings() {
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the contract explicit\n\n# Non-goals\n- do not broaden the bead scope\n\n# Acceptance Criteria\n- preserve level-one heading extraction\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let acceptance_start = prompt
+        .find("## Acceptance Criteria")
+        .expect("acceptance section should exist");
+    let planned_start = prompt
+        .find("## Already Planned Elsewhere")
+        .expect("planned elsewhere section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+    let non_goals_section = &prompt[non_goals_start..acceptance_start];
+    let acceptance_section = &prompt[acceptance_start..planned_start];
+
+    assert!(!must_do_section.contains("# Non-goals"));
+    assert!(!must_do_section.contains("# Acceptance Criteria"));
+    assert!(non_goals_section.contains("- do not broaden the bead scope"));
+    assert!(acceptance_section.contains("- preserve level-one heading extraction"));
+    assert!(!acceptance_section.contains("No explicit acceptance criteria were supplied."));
+}
+
+#[test]
 fn render_bead_task_prompt_preserves_nested_list_indentation_in_extracted_sections() {
     let mut context = sample_bead_context();
     context.bead_acceptance_criteria.clear();
@@ -1166,7 +1344,13 @@ fn render_bead_task_prompt_preserves_fenced_non_goal_blocks_without_mangling_del
 #[test]
 fn render_bead_task_prompt_puts_fence_first_bullet_items_on_indented_lines() {
     let mut context = sample_bead_context();
-    context.already_planned_elsewhere = vec!["```md\n## Review Policy\n```".to_owned()];
+    context.planned_elsewhere = vec![PlannedElsewherePromptContext {
+        id: "ms-alpha.bead-9".to_owned(),
+        title: "Fence-first planned item".to_owned(),
+        relationship: "adjacent same-workstream bead".to_owned(),
+        status: Some("open".to_owned()),
+        summary: Some("```md\n## Review Policy\n```".to_owned()),
+    }];
 
     let prompt = render_bead_task_prompt(&context);
 
@@ -1179,7 +1363,7 @@ fn render_bead_task_prompt_puts_fence_first_bullet_items_on_indented_lines() {
         .expect("review policy section should exist");
     let planned_section = &prompt[planned_start..review_start];
 
-    assert!(planned_section.contains("-\n    ```md\n    ## Review Policy\n    ```"));
+    assert!(planned_section.contains("Summary:\n    ```md\n    ## Review Policy\n    ```"));
     assert!(!planned_section.contains("- ```md"));
     assert!(
         ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
@@ -1209,16 +1393,22 @@ fn rendered_bead_task_prompt_indents_multiline_milestone_fields_without_breaking
         "Ship the prompt contract update.\n## Acceptance Criteria\nKeep this as milestone prose."
             .to_owned(),
     );
-    context.already_planned_elsewhere = vec![
-        "ms-alpha.bead-9 handles follow-up validation.\n## Review Policy\nTrack it separately."
-            .to_owned(),
-    ];
+    context.planned_elsewhere = vec![PlannedElsewherePromptContext {
+        id: "ms-alpha.bead-9".to_owned(),
+        title: "Follow-up validation".to_owned(),
+        relationship: "adjacent same-workstream bead".to_owned(),
+        status: Some("open".to_owned()),
+        summary: Some(
+            "ms-alpha.bead-9 handles follow-up validation.\n## Review Policy\nTrack it separately."
+                .to_owned(),
+        ),
+    }];
 
     let prompt = render_bead_task_prompt(&context);
 
-    assert!(prompt.contains("- Summary: Ship the prompt contract update."));
+    assert!(prompt.contains("- Goal: Ship the prompt contract update."));
     assert!(prompt.contains("    ## Acceptance Criteria"));
-    assert!(prompt.contains("- ms-alpha.bead-9 handles follow-up validation."));
+    assert!(prompt.contains("Summary:\n    ms-alpha.bead-9 handles follow-up validation."));
     assert!(prompt.contains("    ## Review Policy"));
     assert!(
         ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
@@ -1364,7 +1554,13 @@ fn create_project_from_bead_context_accepts_fence_first_bullet_fields() {
     let store = RecordingProjectStore::empty();
     let journal_store = FakeJournalStore;
     let mut context = sample_bead_context();
-    context.already_planned_elsewhere = vec!["```md\n## Review Policy\n```".to_owned()];
+    context.planned_elsewhere = vec![PlannedElsewherePromptContext {
+        id: "ms-alpha.bead-9".to_owned(),
+        title: "Fence-first planned item".to_owned(),
+        relationship: "adjacent same-workstream bead".to_owned(),
+        status: Some("open".to_owned()),
+        summary: Some("```md\n## Review Policy\n```".to_owned()),
+    }];
 
     let record = create_project_from_bead_context(
         &store,
@@ -1383,7 +1579,7 @@ fn create_project_from_bead_context_accepts_fence_first_bullet_fields() {
     assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
     assert!(captured
         .prompt_contents
-        .contains("-\n    ```md\n    ## Review Policy\n    ```"));
+        .contains("Summary:\n    ```md\n    ## Review Policy\n    ```"));
 }
 
 #[test]
@@ -1456,6 +1652,53 @@ fn create_project_from_bead_context_accepts_colon_suffixed_markdown_sections_and
     assert!(captured
         .prompt_contents
         .contains("- avoid the empty acceptance fallback"));
+    assert!(!captured
+        .prompt_contents
+        .contains("No explicit acceptance criteria were supplied."));
+}
+
+#[test]
+fn create_project_from_bead_context_extracts_level_one_markdown_sections() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the task scoped to the active bead\n\n# Non-goals\n- do not broaden the active bead\n\n# Acceptance Criteria\n- preserve level-one heading extraction\n".to_owned(),
+    );
+
+    let record = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: None,
+            prompt_override: None,
+            created_at: test_timestamp(),
+            context,
+        },
+    )
+    .expect("level-one markdown sections should bootstrap");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
+    let must_do_start = captured
+        .prompt_contents
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = captured
+        .prompt_contents
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let must_do_section = &captured.prompt_contents[must_do_start..non_goals_start];
+    assert!(captured
+        .prompt_contents
+        .contains("- do not broaden the active bead"));
+    assert!(captured
+        .prompt_contents
+        .contains("- preserve level-one heading extraction"));
+    assert!(!must_do_section.contains("# Non-goals"));
+    assert!(!must_do_section.contains("# Acceptance Criteria"));
     assert!(!captured
         .prompt_contents
         .contains("No explicit acceptance criteria were supplied."));

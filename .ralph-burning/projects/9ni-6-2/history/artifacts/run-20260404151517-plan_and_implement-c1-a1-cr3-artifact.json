@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260404151517-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-04T16:20:51.865532807Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the remaining `planned_elsewhere` regressions in bead-backed prompt generation by restricting adjacency hints to confirmed or implicit-slot-derived locations, explicitly skipping the current bead from nearby-plan scans, and making planned-elsewhere summary compaction fence-safe so fenced descriptions cannot inject dangling code fences into `prompt.md`. Added focused unit and CLI regressions covering reordered implicit plans, fenced summary compaction, and end-to-end `project create-from-bead` prompt rendering.\n\n## Steps\n\n1. [Completed] Inspected the pending amendments against `src/cli/project.rs` and the existing create-from-bead tests to isolate the unconfirmed-location and fenced-summary failure modes.\n2. [Completed] Updated planned-elsewhere context generation to use matched workstream/bead indices only when membership is confirmed, fall back to the implicit slot hint otherwise, and skip any nearby proposal whose canonical id matches the current bead id.\n3. [Completed] Reworked planned-elsewhere summary compaction to ignore fenced blocks and return the first non-empty unfenced text line, preventing dangling fence openers from breaking canonical prompt validation.\n4. [Completed] Added regression coverage for reordered implicit-plan adjacency, fenced summary compaction, and end-to-end `project create-from-bead` rendering, then ran targeted formatting and tests.\n\n## Validation Evidence\n\n- `cargo fmt --all` passed.\n- `cargo test build_planned_elsewhere_context_ -- --nocapture` passed (2 tests).\n- `cargo test compact_planned_elsewhere_summary_skips_fenced_openers -- --nocapture` passed.\n- `cargo test project_create_from_bead_skips_fenced_planned_elsewhere_summary_openers --test cli -- --nocapture` passed.\n- `cargo test --test cli project_create_from_bead_` passed (19 tests).\n- `cargo test --test unit create_project_from_bead_context_` passed (13 tests).\n\n## Outstanding Risks\n\n- Validation covered the targeted prompt-generation and create-from-bead paths, but I did not rerun the full repository test suite in this remediation pass.\n- The worktree still contains the unrelated untracked `.ralph-burning/` directory, which I left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 3
+}

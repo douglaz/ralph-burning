@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260403141819-final_review-aggregate-c1-a1-cr11-artifact",
+  "payload_id": "run-20260403141819-final_review-aggregate-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T20:33:34.544513832Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 11/20\n\n## Accepted\n\n- `fr-11-45bdde01`\n- `fr-11-3979efaa`\n\n## Rejected\n\n- `fr-11-ab721fd7`\n- `fr-11-631b4586`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-11-45bdde01`\n\n`src/contexts/milestone_record/service.rs:654-665` and `src/contexts/milestone_record/service.rs:776-793` make pending lineage cleanup retryable only when `plan.shape.json` still parses and its stored `shape_signature` exactly matches the current binary’s recomputed shape. That is too brittle for a recovery marker: if the sidecar is missing/corrupt, or if `progress_shape_signature` changes between the failed write and the retry, `materialize_bundle()` will refresh `plan.json`/`plan.md` for the already-committed plan but silently skip `clear_task_run_lineage()`. The milestone is then left on the new plan/version with stale `task-runs.ndjson` from the old shape. The pending-clear state needs to be keyed off a stable committed identity (for example `plan_hash`/plan version) or stored somewhere more durable than the shape sidecar.\n\n### `fr-11-3979efaa`\n\n`src/contexts/milestone_record/service.rs:699-703` persists the new `lineage_reset_required` state only in `plan.shape.json`, but the execution paths in `src/contexts/milestone_record/service.rs:843-849` and `src/contexts/milestone_record/service.rs:984-1002`/`1051-1069` never consult that marker before reconciling from `task-runs.ndjson`. After a post-commit lineage-clear failure, callers can still invoke `record_bead_start`, `update_task_run`, or `repair_task_run`; those paths will immediately rehydrate snapshot counters from stale lineage rows that belong to the pre-rematerialization plan. The run mutation APIs should block or self-heal while a lineage reset is pending.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 11
+}

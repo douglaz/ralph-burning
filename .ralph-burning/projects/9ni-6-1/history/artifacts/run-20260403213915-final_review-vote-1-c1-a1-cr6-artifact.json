@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260403213915-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T23:57:39.287272809Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendments that expose real prompt parsing, rendering, and retry-path defects. Rejected the duplicate-helper amendment because it is a minor deduplication refactor rather than a demonstrated correctness or robustness issue by itself.\n\n## Votes\n\n- `fr-6-32a688d8`: Reject\n  The duplication exists, but this is a tiny private predicate copied in two nearby code paths. On its own that is a low-value maintainability cleanup, not a concrete bug or safety problem. The substantive issue is the helper’s current behavior, which is covered by other amendments.\n- `fr-6-d4f48e45`: Accept\n  `split_bead_description_scope` pushes fence delimiter lines and fenced body lines from the Non-goals section into `non_goal_lines`, and `collect_non_goal_items` then treats them as ordinary prose or bullets. That will turn fenced examples into malformed non-goal items, so this is a real parsing/rendering defect.\n- `fr-6-9cfa9b06`: Accept\n  The fence logic only checks `starts_with(\"```\")` or `starts_with(\"~~~\")` and toggles state blindly, so it does not preserve the opening fence width. A four-backtick fence can therefore be closed early by a three-backtick line, which can cause canonical headings inside code blocks to be misinterpreted. That is a real parser bug.\n- `fr-6-7d857275`: Accept\n  The validator prompts are built from `refinement.refined_prompt`, so once a refinement drops the contract marker or canonical headings, validators stop receiving the contract-preservation guidance for that round. If they still accept, the subsequent `validate_canonical_prompt_shape` failure immediately returns `PromptReviewRejected` instead of routing the issue back through the existing retry loop. That is a genuine robustness defect in the control flow.\n- `fr-6-2cdc8c50`: Accept\n  The prompt renderer formats free-form multiline values as `- {value}` without indenting continuation lines, so embedded newlines can escape the list item and inject top-level content or canonical-looking headings. Because canonical-shape validation now runs on generated prompts and milestone text is allowed to be multiline, valid input can break prompt generation or corrupt the contract. This is a real rendering bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

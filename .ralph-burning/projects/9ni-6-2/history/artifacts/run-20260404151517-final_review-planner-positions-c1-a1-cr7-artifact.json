@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr7-artifact",
+  "payload_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T17:59:07.825197516Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAccept the deterministic-rendering and acceptance-ownership amendments; reject the summary-label amendment because the current behavior is intentional, covered by tests, and the ambiguity is too narrow to justify changing the parsing rule.\n\n## Votes\n\n- `fr-7-f80c2e20`: Reject\n  `compact_planned_elsewhere_summary` is explicitly tested to strip inline labels like `Scope:` and `Summary:` from the first extracted line, so this is current intended normalization rather than an accidental parse. The only real ambiguity is when the very first substantive line begins with one of those words as literal content, which is a narrow edge case; changing the rule would likely regress the existing label-compaction behavior without strong evidence of broader breakage.\n- `fr-7-464e51de`: Accept\n  Silently converting `load_bead_summaries` I/O failures into an empty map makes prompt rendering depend on transient `br list --json` availability instead of only on project state. Because downstream code substitutes `unknown` and fallback titles/statuses when summaries disappear, the same bead can yield different `prompt.md` content and hashes, which is a real determinism defect. This should fail hard or use another deterministic source for the required fields.\n- `fr-7-e92e36d4`: Accept\n  `acceptance_map[].covered_by` is the canonical statement of which beads own milestone acceptance work, while the current `build_planned_elsewhere_context` only infers related items from dependency edges and local workstream adjacency. That misses legitimate planned follow-up beads in other workstreams when they share acceptance ownership but have no direct dependency edge, so the prompt can understate already-planned work and push reviewers toward scope expansion. Planned-elsewhere generation should incorporate that authoritative ownership data.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 7
+}

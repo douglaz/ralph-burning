@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330040352-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260330040352-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T04:54:27.515393776Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all 5 changed files (retry_policy.rs, engine.rs, error.rs, process_backend.rs, tests). The retry limit increases, BinaryNotFound variant addition, exponential backoff, exit code 127 classification, artifact preservation on timeout, and start_paused test annotations are all correctly implemented. Found one critical bug: the new cancellation-during-backoff path in engine.rs:4642-4655 passes the original backend error (TransportFailure) to fail_run_result instead of a Cancellation error, which breaks the existing test `cancellation_between_retry_attempts_does_not_start_next_attempt` and would misreport failure cause in the journal.\n\n## Amendments\n\n1. BUG: Cancellation during retry backoff reports wrong failure class in run_failed journal event. In engine.rs:4642-4655, when cancellation is detected during the backoff sleep, `fail_run_result(&error, ...)` is called with the original backend error (e.g. TransportFailure). This causes `failure_label()` to return \"transport_failure\" instead of \"cancellation\". The pre-existing test `cancellation_between_retry_attempts_does_not_start_next_attempt` (workflow_engine_test.rs:3870) asserts `run_failed.details[\"failure_class\"] == \"cancellation\"` and will fail.\n\nThe sequence: (1) first attempt returns TransportFailure, (2) `will_retry` computed as true (token not cancelled yet), (3) CancelBetweenRetryAttemptsLogWriter triggers cancellation during stage_failed log write, (4) backoff select! detects cancellation, (5) fail_run_result called with original TransportFailure error → writes \"transport_failure\" not \"cancellation\".\n\nIn the old code (without the select!/cancellation check), the retry loop continued to the next attempt, where the stub adapter detected cancellation and returned InvocationCancelled, correctly producing \"cancellation\".\n\nFix: When cancellation is detected during backoff (engine.rs:4642), construct an AppError::InvocationCancelled and pass that to fail_run_result instead of the original `&error`.\n   Rationale: This is a correctness bug that breaks an existing test. The cancellation-during-backoff optimization changes observable behavior: the run_failed journal event records the wrong failure class. Beyond the test failure, this affects operational observability — operators inspecting failed runs would see \"transport_failure\" when the actual cause was cancellation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

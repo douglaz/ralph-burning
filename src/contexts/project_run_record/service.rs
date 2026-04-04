@@ -3,6 +3,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 
 use crate::adapters::fs::FileSystem;
+use crate::contexts::milestone_record::model::{MilestoneProgress, MilestoneStatus};
 use crate::contexts::requirements_drafting::service::SeedHandoff;
 use crate::contexts::workflow_composition;
 use crate::contexts::workspace_governance::config::{
@@ -10,6 +11,7 @@ use crate::contexts::workspace_governance::config::{
 };
 use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
 use crate::shared::error::{AppError, AppResult};
+use crate::shared::text::truncate_with_ascii_ellipsis;
 
 use super::fence_util::{closes_fence, opening_fence_delimiter};
 use super::journal;
@@ -243,11 +245,31 @@ pub struct CreateProjectInput {
 
 /// Bead-backed execution context used to bootstrap a project from milestone state.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeadDependencyPromptContext {
+    pub id: String,
+    pub title: Option<String>,
+    pub relationship: String,
+    pub status: Option<String>,
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedElsewherePromptContext {
+    pub id: String,
+    pub title: String,
+    pub relationship: String,
+    pub status: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BeadProjectContext {
     pub milestone_id: String,
     pub milestone_name: String,
     pub milestone_description: String,
     pub milestone_summary: Option<String>,
+    pub milestone_status: MilestoneStatus,
+    pub milestone_progress: MilestoneProgress,
     pub milestone_goals: Vec<String>,
     pub milestone_non_goals: Vec<String>,
     pub milestone_constraints: Vec<String>,
@@ -256,8 +278,9 @@ pub struct BeadProjectContext {
     pub bead_title: String,
     pub bead_description: Option<String>,
     pub bead_acceptance_criteria: Vec<String>,
-    pub bead_dependencies: Vec<String>,
-    pub already_planned_elsewhere: Vec<String>,
+    pub upstream_dependencies: Vec<BeadDependencyPromptContext>,
+    pub downstream_dependents: Vec<BeadDependencyPromptContext>,
+    pub planned_elsewhere: Vec<PlannedElsewherePromptContext>,
     pub review_policy: Vec<String>,
     pub parent_epic_id: Option<String>,
     pub flow: FlowPreset,
@@ -479,10 +502,20 @@ enum BeadDescriptionSectionKind {
 fn markdown_heading_title(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
-    if hash_count < 2 {
+    if !(1..=6).contains(&hash_count) {
         return None;
     }
-    Some(trimmed[hash_count..].trim())
+    let rest = &trimmed[hash_count..];
+    if !rest.is_empty()
+        && !rest
+            .chars()
+            .next()
+            .map(char::is_whitespace)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    Some(rest.trim().trim_end_matches('#').trim())
 }
 
 fn normalized_section_label(label: &str) -> String {
@@ -730,6 +763,9 @@ fn split_bead_description_scope(description: &str) -> (String, Vec<String>, Vec<
 }
 
 pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
+    const DEPENDENCY_CONTEXT_MAX_ITEMS: usize = 8;
+    const DEPENDENCY_CONTEXT_MAX_BYTES: usize = 1536;
+
     fn escape_canonical_heading_lines(value: &str) -> String {
         let mut active_fence = None;
         value
@@ -805,6 +841,22 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         }
     }
 
+    fn bullet_item_bytes(prefix: &str, value: &str) -> usize {
+        render_bullet_item(prefix, value).len()
+    }
+
+    fn bullet_block_bytes(items: &[String]) -> usize {
+        if items.is_empty() {
+            0
+        } else {
+            items
+                .iter()
+                .map(|item| bullet_item_bytes("- ", item))
+                .sum::<usize>()
+                + (items.len() - 1)
+        }
+    }
+
     fn indent_section_body(value: &str) -> String {
         value
             .lines()
@@ -819,6 +871,203 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
             .join("\n")
     }
 
+    fn format_milestone_progress(progress: &MilestoneProgress) -> String {
+        format!(
+            "{}/{} completed; {} in progress; {} failed; {} blocked; {} skipped; {} remaining",
+            progress.completed_beads,
+            progress.total_beads,
+            progress.in_progress_beads,
+            progress.failed_beads,
+            progress.blocked_beads,
+            progress.skipped_beads,
+            progress.remaining()
+        )
+    }
+
+    fn dependency_context_item(item: &BeadDependencyPromptContext) -> String {
+        let mut line = match item.title.as_deref() {
+            Some(title) if !title.trim().is_empty() => {
+                format!("{} ({title})", item.id)
+            }
+            _ => item.id.clone(),
+        };
+        line.push_str(&format!(" - {}", item.relationship));
+        if let Some(status) = item.status.as_deref() {
+            line.push_str(&format!("; status: {status}"));
+        }
+        if let Some(outcome) = item.outcome.as_deref() {
+            line.push_str(&format!("; outcome: {outcome}"));
+        }
+        line
+    }
+
+    fn dependency_context_suffix(item: &BeadDependencyPromptContext) -> String {
+        let mut suffix = String::new();
+        if let Some(status) = item.status.as_deref() {
+            suffix.push_str(&format!("; status: {status}"));
+        }
+        if let Some(outcome) = item.outcome.as_deref() {
+            suffix.push_str(&format!("; outcome: {outcome}"));
+        }
+        suffix
+    }
+
+    fn dependency_context_item_without_title(
+        item: &BeadDependencyPromptContext,
+        relationship: &str,
+    ) -> String {
+        let mut line = item.id.clone();
+        if !relationship.is_empty() {
+            line.push_str(&format!(" - {relationship}"));
+        }
+        line.push_str(&dependency_context_suffix(item));
+        line
+    }
+
+    fn fit_dependency_context_item_to_budget(
+        item: &BeadDependencyPromptContext,
+        max_bytes: usize,
+    ) -> Option<String> {
+        let full = dependency_context_item(item);
+        if bullet_item_bytes("- ", &full) <= max_bytes {
+            return Some(full);
+        }
+
+        let without_title = dependency_context_item_without_title(item, &item.relationship);
+        if bullet_item_bytes("- ", &without_title) <= max_bytes {
+            return Some(without_title);
+        }
+
+        let minimal = dependency_context_item_without_title(item, "");
+        if bullet_item_bytes("- ", &minimal) > max_bytes {
+            return None;
+        }
+
+        let mut best_fit = minimal;
+        let mut low = 1usize;
+        let mut high = item.relationship.len();
+        while low <= high {
+            let mid = low + (high - low) / 2;
+            let Some(truncated_relationship) =
+                truncate_with_ascii_ellipsis(&item.relationship, mid)
+            else {
+                break;
+            };
+            let candidate = dependency_context_item_without_title(item, &truncated_relationship);
+            if bullet_item_bytes("- ", &candidate) <= max_bytes {
+                best_fit = candidate;
+                low = mid.saturating_add(1);
+            } else if mid == 0 {
+                break;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        Some(best_fit)
+    }
+
+    fn omitted_dependency_context_line(count: usize, label: &str) -> String {
+        format!("{count} additional {label} omitted for prompt budget.")
+    }
+
+    fn format_dependency_context(items: &[BeadDependencyPromptContext], label: &str) -> String {
+        if items.is_empty() {
+            return "None.".to_owned();
+        }
+
+        let rendered_items = items
+            .iter()
+            .map(dependency_context_item)
+            .collect::<Vec<_>>();
+        if rendered_items.len() <= DEPENDENCY_CONTEXT_MAX_ITEMS
+            && bullet_block_bytes(&rendered_items) <= DEPENDENCY_CONTEXT_MAX_BYTES
+        {
+            return bullet_lines(&rendered_items);
+        }
+
+        let mut selected = Vec::new();
+        for item in items {
+            if selected.len() >= DEPENDENCY_CONTEXT_MAX_ITEMS {
+                break;
+            }
+
+            let omitted_count = items.len().saturating_sub(selected.len() + 1);
+            let selected_bytes = bullet_block_bytes(&selected);
+            let separator_before_item = usize::from(!selected.is_empty());
+            let omission_line =
+                (omitted_count > 0).then(|| omitted_dependency_context_line(omitted_count, label));
+            let separator_before_omission = usize::from(omission_line.is_some());
+            let omission_bytes = omission_line
+                .as_ref()
+                .map(|line| bullet_item_bytes("- ", line))
+                .unwrap_or(0);
+            let remaining_bytes = DEPENDENCY_CONTEXT_MAX_BYTES
+                .saturating_sub(selected_bytes)
+                .saturating_sub(separator_before_item)
+                .saturating_sub(separator_before_omission)
+                .saturating_sub(omission_bytes);
+            let Some(fitted_item) = fit_dependency_context_item_to_budget(item, remaining_bytes)
+            else {
+                break;
+            };
+
+            let mut candidate = selected.clone();
+            candidate.push(fitted_item.clone());
+            if let Some(omission_line) = omission_line {
+                candidate.push(omission_line);
+            }
+            if bullet_block_bytes(&candidate) > DEPENDENCY_CONTEXT_MAX_BYTES {
+                break;
+            }
+
+            selected.push(fitted_item);
+        }
+
+        let omitted_count = rendered_items.len().saturating_sub(selected.len());
+        if omitted_count == 0 {
+            return bullet_lines(&selected);
+        }
+
+        while !selected.is_empty() {
+            let omission_line =
+                omitted_dependency_context_line(rendered_items.len() - selected.len(), label);
+            let mut candidate = selected.clone();
+            candidate.push(omission_line.clone());
+            if bullet_block_bytes(&candidate) <= DEPENDENCY_CONTEXT_MAX_BYTES {
+                selected = candidate;
+                return bullet_lines(&selected);
+            }
+            selected.pop();
+        }
+
+        bullet_lines(&[omitted_dependency_context_line(rendered_items.len(), label)])
+    }
+
+    fn format_planned_elsewhere(items: &[PlannedElsewherePromptContext]) -> String {
+        if items.is_empty() {
+            return "No explicit planned-elsewhere items were supplied. Do not absorb adjacent bead work unless it is required to satisfy this bead's acceptance criteria.".to_owned();
+        }
+
+        bullet_lines(
+            &items
+                .iter()
+                .map(|item| {
+                    let mut line = format!("{} ({}) - {}", item.id, item.title, item.relationship);
+                    if let Some(status) = item.status.as_deref() {
+                        line.push_str(&format!("; status: {status}"));
+                    }
+                    if let Some(summary) = item.summary.as_deref() {
+                        line.push_str("\nSummary:");
+                        line.push('\n');
+                        line.push_str(summary);
+                    }
+                    line
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
     let (bead_must_do_scope, bead_local_non_goals, bead_local_acceptance_criteria) = context
         .bead_description
         .as_deref()
@@ -829,9 +1078,21 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         let mut lines = vec![
             render_bullet_item("- Milestone ID: ", &format!("`{}`", context.milestone_id)),
             render_bullet_item("- Milestone Name: ", &context.milestone_name),
+            render_bullet_item(
+                "- Status: ",
+                &format!("`{}`", context.milestone_status.as_str()),
+            ),
+            render_bullet_item(
+                "- Total beads: ",
+                &context.milestone_progress.total_beads.to_string(),
+            ),
+            render_bullet_item(
+                "- Progress: ",
+                &format_milestone_progress(&context.milestone_progress),
+            ),
         ];
         if let Some(summary) = &context.milestone_summary {
-            lines.push(render_bullet_item("- Summary: ", summary));
+            lines.push(render_bullet_item("- Goal: ", summary));
         }
         lines.push(render_bullet_item(
             "- Description: ",
@@ -844,15 +1105,6 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
                     .milestone_goals
                     .iter()
                     .map(|goal| render_bullet_item("  - ", goal)),
-            );
-        }
-        if !context.milestone_constraints.is_empty() {
-            lines.push("- Constraints:".to_owned());
-            lines.extend(
-                context
-                    .milestone_constraints
-                    .iter()
-                    .map(|constraint| render_bullet_item("  - ", constraint)),
             );
         }
         lines.join("\n")
@@ -888,17 +1140,19 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         } else {
             lines.push("- Plan version: None.".to_owned());
         }
-        if context.bead_dependencies.is_empty() {
-            lines.push("- Blocking dependencies: None.".to_owned());
-        } else {
-            lines.push("- Blocking dependencies:".to_owned());
-            lines.extend(
-                context
-                    .bead_dependencies
-                    .iter()
-                    .map(|dependency| render_bullet_item("  - ", dependency)),
-            );
-        }
+        lines.push(String::new());
+        lines.push("### Dependency Context".to_owned());
+        lines.push(String::new());
+        lines.push("- Upstream dependencies:".to_owned());
+        lines.push(indent_section_body(&format_dependency_context(
+            &context.upstream_dependencies,
+            "upstream dependencies",
+        )));
+        lines.push("- Downstream dependents:".to_owned());
+        lines.push(indent_section_body(&format_dependency_context(
+            &context.downstream_dependents,
+            "downstream dependents",
+        )));
         lines.join("\n")
     };
 
@@ -918,14 +1172,21 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         &merged_acceptance_criteria,
         "No explicit acceptance criteria were supplied.",
     );
-    let planned_elsewhere = bullet_lines_or_default(
-        &context.already_planned_elsewhere,
-        "No explicit planned-elsewhere items were supplied. Do not absorb adjacent bead work unless it is required to satisfy this bead's acceptance criteria.",
-    );
-    let review_policy = bullet_lines_or_default(
-        &context.review_policy,
-        "Use the active bead scope as the review boundary.",
-    );
+    let planned_elsewhere = format_planned_elsewhere(&context.planned_elsewhere);
+    let review_policy = {
+        let review_policy = bullet_lines_or_default(
+            &context.review_policy,
+            "Use the active bead scope as the review boundary.",
+        );
+        if context.milestone_constraints.is_empty() {
+            review_policy
+        } else {
+            format!(
+                "{review_policy}\n\n### Milestone Plan Constraints\n\n{}",
+                bullet_lines(&context.milestone_constraints)
+            )
+        }
+    };
     let repo_guidance = match &context.agents_guidance {
         Some(guidance) => format!(
             "Follow the repository AGENTS.md instructions for this repo.\n\n{guidance}"

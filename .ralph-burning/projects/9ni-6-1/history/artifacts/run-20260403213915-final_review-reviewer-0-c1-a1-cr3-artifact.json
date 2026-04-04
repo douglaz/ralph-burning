@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T22:34:39.697760992Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the task prompt contract implementation across 10 changed Rust source files and 3 test files. The contract module (task_prompt_contract.rs), prompt generator (service.rs), and all workflow-stage consumers (engine.rs, completion.rs, final_review.rs, prompt_review.rs, template_catalog.rs) are well-structured. All 119 relevant tests pass. The contract marker is stable, the validation logic correctly enforces section order, and template rendering correctly handles the new optional `task_prompt_contract` placeholder with whitespace collapse. One minor dead-code path found; one semantic question about `already_planned_elsewhere` population.\n\n## Amendments\n\n1. In `split_bead_description_scope` (service.rs:577-580), the inner `section_kind_for_bead_description_line(line)` call is unreachable dead code. Line 570 already checked the same function and got `None` (otherwise the outer `continue` on line 572 would have fired). The inner block can never execute. Remove lines 577-580 or restructure to avoid the redundant call, as it misleads readers into thinking there is a transition path through it.\n   Rationale: Dead code in a state-machine parser is a maintainability risk — a future contributor may assume the branch is live and add behavior there that silently never executes, masking bugs.\n2. In `cli/project.rs:340-344`, `already_planned_elsewhere` is populated from `bead.dependents` (beads that are blocked BY this bead). While reasonable as an approximation, dependents are not always 'planned-elsewhere' items — a dependent bead may be a downstream consumer that doesn't overlap in scope at all. Consider adding a comment documenting this heuristic, or sourcing from a more explicit field (e.g., the bead plan's sibling beads in the same workstream) to reduce false signals in the rendered prompt.\n   Rationale: Incorrect or noisy 'Already Planned Elsewhere' items could cause an LLM agent to incorrectly defer work it should be doing, since the contract guidance says to treat that section as out-of-scope.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

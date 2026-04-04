@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-0-c1-a1-cr21-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-0-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T05:29:31.048474147Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all changes across 8 files (569 insertions, 113 deletions). The implementation centralizes schema processing into `processed_contract_schema_value`, adds an `__rb_wrapped` sentinel to the Claude structured output wrapper, threads `BackendFamily` through prompt builders so the schema in the prompt matches the transport schema exactly, and adds an `is_error` guard to `is_claude_structured_output_retry_failure`. All 748 tests pass. The changes are correct: the unwrap function properly gates on the sentinel + exact field count, the `is_error` guard prevents false-positive retry classification, and the schema-sync tests validate prompt/stdin/transport schema agreement end-to-end. Clippy warnings exist but are all pre-existing (none introduced by this diff). The conformance_spec changes are purely formatting (rustfmt). No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 21
+}

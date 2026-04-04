@@ -155,13 +155,13 @@ impl PreparedCommand {
                 };
 
                 let parsed_payload = if let Some(structured) = envelope.structured_output {
-                    structured
+                    unwrap_claude_structured_output_payload(structured)
                 } else if !envelope.result.trim().is_empty() {
                     // result is non-empty: try direct parse, then extract embedded JSON
                     match serde_json::from_str(&envelope.result)
                         .or_else(|_| extract_json_from_text(&envelope.result))
                     {
-                        Ok(val) => val,
+                        Ok(val) => unwrap_claude_structured_output_payload(val),
                         Err(error) => {
                             self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
@@ -186,7 +186,7 @@ impl PreparedCommand {
                         .ok()
                         .filter(|val| !looks_like_claude_envelope(val))
                     {
-                        Some(val) => val,
+                        Some(val) => unwrap_claude_structured_output_payload(val),
                         None => {
                             self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
@@ -665,8 +665,16 @@ impl ProcessBackendAdapter {
         }
     }
 
-    /// Build the stdin payload from prompt + context.
-    fn assemble_stdin(request: &InvocationRequest) -> String {
+    fn contract_schema_for_backend(request: &InvocationRequest) -> serde_json::Value {
+        processed_contract_schema_value(&request.contract, request.resolved_target.backend.family)
+    }
+
+    /// Build the stdin payload from prompt + context using the same
+    /// backend-processed schema that is enforced on the transport path.
+    /// Claude adds an explicit wrapper envelope; other backends keep the
+    /// native contract payload shape while still seeing strict-mode/inlined
+    /// schema details in stdin.
+    fn assemble_stdin(request: &InvocationRequest, schema_value: &serde_json::Value) -> String {
         let contract_label = request.contract.label();
         let role = request.role.display_name();
         let prompt = &request.payload.prompt;
@@ -686,9 +694,8 @@ impl ProcessBackendAdapter {
             input.push('\n');
         }
 
-        let schema_json = request.contract.json_schema_value();
         let schema_json =
-            serde_json::to_string_pretty(&schema_json).unwrap_or_else(|_| "{}".to_owned());
+            serde_json::to_string_pretty(schema_value).unwrap_or_else(|_| "{}".to_owned());
 
         input.push_str("\nReturn ONLY valid JSON matching the following schema:\n");
         input.push_str(&schema_json);
@@ -704,9 +711,7 @@ impl ProcessBackendAdapter {
         match request.resolved_target.backend.family {
             BackendFamily::Claude => {
                 let model_id = &request.resolved_target.model.model_id;
-                let mut schema_value = request.contract.json_schema_value();
-                enforce_strict_mode_schema(&mut schema_value);
-                inline_schema_refs(&mut schema_value);
+                let schema_value = Self::contract_schema_for_backend(request);
                 let schema_json =
                     serde_json::to_string(&schema_value).unwrap_or_else(|_| "{}".to_owned());
                 let session_resuming =
@@ -737,7 +742,7 @@ impl ProcessBackendAdapter {
                 Ok(PreparedCommand {
                     binary: self.resolve_binary("claude")?,
                     args,
-                    stdin_payload: Self::assemble_stdin(request),
+                    stdin_payload: Self::assemble_stdin(request, &schema_value),
                     response_decoder: ResponseDecoder::Claude { session_resuming },
                     env_overrides: Vec::new(),
                 })
@@ -759,9 +764,7 @@ impl ProcessBackendAdapter {
                 let message_path =
                     temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
-                let mut schema_value = request.contract.json_schema_value();
-                enforce_strict_mode_schema(&mut schema_value);
-                inline_schema_refs(&mut schema_value);
+                let schema_value = Self::contract_schema_for_backend(request);
                 let schema_json =
                     serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
 
@@ -792,7 +795,7 @@ impl ProcessBackendAdapter {
                 Ok(PreparedCommand {
                     binary,
                     args,
-                    stdin_payload: Self::assemble_stdin(request),
+                    stdin_payload: Self::assemble_stdin(request, &schema_value),
                     response_decoder: ResponseDecoder::Codex {
                         schema_path,
                         message_path,
@@ -841,9 +844,7 @@ impl ProcessBackendAdapter {
                 let message_path =
                     temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
-                let mut schema_value = request.contract.json_schema_value();
-                enforce_strict_mode_schema(&mut schema_value);
-                inline_schema_refs(&mut schema_value);
+                let schema_value = Self::contract_schema_for_backend(request);
                 let schema_json =
                     serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
 
@@ -874,7 +875,7 @@ impl ProcessBackendAdapter {
                 Ok(PreparedCommand {
                     binary,
                     args,
-                    stdin_payload: Self::assemble_stdin(request),
+                    stdin_payload: Self::assemble_stdin(request, &schema_value),
                     response_decoder: ResponseDecoder::Codex {
                         schema_path,
                         message_path,
@@ -1343,11 +1344,14 @@ impl AgentExecutionPort for ProcessBackendAdapter {
             status if !status.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
-                // Stale session recovery: if Claude fails with "No conversation
-                // found" while resuming a session, retry once without --resume.
-                if request.prior_session.is_some()
-                    && stderr.contains("No conversation found with session ID")
-                {
+                // Stale Claude sessions can fail either by losing the resume id
+                // entirely or by getting stuck in repeated structured-output
+                // retries. In both cases, retry once without --resume.
+                let retry_without_resume = request.prior_session.is_some()
+                    && (stderr.contains("No conversation found with session ID")
+                        || (request.resolved_target.backend.family == BackendFamily::Claude
+                            && is_claude_structured_output_retry_failure(&output.stdout)));
+                if retry_without_resume {
                     // Do NOT preserve failure artifacts here — this is an internal
                     // retry, not a terminal failure. If the retry succeeds, we don't
                     // want stale artifacts left in runtime/failed. Cleanup deletes the
@@ -1565,8 +1569,91 @@ fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
             .get("result")
             .and_then(|r| r.as_str())
             .map(|s| s.to_owned())
+            .or_else(|| {
+                value
+                    .get("errors")
+                    .and_then(|v| v.as_array())
+                    .and_then(|errors| errors.iter().find_map(|e| e.as_str()))
+                    .map(|s| s.to_owned())
+            })
+            .or_else(|| {
+                value
+                    .get("subtype")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_owned())
+            })
     } else {
         None
+    }
+}
+
+fn is_claude_structured_output_retry_failure(stdout: &[u8]) -> bool {
+    let value: serde_json::Value = match serde_json::from_slice(stdout) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+
+    if value.get("is_error").and_then(|v| v.as_bool()) != Some(true) {
+        return false;
+    }
+
+    value
+        .get("subtype")
+        .and_then(|v| v.as_str())
+        .is_some_and(|subtype| subtype == "error_max_structured_output_retries")
+        || value
+            .get("errors")
+            .and_then(|v| v.as_array())
+            .is_some_and(|errors| {
+                errors.iter().any(|error| {
+                    error.as_str().is_some_and(|message| {
+                        message.contains("Failed to provide valid structured output")
+                    })
+                })
+            })
+}
+
+fn wrap_claude_structured_output_schema(schema: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "__rb_wrapped": {
+                "const": true,
+            },
+            "data": schema,
+        },
+        "required": ["__rb_wrapped", "data"],
+        "additionalProperties": false,
+    })
+}
+
+pub(crate) fn processed_contract_schema_value(
+    contract: &InvocationContract,
+    backend_family: BackendFamily,
+) -> serde_json::Value {
+    let mut schema_value = contract.json_schema_value();
+    enforce_strict_mode_schema(&mut schema_value);
+    inline_schema_refs(&mut schema_value);
+    if backend_family == BackendFamily::Claude {
+        wrap_claude_structured_output_schema(schema_value)
+    } else {
+        schema_value
+    }
+}
+
+fn unwrap_claude_structured_output_payload(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(mut map)
+            if map.len() == 2
+                && map
+                    .get("__rb_wrapped")
+                    .and_then(|v| v.as_bool())
+                    .is_some_and(|wrapped| wrapped)
+                && map.contains_key("data") =>
+        {
+            map.remove("data").unwrap_or(serde_json::Value::Object(map))
+        }
+        other => other,
     }
 }
 
@@ -2518,6 +2605,68 @@ mod tests {
     }
 
     #[test]
+    fn claude_structured_output_retry_failure_detects_subtype() {
+        let stdout = br#"{"is_error":true,"subtype":"error_max_structured_output_retries"}"#;
+        assert!(is_claude_structured_output_retry_failure(stdout));
+    }
+
+    #[test]
+    fn claude_structured_output_retry_failure_detects_errors_array_message() {
+        let stdout =
+            br#"{"is_error":true,"errors":["Failed to provide valid structured output after retries"]}"#;
+        assert!(is_claude_structured_output_retry_failure(stdout));
+    }
+
+    #[test]
+    fn claude_structured_output_retry_failure_rejects_non_matching_json() {
+        let stdout =
+            br#"{"is_error":true,"subtype":"different_error","errors":["something else"]}"#;
+        assert!(!is_claude_structured_output_retry_failure(stdout));
+    }
+
+    #[test]
+    fn claude_structured_output_retry_failure_rejects_non_json_stdout() {
+        assert!(!is_claude_structured_output_retry_failure(
+            b"not json at all"
+        ));
+    }
+
+    #[test]
+    fn claude_structured_output_retry_failure_requires_is_error_true() {
+        let subtype_only = br#"{"subtype":"error_max_structured_output_retries"}"#;
+        assert!(!is_claude_structured_output_retry_failure(subtype_only));
+
+        let false_error_flag = br#"{"is_error":false,"errors":["Failed to provide valid structured output after retries"]}"#;
+        assert!(!is_claude_structured_output_retry_failure(false_error_flag));
+    }
+
+    #[test]
+    fn unwrap_claude_structured_output_payload_requires_wrapper_marker() {
+        let raw_payload = serde_json::json!({
+            "data": {
+                "status": "legitimate-contract-payload"
+            }
+        });
+        assert_eq!(
+            unwrap_claude_structured_output_payload(raw_payload.clone()),
+            raw_payload
+        );
+
+        let wrapped_payload = serde_json::json!({
+            "__rb_wrapped": true,
+            "data": {
+                "status": "wrapped-contract-payload"
+            }
+        });
+        assert_eq!(
+            unwrap_claude_structured_output_payload(wrapped_payload),
+            serde_json::json!({
+                "status": "wrapped-contract-payload"
+            })
+        );
+    }
+
+    #[test]
     fn looks_like_claude_envelope_detects_envelope() {
         let envelope = json!({
             "result": "",
@@ -2700,6 +2849,37 @@ mod tests {
             "structured_output": {
                 "outcome": "approved",
                 "evidence": ["test passed"]
+            }
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let prepared = PreparedCommand {
+            binary: "claude".into(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+            env_overrides: Vec::new(),
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await.unwrap();
+        assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
+
+    #[tokio::test]
+    async fn finish_claude_structured_output_data_wrapper_is_unwrapped() {
+        let envelope = json!({
+            "result": "",
+            "session_id": "sess-test-003b",
+            "structured_output": {
+                "__rb_wrapped": true,
+                "data": {
+                    "outcome": "approved",
+                    "evidence": ["test passed"]
+                }
             }
         });
         let stdout = envelope.to_string();
@@ -2926,6 +3106,15 @@ mod tests {
         let schema: serde_json::Value =
             serde_json::from_str(schema_json).expect("schema should be valid JSON");
 
+        assert!(
+            schema.pointer("/properties/data").is_some(),
+            "Claude schema should wrap the contract payload under properties.data"
+        );
+        assert_eq!(
+            schema.pointer("/properties/__rb_wrapped/const"),
+            Some(&serde_json::json!(true)),
+            "Claude schema should require the wrapper sentinel"
+        );
         assert!(
             schema.get("definitions").is_none(),
             "top-level definitions should be removed"

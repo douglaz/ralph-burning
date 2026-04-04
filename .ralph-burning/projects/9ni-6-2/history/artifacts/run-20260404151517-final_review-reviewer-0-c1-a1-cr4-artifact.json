@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T16:38:43.074644876Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the diff (2 files, ~50 lines). The change adds a `proposal_is_title_fallback_candidate` guard to `infer_implicit_slot_hint` to prevent matching proposals that were explicitly reassigned to different bead IDs. Logic is correct: proposals with `explicit_id = Some(true)` are properly excluded from implicit slot inference, preventing wrong neighbors from appearing in prompt.md's planned-elsewhere context. The new unit test and integration test assertions adequately cover the fix. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

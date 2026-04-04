@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T17:08:31.355897094Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the prompt-generation changes in `src/cli/project.rs` and `src/contexts/project_run_record/service.rs` plus the new CLI/unit coverage. Targeted tests pass, but I found one blocking wire-format bug in `br list` parsing and one additional robustness gap where dependency status from `br show` is discarded, causing the new prompt to degrade to `unknown` more often than necessary.\n\n## Amendments\n\n1. Fix `load_bead_summaries` in `src/cli/project.rs:742-760` to accept the real `br list --json` envelope (`{\"issues\": [...]}`) instead of deserializing a bare `Vec<BeadSummary>`, and do not silently treat that parse failure as an empty map in `src/cli/project.rs:296-298`. The current tests stub the wrong wire format in `tests/cli.rs:1858-1893`, so in a real workspace every generated prompt falls back to `unknown` dependency/dependent status and outcome.\n   Rationale: This is a live correctness bug: the new prompt never receives the status/outcome data it was added to render when run against the real `br` CLI.\n2. Thread dependency status from `br show` into the prompt builders by extending `DependencyRef` in `src/adapters/br_models.rs:227-233` and using that data in `src/cli/project.rs:1033-1097` instead of hard-coding `unknown` whenever the summary lookup misses. The fallback path locked in by `tests/cli.rs:1996-2037` currently discards status data that `br show` already returns, so any transient or partial `br list` failure still produces a non-self-contained prompt.\n   Rationale: Even after fixing the `br list` envelope, the implementation unnecessarily depends on a second CLI call for data already present in the primary bead payload, which weakens robustness and undercuts the bead requirement to include dependency status/outcome.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

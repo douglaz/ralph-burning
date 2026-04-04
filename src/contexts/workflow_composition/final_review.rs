@@ -20,6 +20,7 @@ use chrono::Utc;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::adapters::process_backend::processed_contract_schema_value;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
@@ -234,7 +235,8 @@ where
     let mut reviewer_records = Vec::new();
     for (idx, member) in panel.reviewers.iter().enumerate() {
         let reviewer_id = final_review_reviewer_id(idx);
-        let reviewer_prompt = build_reviewer_prompt(&project_prompt, base_dir, Some(project_id))?;
+        let reviewer_prompt =
+            build_reviewer_prompt(&project_prompt, &member.target, base_dir, Some(project_id))?;
         append_panel_member_started_event(
             journal_store,
             base_dir,
@@ -497,6 +499,7 @@ where
         "Planner Positions",
         &amendments,
         None,
+        &panel.planner,
         base_dir,
         Some(project_id),
     )?;
@@ -729,6 +732,7 @@ where
             "Final Review Votes",
             &amendments,
             Some(&planner_votes),
+            &reviewer.target,
             base_dir,
             Some(project_id),
         )?;
@@ -1042,6 +1046,7 @@ where
             &disputed_set,
             &planner_votes,
             &reviewer_votes,
+            &panel.arbiter,
             base_dir,
             Some(project_id),
         )?;
@@ -1577,11 +1582,17 @@ fn canonical_to_payload(amendment: &CanonicalAmendment) -> FinalReviewCanonicalA
 
 fn build_reviewer_prompt(
     project_prompt: &str,
+    backend_target: &ResolvedBackendTarget,
     base_dir: &Path,
     project_id: Option<&ProjectId>,
 ) -> AppResult<String> {
-    let schema = super::panel_contracts::panel_json_schema(StageId::FinalReview, "reviewer");
-    let schema_str = serde_json::to_string_pretty(&schema)?;
+    let schema_str = serde_json::to_string_pretty(&processed_contract_schema_value(
+        &InvocationContract::Panel {
+            stage_id: StageId::FinalReview,
+            role: "reviewer".to_owned(),
+        },
+        backend_target.backend.family,
+    ))?;
     let task_prompt_contract_block =
         task_prompt_contract::stage_consumer_guidance_for_prompt(project_prompt);
     template_catalog::resolve_and_render(
@@ -1600,11 +1611,17 @@ fn build_voter_prompt(
     title: &str,
     amendments: &[CanonicalAmendment],
     planner_votes: Option<&FinalReviewVotePayload>,
+    backend_target: &ResolvedBackendTarget,
     base_dir: &Path,
     project_id: Option<&ProjectId>,
 ) -> AppResult<String> {
-    let schema = super::panel_contracts::panel_json_schema(StageId::FinalReview, "voter");
-    let schema_str = serde_json::to_string_pretty(&schema)?;
+    let schema_str = serde_json::to_string_pretty(&processed_contract_schema_value(
+        &InvocationContract::Panel {
+            stage_id: StageId::FinalReview,
+            role: "voter".to_owned(),
+        },
+        backend_target.backend.family,
+    ))?;
     let amendment_text = amendments
         .iter()
         .map(|amendment| {
@@ -1640,11 +1657,17 @@ fn build_arbiter_prompt(
     disputed_amendments: &HashMap<String, &CanonicalAmendment>,
     planner_votes: &FinalReviewVotePayload,
     reviewer_votes: &[FinalReviewVotePayload],
+    backend_target: &ResolvedBackendTarget,
     base_dir: &Path,
     project_id: Option<&ProjectId>,
 ) -> AppResult<String> {
-    let schema = super::panel_contracts::panel_json_schema(StageId::FinalReview, "arbiter");
-    let schema_str = serde_json::to_string_pretty(&schema)?;
+    let schema_str = serde_json::to_string_pretty(&processed_contract_schema_value(
+        &InvocationContract::Panel {
+            stage_id: StageId::FinalReview,
+            role: "arbiter".to_owned(),
+        },
+        backend_target.backend.family,
+    ))?;
     let amendment_text = disputed_amendments
         .values()
         .map(|amendment| {
@@ -2159,6 +2182,10 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let prompt = build_reviewer_prompt(
             "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            &ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                "claude-test",
+            ),
             tmp.path(),
             None,
         )
@@ -2177,8 +2204,16 @@ mod tests {
             "LEGACY REVIEWER\n\n{{project_prompt}}\n\n{{json_schema}}",
         );
 
-        let prompt = build_reviewer_prompt("# Prompt\n\nGeneric.", tmp.path(), None)
-            .expect("reviewer prompt");
+        let prompt = build_reviewer_prompt(
+            "# Prompt\n\nGeneric.",
+            &ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                "claude-test",
+            ),
+            tmp.path(),
+            None,
+        )
+        .expect("reviewer prompt");
 
         assert!(prompt.starts_with("LEGACY REVIEWER"));
         assert!(prompt.contains("# Prompt"));

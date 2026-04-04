@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-vote-0-c1-a1-cr15-artifact",
+  "payload_id": "run-20260404151517-final_review-vote-0-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T20:40:43.374966332Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments address genuine robustness defects. The first removes an overly strict guard that contradicts the renderer's own graceful degradation. The second addresses unbounded prompt growth from planned-elsewhere context accumulation.\n\n## Votes\n\n- `fr-15-83363dc7`: Accept\n  The code at lines 849-874 creates a hard error when relations lack inline status AND `br list` is unavailable. But `prompt_bead_status` (line 1222-1228) and `prompt_bead_outcome` (line 1230-1235) already handle the double-None case deterministically by returning `\"unknown\"`. The guard contradicts the renderer's own contract. Relaxing it aligns the error handling with the actual capability of the downstream code: the prompt will render with `unknown` status, which is explicit and stable. Crucially, `AppError::CorruptRecord` at line 327 still remains a hard failure, so actual data corruption is still caught. This is a clear correctness improvement — the system fails where it shouldn't.\n- `fr-15-2ea8498f`: Accept\n  The `build_planned_elsewhere_context` function (lines 1321-1503) accumulates items from three unbounded sources: all dependents (line 1386), all shared-acceptance owners via the acceptance_map (line 1406), and workstream neighbors (bounded to ±1). While `compact_planned_elsewhere_summary` truncates each item's summary to a single line, the item count itself is unbounded. For milestones with many beads sharing acceptance criteria, the rendered output from `format_planned_elsewhere` (lines 895-916) can grow linearly with milestone size. A deterministic ranking plus fixed max-items/max-bytes budget is a sound engineering safeguard. The amendment preserves determinism (ranking is specified as deterministic) and prevents pathological prompt inflation without losing the most relevant items if truncation is done by priority.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 15
+}

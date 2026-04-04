@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260403213915-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-03T22:53:02.898502955Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the pending prompt-contract amendments for bead `ralph-burning-9ni.6.1`. I removed the unreachable branch in `split_bead_description_scope`, tightened `validate_canonical_prompt_shape()` so canonical section headings must each appear exactly once and in contract order, updated regression coverage to reject duplicate and out-of-order canonical headings while still accepting normalized rendered bead prompts, and restored the repo workspace scaffold by re-adding `.ralph-burning/workspace.toml` so repo-root config loading continues to work.\n\n## Steps\n\n1. [Completed] Inspect the reported prompt-contract regressions and workspace scaffold issue in the bead prompt renderer, canonical contract validator, prompt-review gate usage, and repo workspace config expectations.\n2. [Completed] Remove the dead `split_bead_description_scope` branch, tighten canonical prompt validation to enforce unique ordered headings, and update the contract regression tests accordingly.\n3. [Completed] Restore `.ralph-burning/workspace.toml` in the repo workspace and verify repo-root config loading still succeeds with the expected scaffold present.\n4. [Completed] Run focused formatting and deterministic validation commands for the contract path and workspace-config regression.\n\n## Validation Evidence\n\n- Ran `cargo fmt --all` successfully.\n- Ran `cargo test task_prompt_contract -- --nocapture` and the canonical contract tests passed, including the new duplicate-heading and out-of-order-heading rejection coverage.\n- Ran `cargo test rendered_bead_task_prompt_with_embedded_sections_still_satisfies_contract_shape -- --nocapture` and the rendered bead prompt still validated after embedded-section normalization.\n- Ran `cargo run -- config show` from the repo root successfully after restoring `.ralph-burning/workspace.toml`.\n\n## Outstanding Risks\n\n- I ran focused formatting and regression coverage for the prompt-contract path plus a repo-root `config show` check, not the full repository test suite.\n- The stricter validator now rejects any prompt body that contains a literal canonical heading line such as `## Acceptance Criteria`; if a future consumer needs to quote a canonical heading verbatim inside section content, it will need alternate formatting.\n- The workspace still has pre-existing untracked `.ralph-burning/active-project`, `.ralph-burning/projects/`, and `.ralph-burning/prompts/` content, which I left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

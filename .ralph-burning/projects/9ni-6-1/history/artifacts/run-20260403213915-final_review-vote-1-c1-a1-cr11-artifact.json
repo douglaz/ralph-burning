@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260403213915-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T01:26:11.710618002Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness defects in task-prompt contract handling. One allows override templates to silently strip required contract guidance, and the other lets incidental marker text falsely activate canonical-contract behavior.\n\n## Votes\n\n- `fr-11-32cbf896`: Accept\n  `task_prompt_contract` is declared optional in the affected template manifests, `validate_template` only enforces required placeholders, and `render` expands omitted optional placeholders to empty. The workflow builders pass the contract guidance only through that placeholder for the cited stage/panel prompts, so an override template that omits it silently removes the contract instructions. That creates behavior drift based purely on template override source and gives no validation signal, which is a real robustness and maintainability bug.\n- `fr-11-cb96857e`: Accept\n  `prompt_uses_contract` currently returns true when any trimmed line matches the marker, regardless of whether that line is inside a fenced block or other embedded snippet. The canonical-shape validator is otherwise fence-aware for section headings, so detection and validation use inconsistent rules. That means a prompt can be misclassified as contract-bearing just because it quotes the marker text incidentally, which then turns on stage/prompt-review contract guidance and canonical drift enforcement for a prompt that never actually declared the canonical contract. The detection rule should be narrowed to the same top-level interpretation used by the canonical shape logic.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

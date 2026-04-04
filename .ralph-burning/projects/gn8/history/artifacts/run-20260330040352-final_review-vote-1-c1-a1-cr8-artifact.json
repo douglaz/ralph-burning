@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330040352-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260330040352-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T10:38:41.224491182Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccepted three amendments: two identify concrete tmux-mode defects, and one is worthwhile defensive hardening. Rejected two amendments whose premises do not match the current timeout and child-reaping mechanics.\n\n## Votes\n\n- `fr-8-5aba0f56`: Reject\n  This does not identify a real hang in the current implementation. After the timeout fires, the timed future is cancelled, and the background reap path uses ManagedChild::wait(), which only polls child.try_wait(); it does not wait for stdout/stderr drains or pipe closure. Open pipe handles therefore do not make the reap task block indefinitely, so the proposed race is not a concrete defect here.\n- `fr-8-d2366c9b`: Accept\n  Normal workflow keeps attempts 1-indexed through StageCursor invariants, but backoff_for_attempt is still a public utility and currently turns an invalid attempt 0 into the capped 60s delay via saturating arithmetic. Returning Duration::ZERO for 0 is a trivial hardening fix that makes the function behave consistently with its documented contract and avoids surprising misuse behavior.\n- `fr-8-63eaddd6`: Reject\n  This does not show a correctness bug in the current code. The OpenRouter adapter builds a reqwest client with request.timeout and then awaits both send() and response.text() on that client; the amendment's slow-streaming premise is not established by this implementation. The extra 30s service buffer is an intentional safety net, not evidence that timeout enforcement is broken.\n- `fr-8-f881e1e1`: Accept\n  This is a real behavioral gap. ProcessBackendAdapter classifies exit code 127 as BinaryNotFound so retries stop immediately, but TmuxAdapter still hard-codes every non-zero exit to TransportFailure. In tmux mode that causes futile retries for an unrecoverable command-not-found failure and breaks the intended exit-127 terminal behavior.\n- `fr-8-19d961a9`: Accept\n  This identifies a real cleanup bug. In tmux mode, a service-level timeout drops the invoke future before prepared.cleanup() or prepared.finish() runs, and cancel() only tears down tmux-session artifacts. That leaves PreparedCommand artifacts unhandled, so Codex temp files can leak and timeout failures skip the failed-artifact preservation path. OpenRouter-in-tmux is unsupported, but the leak is still real for Codex tmux invocations.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 8
+}

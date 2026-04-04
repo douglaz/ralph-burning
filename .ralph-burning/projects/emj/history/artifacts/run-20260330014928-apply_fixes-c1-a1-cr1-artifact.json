@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330014928-apply_fixes-c1-a1-cr1-artifact",
+  "payload_id": "run-20260330014928-apply_fixes-c1-a1-cr1",
+  "stage_id": "apply_fixes",
+  "created_at": "2026-03-30T02:03:10.296242226Z",
+  "content": "# Apply Fixes\n\n## Change Summary\n\nNo fixes required — the review stage approved the implementation with zero findings, zero gaps, and zero follow-up amendments. Verified all acceptance criteria still hold: cargo test (329 lib + 128 cli + 1 tmux + 667 unit = 1125 total, 0 failures), cargo clippy -- -D warnings clean, cargo fmt --check clean.\n\n## Steps\n\n1. [Completed] Verify cargo test still passes after review approval (no code changes needed)\n2. [Completed] Verify cargo clippy -- -D warnings still clean\n3. [Completed] Verify cargo fmt --check still clean\n4. [Completed] Spot-check TokenCounts struct has cache_read_tokens and cache_creation_tokens fields\n5. [Completed] Spot-check tracing::info! event in service.rs emits all required fields\n\n## Validation Evidence\n\n- cargo test: 329 lib + 128 cli + 1 tmux + 667 unit = 1125 tests passed, 0 failed, 0 ignored\n- cargo clippy -- -D warnings: clean, no warnings\n- cargo fmt --check: clean, no formatting issues\n- Review stage outcome: approved with empty findings_or_gaps and empty follow_up_or_amendments\n- Spot-checked model.rs:240-247 confirms TokenCounts has cache_read_tokens and cache_creation_tokens\n- Spot-checked service.rs:262-277 confirms tracing::info! with invocation_id, backend, model, attempt, duration_ms, prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens, tokens_reported, cache_reported, session_reused\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

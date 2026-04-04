@@ -170,6 +170,15 @@ impl BrCommand {
         Self::new("list").json()
     }
 
+    /// `br list --all --deferred --limit=0 --json`
+    pub fn list_all() -> Self {
+        Self::new("list")
+            .flag("all")
+            .flag("deferred")
+            .kv("limit", "0")
+            .json()
+    }
+
     /// `br list --status=<status> --json`
     pub fn list_by_status(status: impl Into<String>) -> Self {
         Self::new("list").kv("status", status).json()

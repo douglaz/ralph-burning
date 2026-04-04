@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T22:00:07.516970403Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAccept all four amendments. Three identify concrete correctness/robustness issues in prompt rendering and contract propagation, and one identifies a real data-model wiring gap that leaves part of the contract permanently nonfunctional in production.\n\n## Votes\n\n- `fr-1-617368af`: Accept\n  The guidance text currently names the contract as `bead_execution_prompt/1.` rather than `bead_execution_prompt/1`. Even if today this string is only instructional, it is still an incorrect identifier and can mislead LLM consumers or any future text-based extraction logic. Fixing the punctuation is a low-risk correctness improvement.\n- `fr-1-74a3f619`: Accept\n  `already_planned_elsewhere` is effectively dead in production: the only real constructor hardcodes it to empty, and there is no upstream data source to populate it. That means a canonical contract section can never carry real project data, which is a maintainability and product-correctness gap. Wiring it or explicitly documenting it as a placeholder would make the behavior intentional instead of silently inert.\n- `fr-1-60ee64b1`: Accept\n  This identifies a real end-to-end contract integrity problem. The contract marker is detected by exact string match, but prompt review rewrites `prompt.md` through generic templates and then persists the rewritten prompt, with no preservation rule for the marker or section semantics. That can silently disable later contract-aware behavior. Extending the contract handling so prompt-review and downstream judging stages preserve and respect the canonical bead contract is the correct robustness fix.\n- `fr-1-1646d5c1`: Accept\n  Wrapping free-form `agents_guidance` in a synthesized `- ...` bullet is unsafe for markdown content. Multi-line text, headings, fenced code, and nested lists can be malformed or semantically altered, which is especially bad because this section carries repo-specific execution instructions. Preserving the guidance verbatim is the safer and more maintainable rendering behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

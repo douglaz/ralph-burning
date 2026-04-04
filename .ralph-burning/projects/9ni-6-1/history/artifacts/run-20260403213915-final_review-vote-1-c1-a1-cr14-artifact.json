@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-vote-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260403213915-final_review-vote-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T02:22:44.306114145Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe first amendment identifies a real false-negative in canonical prompt validation that can let contract drift through. The second describes an intentional compatibility behavior: omitting `{{task_prompt_contract}}` removes supplemental guidance, but the canonical prompt itself is still delivered through the main prompt fields, so I do not see a correctness or safety defect there.\n\n## Votes\n\n- `fr-14-c8de46bb`: Accept\n  `validate_canonical_prompt_shape()` only enforces duplicate/order checks while `expected_index` still points inside the canonical section list. Once `## AGENTS / Repo Guidance` has been seen, `expected_index == BEAD_TASK_PROMPT_SECTION_TITLES.len()`, so a later top-level canonical heading like `## Acceptance Criteria` falls through without error. `render_bead_task_prompt()` currently emits repo guidance verbatim at top level under `## AGENTS / Repo Guidance`, so the validator cannot distinguish real trailing contract drift from unescaped guidance content. Because `create_project_from_bead_context()` and prompt-review drift checks both rely on this validator, that is a real contract-integrity hole. Tightening validation, together with escaping or delimiting repo-guidance content when needed, is warranted.\n- `fr-14-015e8372`: Reject\n  The optional `task_prompt_contract` placeholder is a deliberate compatibility choice, and the codebase has explicit tests asserting that legacy stage and panel overrides without that placeholder still resolve. Omitting the placeholder drops only the extra explanatory guidance block; the actual canonical prompt still flows through `{{project_prompt}}` or `{{prompt_text}}`, so the downstream agent still sees the marker and canonical sections themselves. For prompt review, canonical-shape drift is also enforced in Rust after refinement via `canonical_contract_drift_concerns()`, independent of whether the template rendered the extra guidance block. This may be a quality or consistency tradeoff, but it is not a clear correctness, safety, or robustness defect that justifies forcing the placeholder or bypassing override control.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}
