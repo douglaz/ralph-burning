@@ -2317,7 +2317,7 @@ exit 1
 }
 
 #[test]
-fn project_create_from_bead_fails_when_br_list_is_unavailable_and_relation_statuses_are_missing() {
+fn project_create_from_bead_uses_unknown_relation_statuses_when_br_list_is_unavailable() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let fake_br = write_editor_script(
@@ -2373,7 +2373,7 @@ exit 1
             "--bead-id",
             "ms-alpha.bead-2",
             "--project-id",
-            "missing-br-list-missing-status-project",
+            "missing-br-list-unknown-status-project",
         ])
         .env("PATH", path)
         .current_dir(temp_dir.path())
@@ -2381,30 +2381,26 @@ exit 1
         .expect("run project create-from-bead");
 
     assert!(
-        !output.status.success(),
-        "expected create-from-bead to fail when relation statuses are missing, stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let prompt = fs::read_to_string(
+        project_root(temp_dir.path(), "missing-br-list-unknown-status-project").join("prompt.md"),
+    )
+    .expect("read prompt");
     assert!(
-        stderr.contains("failed to load bead summaries"),
-        "stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("cannot render deterministic dependency status"),
-        "stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("dependency ms-alpha.bead-1"),
-        "stderr: {stderr}"
+        prompt.contains(
+            "ms-alpha.bead-1 (Define task-source metadata) - blocking dependency; status: unknown; outcome: unknown"
+        ),
+        "prompt: {prompt}"
     );
     assert!(
-        stderr.contains("dependent ms-alpha.bead-3"),
-        "stderr: {stderr}"
-    );
-    assert!(
-        !project_root(temp_dir.path(), "missing-br-list-missing-status-project").exists(),
-        "project should not be created when direct relation statuses are unavailable"
+        prompt.contains(
+            "ms-alpha.bead-3 (Document task bootstrap follow-up) - downstream dependent; status: unknown; outcome: unknown"
+        ),
+        "prompt: {prompt}"
     );
 }
 

@@ -41,6 +41,10 @@ use crate::contexts::workspace_governance::config::{CliBackendOverrides, Effecti
 use crate::shared::domain::{FlowPreset, ProjectId};
 use crate::shared::error::{AppError, AppResult};
 
+const PLANNED_ELSEWHERE_MAX_ITEMS: usize = 6;
+const PLANNED_ELSEWHERE_MAX_BYTES: usize = 1536;
+const PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES: usize = 240;
+
 #[derive(Debug, Args)]
 pub struct ProjectCommand {
     #[command(subcommand)]
@@ -325,10 +329,7 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
             let bead_summaries = match load_bead_summaries(&current_dir).await {
                 Ok(summaries) => summaries,
                 Err(error @ AppError::CorruptRecord { .. }) => return Err(error),
-                Err(error @ AppError::Io(_)) => {
-                    ensure_direct_relations_have_statuses_for_prompt(&bead, &error)?;
-                    BTreeMap::new()
-                }
+                Err(AppError::Io(_)) => BTreeMap::new(),
                 Err(other) => return Err(other),
             };
 
@@ -846,34 +847,6 @@ fn load_optional_prompt_override(
     Ok(Some(prompt))
 }
 
-fn ensure_direct_relations_have_statuses_for_prompt(
-    bead: &BeadDetail,
-    source_error: &AppError,
-) -> AppResult<()> {
-    let mut missing_relations = bead
-        .dependencies
-        .iter()
-        .filter(|relation| relation.status.is_none())
-        .map(|relation| format!("dependency {}", relation.id))
-        .collect::<Vec<_>>();
-    missing_relations.extend(
-        bead.dependents
-            .iter()
-            .filter(|relation| relation.status.is_none())
-            .map(|relation| format!("dependent {}", relation.id)),
-    );
-
-    if missing_relations.is_empty() {
-        return Ok(());
-    }
-
-    Err(AppError::Io(std::io::Error::other(format!(
-        "{source_error}; cannot render deterministic dependency status for bead '{}' because relation status is missing for {}",
-        bead.id,
-        missing_relations.join(", ")
-    ))))
-}
-
 fn infer_parent_epic_id(bead: &BeadDetail) -> Option<String> {
     bead.dependencies
         .iter()
@@ -887,6 +860,20 @@ struct ResolvedBeadPlan {
     membership_confirmed: bool,
     matched_workstream_index: Option<usize>,
     matched_bead_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PlannedElsewherePriority {
+    DirectDependent,
+    SharedAcceptance,
+    AdjacentNeighbor,
+    UpstreamNeighbor,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedElsewhereCandidate {
+    item: PlannedElsewherePromptContext,
+    priority: PlannedElsewherePriority,
 }
 
 fn ensure_bead_belongs_to_milestone(
@@ -1328,13 +1315,12 @@ fn build_planned_elsewhere_context(
     let allow_plan_derived_enrichment = bead_plan.membership_confirmed;
     let dependent_ids = BTreeSet::from_iter(bead.dependents.iter().map(|item| item.id.clone()));
     let upstream_ids = BTreeSet::from_iter(bead.dependencies.iter().map(|item| item.id.clone()));
-    let mut items = Vec::new();
-    let mut seen_ids = BTreeSet::new();
+    let mut items = BTreeMap::new();
 
-    let mut add_item = |item: PlannedElsewherePromptContext| {
-        if seen_ids.insert(item.id.clone()) {
-            items.push(item);
-        }
+    let mut add_item = |item: PlannedElsewherePromptContext, priority: PlannedElsewherePriority| {
+        items
+            .entry(item.id.clone())
+            .or_insert(PlannedElsewhereCandidate { item, priority });
     };
 
     let mut next_implicit_bead = 1usize;
@@ -1391,16 +1377,19 @@ fn build_planned_elsewhere_context(
             .and_then(|(_, _, _, proposal)| {
                 compact_planned_elsewhere_summary(proposal.description.as_deref())
             });
-        add_item(PlannedElsewherePromptContext {
-            id: dependent.id.clone(),
-            title: summary
-                .map(|entry| entry.title.clone())
-                .or_else(|| dependent.title.clone())
-                .unwrap_or_else(|| dependent.id.clone()),
-            relationship: relationship_label(&dependent.kind, false).to_owned(),
-            status: Some(prompt_bead_status(summary, dependent.status.as_ref())),
-            summary: plan_summary,
-        });
+        add_item(
+            PlannedElsewherePromptContext {
+                id: dependent.id.clone(),
+                title: summary
+                    .map(|entry| entry.title.clone())
+                    .or_else(|| dependent.title.clone())
+                    .unwrap_or_else(|| dependent.id.clone()),
+                relationship: relationship_label(&dependent.kind, false).to_owned(),
+                status: Some(prompt_bead_status(summary, dependent.status.as_ref())),
+                summary: plan_summary,
+            },
+            PlannedElsewherePriority::DirectDependent,
+        );
     }
 
     for (related_bead_id, mut criterion_ids) in shared_acceptance_owners {
@@ -1419,16 +1408,19 @@ fn build_planned_elsewhere_context(
             ),
             None => format!("shared milestone acceptance ownership ({criteria_label})"),
         };
-        add_item(PlannedElsewherePromptContext {
-            id: related_bead_id.clone(),
-            title: summary
-                .map(|entry| entry.title.clone())
-                .or_else(|| proposal_entry.map(|(_, _, _, proposal)| proposal.title.clone()))
-                .unwrap_or_else(|| related_bead_id.clone()),
-            relationship,
-            status: Some(prompt_bead_status(summary, None)),
-            summary: plan_summary,
-        });
+        add_item(
+            PlannedElsewherePromptContext {
+                id: related_bead_id.clone(),
+                title: summary
+                    .map(|entry| entry.title.clone())
+                    .or_else(|| proposal_entry.map(|(_, _, _, proposal)| proposal.title.clone()))
+                    .unwrap_or_else(|| related_bead_id.clone()),
+                relationship,
+                status: Some(prompt_bead_status(summary, None)),
+                summary: plan_summary,
+            },
+            PlannedElsewherePriority::SharedAcceptance,
+        );
     }
 
     let location_hint = bead_plan
@@ -1446,12 +1438,7 @@ fn build_planned_elsewhere_context(
                 .flatten()
         });
     let Some((workstream_index, current_bead_index)) = location_hint else {
-        items.sort_by(|left, right| {
-            left.id
-                .cmp(&right.id)
-                .then_with(|| left.title.cmp(&right.title))
-        });
-        return items;
+        return apply_planned_elsewhere_budget(items.into_values().collect());
     };
 
     let workstream = &bundle.workstreams[workstream_index];
@@ -1474,32 +1461,166 @@ fn build_planned_elsewhere_context(
                 continue;
             }
 
-            let relation = if dependent_ids.contains(&proposal_id) {
-                "downstream dependent already planned elsewhere"
+            let (relation, priority) = if dependent_ids.contains(&proposal_id) {
+                (
+                    "downstream dependent already planned elsewhere",
+                    PlannedElsewherePriority::DirectDependent,
+                )
             } else if upstream_ids.contains(&proposal_id) {
-                "upstream dependency already planned elsewhere"
+                (
+                    "upstream dependency already planned elsewhere",
+                    PlannedElsewherePriority::UpstreamNeighbor,
+                )
             } else {
-                "adjacent same-workstream bead"
+                (
+                    "adjacent same-workstream bead",
+                    PlannedElsewherePriority::AdjacentNeighbor,
+                )
             };
             let summary = bead_summaries.get(&proposal_id);
-            add_item(PlannedElsewherePromptContext {
-                id: proposal_id.clone(),
-                title: summary
-                    .map(|entry| entry.title.clone())
-                    .unwrap_or_else(|| proposal.title.clone()),
-                relationship: format!("{relation} in {}", workstream.name),
-                status: Some(prompt_bead_status(summary, None)),
-                summary: compact_planned_elsewhere_summary(proposal.description.as_deref()),
-            });
+            add_item(
+                PlannedElsewherePromptContext {
+                    id: proposal_id.clone(),
+                    title: summary
+                        .map(|entry| entry.title.clone())
+                        .unwrap_or_else(|| proposal.title.clone()),
+                    relationship: format!("{relation} in {}", workstream.name),
+                    status: Some(prompt_bead_status(summary, None)),
+                    summary: compact_planned_elsewhere_summary(proposal.description.as_deref()),
+                },
+                priority,
+            );
         }
     }
 
-    items.sort_by(|left, right| {
+    apply_planned_elsewhere_budget(items.into_values().collect())
+}
+
+fn apply_planned_elsewhere_budget(
+    items: Vec<PlannedElsewhereCandidate>,
+) -> Vec<PlannedElsewherePromptContext> {
+    let mut ranked_items = items;
+    ranked_items.sort_by(|left, right| {
+        left.priority
+            .cmp(&right.priority)
+            .then_with(|| left.item.id.cmp(&right.item.id))
+            .then_with(|| left.item.title.cmp(&right.item.title))
+    });
+
+    let mut selected = Vec::new();
+    let mut used_bytes = 0usize;
+    for item in ranked_items {
+        if selected.len() >= PLANNED_ELSEWHERE_MAX_ITEMS
+            || used_bytes >= PLANNED_ELSEWHERE_MAX_BYTES
+        {
+            break;
+        }
+
+        let remaining_bytes = PLANNED_ELSEWHERE_MAX_BYTES - used_bytes;
+        let Some(item) = fit_planned_elsewhere_item_to_budget(&item.item, remaining_bytes) else {
+            continue;
+        };
+        used_bytes += planned_elsewhere_serialized_bytes(&item);
+        selected.push(item);
+    }
+
+    selected.sort_by(|left, right| {
         left.id
             .cmp(&right.id)
             .then_with(|| left.title.cmp(&right.title))
     });
-    items
+    selected
+}
+
+fn fit_planned_elsewhere_item_to_budget(
+    item: &PlannedElsewherePromptContext,
+    remaining_bytes: usize,
+) -> Option<PlannedElsewherePromptContext> {
+    let mut fitted = item.clone();
+    fitted.summary = fitted.summary.as_deref().and_then(|summary| {
+        truncate_with_ascii_ellipsis(summary, PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES)
+    });
+
+    let base_bytes = planned_elsewhere_serialized_bytes_without_summary(&fitted);
+    if base_bytes > remaining_bytes {
+        return None;
+    }
+
+    let Some(summary) = fitted.summary.as_deref() else {
+        return Some(fitted);
+    };
+
+    let remaining_summary_bytes = remaining_bytes.saturating_sub(base_bytes + "\nSummary:\n".len());
+    if remaining_summary_bytes == 0 {
+        fitted.summary = None;
+        return Some(fitted);
+    }
+
+    fitted.summary = truncate_with_ascii_ellipsis(summary, remaining_summary_bytes);
+    Some(fitted)
+}
+
+fn planned_elsewhere_serialized_bytes(item: &PlannedElsewherePromptContext) -> usize {
+    planned_elsewhere_serialized_bytes_without_summary(item)
+        + item
+            .summary
+            .as_deref()
+            .map(|summary| "\nSummary:\n".len() + summary.len())
+            .unwrap_or(0)
+}
+
+fn planned_elsewhere_serialized_bytes_without_summary(
+    item: &PlannedElsewherePromptContext,
+) -> usize {
+    let mut bytes = item.id.len() + item.title.len() + item.relationship.len() + " () - ".len();
+    if let Some(status) = item.status.as_deref() {
+        bytes += "; status: ".len() + status.len();
+    }
+    bytes
+}
+
+fn truncate_with_ascii_ellipsis(value: &str, max_bytes: usize) -> Option<String> {
+    if max_bytes == 0 {
+        return None;
+    }
+    if value.len() <= max_bytes {
+        return Some(value.to_owned());
+    }
+    if max_bytes <= 3 {
+        return Some(truncate_to_char_boundary(value, max_bytes).to_owned());
+    }
+
+    let truncated = truncate_to_char_boundary(value, max_bytes - 3);
+    Some(format!("{truncated}..."))
+}
+
+fn truncate_to_char_boundary(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+
+    let mut end = 0usize;
+    for (index, _) in value.char_indices() {
+        if index > max_bytes {
+            break;
+        }
+        end = index;
+    }
+
+    if end == 0 && !value.is_empty() && max_bytes > 0 {
+        let first_char_end = value
+            .char_indices()
+            .nth(1)
+            .map(|(index, _)| index)
+            .unwrap_or(value.len());
+        if first_char_end <= max_bytes {
+            &value[..first_char_end]
+        } else {
+            ""
+        }
+    } else {
+        &value[..end]
+    }
 }
 
 fn parse_flow_override(raw: Option<&str>) -> AppResult<Option<FlowPreset>> {
@@ -2058,11 +2179,13 @@ fn truncate_utf8(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        backfill_legacy_explicit_bead_flags, build_dependency_prompt_context,
-        build_dependent_prompt_context, build_planned_elsewhere_context,
-        compact_planned_elsewhere_summary, ensure_bead_belongs_to_milestone,
-        ensure_bead_creation_targets_are_actionable, infer_parent_epic_id, load_milestone_bundle,
-        map_br_list_error, resolve_bead_plan, validate_milestone_plan_snapshot,
+        apply_planned_elsewhere_budget, backfill_legacy_explicit_bead_flags,
+        build_dependency_prompt_context, build_dependent_prompt_context,
+        build_planned_elsewhere_context, compact_planned_elsewhere_summary,
+        ensure_bead_belongs_to_milestone, ensure_bead_creation_targets_are_actionable,
+        infer_parent_epic_id, load_milestone_bundle, map_br_list_error,
+        planned_elsewhere_serialized_bytes, resolve_bead_plan, validate_milestone_plan_snapshot,
+        PlannedElsewhereCandidate, PlannedElsewherePriority, PLANNED_ELSEWHERE_MAX_BYTES,
     };
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -2076,6 +2199,7 @@ mod tests {
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
     };
     use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus};
+    use crate::contexts::project_run_record::service::PlannedElsewherePromptContext;
     use crate::shared::domain::FlowPreset;
     use crate::shared::error::AppError;
 
@@ -2556,6 +2680,21 @@ mod tests {
     }
 
     #[test]
+    fn build_dependency_prompt_context_uses_unknown_status_when_all_status_sources_are_missing() {
+        let relations = vec![DependencyRef {
+            id: "ms-alpha.bead-1".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Define task-source metadata".to_owned()),
+            status: None,
+        }];
+
+        let prompt_context = build_dependency_prompt_context(&relations, &BTreeMap::new());
+
+        assert_eq!(prompt_context[0].status.as_deref(), Some("unknown"));
+        assert_eq!(prompt_context[0].outcome.as_deref(), Some("unknown"));
+    }
+
+    #[test]
     fn build_planned_elsewhere_context_sorts_explicit_and_neighbor_items_by_id() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
         let bundle = sample_three_bead_bundle();
@@ -2771,6 +2910,103 @@ mod tests {
         ));
 
         assert_eq!(summary.as_deref(), Some("Capture the real follow-up text."));
+    }
+
+    #[test]
+    fn apply_planned_elsewhere_budget_prefers_high_priority_items_and_caps_bytes() {
+        let long_summary = "Capture deterministic scope context. ".repeat(32);
+        let budgeted = apply_planned_elsewhere_budget(vec![
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-10".to_owned(),
+                    title: "Direct dependent follow-up alpha".to_owned(),
+                    relationship: "downstream dependent".to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(long_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::DirectDependent,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-11".to_owned(),
+                    title: "Direct dependent follow-up beta".to_owned(),
+                    relationship: "downstream dependent".to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(long_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::DirectDependent,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-20".to_owned(),
+                    title: "Shared acceptance validation alpha".to_owned(),
+                    relationship:
+                        "shared milestone acceptance ownership in Validation (AC-1, AC-2)"
+                            .to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(long_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::SharedAcceptance,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-21".to_owned(),
+                    title: "Shared acceptance validation beta".to_owned(),
+                    relationship:
+                        "shared milestone acceptance ownership in Validation (AC-3, AC-4)"
+                            .to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(long_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::SharedAcceptance,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-30".to_owned(),
+                    title: "Adjacent same-workstream follow-up".to_owned(),
+                    relationship: "adjacent same-workstream bead in Task Substrate".to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(long_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::AdjacentNeighbor,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-40".to_owned(),
+                    title: "Upstream blocker context".to_owned(),
+                    relationship: "upstream dependency already planned elsewhere in Task Substrate"
+                        .to_owned(),
+                    status: Some("closed".to_owned()),
+                    summary: Some(long_summary),
+                },
+                priority: PlannedElsewherePriority::UpstreamNeighbor,
+            },
+        ]);
+
+        assert_eq!(
+            budgeted
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ms-alpha.bead-10",
+                "ms-alpha.bead-11",
+                "ms-alpha.bead-20",
+                "ms-alpha.bead-21",
+            ]
+        );
+        assert!(budgeted.iter().all(|item| item
+            .summary
+            .as_deref()
+            .unwrap_or_default()
+            .ends_with("...")));
+        assert!(
+            budgeted
+                .iter()
+                .map(planned_elsewhere_serialized_bytes)
+                .sum::<usize>()
+                <= PLANNED_ELSEWHERE_MAX_BYTES
+        );
     }
 
     #[test]
