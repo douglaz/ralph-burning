@@ -504,6 +504,39 @@ fn default_br_list_response() -> &'static str {
 }"#
 }
 
+fn exhaustive_br_list_response_with_closed_adjacent_bead() -> String {
+    let mut issues = Vec::new();
+    for index in 0..55 {
+        issues.push(serde_json::json!({
+            "id": format!("ms-bulk.bead-{:03}", index),
+            "title": format!("Bulk open bead {index:03}"),
+            "status": "open",
+            "priority": "P3",
+            "issue_type": "task",
+            "labels": ["bulk"]
+        }));
+    }
+    issues.push(serde_json::json!({
+        "id": "ms-alpha.bead-2",
+        "title": "Bootstrap bead-backed task creation",
+        "status": "open",
+        "priority": "P1",
+        "issue_type": "feature",
+        "labels": ["creation", "prompt"]
+    }));
+    issues.push(serde_json::json!({
+        "id": "ms-alpha.bead-3",
+        "title": "Document task bootstrap follow-up",
+        "status": "closed",
+        "priority": "P2",
+        "issue_type": "docs",
+        "labels": ["docs"]
+    }));
+
+    serde_json::to_string_pretty(&serde_json::json!({ "issues": issues }))
+        .expect("serialize exhaustive br list response")
+}
+
 fn default_ms_alpha_bead_2_show_response() -> &'static str {
     r#"[
   {
@@ -535,7 +568,7 @@ cat <<'EOF'
 EOF
 exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
 cat <<'EOF'
 {list_payload}
 EOF
@@ -1933,7 +1966,7 @@ cat <<'EOF'
 EOF
 exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
 cat <<'EOF'
 {
   "issues": [
@@ -2036,6 +2069,81 @@ exit 1
 }
 
 #[test]
+fn project_create_from_bead_loads_closed_adjacent_bead_from_exhaustive_br_list() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let exhaustive_list_payload = exhaustive_br_list_response_with_closed_adjacent_bead();
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        &format!(
+            r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {{
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": [],
+    "dependents": []
+  }}
+]
+EOF
+exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
+cat <<'EOF'
+{exhaustive_list_payload}
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+        ),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "closed-adjacent-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let prompt = fs::read_to_string(
+        project_root(temp_dir.path(), "closed-adjacent-project").join("prompt.md"),
+    )
+    .expect("read prompt");
+    assert!(prompt.contains("ms-alpha.bead-3 (Document task bootstrap follow-up)"));
+    assert!(prompt.contains("adjacent same-workstream bead in Task Substrate"));
+    assert!(prompt.contains("status: closed"));
+    assert!(prompt.contains(
+        "Summary:\n    Capture the operator-facing workflow once project creation is stable."
+    ));
+}
+
+#[test]
 fn project_create_from_bead_falls_back_when_br_list_is_unavailable() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
@@ -2075,7 +2183,7 @@ cat <<'EOF'
 EOF
 exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
 echo "simulated br list failure" >&2
 exit 1
 fi
@@ -2165,7 +2273,7 @@ cat <<'EOF'
 EOF
 exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
 echo "simulated br list failure" >&2
 exit 1
 fi
@@ -2246,7 +2354,7 @@ cat <<'EOF'
 EOF
 exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
 echo "simulated br list failure" >&2
 exit 1
 fi
@@ -2371,7 +2479,7 @@ cat <<'EOF'
 EOF
 exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
 cat <<'EOF'
 {
   "issues": [
@@ -2508,7 +2616,7 @@ cat <<'EOF'
 EOF
 exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
 cat <<'EOF'
 {
   "issues": [
@@ -2652,7 +2760,7 @@ cat <<'EOF'
 EOF
 exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
 cat <<'EOF'
 {
   "issues": [
@@ -2806,7 +2914,7 @@ cat <<'EOF'
 EOF
 exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
 cat <<'EOF'
 {
   "issues": [
@@ -2905,7 +3013,7 @@ cat <<'EOF'
 EOF
 exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
 echo "failed to parse .beads/issues.jsonl: corrupt json" >&2
 exit 1
 fi

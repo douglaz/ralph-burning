@@ -766,7 +766,7 @@ async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetai
 async fn load_bead_summaries(base_dir: &Path) -> AppResult<BTreeMap<String, BeadSummary>> {
     let response: BrListResponse = BrAdapter::new()
         .with_working_dir(base_dir.to_path_buf())
-        .exec_json(&BrCommand::list())
+        .exec_json(&BrCommand::list_all())
         .await
         .map_err(map_br_list_error)?;
     let summaries = match response {
@@ -786,7 +786,9 @@ fn map_br_list_error(error: BrError) -> AppError {
         BrError::BrExitError { stderr, .. } if br_list_exit_error_looks_corrupt(&stderr) => {
             AppError::CorruptRecord {
                 file: ".beads/issues.jsonl".to_owned(),
-                details: format!("`br list --json` reported corrupt bead data: {stderr}"),
+                details: format!(
+                    "`br list --all --deferred --limit=0 --json` reported corrupt bead data: {stderr}"
+                ),
             }
         }
         BrError::BrExitError { stderr, .. } => AppError::Io(std::io::Error::other(format!(
@@ -794,7 +796,9 @@ fn map_br_list_error(error: BrError) -> AppError {
         ))),
         BrError::BrParseError { details, .. } => AppError::CorruptRecord {
             file: ".beads/issues.jsonl".to_owned(),
-            details: format!("failed to parse `br list --json` output: {details}"),
+            details: format!(
+                "failed to parse `br list --all --deferred --limit=0 --json` output: {details}"
+            ),
         },
         other => AppError::Io(std::io::Error::other(format!(
             "failed to load bead summaries: {other}"
