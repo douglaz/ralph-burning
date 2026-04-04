@@ -475,6 +475,12 @@ enum BeadDescriptionSectionKind {
     NonGoals,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FenceDelimiter {
+    marker: char,
+    count: usize,
+}
+
 fn markdown_heading_title(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
@@ -484,9 +490,32 @@ fn markdown_heading_title(line: &str) -> Option<&str> {
     Some(trimmed[hash_count..].trim())
 }
 
-fn is_fence_delimiter(line: &str) -> bool {
+fn opening_fence_delimiter(line: &str) -> Option<FenceDelimiter> {
     let trimmed = line.trim();
-    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+    let marker = trimmed.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+
+    let count = trimmed.chars().take_while(|ch| *ch == marker).count();
+    if count < 3 {
+        return None;
+    }
+
+    Some(FenceDelimiter { marker, count })
+}
+
+fn closes_fence(line: &str, opening: FenceDelimiter) -> bool {
+    let Some(candidate) = opening_fence_delimiter(line) else {
+        return false;
+    };
+
+    if candidate.marker != opening.marker || candidate.count < opening.count {
+        return false;
+    }
+
+    let trimmed = line.trim();
+    trimmed[candidate.count..].trim().is_empty()
 }
 
 fn normalized_section_label(label: &str) -> String {
@@ -519,8 +548,29 @@ fn section_kind_for_bead_description_line(line: &str) -> Option<BeadDescriptionS
 fn collect_non_goal_items(lines: &[String]) -> Vec<String> {
     let mut items = Vec::new();
     let mut current = String::new();
+    let mut active_fence = None;
 
     for line in lines {
+        if let Some(opening) = active_fence {
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(line);
+            if closes_fence(line, opening) {
+                active_fence = None;
+            }
+            continue;
+        }
+
+        if let Some(opening) = opening_fence_delimiter(line) {
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(line);
+            active_fence = Some(opening);
+            continue;
+        }
+
         let trimmed = line.trim();
         if trimmed.is_empty() {
             if !current.is_empty() {
@@ -543,7 +593,11 @@ fn collect_non_goal_items(lines: &[String]) -> Vec<String> {
         }
 
         if !current.is_empty() {
-            current.push(' ');
+            if current.contains('\n') {
+                current.push('\n');
+            } else {
+                current.push(' ');
+            }
         }
         current.push_str(trimmed);
     }
@@ -569,25 +623,28 @@ fn split_bead_description_scope(description: &str) -> (String, Vec<String>) {
     let mut must_do_lines = Vec::new();
     let mut non_goal_lines = Vec::new();
     let mut active_section = None;
-    let mut in_fence = false;
+    let mut active_fence = None;
 
     for line in description.lines() {
-        if is_fence_delimiter(line) {
+        if let Some(opening) = active_fence {
             match active_section {
                 Some(BeadDescriptionSectionKind::AcceptanceCriteria) => {}
                 Some(BeadDescriptionSectionKind::NonGoals) => non_goal_lines.push(line.to_owned()),
                 None => must_do_lines.push(line.to_owned()),
             }
-            in_fence = !in_fence;
+            if closes_fence(line, opening) {
+                active_fence = None;
+            }
             continue;
         }
 
-        if in_fence {
+        if let Some(opening) = opening_fence_delimiter(line) {
             match active_section {
                 Some(BeadDescriptionSectionKind::AcceptanceCriteria) => {}
                 Some(BeadDescriptionSectionKind::NonGoals) => non_goal_lines.push(line.to_owned()),
                 None => must_do_lines.push(line.to_owned()),
             }
+            active_fence = Some(opening);
             continue;
         }
 
@@ -609,10 +666,33 @@ fn split_bead_description_scope(description: &str) -> (String, Vec<String>) {
 }
 
 pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
+    fn render_bullet_item(prefix: &str, value: &str) -> String {
+        let mut lines = value.lines();
+        let first_line = lines.next().unwrap_or_default();
+        let continuation_indent = " ".repeat(prefix.len());
+        let mut rendered =
+            if !first_line.is_empty() && opening_fence_delimiter(first_line).is_some() {
+                format!(
+                    "{}\n{}{}",
+                    prefix.trim_end(),
+                    continuation_indent,
+                    first_line
+                )
+            } else {
+                format!("{prefix}{first_line}")
+            };
+        for line in lines {
+            rendered.push('\n');
+            rendered.push_str(&continuation_indent);
+            rendered.push_str(line);
+        }
+        rendered
+    }
+
     fn bullet_lines(items: &[String]) -> String {
         items
             .iter()
-            .map(|item| format!("- {item}"))
+            .map(|item| render_bullet_item("- ", item))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -633,20 +713,23 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
 
     let milestone_summary = {
         let mut lines = vec![
-            format!("- Milestone ID: `{}`", context.milestone_id),
-            format!("- Milestone Name: {}", context.milestone_name),
+            render_bullet_item("- Milestone ID: ", &format!("`{}`", context.milestone_id)),
+            render_bullet_item("- Milestone Name: ", &context.milestone_name),
         ];
         if let Some(summary) = &context.milestone_summary {
-            lines.push(format!("- Summary: {summary}"));
+            lines.push(render_bullet_item("- Summary: ", summary));
         }
-        lines.push(format!("- Description: {}", context.milestone_description));
+        lines.push(render_bullet_item(
+            "- Description: ",
+            &context.milestone_description,
+        ));
         if !context.milestone_goals.is_empty() {
             lines.push("- Goals:".to_owned());
             lines.extend(
                 context
                     .milestone_goals
                     .iter()
-                    .map(|goal| format!("  - {goal}")),
+                    .map(|goal| render_bullet_item("  - ", goal)),
             );
         }
         if !context.milestone_constraints.is_empty() {
@@ -655,7 +738,7 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
                 context
                     .milestone_constraints
                     .iter()
-                    .map(|constraint| format!("  - {constraint}")),
+                    .map(|constraint| render_bullet_item("  - ", constraint)),
             );
         }
         lines.join("\n")
@@ -663,22 +746,31 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
 
     let current_bead_details = {
         let mut lines = vec![
-            format!("- Bead ID: `{}`", context.bead_id),
-            format!("- Title: {}", context.bead_title),
-            format!("- Flow: `{}`", context.flow.as_str()),
+            render_bullet_item("- Bead ID: ", &format!("`{}`", context.bead_id)),
+            render_bullet_item("- Title: ", &context.bead_title),
+            render_bullet_item("- Flow: ", &format!("`{}`", context.flow.as_str())),
         ];
         if let Some(parent_epic_id) = &context.parent_epic_id {
-            lines.push(format!("- Parent epic: `{parent_epic_id}`"));
+            lines.push(render_bullet_item(
+                "- Parent epic: ",
+                &format!("`{parent_epic_id}`"),
+            ));
         } else {
             lines.push("- Parent epic: None.".to_owned());
         }
         if let Some(plan_hash) = &context.plan_hash {
-            lines.push(format!("- Plan hash: `{plan_hash}`"));
+            lines.push(render_bullet_item(
+                "- Plan hash: ",
+                &format!("`{plan_hash}`"),
+            ));
         } else {
             lines.push("- Plan hash: None.".to_owned());
         }
         if let Some(plan_version) = context.plan_version {
-            lines.push(format!("- Plan version: {plan_version}"));
+            lines.push(render_bullet_item(
+                "- Plan version: ",
+                &plan_version.to_string(),
+            ));
         } else {
             lines.push("- Plan version: None.".to_owned());
         }
@@ -690,7 +782,7 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
                 context
                     .bead_dependencies
                     .iter()
-                    .map(|dependency| format!("  - {dependency}")),
+                    .map(|dependency| render_bullet_item("  - ", dependency)),
             );
         }
         lines.join("\n")

@@ -13,6 +13,12 @@ pub const BEAD_TASK_PROMPT_CONTRACT_VERSION: u32 = 1;
 
 const CONTRACT_MARKER_PREFIX: &str = "<!-- ralph-task-prompt-contract:";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FenceDelimiter {
+    marker: char,
+    count: usize,
+}
+
 /// Canonical section title for milestone context.
 pub const SECTION_MILESTONE_SUMMARY: &str = "Milestone Summary";
 /// Canonical section title for current bead metadata.
@@ -58,15 +64,38 @@ fn contract_identifier() -> String {
 }
 
 fn canonical_section_heading_index(line: &str) -> Option<usize> {
-    let title = line.trim().strip_prefix("## ")?;
+    let title = line.trim_end().strip_prefix("## ")?;
     BEAD_TASK_PROMPT_SECTION_TITLES
         .iter()
         .position(|section| *section == title)
 }
 
-fn is_fence_delimiter(line: &str) -> bool {
+fn opening_fence_delimiter(line: &str) -> Option<FenceDelimiter> {
     let trimmed = line.trim();
-    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+    let marker = trimmed.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+
+    let count = trimmed.chars().take_while(|ch| *ch == marker).count();
+    if count < 3 {
+        return None;
+    }
+
+    Some(FenceDelimiter { marker, count })
+}
+
+fn closes_fence(line: &str, opening: FenceDelimiter) -> bool {
+    let Some(candidate) = opening_fence_delimiter(line) else {
+        return false;
+    };
+
+    if candidate.marker != opening.marker || candidate.count < opening.count {
+        return false;
+    }
+
+    let trimmed = line.trim();
+    trimmed[candidate.count..].trim().is_empty()
 }
 
 fn consumer_guidance_body() -> String {
@@ -143,14 +172,18 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
     let mut seen_positions = vec![None; BEAD_TASK_PROMPT_SECTION_TITLES.len()];
     let mut reported_missing = vec![false; BEAD_TASK_PROMPT_SECTION_TITLES.len()];
     let mut expected_index = 0usize;
-    let mut in_fence = false;
+    let mut active_fence = None;
 
     for (line_index, line) in prompt.lines().enumerate() {
-        if is_fence_delimiter(line) {
-            in_fence = !in_fence;
+        if let Some(opening) = active_fence {
+            if closes_fence(line, opening) {
+                active_fence = None;
+            }
             continue;
         }
-        if in_fence {
+
+        if let Some(opening) = opening_fence_delimiter(line) {
+            active_fence = Some(opening);
             continue;
         }
 
@@ -320,6 +353,36 @@ mod tests {
     fn canonical_prompt_shape_ignores_canonical_headings_inside_fenced_examples() {
         let prompt = format!(
             "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\n```md\n## Acceptance Criteria\n```\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        assert!(validate_canonical_prompt_shape(&prompt).is_ok());
+    }
+
+    #[test]
+    fn canonical_prompt_shape_keeps_longer_opening_fence_active_until_matching_close() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n  ````md\n  ## Acceptance Criteria\n  ```\n  ````\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        assert!(validate_canonical_prompt_shape(&prompt).is_ok());
+    }
+
+    #[test]
+    fn canonical_prompt_shape_ignores_indented_canonical_heading_like_lines_in_section_bodies() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n  ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        assert!(validate_canonical_prompt_shape(&prompt).is_ok());
+    }
+
+    #[test]
+    fn canonical_prompt_shape_allows_trailing_whitespace_on_canonical_headings() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary \n\nA\n\n## Current Bead Details\t\n\nB\n\n## Must-Do Scope \n\nC\n\n## Explicit Non-Goals \n\nD\n\n## Acceptance Criteria \n\nE\n\n## Already Planned Elsewhere \n\nF\n\n## Review Policy \n\nG\n\n## AGENTS / Repo Guidance \n\nH",
             contract_marker()
         );
 

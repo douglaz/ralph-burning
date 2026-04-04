@@ -124,6 +124,7 @@ where
             cursor,
             refiner_target,
             &original_prompt,
+            &original_prompt,
             "refiner",
             refiner_timeout,
             cancellation_token.clone(),
@@ -182,6 +183,7 @@ where
                 cursor,
                 validator_target,
                 &refinement.refined_prompt,
+                &original_prompt,
                 "validator",
                 validator_timeout,
                 cancellation_token.clone(),
@@ -229,6 +231,12 @@ where
             }
         }
 
+        let contract_drift_concerns =
+            canonical_contract_drift_concerns(&original_prompt, &refinement.refined_prompt);
+        if !contract_drift_concerns.is_empty() {
+            collected_concerns.extend(contract_drift_concerns);
+        }
+
         // ── Step 4: Enforce min_reviewers ──────────────────────────────────
         if executed_count < min_reviewers {
             return Err(AppError::InsufficientPanelMembers {
@@ -239,19 +247,9 @@ where
         }
 
         // ── Step 5: Check acceptance ───────────────────────────────────────
-        if reject_count == 0 {
+        if reject_count == 0 && collected_concerns.is_empty() {
             // Success: all validators accepted.
             let refined = refinement.refined_prompt.clone();
-            if task_prompt_contract::prompt_uses_contract(&original_prompt) {
-                task_prompt_contract::validate_canonical_prompt_shape(&refined).map_err(
-                    |errors| AppError::PromptReviewRejected {
-                        details: format!(
-                            "refined prompt no longer satisfies the canonical bead task contract: {}",
-                            errors.join("; ")
-                        ),
-                    },
-                )?;
-            }
             let primary = PromptReviewPrimaryPayload {
                 decision: PromptReviewDecision::Accepted,
                 refined_prompt: refinement.refined_prompt,
@@ -276,12 +274,28 @@ where
         // refiner; otherwise fall through to the final rejection error.
         let is_last_round = round + 1 >= total_rounds;
         if is_last_round {
-            return Err(AppError::PromptReviewRejected {
-                details: format!(
+            let summary = if reject_count == 0 {
+                format!(
+                    "the refined prompt still violated the canonical bead task prompt contract \
+                     after {} refinement retries",
+                    max_refinement_retries
+                )
+            } else {
+                format!(
                     "{reject_count} of {executed_count} validators rejected the refined prompt \
                      (after {} refinement retries)",
                     max_refinement_retries
-                ),
+                )
+            };
+            let mut detail_parts = vec![summary];
+            if !collected_concerns.is_empty() {
+                detail_parts.push(format!(
+                    "remaining concerns: {}",
+                    collected_concerns.join("; ")
+                ));
+            }
+            return Err(AppError::PromptReviewRejected {
+                details: detail_parts.join("; "),
             });
         }
 
@@ -303,10 +317,25 @@ fn format_prior_concerns(concerns: &[String]) -> String {
     section
 }
 
+fn canonical_contract_drift_concerns(original_prompt: &str, refined_prompt: &str) -> Vec<String> {
+    if !task_prompt_contract::prompt_uses_contract(original_prompt) {
+        return Vec::new();
+    }
+
+    match task_prompt_contract::validate_canonical_prompt_shape(refined_prompt) {
+        Ok(()) => Vec::new(),
+        Err(errors) => vec![format!(
+            "Preserve the canonical bead task prompt contract exactly: {}",
+            errors.join("; ")
+        )],
+    }
+}
+
 fn build_prompt_review_member_prompt(
     base_dir: &Path,
     project_id: Option<&ProjectId>,
     prompt_text: &str,
+    contract_reference_prompt: &str,
     role_label: &str,
     schema_str: &str,
     extra_values: &[(&str, &str)],
@@ -317,7 +346,7 @@ fn build_prompt_review_member_prompt(
         "prompt_review_validator"
     };
     let task_prompt_contract_block =
-        task_prompt_contract::prompt_review_consumer_guidance_for_prompt(prompt_text);
+        task_prompt_contract::prompt_review_consumer_guidance_for_prompt(contract_reference_prompt);
 
     let mut values: Vec<(&str, &str)> = vec![
         ("role_label", role_label),
@@ -342,6 +371,7 @@ async fn invoke_panel_member<A, R, S>(
     cursor: &StageCursor,
     target: &ResolvedBackendTarget,
     prompt_text: &str,
+    contract_reference_prompt: &str,
     role_label: &str,
     timeout: Duration,
     cancellation_token: CancellationToken,
@@ -369,6 +399,7 @@ where
         base_dir,
         project_id,
         prompt_text,
+        contract_reference_prompt,
         role_label,
         &schema_str,
         extra_values,
@@ -481,6 +512,7 @@ mod tests {
             tmp.path(),
             None,
             CANONICAL_PROMPT,
+            CANONICAL_PROMPT,
             "refiner",
             "{}",
             &[],
@@ -498,6 +530,7 @@ mod tests {
             tmp.path(),
             None,
             "# Prompt\n\nGeneric.",
+            "# Prompt\n\nGeneric.",
             "validator",
             "{}",
             &[],
@@ -505,5 +538,37 @@ mod tests {
         .expect("render prompt");
 
         assert!(!prompt.contains("## Task Prompt Contract"));
+    }
+
+    #[test]
+    fn build_prompt_review_member_prompt_keeps_contract_guidance_for_refined_prompt_without_marker()
+    {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_prompt_review_member_prompt(
+            tmp.path(),
+            None,
+            "# Refined Prompt\n\nDropped the canonical marker by mistake.",
+            CANONICAL_PROMPT,
+            "validator",
+            "{}",
+            &[],
+        )
+        .expect("render prompt");
+
+        assert!(prompt.contains("## Task Prompt Contract"));
+        assert!(prompt.contains("preserve the exact contract marker line"));
+        assert!(prompt.contains("# Refined Prompt"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_becomes_retryable_concern() {
+        let concerns = canonical_contract_drift_concerns(
+            CANONICAL_PROMPT,
+            "# Refined Prompt\n\nMissing the canonical sections.",
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("Preserve the canonical bead task prompt contract exactly"));
+        assert!(concerns[0].contains("missing exact contract marker"));
     }
 }

@@ -921,6 +921,58 @@ fn render_bead_task_prompt_ignores_embedded_section_labels_inside_fenced_code_bl
 }
 
 #[test]
+fn render_bead_task_prompt_preserves_fenced_non_goal_blocks_without_mangling_delimiters() {
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Scope:\n- keep the contract explicit\n\nNon-goals:\nExample config:\n````md\n## Acceptance Criteria\n```\nstill inside the block\n````\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let acceptance_start = prompt[non_goals_start..]
+        .rfind("\n\n## Acceptance Criteria\n\n")
+        .map(|offset| non_goals_start + offset + 2)
+        .expect("acceptance section should exist");
+    let non_goals_section = &prompt[non_goals_start..acceptance_start];
+
+    assert!(non_goals_section.contains("````md"));
+    assert!(non_goals_section.contains("```"));
+    assert!(non_goals_section.contains("still inside the block"));
+    assert!(!non_goals_section.contains("- ````md"));
+    assert!(
+        ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
+            .is_ok()
+    );
+}
+
+#[test]
+fn render_bead_task_prompt_puts_fence_first_bullet_items_on_indented_lines() {
+    let mut context = sample_bead_context();
+    context.already_planned_elsewhere = vec!["```md\n## Review Policy\n```".to_owned()];
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let planned_start = prompt
+        .find("## Already Planned Elsewhere")
+        .expect("planned elsewhere section should exist");
+    let review_start = prompt[planned_start..]
+        .rfind("\n\n## Review Policy\n\n")
+        .map(|offset| planned_start + offset + 2)
+        .expect("review policy section should exist");
+    let planned_section = &prompt[planned_start..review_start];
+
+    assert!(planned_section.contains("-\n  ```md\n  ## Review Policy\n  ```"));
+    assert!(!planned_section.contains("- ```md"));
+    assert!(
+        ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
+            .is_ok()
+    );
+}
+
+#[test]
 fn rendered_bead_task_prompt_with_embedded_sections_still_satisfies_contract_shape() {
     let mut context = sample_bead_context();
     context.bead_description = Some(
@@ -929,6 +981,30 @@ fn rendered_bead_task_prompt_with_embedded_sections_still_satisfies_contract_sha
 
     let prompt = render_bead_task_prompt(&context);
 
+    assert!(
+        ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
+            .is_ok()
+    );
+}
+
+#[test]
+fn rendered_bead_task_prompt_indents_multiline_milestone_fields_without_breaking_contract() {
+    let mut context = sample_bead_context();
+    context.milestone_summary = Some(
+        "Ship the prompt contract update.\n## Acceptance Criteria\nKeep this as milestone prose."
+            .to_owned(),
+    );
+    context.already_planned_elsewhere = vec![
+        "ms-alpha.bead-9 handles follow-up validation.\n## Review Policy\nTrack it separately."
+            .to_owned(),
+    ];
+
+    let prompt = render_bead_task_prompt(&context);
+
+    assert!(prompt.contains("- Summary: Ship the prompt contract update."));
+    assert!(prompt.contains("  ## Acceptance Criteria"));
+    assert!(prompt.contains("- ms-alpha.bead-9 handles follow-up validation."));
+    assert!(prompt.contains("  ## Review Policy"));
     assert!(
         ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
             .is_ok()
@@ -1017,6 +1093,63 @@ fn create_project_from_bead_context_respects_explicit_project_id_and_prompt_over
             "# Custom Prompt\nUse the explicit prompt."
         )
     );
+}
+
+#[test]
+fn create_project_from_bead_context_accepts_multiline_canonical_fields() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let mut context = sample_bead_context();
+    context.milestone_summary = Some(
+        "Ship the prompt contract update.\n## Acceptance Criteria\nKeep this prose indented."
+            .to_owned(),
+    );
+
+    let record = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: None,
+            prompt_override: None,
+            created_at: test_timestamp(),
+            context,
+        },
+    )
+    .expect("multiline canonical fields should still validate");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
+    assert!(captured
+        .prompt_contents
+        .contains("  ## Acceptance Criteria"));
+}
+
+#[test]
+fn create_project_from_bead_context_accepts_fence_first_bullet_fields() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let mut context = sample_bead_context();
+    context.already_planned_elsewhere = vec!["```md\n## Review Policy\n```".to_owned()];
+
+    let record = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: None,
+            prompt_override: None,
+            created_at: test_timestamp(),
+            context,
+        },
+    )
+    .expect("fence-first bullet fields should still validate");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
+    assert!(captured
+        .prompt_contents
+        .contains("-\n  ```md\n  ## Review Policy\n  ```"));
 }
 
 #[test]
