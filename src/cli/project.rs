@@ -1100,10 +1100,12 @@ fn infer_implicit_slot_hint(
 ) -> Option<(usize, usize)> {
     let mut next_implicit_bead = 1usize;
     for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
-        for (bead_index, _) in workstream.beads.iter().enumerate() {
+        for (bead_index, proposal) in workstream.beads.iter().enumerate() {
             let implicit_bead_id = format!("{}.bead-{}", milestone_id.as_str(), next_implicit_bead);
             next_implicit_bead += 1;
-            if bead_matches_implicit_slot(bead_id, milestone_id.as_str(), &implicit_bead_id) {
+            if bead_matches_implicit_slot(bead_id, milestone_id.as_str(), &implicit_bead_id)
+                && proposal_is_title_fallback_candidate(proposal, milestone_id, &implicit_bead_id)
+            {
                 return Some((workstream_index, bead_index));
             }
         }
@@ -1859,6 +1861,25 @@ mod tests {
         bundle
     }
 
+    fn sample_three_bead_bundle() -> MilestoneBundle {
+        let mut bundle = sample_two_bead_bundle();
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Document task bootstrap follow-up".to_owned(),
+            description: Some(
+                "Capture the operator-facing workflow once project creation is stable.".to_owned(),
+            ),
+            bead_type: Some("docs".to_owned()),
+            priority: Some(2),
+            labels: Vec::new(),
+            depends_on: vec!["bead-2".to_owned()],
+            acceptance_criteria: Vec::new(),
+            flow_override: None,
+        });
+        bundle
+    }
+
     #[test]
     fn load_milestone_bundle_rejects_invalid_bundle_semantics() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2100,6 +2121,26 @@ mod tests {
         assert_eq!(planned_elsewhere.len(), 1);
         assert_eq!(planned_elsewhere[0].id, "ms-alpha.bead-1");
         assert_ne!(planned_elsewhere[0].id, bead.id);
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_drops_implicit_slot_hint_when_slot_was_reassigned() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_three_bead_bundle();
+        bundle.workstreams[0].beads[1].bead_id = Some("ms-alpha.bead-200".to_owned());
+        bundle.workstreams[0].beads[1].explicit_id = Some(true);
+        let bead = sample_bead();
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &BTreeMap::new(),
+        );
+
+        assert!(planned_elsewhere.is_empty());
     }
 
     #[test]

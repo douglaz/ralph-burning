@@ -3354,6 +3354,13 @@ exit 1
     assert!(project_toml.contains("flow = \"quick_dev\""));
     assert!(!project_toml.contains("plan_version = "));
     assert!(!project_toml.contains("plan_hash = "));
+
+    let prompt = fs::read_to_string(
+        project_root(temp_dir.path(), "mismatched-explicit-bead-id").join("prompt.md"),
+    )
+    .expect("read prompt");
+    assert!(!prompt.contains("ms-alpha.bead-1 (Define task-source metadata)"));
+    assert!(!prompt.contains("ms-alpha.bead-3 (Document task bootstrap follow-up)"));
 }
 
 #[test]
