@@ -704,6 +704,29 @@ fn split_bead_description_scope(description: &str) -> (String, Vec<String>, Vec<
 }
 
 pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
+    fn escape_canonical_heading_lines(value: &str) -> String {
+        value
+            .lines()
+            .map(|line| {
+                let trimmed_end = line.trim_end();
+                let leading_spaces = trimmed_end.chars().take_while(|ch| *ch == ' ').count();
+                let is_canonical_heading = leading_spaces <= 3
+                    && trimmed_end[leading_spaces..]
+                        .strip_prefix("## ")
+                        .map(|title| {
+                            task_prompt_contract::BEAD_TASK_PROMPT_SECTION_TITLES.contains(&title)
+                        })
+                        .unwrap_or(false);
+                if is_canonical_heading {
+                    format!("    {line}")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn render_bullet_item(prefix: &str, value: &str) -> String {
         let mut lines = value.lines();
         let first_line = lines.next().unwrap_or_default();
@@ -870,6 +893,7 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         ),
         None => "Follow the repository AGENTS.md instructions for this repo.\n\nNo milestone-specific AGENTS guidance was supplied.".to_owned(),
     };
+    let repo_guidance = escape_canonical_heading_lines(&repo_guidance);
 
     vec![
         format!(

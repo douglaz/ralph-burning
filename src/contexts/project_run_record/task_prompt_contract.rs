@@ -249,8 +249,16 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
             continue;
         }
 
+        let heading = format!("## {}", BEAD_TASK_PROMPT_SECTION_TITLES[found_index]);
+        if expected_index >= BEAD_TASK_PROMPT_SECTION_TITLES.len() {
+            errors.push(format!(
+                "unexpected extra canonical heading `{heading}` after `## {}`",
+                SECTION_AGENTS_REPO_GUIDANCE
+            ));
+            continue;
+        }
+
         if let Some(expected_section) = BEAD_TASK_PROMPT_SECTION_TITLES.get(expected_index) {
-            let heading = format!("## {}", BEAD_TASK_PROMPT_SECTION_TITLES[found_index]);
             let expected_heading = format!("## {expected_section}");
             errors.push(format!(
                 "unexpected canonical heading `{heading}` before `{expected_heading}`"
@@ -447,9 +455,22 @@ mod tests {
     }
 
     #[test]
-    fn canonical_prompt_shape_allows_verbatim_agents_guidance_with_canonical_heading_lines() {
+    fn canonical_prompt_shape_rejects_extra_canonical_headings_after_agents_guidance() {
         let prompt = format!(
             "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
+            contract_marker()
+        );
+
+        let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert!(errors.iter().any(|error| {
+            error.contains("unexpected extra canonical heading `## Review Policy`")
+        }));
+    }
+
+    #[test]
+    fn canonical_prompt_shape_allows_escaped_canonical_heading_lines_after_agents_guidance() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n    ## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
             contract_marker()
         );
 

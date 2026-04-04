@@ -611,4 +611,15 @@ mod tests {
         assert_eq!(concerns.len(), 1);
         assert!(concerns[0].contains("must appear before the canonical section block"));
     }
+
+    #[test]
+    fn canonical_contract_drift_flags_extra_canonical_heading_after_agents_guidance() {
+        let concerns = canonical_contract_drift_concerns(
+            CANONICAL_PROMPT,
+            "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n\n## Acceptance Criteria\n\nduplicate drift",
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("unexpected extra canonical heading `## Acceptance Criteria`"));
+    }
 }

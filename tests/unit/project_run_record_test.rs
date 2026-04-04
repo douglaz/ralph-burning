@@ -775,6 +775,24 @@ fn render_bead_task_prompt_preserves_multiline_agents_guidance_verbatim() {
 }
 
 #[test]
+fn render_bead_task_prompt_escapes_canonical_headings_inside_agents_guidance() {
+    let mut context = sample_bead_context();
+    context.agents_guidance = Some(
+        "## Acceptance Criteria\nKeep this as embedded guidance, not a new contract section."
+            .to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    assert!(prompt.contains("    ## Acceptance Criteria"));
+    assert!(!prompt.contains("\n\n## Acceptance Criteria\n\nKeep this as embedded guidance"));
+    assert!(
+        ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
+            .is_ok()
+    );
+}
+
+#[test]
 fn render_bead_task_prompt_extracts_bead_local_non_goals_and_strips_embedded_contract_sections() {
     let mut context = sample_bead_context();
     context.bead_description = Some(
@@ -1545,6 +1563,37 @@ fn create_project_from_bead_context_rejects_misplaced_top_level_contract_marker_
             if path == "<prompt override>"
                 && reason.contains("canonical bead task contract violated")
                 && reason.contains("must appear before the canonical section block")
+    ));
+}
+
+#[test]
+fn create_project_from_bead_context_rejects_extra_canonical_heading_after_agents_guidance() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let marker =
+        ralph_burning::contexts::project_run_record::task_prompt_contract::contract_marker();
+
+    let error = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: Some(ProjectId::new("duplicate-after-agents").unwrap()),
+            prompt_override: Some(format!(
+                "{marker}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n\n## Acceptance Criteria\n\nduplicate drift"
+            )),
+            created_at: test_timestamp(),
+            context: sample_bead_context(),
+        },
+    )
+    .expect_err("duplicate canonical heading after AGENTS guidance should fail");
+
+    assert!(matches!(
+        error,
+        AppError::InvalidPrompt { ref path, ref reason }
+            if path == "<prompt override>"
+                && reason.contains("canonical bead task contract violated")
+                && reason.contains("unexpected extra canonical heading `## Acceptance Criteria`")
     ));
 }
 
