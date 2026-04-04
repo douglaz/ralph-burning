@@ -155,13 +155,13 @@ impl PreparedCommand {
                 };
 
                 let parsed_payload = if let Some(structured) = envelope.structured_output {
-                    structured
+                    unwrap_claude_structured_output_payload(structured)
                 } else if !envelope.result.trim().is_empty() {
                     // result is non-empty: try direct parse, then extract embedded JSON
                     match serde_json::from_str(&envelope.result)
                         .or_else(|_| extract_json_from_text(&envelope.result))
                     {
-                        Ok(val) => val,
+                        Ok(val) => unwrap_claude_structured_output_payload(val),
                         Err(error) => {
                             self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
@@ -707,6 +707,7 @@ impl ProcessBackendAdapter {
                 let mut schema_value = request.contract.json_schema_value();
                 enforce_strict_mode_schema(&mut schema_value);
                 inline_schema_refs(&mut schema_value);
+                let schema_value = wrap_claude_structured_output_schema(schema_value);
                 let schema_json =
                     serde_json::to_string(&schema_value).unwrap_or_else(|_| "{}".to_owned());
                 let session_resuming =
@@ -1343,11 +1344,14 @@ impl AgentExecutionPort for ProcessBackendAdapter {
             status if !status.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
-                // Stale session recovery: if Claude fails with "No conversation
-                // found" while resuming a session, retry once without --resume.
-                if request.prior_session.is_some()
-                    && stderr.contains("No conversation found with session ID")
-                {
+                // Stale Claude sessions can fail either by losing the resume id
+                // entirely or by getting stuck in repeated structured-output
+                // retries. In both cases, retry once without --resume.
+                let retry_without_resume = request.prior_session.is_some()
+                    && (stderr.contains("No conversation found with session ID")
+                        || (request.resolved_target.backend.family == BackendFamily::Claude
+                            && is_claude_structured_output_retry_failure(&output.stdout)));
+                if retry_without_resume {
                     // Do NOT preserve failure artifacts here — this is an internal
                     // retry, not a terminal failure. If the retry succeeds, we don't
                     // want stale artifacts left in runtime/failed. Cleanup deletes the
@@ -1565,8 +1569,63 @@ fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
             .get("result")
             .and_then(|r| r.as_str())
             .map(|s| s.to_owned())
+            .or_else(|| {
+                value
+                    .get("errors")
+                    .and_then(|v| v.as_array())
+                    .and_then(|errors| errors.iter().find_map(|e| e.as_str()))
+                    .map(|s| s.to_owned())
+            })
+            .or_else(|| {
+                value
+                    .get("subtype")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_owned())
+            })
     } else {
         None
+    }
+}
+
+fn is_claude_structured_output_retry_failure(stdout: &[u8]) -> bool {
+    let value: serde_json::Value = match serde_json::from_slice(stdout) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+
+    value
+        .get("subtype")
+        .and_then(|v| v.as_str())
+        .is_some_and(|subtype| subtype == "error_max_structured_output_retries")
+        || value
+            .get("errors")
+            .and_then(|v| v.as_array())
+            .is_some_and(|errors| {
+                errors.iter().any(|error| {
+                    error.as_str().is_some_and(|message| {
+                        message.contains("Failed to provide valid structured output")
+                    })
+                })
+            })
+}
+
+fn wrap_claude_structured_output_schema(schema: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "data": schema,
+        },
+        "required": ["data"],
+        "additionalProperties": false,
+    })
+}
+
+fn unwrap_claude_structured_output_payload(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(mut map) if map.len() == 1 => {
+            map.remove("data").unwrap_or(serde_json::Value::Object(map))
+        }
+        other => other,
     }
 }
 
@@ -2721,6 +2780,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finish_claude_structured_output_data_wrapper_is_unwrapped() {
+        let envelope = json!({
+            "result": "",
+            "session_id": "sess-test-003b",
+            "structured_output": {
+                "data": {
+                    "outcome": "approved",
+                    "evidence": ["test passed"]
+                }
+            }
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let prepared = PreparedCommand {
+            binary: "claude".into(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+            env_overrides: Vec::new(),
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await.unwrap();
+        assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
+
+    #[tokio::test]
     async fn finish_claude_result_json_extraction() {
         // When structured_output is null but result contains JSON embedded in
         // markdown fencing, the fallback should extract it.
@@ -2926,6 +3015,10 @@ mod tests {
         let schema: serde_json::Value =
             serde_json::from_str(schema_json).expect("schema should be valid JSON");
 
+        assert!(
+            schema.pointer("/properties/data").is_some(),
+            "Claude schema should wrap the contract payload under properties.data"
+        );
         assert!(
             schema.get("definitions").is_none(),
             "top-level definitions should be removed"
