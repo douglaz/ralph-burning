@@ -753,18 +753,7 @@ async fn load_bead_summaries(base_dir: &Path) -> AppResult<BTreeMap<String, Bead
         .with_working_dir(base_dir.to_path_buf())
         .exec_json(&BrCommand::list())
         .await
-        .map_err(|error| match error {
-            BrError::BrExitError { stderr, .. } => AppError::Io(std::io::Error::other(format!(
-                "failed to load bead summaries: {stderr}"
-            ))),
-            BrError::BrParseError { details, .. } => AppError::CorruptRecord {
-                file: ".beads/issues.jsonl".to_owned(),
-                details: format!("failed to parse `br list --json` output: {details}"),
-            },
-            other => AppError::Io(std::io::Error::other(format!(
-                "failed to load bead summaries: {other}"
-            ))),
-        })?;
+        .map_err(map_br_list_error)?;
     let summaries = match response {
         BrListResponse::Envelope { issues } => issues,
         BrListResponse::Many(issues) => issues,
@@ -775,6 +764,42 @@ async fn load_bead_summaries(base_dir: &Path) -> AppResult<BTreeMap<String, Bead
             .into_iter()
             .map(|summary| (summary.id.clone(), summary)),
     ))
+}
+
+fn map_br_list_error(error: BrError) -> AppError {
+    match error {
+        BrError::BrExitError { stderr, .. } if br_list_exit_error_looks_corrupt(&stderr) => {
+            AppError::CorruptRecord {
+                file: ".beads/issues.jsonl".to_owned(),
+                details: format!("`br list --json` reported corrupt bead data: {stderr}"),
+            }
+        }
+        BrError::BrExitError { stderr, .. } => AppError::Io(std::io::Error::other(format!(
+            "failed to load bead summaries: {stderr}"
+        ))),
+        BrError::BrParseError { details, .. } => AppError::CorruptRecord {
+            file: ".beads/issues.jsonl".to_owned(),
+            details: format!("failed to parse `br list --json` output: {details}"),
+        },
+        other => AppError::Io(std::io::Error::other(format!(
+            "failed to load bead summaries: {other}"
+        ))),
+    }
+}
+
+fn br_list_exit_error_looks_corrupt(stderr: &str) -> bool {
+    let normalized = stderr.to_ascii_lowercase();
+    [
+        ".beads/issues.jsonl",
+        "issues.jsonl",
+        "corrupt",
+        "failed to parse",
+        "parse error",
+        "invalid json",
+        "malformed json",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
 }
 
 fn load_optional_prompt_override(
@@ -1000,6 +1025,68 @@ fn closes_fence(line: &str, opening: (char, usize)) -> bool {
     trimmed[candidate.1..].trim().is_empty()
 }
 
+fn markdown_heading_title(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if hash_count < 2 {
+        return None;
+    }
+    Some(trimmed[hash_count..].trim())
+}
+
+fn normalized_summary_label(label: &str) -> String {
+    label
+        .trim()
+        .trim_end_matches(':')
+        .chars()
+        .filter(|ch| !matches!(ch, '-' | '_' | ' '))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn is_planned_elsewhere_scope_label(label: &str) -> bool {
+    matches!(
+        normalized_summary_label(label).as_str(),
+        "goal"
+            | "goals"
+            | "scope"
+            | "summary"
+            | "details"
+            | "detail"
+            | "overview"
+            | "context"
+            | "objective"
+            | "objectives"
+            | "description"
+    )
+}
+
+fn strip_markdown_list_marker(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if let Some(item) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+    {
+        return Some(item);
+    }
+
+    let bytes = trimmed.as_bytes();
+    let mut marker_len = 0usize;
+    while marker_len < bytes.len() && bytes[marker_len].is_ascii_digit() {
+        marker_len += 1;
+    }
+
+    if marker_len == 0 || marker_len + 1 >= bytes.len() {
+        return None;
+    }
+
+    if matches!(bytes[marker_len], b'.' | b')') && bytes[marker_len + 1] == b' ' {
+        Some(&trimmed[marker_len + 2..])
+    } else {
+        None
+    }
+}
+
 fn compact_planned_elsewhere_summary(value: Option<&str>) -> Option<String> {
     value.and_then(|raw| {
         let mut active_fence = None;
@@ -1020,6 +1107,23 @@ fn compact_planned_elsewhere_summary(value: Option<&str>) -> Option<String> {
             if let Some(opening) = opening_fence_delimiter(trimmed) {
                 active_fence = Some(opening);
                 continue;
+            }
+
+            if markdown_heading_title(trimmed).is_some() {
+                continue;
+            }
+
+            if let Some((label, rest)) = trimmed.split_once(':') {
+                if is_planned_elsewhere_scope_label(label) {
+                    if !rest.trim().is_empty() {
+                        return Some(rest.trim().to_owned());
+                    }
+                    continue;
+                }
+            }
+
+            if let Some(item) = strip_markdown_list_marker(trimmed) {
+                return Some(item.trim().to_owned());
             }
 
             return Some(trimmed.to_owned());
@@ -1832,7 +1936,7 @@ mod tests {
         build_dependent_prompt_context, build_planned_elsewhere_context,
         compact_planned_elsewhere_summary, ensure_bead_belongs_to_milestone,
         ensure_bead_creation_targets_are_actionable, infer_parent_epic_id, load_milestone_bundle,
-        resolve_bead_plan, validate_milestone_plan_snapshot,
+        map_br_list_error, resolve_bead_plan, validate_milestone_plan_snapshot,
     };
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -1840,6 +1944,7 @@ mod tests {
     use crate::adapters::br_models::{
         BeadDetail, BeadPriority, BeadStatus, BeadType, DependencyKind, DependencyRef,
     };
+    use crate::adapters::br_process::BrError;
     use crate::adapters::fs::FsMilestonePlanStore;
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
@@ -2337,6 +2442,54 @@ mod tests {
         ));
 
         assert_eq!(summary.as_deref(), Some("Capture the real follow-up text."));
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_skips_scope_labels_and_returns_body_text() {
+        let summary =
+            compact_planned_elsewhere_summary(Some("Goal:\nKeep project creation deterministic."));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("Keep project creation deterministic.")
+        );
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_uses_inline_scope_label_body() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "Scope: Capture the operator-facing workflow once project creation is stable.",
+        ));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("Capture the operator-facing workflow once project creation is stable.")
+        );
+    }
+
+    #[test]
+    fn map_br_list_error_marks_corrupt_exit_output_as_corrupt_record() {
+        let error = map_br_list_error(BrError::BrExitError {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "failed to parse .beads/issues.jsonl: corrupt json".to_owned(),
+            command: "br list --json".to_owned(),
+        });
+
+        assert!(matches!(error, AppError::CorruptRecord { .. }));
+        assert!(error.to_string().contains(".beads/issues.jsonl"));
+    }
+
+    #[test]
+    fn map_br_list_error_keeps_generic_exit_failures_degradable() {
+        let error = map_br_list_error(BrError::BrExitError {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "simulated br list failure".to_owned(),
+            command: "br list --json".to_owned(),
+        });
+
+        assert!(matches!(error, AppError::Io(_)));
     }
 
     #[test]

@@ -231,7 +231,7 @@ pub struct DependencyRef {
     pub kind: DependencyKind,
     #[serde(default)]
     pub title: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<BeadStatus>,
 }
 
@@ -903,6 +903,27 @@ mod tests {
         let dep: DependencyRef = serde_json::from_str(json)?;
         assert_eq!(dep.title.as_deref(), Some("Parent"));
         assert_eq!(dep.status, Some(BeadStatus::Closed));
+        Ok(())
+    }
+
+    #[test]
+    fn dependency_ref_omits_null_status_on_serialize() -> Result<(), Box<dyn std::error::Error>> {
+        let dep = DependencyRef {
+            id: "dep-1".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Setup project".to_owned()),
+            status: None,
+        };
+
+        let value = serde_json::to_value(&dep)?;
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "id": "dep-1",
+                "kind": "blocks",
+                "title": "Setup project"
+            })
+        );
         Ok(())
     }
 
