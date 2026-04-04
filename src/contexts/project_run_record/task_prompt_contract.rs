@@ -5,6 +5,8 @@
 //! The contract is intentionally explicit and versioned so prompt generation
 //! and downstream workflow stages can reason about the same stable structure.
 
+use super::fence_util::{closes_fence, opening_fence_delimiter};
+
 /// Stable contract identifier for bead-backed execution prompts.
 pub const BEAD_TASK_PROMPT_CONTRACT_NAME: &str = "bead_execution_prompt";
 
@@ -12,12 +14,6 @@ pub const BEAD_TASK_PROMPT_CONTRACT_NAME: &str = "bead_execution_prompt";
 pub const BEAD_TASK_PROMPT_CONTRACT_VERSION: u32 = 1;
 
 const CONTRACT_MARKER_PREFIX: &str = "<!-- ralph-task-prompt-contract:";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FenceDelimiter {
-    marker: char,
-    count: usize,
-}
 
 /// Canonical section title for milestone context.
 pub const SECTION_MILESTONE_SUMMARY: &str = "Milestone Summary";
@@ -68,34 +64,6 @@ fn canonical_section_heading_index(line: &str) -> Option<usize> {
     BEAD_TASK_PROMPT_SECTION_TITLES
         .iter()
         .position(|section| *section == title)
-}
-
-fn opening_fence_delimiter(line: &str) -> Option<FenceDelimiter> {
-    let trimmed = line.trim();
-    let marker = trimmed.chars().next()?;
-    if marker != '`' && marker != '~' {
-        return None;
-    }
-
-    let count = trimmed.chars().take_while(|ch| *ch == marker).count();
-    if count < 3 {
-        return None;
-    }
-
-    Some(FenceDelimiter { marker, count })
-}
-
-fn closes_fence(line: &str, opening: FenceDelimiter) -> bool {
-    let Some(candidate) = opening_fence_delimiter(line) else {
-        return false;
-    };
-
-    if candidate.marker != opening.marker || candidate.count < opening.count {
-        return false;
-    }
-
-    let trimmed = line.trim();
-    trimmed[candidate.count..].trim().is_empty()
 }
 
 fn consumer_guidance_body() -> String {

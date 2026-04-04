@@ -11,6 +11,7 @@ use crate::contexts::workspace_governance::config::{
 use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
 use crate::shared::error::{AppError, AppResult};
 
+use super::fence_util::{closes_fence, opening_fence_delimiter};
 use super::journal;
 use super::model::{
     ActiveRun, AmendmentSource, ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord,
@@ -475,12 +476,6 @@ enum BeadDescriptionSectionKind {
     NonGoals,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FenceDelimiter {
-    marker: char,
-    count: usize,
-}
-
 fn markdown_heading_title(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
@@ -488,34 +483,6 @@ fn markdown_heading_title(line: &str) -> Option<&str> {
         return None;
     }
     Some(trimmed[hash_count..].trim())
-}
-
-fn opening_fence_delimiter(line: &str) -> Option<FenceDelimiter> {
-    let trimmed = line.trim();
-    let marker = trimmed.chars().next()?;
-    if marker != '`' && marker != '~' {
-        return None;
-    }
-
-    let count = trimmed.chars().take_while(|ch| *ch == marker).count();
-    if count < 3 {
-        return None;
-    }
-
-    Some(FenceDelimiter { marker, count })
-}
-
-fn closes_fence(line: &str, opening: FenceDelimiter) -> bool {
-    let Some(candidate) = opening_fence_delimiter(line) else {
-        return false;
-    };
-
-    if candidate.marker != opening.marker || candidate.count < opening.count {
-        return false;
-    }
-
-    let trimmed = line.trim();
-    trimmed[candidate.count..].trim().is_empty()
 }
 
 fn normalized_section_label(label: &str) -> String {
