@@ -293,11 +293,6 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
     let milestone_snapshot = snapshot_store.read_snapshot(&current_dir, &milestone_id)?;
     let milestone_bundle = load_milestone_bundle(&plan_store, &current_dir, &milestone_id)?;
     let bead = load_bead_detail(&current_dir, &args.bead_id).await?;
-    let bead_summaries = match load_bead_summaries(&current_dir).await {
-        Ok(summaries) => summaries,
-        Err(AppError::Io(_)) => BTreeMap::new(),
-        Err(error) => return Err(error),
-    };
     let flow_override = parse_flow_override(args.flow.as_deref())?;
     ensure_bead_belongs_to_milestone(&milestone_id, &bead)?;
     ensure_bead_creation_targets_are_actionable(&milestone_id, milestone_snapshot.status, &bead)?;
@@ -323,6 +318,7 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         .membership_confirmed
         .then_some(confirmed_plan_version)
         .flatten();
+    let bead_summaries = load_bead_summaries(&current_dir).await?;
 
     let context = BeadProjectContext {
         milestone_id: milestone.id.to_string(),
@@ -997,6 +993,15 @@ fn canonical_proposal_id(
     }
 }
 
+fn canonicalize_bundle_bead_ref(milestone_id: &MilestoneId, raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with(&format!("{}.", milestone_id.as_str())) {
+        trimmed.to_owned()
+    } else {
+        format!("{}.{}", milestone_id.as_str(), trimmed)
+    }
+}
+
 fn opening_fence_delimiter(line: &str) -> Option<(char, usize)> {
     let trimmed = line.trim();
     let marker = trimmed.chars().next()?;
@@ -1286,6 +1291,29 @@ fn build_planned_elsewhere_context(
         }
     }
 
+    let mut shared_acceptance_owners = BTreeMap::<String, Vec<String>>::new();
+    for criterion in &bundle.acceptance_map {
+        let covered_by = criterion
+            .covered_by
+            .iter()
+            .map(|bead_ref| canonicalize_bundle_bead_ref(milestone_id, bead_ref))
+            .collect::<Vec<_>>();
+        if !covered_by.iter().any(|covered_id| covered_id == &bead.id) {
+            continue;
+        }
+
+        for related_bead_id in covered_by {
+            if related_bead_id == bead.id {
+                continue;
+            }
+
+            shared_acceptance_owners
+                .entry(related_bead_id)
+                .or_default()
+                .push(criterion.id.clone());
+        }
+    }
+
     for dependent in &bead.dependents {
         let summary = bead_summaries.get(&dependent.id);
         let plan_summary = proposal_lookup
@@ -1301,6 +1329,34 @@ fn build_planned_elsewhere_context(
                 .unwrap_or_else(|| dependent.id.clone()),
             relationship: relationship_label(&dependent.kind, false).to_owned(),
             status: Some(prompt_bead_status(summary, dependent.status.as_ref())),
+            summary: plan_summary,
+        });
+    }
+
+    for (related_bead_id, mut criterion_ids) in shared_acceptance_owners {
+        criterion_ids.sort();
+        criterion_ids.dedup();
+        let summary = bead_summaries.get(&related_bead_id);
+        let proposal_entry = proposal_lookup.get(&related_bead_id);
+        let plan_summary = proposal_entry.and_then(|(_, _, _, proposal)| {
+            compact_planned_elsewhere_summary(proposal.description.as_deref())
+        });
+        let workstream_name = proposal_entry.map(|(_, _, workstream_name, _)| *workstream_name);
+        let criteria_label = criterion_ids.join(", ");
+        let relationship = match workstream_name {
+            Some(workstream_name) => format!(
+                "shared milestone acceptance ownership in {workstream_name} ({criteria_label})"
+            ),
+            None => format!("shared milestone acceptance ownership ({criteria_label})"),
+        };
+        add_item(PlannedElsewherePromptContext {
+            id: related_bead_id.clone(),
+            title: summary
+                .map(|entry| entry.title.clone())
+                .or_else(|| proposal_entry.map(|(_, _, _, proposal)| proposal.title.clone()))
+                .unwrap_or_else(|| related_bead_id.clone()),
+            relationship,
+            status: Some(prompt_bead_status(summary, None)),
             summary: plan_summary,
         });
     }
@@ -1942,7 +1998,7 @@ mod tests {
     use std::path::Path;
 
     use crate::adapters::br_models::{
-        BeadDetail, BeadPriority, BeadStatus, BeadType, DependencyKind, DependencyRef,
+        BeadDetail, BeadPriority, BeadStatus, BeadSummary, BeadType, DependencyKind, DependencyRef,
     };
     use crate::adapters::br_process::BrError;
     use crate::adapters::fs::FsMilestonePlanStore;
@@ -2433,6 +2489,69 @@ mod tests {
                 "ms-alpha.bead-9",
             ]
         );
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_includes_shared_acceptance_owners_from_other_workstreams() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.acceptance_map[0].covered_by = vec![
+            "bead-2".to_owned(),
+            "bead-4".to_owned(),
+            "bead-4".to_owned(),
+        ];
+        bundle.workstreams.push(Workstream {
+            name: "Validation".to_owned(),
+            description: Some("Confirm task bootstrap behavior.".to_owned()),
+            beads: vec![BeadProposal {
+                bead_id: Some("bead-4".to_owned()),
+                explicit_id: Some(true),
+                title: "Validate task bootstrap follow-up".to_owned(),
+                description: Some(
+                    "Confirm the shared acceptance outcome without expanding the current bead."
+                        .to_owned(),
+                ),
+                bead_type: Some("task".to_owned()),
+                priority: Some(1),
+                labels: Vec::new(),
+                depends_on: Vec::new(),
+                acceptance_criteria: vec!["AC-1".to_owned()],
+                flow_override: None,
+            }],
+        });
+        let resolved =
+            resolve_bead_plan(&bundle, &milestone_id, &sample_bead()).expect("resolve bead");
+        let bead_summaries = BTreeMap::from([(
+            "ms-alpha.bead-4".to_owned(),
+            BeadSummary {
+                id: "ms-alpha.bead-4".to_owned(),
+                title: "Validate task bootstrap follow-up".to_owned(),
+                status: BeadStatus::Open,
+                priority: BeadPriority::new(1),
+                bead_type: BeadType::Task,
+                labels: Vec::new(),
+            },
+        )]);
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &sample_bead(),
+            &resolved,
+            &bead_summaries,
+        );
+
+        assert!(planned_elsewhere.iter().any(|item| {
+            item.id == "ms-alpha.bead-4"
+                && item
+                    .relationship
+                    .contains("shared milestone acceptance ownership in Validation (AC-1)")
+                && item.status.as_deref() == Some("open")
+                && item.summary.as_deref()
+                    == Some(
+                        "Confirm the shared acceptance outcome without expanding the current bead.",
+                    )
+        }));
     }
 
     #[test]
