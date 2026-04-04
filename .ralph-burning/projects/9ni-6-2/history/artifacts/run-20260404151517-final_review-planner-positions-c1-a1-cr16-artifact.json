@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr16-artifact",
+  "payload_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T21:03:42.221056849Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAll three amendments identify real prompt-construction defects. Two are budget-enforcement issues where the implementation claims bounded context but leaves meaningful rendered size untracked or unbounded, and the third is a summary-fidelity issue that drops substantive text from wrapped bead descriptions.\n\n## Votes\n\n- `fr-16-2346c4b9`: Accept\n  `planned_elsewhere_serialized_bytes*` is used as an actual admission-control budget for content that is later rendered by `format_planned_elsewhere`, but it omits bytes that are deterministically added during rendering: the `- ` bullet prefix, newline joins between items, and continuation indentation for multiline summaries. That means the code can select items that satisfy the tracked budget while still exceeding the rendered budget every time. Either fixing the estimate or explicitly documenting that the constant excludes formatting overhead would resolve a real correctness/maintainability mismatch.\n- `fr-16-24fdee51`: Accept\n  The current prompt builder budgets only the planned-elsewhere section, while upstream and downstream dependency sections are rendered in full with no size cap or summarization. Because dependency fan-in/fan-out is data-dependent and unbounded, prompt size can grow without limit for large beads or epics, which conflicts with the project’s stated requirement that the bead prompt stay concise and within a reasonable context budget. This is a real robustness issue, not a theoretical one.\n- `fr-16-23904bdf`: Accept\n  `compact_planned_elsewhere_summary` currently returns only the first surviving non-empty line. For hard-wrapped descriptions, that truncates the first paragraph mid-thought and can remove the clause that explains what work is actually owned elsewhere. Preserving continuation lines from the same paragraph keeps summaries accurate while still remaining compact once later byte limits are applied. The current behavior loses meaning, so this is a valid quality/correctness fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 16
+}

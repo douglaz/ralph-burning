@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-vote-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260403213915-final_review-vote-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T23:10:06.473006539Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll three amendments describe real, verified bugs. Amendment 1: the bead-description splitter's `is_bead_description_section_boundary` treats any colon-terminated label as a boundary, silently ejecting content from Non-goals into Must-Do Scope. Amendment 2: `validate_canonical_prompt_shape` scans all trimmed lines for canonical headings without excluding verbatim AGENTS guidance content, so legitimate repo guidance containing a canonical heading creates a duplicate-heading rejection. Amendment 3: `.ralph-burning/workspace.toml` is now untracked but `load_workspace_config` unconditionally reads it, breaking clean checkouts.\n\n## Votes\n\n- `fr-4-a8e51d7e`: Accept\n  Verified in source. `is_bead_description_section_boundary` (line 512) delegates to `is_plain_section_label_line` (lines 500-509), which matches any colon-terminated alphabetic label. In `split_bead_description_scope` (line 575), when `active_section` is `NonGoals`, a line like `Examples:` clears `active_section` to `None`. Subsequent bullets then fall into the `None` arm at line 582 and are pushed to `must_do_lines`. This silently converts non-goal content into required scope — a correctness bug that inverts the contract boundary.\n- `fr-4-1444858e`: Accept\n  Verified in source. `validate_canonical_prompt_shape` (lines 131-145) iterates over all trimmed lines and counts exact matches to canonical headings like `## Review Policy`. The `agents_guidance` field is injected verbatim at lines 699-704 into the rendered prompt, and the prompt is persisted at line 379 without post-render validation. If any AGENTS.md or milestone guidance snippet contains a line that exactly matches a canonical heading, the validator will detect duplicates and produce a rejection error at the prompt-review gate (lines 245-253). This is a robustness defect: valid external guidance can trigger a false-positive contract violation.\n- `fr-4-9b34ece1`: Accept\n  Verified in source. `load_workspace_config` at lines 65-66 unconditionally calls `FileSystem::read_to_string` on `.ralph-burning/workspace.toml`. Git status confirms `.ralph-burning/` is untracked (listed under `??`), meaning a clean `git clone` or `git archive HEAD` will not contain this file. Any command path that calls `load_workspace_config` — such as `config show` — will fail with a file-not-found error on a clean checkout. This is a concrete regression from the tracked state on `origin/master`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

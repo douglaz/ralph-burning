@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T15:43:21.481466634Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed `origin/master...HEAD`, read the main prompt-generation and schema-sync changes, and ran targeted tests (`cargo test --quiet --test cli -- --nocapture project_create_from_bead`, plus filtered `unit` tests for prompt builder, project run record, and process backend). I found two correctness gaps in the new bead-prompt enrichment path: silent degradation when `br list` fails, and loss of planned-elsewhere neighborhood context for title-drifted beads.\n\n## Amendments\n\n1. src/cli/project.rs:296 and src/cli/project.rs:740-759: `handle_create_from_bead` currently does `load_bead_summaries(...).await.unwrap_or_default()`, which turns every `br list --json` failure into an empty map. In that state project creation still succeeds, but the generated `prompt.md` silently drops dependency status/outcome data and most planned-elsewhere enrichment, so the output no longer satisfies the new prompt contract. Propagate the `br list` error (or add an explicit deterministic fallback that still preserves the required fields) and add a regression test for the failed/missing `br list` path.\n   Rationale: The new feature is supposed to make the bead prompt self-contained and deterministic. Right now a transient adapter failure produces an incomplete prompt instead of a hard failure, so callers cannot trust the prompt contents.\n2. src/cli/project.rs:881-893 and src/cli/project.rs:1089-1094: when the live bead title has drifted from the milestone plan, `resolve_bead_plan` returns `matched_workstream_index = None` / `matched_bead_index = None`, and `build_planned_elsewhere_context` immediately bails out. That means a renamed bead like `ms-alpha.bead-2` loses all same-workstream planned-elsewhere context even though its implicit slot still identifies its neighbors in the plan. Preserve the 9ni.6.1 'do not confirm membership' behavior for plan_hash/plan_version, but still use the implicit slot as a non-confirming hint to recover nearby planned-elsewhere summaries.\n   Rationale: This leaves one of the supported create-from-bead drift paths with a non-self-contained prompt, which is a direct miss against the acceptance criteria for 9ni.6.2.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

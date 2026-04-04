@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-vote-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260403213915-final_review-vote-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T02:57:29.548058066Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the legacy prompt-hash compatibility amendment and the maintainability comment about blank-line-gated scope resets. Reject the other two amendments because they describe intentional, tested parser contracts rather than concrete correctness defects.\n\n## Votes\n\n- `fr-16-bfce8a2e`: Reject\n  The code intentionally recognizes only exact canonical headings of the form `## <exact title>`, which matches the contract parser's behavior. `trim_end()` already covers trailing whitespace, and adding `.trim()` would not address the cited suffix cases like `{#custom-id}` anyway. This is a contract choice, not a current robustness bug.\n- `fr-16-c9dbcb39`: Accept\n  The blank-line gate on scope resets is real and easy to miss when reading the control flow, especially because markdown headings otherwise look like unconditional subsection boundaries. A short explanatory comment would improve maintainability and reduce the chance of accidental future changes to this parsing heuristic.\n- `fr-16-6d42c4e7`: Reject\n  The `>= 2` word rule is a deliberate, tested heuristic for keeping common single-word labels nested inside non-goals or acceptance criteria. The amendment shows that another heuristic could be chosen, but it does not show the current behavior is incorrect, unsafe, or internally inconsistent.\n- `fr-16-69e675a9`: Accept\n  `FileSystem::prompt_hash` now produces SHA-256 output, while resume drift detection still compares the newly computed hash to the persisted `prompt_hash_at_cycle_start` by exact string equality. Interrupted runs created before this change will therefore report drift even when `prompt.md` is unchanged. That is a real backward-compatibility regression and needs migration or dual-format handling.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}

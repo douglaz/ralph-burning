@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr3-artifact",
+  "payload_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T22:45:19.607903217Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nThree amendments identify real regressions or misleading code paths; the dependents-to-planned-elsewhere concern is a reasonable heuristic critique but not a concrete correctness defect on its own.\n\n## Votes\n\n- `fr-3-599dbf06`: Accept\n  The report is correct. In split_bead_description_scope, the second call to section_kind_for_bead_description_line(line) sits in a branch that only runs after the same function already returned None for that exact line, so it cannot become Some without any intervening transformation. That makes the inner block unreachable dead code and worth removing for clarity and maintainability.\n- `fr-3-eb1353e8`: Reject\n  Using bead.dependents as already_planned_elsewhere is an imperfect heuristic, but it is still a defensible approximation: dependents are explicitly separate beads already present in the plan and therefore do represent work planned elsewhere. The amendment does not show a concrete correctness or safety failure, only possible prompt noisiness, and there is no identified stronger source in the current model that clearly supersedes this heuristic.\n- `fr-3-eb683533`: Accept\n  The contract validator is now too permissive for the guarantee it is used to enforce. Because validate_canonical_prompt_shape only searches forward for the next matching heading, prompts with stray earlier canonical headings can still pass, and the added test explicitly blesses that drift. Since prompt_review relies on this function as the final acceptance gate for refined prompts, this is a real contract-integrity regression.\n- `fr-3-02aa5078`: Accept\n  This is a concrete regression. The checked-in workspace scaffold was removed from HEAD, while config loading still unconditionally reads .ralph-burning/workspace.toml from the repo root. In a clean HEAD checkout, running the repo-root config command fails with a missing-file error, so deleting the tracked workspace.toml breaks an existing supported workflow unless the repository is intentionally no longer meant to be initialized.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 3
+}

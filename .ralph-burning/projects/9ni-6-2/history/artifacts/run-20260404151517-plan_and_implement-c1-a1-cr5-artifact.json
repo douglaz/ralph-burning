@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260404151517-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-04T16:55:47.387947737Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRestricted `planned_elsewhere` neighbor inference to confirmed milestone-plan membership so unconfirmed title/implicit-slot fallbacks no longer inject adjacent beads into `prompt.md`, and normalized `upstream_dependencies`, `downstream_dependents`, and `planned_elsewhere` ordering by stable `(id, title)` keys before rendering. Updated unit and CLI regressions to cover the tightened unconfirmed-membership behavior and deterministic ordering for hashing-sensitive prompt generation.\n\n## Steps\n\n1. [Completed] Patched `src/cli/project.rs` so planned-elsewhere adjacency only uses confirmed plan membership and no longer falls back to implicit-slot hints for unconfirmed beads.\n2. [Completed] Sorted dependency, dependent, and planned-elsewhere prompt-context collections by stable `(id, title)` keys before prompt rendering to keep `prompt.md` deterministic across equivalent inputs.\n3. [Completed] Adjusted existing regressions and added focused tests for unconfirmed-membership suppression and stable ordering, including the CLI title-drift path.\n4. [Completed] Ran formatting and targeted tests covering the touched prompt-generation and create-from-bead flows.\n\n## Validation Evidence\n\n- `cargo fmt --all` passed.\n- `cargo test build_planned_elsewhere_context_ -- --nocapture` passed (4 tests).\n- `cargo test build_dependency_prompt_context_sorts_items_by_id_and_title -- --nocapture` passed.\n- `cargo test build_dependent_prompt_context_sorts_items_by_id_and_title -- --nocapture` passed.\n- `cargo test project_create_from_bead_ --test cli -- --nocapture` passed (19 tests).\n\n## Outstanding Risks\n\n- Validation was focused on the amended prompt-generation paths; I did not rerun the full repository test suite or `br lint` in this pass.\n- The worktree still contains the unrelated untracked `.ralph-burning/` directory, which I left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 5
+}

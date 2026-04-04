@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260404151517-final_review-aggregate-c1-a1-cr7-artifact",
+  "payload_id": "run-20260404151517-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T18:03:27.635949391Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 7/20\n\n## Accepted\n\n- `fr-7-464e51de`\n- `fr-7-e92e36d4`\n\n## Rejected\n\n- `fr-7-f80c2e20`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-7-464e51de`\n\nDo not silently degrade prompt generation when `br list --json` fails. `handle_create_from_bead` currently converts any `AppError::Io` from `load_bead_summaries` into an empty summary map (`src/cli/project.rs:296-300`), and the downstream renderers then emit fallback/`unknown` dependency data when those summaries are missing (`src/cli/project.rs:1154-1167`, `src/cli/project.rs:1358-1366`). That means the same milestone/bead state can produce different `prompt.md` contents and different prompt hashes depending on transient `br list` availability, which violates the bead’s deterministic-rendering requirement. Either fail hard on generic `br list` failures or source the needed status/title fields from deterministic project data instead of silently dropping them.\n\n### `fr-7-e92e36d4`\n\nPlanned-elsewhere generation should incorporate the milestone plan’s explicit acceptance ownership, not just dependents and adjacent same-workstream beads. `build_planned_elsewhere_context` only considers `bead.dependents`, `bead.dependencies`, and +/-1 workstream neighbors (`src/cli/project.rs:1253-1376`), even though the bundle already carries authoritative `acceptance_map[].covered_by` ownership data for which beads own related milestone criteria (`src/contexts/milestone_record/bundle.rs:51-52`, `src/contexts/milestone_record/bundle.rs:704-713`). As written, a related bead in another workstream with no direct dependency edge will be omitted from `## Already Planned Elsewhere`, so the prompt can miss the very planned follow-up work that is supposed to prevent scope creep and over-demanding reviews.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}

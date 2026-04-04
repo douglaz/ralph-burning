@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr19-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T04:56:05.393933132Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed `git diff origin/master..HEAD`, read the changed implementation in `src/adapters/process_backend.rs` and the related test/scenario updates, and ran `cargo test process_backend --lib -- --nocapture` plus `cargo test process_backend_test -- --nocapture`. I did not find any correctness, safety, or robustness issues in the submitted changes.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 19
+}

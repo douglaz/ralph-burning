@@ -23,6 +23,11 @@ result
 
 # Transient runtime artifacts — never part of durable project history
 .ralph/tmp/
+.ralph-burning/active-project
+.ralph-burning/projects/*/sessions.json
+.ralph-burning/projects/*/runtime/
+.ralph-burning/projects/*/rollback/
+.ralph-burning/projects/*/history/payloads/
 .claude/scheduled_tasks.lock
 *.log
 

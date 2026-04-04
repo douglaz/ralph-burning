@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T17:32:41.199738116Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the cumulative `9ni-6-2` changes against `4654299..HEAD`, read the prompt-generation implementation and related tests, and found two correctness issues: one external JSON contract regression and one planned-elsewhere summarization bug for sectioned bead descriptions.\n\n## Amendments\n\n1. `src/adapters/br_models.rs:232-235` adds `DependencyRef.status` as an `Option<BeadStatus>` without `skip_serializing_if = \"Option::is_none\"`. Because `DependencyRef` is still serialized and embedded in externally visible payloads such as `BeadDetail` (`src/adapters/br_models.rs:255-280`) and `BeadReadView` (`src/contexts/milestone_record/queries.rs:29-52`), every dependency/dependent that lacks a status will now start emitting `\"status\": null`. That is a non-prompt JSON contract change and violates the bead requirement to keep behavior outside prompt generation stable.\n   Rationale: Prevents backward-incompatible output drift in existing JSON surfaces that were not supposed to change for this bead.\n2. `src/cli/project.rs:1003-1025` computes planned-elsewhere summaries by returning the first non-empty line outside fences, and `build_planned_elsewhere_context` uses that value directly at `src/cli/project.rs:1187-1190` and `src/cli/project.rs:1262`. For structured bead descriptions like `Goal:\\nKeep ...` or `Scope:\\n...` (a format already supported elsewhere via `split_bead_description_scope` in `src/contexts/project_run_record/service.rs:694-752`), the generated prompt will summarize the neighboring bead as just `Goal:`/`Scope:` instead of the actual scope text. That makes `prompt.md` materially less self-contained and can hide the real planned-elsewhere boundary.\n   Rationale: The new planned-elsewhere section is meant to clarify adjacent scope; with sectioned descriptions it currently degrades into useless one-word summaries.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

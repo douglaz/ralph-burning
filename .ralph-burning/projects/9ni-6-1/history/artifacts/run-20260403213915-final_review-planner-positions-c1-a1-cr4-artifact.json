@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr4-artifact",
+  "payload_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T23:08:59.751557530Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAll three amendments describe concrete regressions: one misclassifies non-goal content as required scope, one lets valid repo guidance trip the canonical prompt validator, and one breaks clean-checkout workspace behavior by removing tracked scaffold files that repo-root commands still require.\n\n## Votes\n\n- `fr-4-a8e51d7e`: Accept\n  The code does treat any plain colon-terminated label as a section boundary once a bead-description section is active. Inside `Non-goals:` or embedded `Acceptance Criteria`, a line like `Examples:` clears `active_section`, so following bullets are appended to `must_do_lines` instead of staying in the current section. That is a real correctness bug because it can invert non-goal text into required scope.\n- `fr-4-1444858e`: Accept\n  `validate_canonical_prompt_shape()` counts raw trimmed lines that exactly equal canonical headings, without excluding quoted guidance or fenced content. `render_bead_task_prompt()` injects `agents_guidance` verbatim into the `AGENTS / Repo Guidance` section and does not validate the rendered result before persisting it. So a legitimate AGENTS snippet containing `## Review Policy` or another canonical heading can create a prompt that later fails the prompt-review contract gate even though the guidance content itself is valid. That is a robustness defect in the contract enforcement path.\n- `fr-4-9b34ece1`: Accept\n  The branch removes tracked `.ralph-burning` scaffold files, including `workspace.toml`, while `load_workspace_config()` still unconditionally reads `.ralph-burning/workspace.toml`. In a clean archive/checkout of `HEAD`, running from that checkout fails with `No such file or directory`, so repo-root workflows now depend on untracked local state. That is a concrete regression in clean-checkout behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330040352-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260330040352-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T08:27:51.282141845Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nI would reject fr-7-f5efd49b because its core premise about reqwest timeout semantics is incorrect, and accept fr-7-144385ef plus fr-7-9872eaf7 because both describe concrete, code-verified defects in timeout enforcement and retry classification.\n\n## Votes\n\n- `fr-7-f5efd49b`: Reject\n  OpenRouterBackendAdapter does set `reqwest::Client::builder().timeout(request.timeout)` and then awaits both `.send()` and `response.text()`. In reqwest, `ClientBuilder::timeout()` is a total request deadline, applied from connection start until the response body finishes; the per-read reset behavior belongs to `read_timeout()` (https://docs.rs/reqwest/latest/reqwest/struct.ClientBuilder.html). That means a slow trickle-streaming response is still bounded by the configured timeout, so `enforces_timeout() == true` is consistent with the adapter’s documented behavior. The amendment’s proposed defect depends on a timeout semantic that reqwest does not use here.\n- `fr-7-144385ef`: Accept\n  TmuxAdapter advertises `enforces_timeout() == true` by delegating to ProcessBackendAdapter, but its `invoke()` path never applies `request.timeout`. It only calls `build_command()` on the process adapter and then waits in `wait_for_session_exit()`, which is an unbounded polling loop until the service cancels it. Because AgentExecutionService adds a 30-second buffer whenever `enforces_timeout()` is true, tmux invocations can run about 30 seconds past the configured timeout before the safety-net timeout fires. That is a real timeout-enforcement regression in tmux mode.\n- `fr-7-9872eaf7`: Accept\n  `OpenRouterBackendAdapter::api_key()` reports a missing `OPENROUTER_API_KEY` as `BackendUnavailable { failure_class: None }`. `AppError::failure_class()` maps that to `TransportFailure`, and the retry policy retries transport failures up to 5 times. A missing API key is a deterministic prerequisite failure, not a transient transport issue, so the current classification wastes retries and delays the real error. The repository already documents and uses `BinaryNotFound` as the terminal class for missing infrastructure prerequisites, including missing API keys in the process backend, so this standalone OpenRouter path is inconsistent and defective.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 7
+}

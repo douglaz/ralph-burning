@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260404151517-final_review-aggregate-c1-a1-cr15-artifact",
+  "payload_id": "run-20260404151517-final_review-aggregate-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T20:42:09.328475451Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 15/20\n\n## Accepted\n\n- `fr-15-83363dc7`\n- `fr-15-2ea8498f`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-15-83363dc7`\n\nRelax the `br list` fallback in `project create-from-bead` so missing relation statuses do not abort project creation. Right now `src/cli/project.rs:321-333` calls `ensure_direct_relations_have_statuses_for_prompt`, and `src/cli/project.rs:849-874` turns any missing inline status into a hard error whenever `br list --all --deferred --limit=0 --json` is unavailable. That is stricter than the renderer itself needs, because the prompt helpers already have deterministic `unknown` fallbacks in `src/cli/project.rs:1222-1262`. Amend this path to keep generating the prompt with `unknown` status/outcome instead of failing the whole command.\n\n### `fr-15-2ea8498f`\n\nAdd a deterministic size budget for planned-elsewhere context before rendering `prompt.md`. `src/cli/project.rs:1321-1502` currently accumulates every direct dependent, every shared-acceptance owner, and adjacent neighbors, and `src/contexts/project_run_record/service.rs:895-916` plus `src/contexts/project_run_record/service.rs:1021` render the entire collection verbatim. There is no cap on item count or summary length, so large milestones can produce unbounded prompt growth. Amend this by ranking items deterministically and enforcing a fixed max-items/max-bytes budget before serialization.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 15
+}

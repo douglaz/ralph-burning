@@ -1,0 +1,7 @@
+id = "e8p"
+name = "Add minimal flow preset"
+flow = "quick_dev"
+prompt_reference = "prompt.md"
+prompt_hash = "e78da4e97d1b61e3"
+created_at = "2026-03-30T03:11:15.606017219Z"
+status_summary = "created"

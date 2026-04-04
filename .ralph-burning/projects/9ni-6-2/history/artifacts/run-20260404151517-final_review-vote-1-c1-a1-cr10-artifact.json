@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-vote-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260404151517-final_review-vote-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T19:07:59.366757848Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real correctness or robustness problems in the new prompt-context path. The `--prompt-file` regression is the most significant; the other two are smaller but still valid data-quality defects in planned-elsewhere context generation.\n\n## Votes\n\n- `fr-10-eb47f625`: Accept\n  `build_planned_elsewhere_context` adds downstream dependents before shared acceptance owners and deduplicates only by bead id via `seen_ids`. If the same bead appears in both sets, the shared-acceptance relationship and criterion IDs are silently discarded with no explicit precedence rule. That is real prompt-information loss, so the logic should either merge the metadata or explicitly filter/document precedence instead of relying on incidental dedup behavior.\n- `fr-10-265dc6c6`: Accept\n  `handle_create_from_bead` still loads bead summaries and planned-elsewhere context even when `--prompt-file` is supplied, but `create_project_from_bead_context` ignores the generated prompt context as soon as `prompt_override` is present. That means the override path can now fail on `br list` errors or missing relation-status metadata that are irrelevant to the supplied prompt. This is a real robustness regression and the override path should bypass or downgrade those lookups.\n- `fr-10-88fbd81a`: Accept\n  `compact_planned_elsewhere_summary` skips headings through a helper that only recognizes headings with at least two leading `#` characters. As a result, a description beginning with a valid level-1 ATX heading produces `Summary: # Heading` instead of the first substantive line. That is degraded prompt output, and expanding this compaction path to ignore level-1 headings as well is a correct, low-risk fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T01:59:31.890622529Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReview found two correctness gaps in the new prompt-contract handling: heading-like lines are not escaped strongly enough for real markdown semantics, and the embedded-section parser flattens nested lists into separate contract items.\n\n## Amendments\n\n1. Fix the heading-escaping mismatch in the canonical prompt renderer and validator. `render_bead_task_prompt()` only prefixes embedded body lines with two spaces in `src/contexts/project_run_record/service.rs:696-711` and `src/contexts/project_run_record/service.rs:732-744`, but markdown still treats headings with up to three leading spaces as real headings. Meanwhile `validate_canonical_prompt_shape()` only recognizes headings that start at column 1 in `src/contexts/project_run_record/task_prompt_contract.rs:62-67` and `src/contexts/project_run_record/task_prompt_contract.rs:199-241`. That means inputs such as `  ## Acceptance Criteria` or `  ## Review Policy` inside milestone/bead prose still pass drift validation even though downstream readers will see extra top-level sections. Escape these lines strongly enough (for example 4+ spaces or fenced blocks), and make the validator reject markdown-valid canonical headings outside the intended section boundaries.\n   Rationale: Right now the contract checker can report a prompt as valid while the rendered markdown still contains duplicate canonical headings, which breaks the “one clear contract” guarantee.\n2. Preserve indentation when extracting embedded `Non-goals` and `Acceptance Criteria` lists from bead descriptions. `collect_section_items()` trims each line before list parsing in `src/contexts/project_run_record/service.rs:569-595`, and `strip_markdown_list_marker()` then treats indented sub-bullets/numbered items as new top-level entries in `src/contexts/project_run_record/service.rs:517-540`. A nested list like `- primary criterion` followed by `  - supporting note` is flattened into two separate acceptance criteria/non-goals in the rendered prompt, which changes the actual scope boundary. Keep indentation context, or only start a new item for list markers that were top-level in the source text.\n   Rationale: This silently rewrites structured bead descriptions and can promote explanatory subpoints into independent requirements or non-goals.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

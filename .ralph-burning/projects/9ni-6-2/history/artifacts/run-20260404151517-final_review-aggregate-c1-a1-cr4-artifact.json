@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260404151517-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260404151517-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T16:52:23.359855405Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 4/20\n\n## Accepted\n\n- `fr-4-fc86a130`\n- `fr-4-e1d33dd1`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-fc86a130`\n\nsrc/cli/project.rs:1096-1114 and src/cli/project.rs:1171-1220 should stop using the implicit-slot fallback to populate planned-elsewhere neighbors when the bead's membership in the current plan is unconfirmed. In the current flow, a reorder of implicit proposals can make `infer_implicit_slot_hint` anchor to an old numeric slot, and the neighbor scan then emits the title-matching proposal for the current logical bead under a different bead ID as an \"adjacent same-workstream bead\". That misclassifies in-scope work as planned elsewhere and can push the implementing agent away from required changes. Limit adjacent planned-elsewhere inference to confirmed membership, or explicitly filter out proposals that resolve to the current bead's title/identity before emitting them.\n\n### `fr-4-e1d33dd1`\n\nsrc/cli/project.rs:1054-1094 and src/cli/project.rs:1116-1225 should normalize ordering before rendering `upstream_dependencies`, `downstream_dependents`, and `planned_elsewhere`. Right now the prompt preserves the raw encounter order from `br show`/plan traversal, so semantically identical dependency sets can produce different `prompt.md` contents and hashes if the upstream tool returns items in a different order. Sort by a stable key such as `(id, title)` before building the prompt context.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

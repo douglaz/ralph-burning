@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260404151517-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T15:49:41.762247077Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll four amendments identify real issues in the current code or tests. One removes redundant prompt content, one removes misleading dead fixture code, one fixes a silent error-swallowing path that degrades prompt quality, and one restores lost same-workstream context without reintroducing unsafe plan confirmation.\n\n## Votes\n\n- `fr-1-6a4e23f8`: Accept\n  The duplication is real: milestone constraints are emitted under both `## Milestone Summary` and `## Review Policy`. Keeping the constraints only in the review-policy block preserves the actionable guidance while removing redundant prompt tokens and reducing maintenance drift risk.\n- `fr-1-2e8dad6c`: Accept\n  The second `if [ \"$1\" = \"list\" ] && [ \"$2\" = \"--json\" ]` branch is unreachable because the first matching branch exits. Since the two branches disagree on fixture contents, leaving both in place is misleading about what data the test actually exercises. Removing the dead branch is the correct fix.\n- `fr-1-687aba85`: Accept\n  `load_bead_summaries(...).await.unwrap_or_default()` currently converts a real `br list --json` failure into a successful create path with degraded prompt data. That silently drops dependency status/outcome fields and weakens planned-elsewhere context instead of surfacing an operational failure. This is a correctness issue; the command should fail or use an explicit fallback with a regression test.\n- `fr-1-72b36054`: Accept\n  When title drift causes `resolve_bead_plan` to return no matched indices, `build_planned_elsewhere_context` loses adjacent same-workstream context even though the bead's canonical slot can still provide a non-authoritative position hint. Using that slot only for nearby planned-elsewhere summaries, while still withholding `plan_hash`/`plan_version` confirmation, improves prompt fidelity without weakening the existing safety boundary.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

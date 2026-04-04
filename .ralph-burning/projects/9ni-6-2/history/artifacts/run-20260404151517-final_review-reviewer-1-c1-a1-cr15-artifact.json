@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T20:38:28.746998241Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the full diff for the 9ni-6-2 implementation, including `src/cli/project.rs`, `src/contexts/project_run_record/service.rs`, and the related adapter/model changes. I found two substantive robustness gaps: the new dependency-status enrichment path now hard-fails `create-from-bead` on missing relation statuses when `br list` is unavailable, and planned-elsewhere rendering has no deterministic size bound even though the feature requires a constrained prompt budget.\n\n## Amendments\n\n1. Relax the `br list` fallback in `project create-from-bead` so missing relation statuses do not abort project creation. Right now `src/cli/project.rs:321-333` calls `ensure_direct_relations_have_statuses_for_prompt`, and `src/cli/project.rs:849-874` turns any missing inline status into a hard error whenever `br list --all --deferred --limit=0 --json` is unavailable. That is stricter than the renderer itself needs, because the prompt helpers already have deterministic `unknown` fallbacks in `src/cli/project.rs:1222-1262`. Amend this path to keep generating the prompt with `unknown` status/outcome instead of failing the whole command.\n   Rationale: This is a robustness regression outside prompt generation itself: a transient `br list` failure or an older `br show` payload now breaks `project create-from-bead`, even though deterministic prompt output is still possible.\n2. Add a deterministic size budget for planned-elsewhere context before rendering `prompt.md`. `src/cli/project.rs:1321-1502` currently accumulates every direct dependent, every shared-acceptance owner, and adjacent neighbors, and `src/contexts/project_run_record/service.rs:895-916` plus `src/contexts/project_run_record/service.rs:1021` render the entire collection verbatim. There is no cap on item count or summary length, so large milestones can produce unbounded prompt growth. Amend this by ranking items deterministically and enforcing a fixed max-items/max-bytes budget before serialization.\n   Rationale: The bead explicitly requires the generated prompt to stay concise enough for a reasonable context budget. As implemented, prompt size scales with milestone fan-out and can exceed that budget on wide graphs.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 15
+}

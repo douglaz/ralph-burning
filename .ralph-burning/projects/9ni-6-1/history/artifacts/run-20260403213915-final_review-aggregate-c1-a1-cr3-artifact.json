@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260403213915-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260403213915-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T22:49:19.879011511Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 3/20\n\n## Accepted\n\n- `fr-3-599dbf06`\n- `fr-3-eb683533`\n- `fr-3-02aa5078`\n\n## Rejected\n\n- `fr-3-eb1353e8`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-599dbf06`\n\nIn `split_bead_description_scope` (service.rs:577-580), the inner `section_kind_for_bead_description_line(line)` call is unreachable dead code. Line 570 already checked the same function and got `None` (otherwise the outer `continue` on line 572 would have fired). The inner block can never execute. Remove lines 577-580 or restructure to avoid the redundant call, as it misleads readers into thinking there is a transition path through it.\n\n### `fr-3-eb683533`\n\n`validate_canonical_prompt_shape()` no longer guarantees that the canonical headings are unique and truly in order. In `src/contexts/project_run_record/task_prompt_contract.rs:131-144`, it now scans forward from the previous match and accepts the first later occurrence of each heading, so a malformed prompt with an earlier stray `## Acceptance Criteria` (or any other canonical heading) still passes as long as the heading appears again later in the expected slot. The new test at `src/contexts/project_run_record/task_prompt_contract.rs:218-225` explicitly codifies that permissive behavior. Because `src/contexts/workflow_composition/prompt_review.rs:245-253` uses this function as the final gate before accepting a refined prompt, prompt review can now persist contract-drifted prompts that still violate the promised canonical section order.\n\n### `fr-3-02aa5078`\n\nThe diff deletes the checked-in repo workspace config `.ralph-burning/workspace.toml` (whole file removed), but repo-root commands still unconditionally require that file via `src/contexts/workspace_governance/mod.rs:65-66`. In a clean export of `HEAD`, running `ralph-burning config show` from the repo root now fails with `No such file or directory`, while the same command succeeds from `origin/master`. Unless this repo is intentionally no longer supposed to be an initialized workspace, removing the tracked workspace scaffold is a regression unrelated to the prompt-contract feature.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

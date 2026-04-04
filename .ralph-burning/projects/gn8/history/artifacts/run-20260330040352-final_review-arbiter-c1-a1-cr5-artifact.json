@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330040352-final_review-arbiter-c1-a1-cr5-artifact",
+  "payload_id": "run-20260330040352-final_review-arbiter-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T06:26:28.014034086Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected the sole disputed amendment (fr-5-5b9be0ac). The classify_exit_failure() stub is an intentional, documented design decision that correctly distinguishes spawn-time failures (where the OS definitively reports a missing binary) from post-spawn exits (where exit codes are application-defined). The most critical missing-interpreter case — shebang scripts with absent interpreters — is already caught at spawn time via ErrorKind::NotFound. Reclassifying post-spawn exit 127 as non-retryable would create false terminal failures for wrappers that use 127 for their own error signaling, which is a worse failure mode than burning a few retry attempts.\n\n## Rulings\n\n- `fr-5-5b9be0ac`: Reject\n  The code's design is intentional and well-documented (lines 1442-1448). The spawn-time path (lines 985-990) already catches the definitive missing-binary case via ErrorKind::NotFound. For shebang scripts (#!/usr/bin/env node), if the interpreter is missing, Linux's execve() fails with ENOENT at the kernel level, which spawn() catches as BinaryNotFound — so the most important missing-interpreter case is already handled. The remaining post-spawn 127 scenario (e.g., bash starts but an internal command fails) is genuinely application-defined behavior: retrying may help if a deployment is completing or PATH is being updated. Reclassifying post-spawn 127 as non-retryable would create false terminal failures for wrapper scripts that use exit 127 for their own error conditions. Burning a few retry attempts on a broken wrapper is a less harmful failure mode than prematurely abandoning retries on a transiently misconfigured environment. The planner and Reviewer 1's technical analysis of the spawn-time vs post-spawn distinction is correct, and the 2-to-1 consensus reflects the stronger technical argument.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}

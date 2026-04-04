@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-vote-0-c1-a1-cr9-artifact",
+  "payload_id": "run-20260404151517-final_review-vote-0-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T18:45:33.131875328Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAccept the amendment. The code analysis confirms that the overly broad `AppError::Io` catch at line 324 silently swallows all non-corrupt `br list` failures into an empty summary map. Combined with `DependencyRef.status` being `Option<BeadStatus>` (line 235), when `br show` responses omit relation statuses, both data sources for `prompt_bead_status`/`prompt_bead_outcome` resolve to `None`, producing `\"unknown\"` silently. The existing regression test only covers the case where `br show` includes statuses on all dependency refs, so the problematic path is untested.\n\n## Votes\n\n- `fr-9-db1bb842`: Accept\n  Verified all four claims: (1) `map_br_list_error` funnels both `BrExitError` (non-corrupt) and catch-all errors into `AppError::Io`, which line 324 swallows into an empty map — this is too broad since it silently recovers from transient failures, version skew, and permission errors. (2) `DependencyRef.status` is `Option<BeadStatus>` (line 235), so `br show` responses legitimately omit it. (3) `prompt_bead_status` and `prompt_bead_outcome` (lines 1164-1177) fall through to `\"unknown\"` when both the summary map lookup and the relation status are None. (4) The existing test at lines 2038-2117 supplies status-rich `br show` payloads (`\"status\": \"closed\"` and `\"status\": \"open\"`), so it never exercises the double-None path. The fix should either narrow the Io fallback to the explicitly anticipated unsupported-list scenario, or validate that every dependency carries a status before proceeding, plus a regression test for the missing-status path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 9
+}

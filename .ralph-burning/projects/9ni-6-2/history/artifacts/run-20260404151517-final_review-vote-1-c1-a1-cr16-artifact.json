@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-vote-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260404151517-final_review-vote-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T21:08:09.380215128Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments describe real prompt-construction defects: the planned-elsewhere byte budget undercounts rendered output, dependency context is uncapped, and compact summary extraction can drop meaning from wrapped paragraphs.\n\n## Votes\n\n- `fr-16-2346c4b9`: Accept\n  `planned_elsewhere_serialized_bytes` and `planned_elsewhere_serialized_bytes_without_summary` are used as admission-control accounting for `PLANNED_ELSEWHERE_MAX_BYTES`, but `format_planned_elsewhere` adds deterministic bytes that are never counted: the `- ` bullet prefix, newline joins between items, and render-time indentation on continuation lines. That makes the tracked budget smaller than the rendered section and leaves the current byte-cap logic inaccurate.\n- `fr-16-24fdee51`: Accept\n  `render_bead_task_prompt` renders every upstream dependency and downstream dependent verbatim with no item or byte cap, while nearby prompt sections already have explicit trimming/budget logic. Because dependency fan-in and fan-out are data-driven and unbounded, a high-degree bead or epic can make `prompt.md` arbitrarily large. That is a real robustness and maintainability problem.\n- `fr-16-23904bdf`: Accept\n  `compact_planned_elsewhere_summary` currently returns the first surviving non-empty line and drops later continuation lines from the same paragraph. For hard-wrapped descriptions, that can remove the clause that actually explains what work is planned elsewhere. Preserving same-paragraph continuation lines is the safer behavior, especially since later byte-budgeting already limits overall summary size.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}

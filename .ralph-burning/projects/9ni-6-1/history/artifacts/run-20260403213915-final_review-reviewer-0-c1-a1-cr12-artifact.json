@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-0-c1-a1-cr12-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-0-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T01:34:40.805151058Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all 5 changed files end-to-end: task_prompt_contract.rs, template_catalog.rs, and 3 test files. The changes implement two cohesive improvements: (1) hardened prompt_uses_contract detection that skips fenced code blocks and requires structural evidence (marker + early canonical section), and (2) promoting task_prompt_contract from optional to required in all stage and panel template manifests. All 439 unit tests and 155 integration tests pass; the single failure (run_attach_tmux) is pre-existing and unrelated. The fence-skipping logic in top_level_lines is correct, including handling of nested/longer fences. The split between prompt_uses_contract (marker + section evidence) and has_top_level_contract_marker (marker only) is sound — the former gates guidance injection while the latter is used inside validate_canonical_prompt_shape which independently validates all sections. Built-in defaults all include the {{task_prompt_contract}} placeholder, matching the new required status. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 12
+}

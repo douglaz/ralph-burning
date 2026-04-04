@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-plan_and_implement-c1-a1-cr20-artifact",
+  "payload_id": "run-20260403213915-plan_and_implement-c1-a1-cr20",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-04T05:04:07.366259548Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the pending `process_backend` prompt-contract remediations for bead `ralph-burning-9ni.6.1`. Claude structured-output wrapping now uses an explicit `__rb_wrapped: true` sentinel and unwrapping only strips payloads that carry that marker, which prevents legitimate raw contract payloads shaped like `{\"data\": ...}` from being silently altered. I also guarded `is_claude_structured_output_retry_failure()` on `is_error: true`, documented that stdin now shows the processed backend-enforced schema, and extended unit coverage so non-Claude stdin schemas are verified to stay unwrapped while still matching the processed transport schema.\n\n## Steps\n\n1. [Completed] Inspect the current Claude structured-output unwrap path, retry-failure detection, stdin schema assembly, and existing `process_backend` tests for the reported gaps.\n2. [Completed] Patch `process_backend.rs` to add an explicit Claude wrapper sentinel, require that marker during unwrap, guard structured-output retry detection on `is_error: true`, and document that stdin uses the processed backend schema while only Claude adds a wrapper.\n3. [Completed] Add deterministic regressions for the wrapper-marker behavior and non-Claude stdin schema shape, then run focused formatting and `process_backend` cargo tests.\n\n## Validation Evidence\n\n- Ran `TMPDIR=$PWD/.tmp cargo fmt --all` successfully.\n- Ran `TMPDIR=$PWD/.tmp cargo fmt --all --check` successfully.\n- Ran `TMPDIR=$PWD/.tmp cargo test claude_structured_output_retry_failure -- --nocapture` successfully, including the new `is_error` guard coverage.\n- Ran `TMPDIR=$PWD/.tmp cargo test unwrap_claude_structured_output_payload_requires_wrapper_marker -- --nocapture` successfully.\n- Ran `TMPDIR=$PWD/.tmp cargo test process_backend -- --nocapture` successfully, including the updated Claude wrapper assertions and the new Codex stdin-schema regression that verifies non-Claude stdin does not include the Claude `properties.data` wrapper.\n\n## Outstanding Risks\n\n- I ran focused formatting and `process_backend` regression coverage, not the full repository test suite.\n- The Claude wrapper contract now explicitly requires `__rb_wrapped: true`; any external mock or fixture outside this repo that still emits the old wrapper shape `{\"data\": ...}` will need to be updated.\n- The workspace still contains the pre-existing untracked `.ralph-burning/` runtime directory, which I left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 20
+}

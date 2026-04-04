@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260404151517-final_review-aggregate-c1-a1-cr18-artifact",
+  "payload_id": "run-20260404151517-final_review-aggregate-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T21:48:04.519318463Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 18/20\n\n## Accepted\n\n- `fr-18-2e31f230`\n- `fr-18-96c40295`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-18-2e31f230`\n\nIn `src/contexts/project_run_record/service.rs` lines 931-938, `truncate_to_char_boundary` returns the first character even when it exceeds `max_bytes` (e.g., a 4-byte emoji when max_bytes=2). The `project.rs` version (lines 1734-1744) correctly returns `\"\"` when `first_char_end > max_bytes`. The service.rs version should match: replace `return &value[..first_char_end.min(value.len())];` with the same `if first_char_end <= max_bytes { &value[..first_char_end] } else { \"\" }` guard used in project.rs. Without this fix, `truncate_with_ascii_ellipsis` in service.rs can produce strings exceeding the requested byte limit when input contains multi-byte characters at the start, causing fitted dependency items to silently exceed the budget.\n\n### `fr-18-96c40295`\n\nThe functions `truncate_with_ascii_ellipsis` and `truncate_to_char_boundary` are now fully duplicated between `src/cli/project.rs` (lines 1706-1748) and `src/contexts/project_run_record/service.rs` (lines 903-941), with slightly different edge-case behavior (the service.rs version has the bug above). Extract these into a shared utility module so both call sites use the same implementation and stay in sync.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 18
+}

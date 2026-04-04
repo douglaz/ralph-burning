@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T19:24:00.663281336Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 correctness issue: prompt enrichment relies on a partial `br list` result set, so related-bead status/context silently degrades for closed, deferred, or paged-out beads.\n\n## Amendments\n\n1. In `src/adapters/br_process.rs:168-170` / `src/cli/project.rs:766-780`, stop hydrating `bead_summaries` from bare `br list --json`. `build_planned_elsewhere_context()` depends on that map for related-bead titles/statuses (`src/cli/project.rs:1396-1420`, `src/cli/project.rs:1474-1482`), but bare `br list` only returns the first 50 open issues and excludes closed/deferred ones. That means closed, deferred, or paged-out adjacent/shared-acceptance beads will be rendered with `status: unknown` or incomplete enrichment even though the data exists, which breaks the self-contained prompt contract and can mis-scope follow-on work. Fetch an exhaustive set (`--all --deferred --limit=0`) or query the specific related IDs instead, then add a regression test that covers a closed adjacent bead in a repo with >50 open issues.\n   Rationale: The current CLI fixtures mask this: `tests/cli.rs:476-545` stubs bare `br list --json` with a closed bead and only three results, so it never exercises the real command defaults.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

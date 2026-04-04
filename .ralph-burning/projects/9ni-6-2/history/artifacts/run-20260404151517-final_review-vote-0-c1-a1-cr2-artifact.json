@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-vote-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260404151517-final_review-vote-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T16:16:07.275604823Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real, code-verified correctness bugs in planned_elsewhere prompt-context generation. Amendment fr-2-8e1b9900 addresses unconfirmed title-fallback indexes being used for adjacency scanning, which can cause the current bead to appear in its own 'Already Planned Elsewhere' section. Amendment fr-2-64eff26f addresses fence-opening lines surviving compaction and breaking canonical prompt validation. Both are confirmed by reading the relevant source code and are well-scoped fixes.\n\n## Votes\n\n- `fr-2-8e1b9900`: Accept\n  Verified in source: resolve_bead_plan (line 884-889) records matched_workstream_index/matched_bead_index even when membership_confirmed is false (title-only fallback). build_planned_elsewhere_context (line 1121-1124) consumes those indexes unconditionally via .zip(), and the neighbor scan (line 1141) excludes by plan index, not by bead identity (proposal_id). With a reordered implicit plan whose old title still matches at the wrong slot, the adjacency window centers on the wrong position, and the actual bead is not excluded since exclusion is index-based. This is a concrete correctness bug — the current bead can appear as 'adjacent same-workstream bead' in its own planned-elsewhere context. Restricting to confirmed/implicit-slot-derived locations and/or filtering by proposal_id == bead.id is the correct fix.\n- `fr-2-64eff26f`: Accept\n  Verified in source: compact_planned_elsewhere_summary (lines 958-964) returns the first non-empty trimmed line of a description, which can be a fence opener like '```md'. format_planned_elsewhere (lines 898-901) injects this summary verbatim into the rendered prompt. validate_canonical_prompt_shape (lines 176-188) tracks active_fence state — once a fence is opened and never closed, all subsequent lines are consumed by the fence-tracking loop (line 183: continue), causing later canonical headings like '## Review Policy' to be invisible to validation. This makes validate_canonical_prompt_shape report missing required sections, and create_project_from_bead fails with InvalidPrompt. This is a real prompt-construction bug with a concrete failure path. Making compaction fence-safe (stripping/closing fences or selecting a non-fence line) is technically sound.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

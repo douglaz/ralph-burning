@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr2-artifact",
+  "payload_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T16:14:56.125214261Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nBoth amendments address real correctness defects in prompt-context generation. One prevents non-authoritative title fallback data from being treated as a stable location hint, which can misclassify the current bead as nearby planned work. The other prevents malformed markdown fence summaries from corrupting canonical prompt validation. Both improve robustness with low conceptual risk.\n\n## Votes\n\n- `fr-2-8e1b9900`: Accept\n  `resolve_bead_plan` currently preserves workstream/bead indexes even when the match is only an unconfirmed title fallback, and `build_planned_elsewhere_context` prefers those indexes before recomputing the implicit slot. In the reordered-implicit-plan case, that makes adjacency scan around the wrong slot and can emit the live bead itself because exclusion is by index, not by `proposal_id`. That is a real correctness bug in scope control and prompt accuracy. Restricting adjacency hints to confirmed or implicit-slot-derived locations, and/or skipping `proposal_id == bead.id`, is the right robustness fix.\n- `fr-2-64eff26f`: Accept\n  `compact_planned_elsewhere_summary` blindly taking the first non-empty line allows a bare fence opener such as `````md` to flow into `format_planned_elsewhere`. The rendered prompt then contains an opening fence with no close, and the canonical-shape validator explicitly ignores headings while a fence is active, so later required sections can disappear from validation and project creation can fail. This is a concrete prompt-construction bug, not just formatting polish. Making compaction fence-safe or selecting a non-fence summary line is technically sound and improves prompt reliability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260403213915-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T23:12:38.759253063Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify concrete defects: the bead-description parser can move out-of-scope text back into required scope, the canonical prompt validator can reject valid verbatim AGENTS guidance, and removing the checked-in workspace scaffold breaks repo-root commands from a clean checkout.\n\n## Votes\n\n- `fr-4-a8e51d7e`: Accept\n  `split_bead_description_scope()` clears `active_section` on any plain colon-terminated label once it is inside a recognized section. Because `is_bead_description_section_boundary()` accepts labels like `Examples:` and `Notes:`, a nested label inside `Non-goals:` or `## Acceptance Criteria` terminates that section and the following lines are appended to `must_do_lines`. That can invert non-goal text into in-scope work, so this is a real correctness bug.\n- `fr-4-1444858e`: Accept\n  `validate_canonical_prompt_shape()` counts exact `## ...` heading strings across all trimmed lines without excluding fenced content or verbatim repo guidance. `render_bead_task_prompt()` injects `agents_guidance` verbatim into `AGENTS / Repo Guidance`, and project creation persists that rendered prompt without validating it first. As a result, a legitimate AGENTS snippet containing a canonical heading such as `## Review Policy` can create a prompt that later fails prompt-review validation even when the guidance itself is valid. That is a robustness defect in the contract enforcement path.\n- `fr-4-9b34ece1`: Accept\n  This branch no longer tracks `.ralph-burning/workspace.toml` or `.ralph-burning/active-project`, but `load_workspace_config()` still unconditionally reads `.ralph-burning/workspace.toml`. In a clean archive of `HEAD`, running the built binary with `config show` from repo root fails with `No such file or directory`, while the same check against `origin/master` succeeds. That is a concrete clean-checkout regression.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

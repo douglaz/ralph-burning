@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr19-artifact",
+  "payload_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T04:56:58.202742671Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nTwo amendments identify concrete correctness issues in Claude response handling, and one adds worthwhile regression coverage around a subtle schema-prompt behavior change.\n\n## Votes\n\n- `fr-19-381e9eda`: Accept\n  The current unwrap logic is too permissive. Any single-key object named `data` is treated as the Claude wrapper, even when `{\"data\": ...}` is the actual contract payload. That can silently corrupt otherwise valid output before validation. Using an explicit wrapper marker or a schema-aware unwrap would be more robust.\n- `fr-19-0790ab8d`: Accept\n  The refactor did change the stdin prompt content for non-Claude backends by reusing the processed backend schema instead of the raw contract schema. That is defensible, but it is a meaningful prompt-surface change and should be pinned down with tests. Verifying that non-Claude stdin does not gain the Claude `properties.data` wrapper is a good regression guard, and documenting the processed-schema behavior improves maintainability.\n- `fr-19-51c68ba3`: Accept\n  `is_claude_structured_output_retry_failure` currently matches on `subtype` and `errors` without first confirming the payload is actually an error envelope. Since the retry decision drops session reuse and changes control flow, false positives matter. Requiring `is_error: true` aligns this helper with `extract_stdout_error` and makes the retry trigger materially safer.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 19
+}

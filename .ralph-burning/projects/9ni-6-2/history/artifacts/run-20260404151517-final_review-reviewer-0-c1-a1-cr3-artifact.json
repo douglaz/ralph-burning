@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T16:23:40.706573006Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed three changes: (1) fence-aware markdown parsing in compact_planned_elsewhere_summary that correctly skips fenced code blocks when extracting summary lines, (2) a membership_confirmed guard that prevents unconfirmed title-only matches from being used as location hints in build_planned_elsewhere_context, and (3) a proposal_id == bead.id guard that prevents a bead from appearing in its own planned-elsewhere context. All three are correctness fixes with proper test coverage. The fence parser handles CommonMark opening/closing rules correctly including info strings, mismatched markers, and unclosed fences. Byte indexing in closes_fence is safe because fence markers are single-byte ASCII. No bugs, safety issues, or significant maintainability concerns found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}
