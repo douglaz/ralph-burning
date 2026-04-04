@@ -586,6 +586,11 @@ async fn claude_command_construction_and_double_parse() {
         stdin_schema, schema,
         "Claude stdin schema should match the wrapped transport schema exactly"
     );
+    assert_eq!(
+        stdin_schema.pointer("/properties/__rb_wrapped/const"),
+        Some(&serde_json::json!(true)),
+        "Claude stdin schema should include the explicit wrapper sentinel"
+    );
     assert!(
         stdin_schema.pointer("/properties/data").is_some(),
         "Claude stdin schema should include the top-level data wrapper"
@@ -726,6 +731,21 @@ async fn codex_command_construction_and_temp_files() {
         "schema should not have top-level definitions key"
     );
     assert_no_ref_keys(&schema, "schema");
+    let stdin_file = request.working_dir.join("codex-stdin.txt");
+    let stdin_text = fs::read_to_string(&stdin_file).expect("read stdin");
+    let stdin_schema = parse_schema_from_stdin(&stdin_text);
+    assert_eq!(
+        stdin_schema, schema,
+        "Codex stdin schema should match the processed transport schema exactly"
+    );
+    assert!(
+        stdin_schema.pointer("/properties/data").is_none(),
+        "Non-Claude stdin schema should not include Claude's data wrapper"
+    );
+    assert!(
+        stdin_schema.pointer("/properties/__rb_wrapped").is_none(),
+        "Non-Claude stdin schema should not include Claude's wrapper sentinel"
+    );
 
     assert!(
         !schema_path.exists(),
@@ -1750,6 +1770,11 @@ async fn stdin_payload_includes_contract_role_prompt_context_and_schema() {
         "should contain schema instruction"
     );
     let stdin_schema = parse_schema_from_stdin(&stdin_text);
+    assert_eq!(
+        stdin_schema.pointer("/properties/__rb_wrapped/const"),
+        Some(&serde_json::json!(true)),
+        "Claude stdin schema should include the wrapper sentinel"
+    );
     assert!(
         stdin_schema.pointer("/properties/data").is_some(),
         "Claude stdin schema should describe the same wrapped data contract as transport"

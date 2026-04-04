@@ -676,7 +676,11 @@ impl ProcessBackendAdapter {
         }
     }
 
-    /// Build the stdin payload from prompt + context.
+    /// Build the stdin payload from prompt + context using the same
+    /// backend-processed schema that is enforced on the transport path.
+    /// Claude adds an explicit wrapper envelope; other backends keep the
+    /// native contract payload shape while still seeing strict-mode/inlined
+    /// schema details in stdin.
     fn assemble_stdin(request: &InvocationRequest, schema_value: &serde_json::Value) -> String {
         let contract_label = request.contract.label();
         let role = request.role.display_name();
@@ -1596,6 +1600,10 @@ fn is_claude_structured_output_retry_failure(stdout: &[u8]) -> bool {
         Err(_) => return false,
     };
 
+    if value.get("is_error").and_then(|v| v.as_bool()) != Some(true) {
+        return false;
+    }
+
     value
         .get("subtype")
         .and_then(|v| v.as_str())
@@ -1616,16 +1624,26 @@ fn wrap_claude_structured_output_schema(schema: serde_json::Value) -> serde_json
     serde_json::json!({
         "type": "object",
         "properties": {
+            "__rb_wrapped": {
+                "const": true,
+            },
             "data": schema,
         },
-        "required": ["data"],
+        "required": ["__rb_wrapped", "data"],
         "additionalProperties": false,
     })
 }
 
 fn unwrap_claude_structured_output_payload(value: serde_json::Value) -> serde_json::Value {
     match value {
-        serde_json::Value::Object(mut map) if map.len() == 1 => {
+        serde_json::Value::Object(mut map)
+            if map.len() == 2
+                && map
+                    .get("__rb_wrapped")
+                    .and_then(|v| v.as_bool())
+                    .is_some_and(|wrapped| wrapped)
+                && map.contains_key("data") =>
+        {
             map.remove("data").unwrap_or(serde_json::Value::Object(map))
         }
         other => other,
@@ -2581,19 +2599,21 @@ mod tests {
 
     #[test]
     fn claude_structured_output_retry_failure_detects_subtype() {
-        let stdout = br#"{"subtype":"error_max_structured_output_retries"}"#;
+        let stdout = br#"{"is_error":true,"subtype":"error_max_structured_output_retries"}"#;
         assert!(is_claude_structured_output_retry_failure(stdout));
     }
 
     #[test]
     fn claude_structured_output_retry_failure_detects_errors_array_message() {
-        let stdout = br#"{"errors":["Failed to provide valid structured output after retries"]}"#;
+        let stdout =
+            br#"{"is_error":true,"errors":["Failed to provide valid structured output after retries"]}"#;
         assert!(is_claude_structured_output_retry_failure(stdout));
     }
 
     #[test]
     fn claude_structured_output_retry_failure_rejects_non_matching_json() {
-        let stdout = br#"{"subtype":"different_error","errors":["something else"]}"#;
+        let stdout =
+            br#"{"is_error":true,"subtype":"different_error","errors":["something else"]}"#;
         assert!(!is_claude_structured_output_retry_failure(stdout));
     }
 
@@ -2602,6 +2622,41 @@ mod tests {
         assert!(!is_claude_structured_output_retry_failure(
             b"not json at all"
         ));
+    }
+
+    #[test]
+    fn claude_structured_output_retry_failure_requires_is_error_true() {
+        let subtype_only = br#"{"subtype":"error_max_structured_output_retries"}"#;
+        assert!(!is_claude_structured_output_retry_failure(subtype_only));
+
+        let false_error_flag = br#"{"is_error":false,"errors":["Failed to provide valid structured output after retries"]}"#;
+        assert!(!is_claude_structured_output_retry_failure(false_error_flag));
+    }
+
+    #[test]
+    fn unwrap_claude_structured_output_payload_requires_wrapper_marker() {
+        let raw_payload = serde_json::json!({
+            "data": {
+                "status": "legitimate-contract-payload"
+            }
+        });
+        assert_eq!(
+            unwrap_claude_structured_output_payload(raw_payload.clone()),
+            raw_payload
+        );
+
+        let wrapped_payload = serde_json::json!({
+            "__rb_wrapped": true,
+            "data": {
+                "status": "wrapped-contract-payload"
+            }
+        });
+        assert_eq!(
+            unwrap_claude_structured_output_payload(wrapped_payload),
+            serde_json::json!({
+                "status": "wrapped-contract-payload"
+            })
+        );
     }
 
     #[test]
@@ -2813,6 +2868,7 @@ mod tests {
             "result": "",
             "session_id": "sess-test-003b",
             "structured_output": {
+                "__rb_wrapped": true,
                 "data": {
                     "outcome": "approved",
                     "evidence": ["test passed"]
@@ -3046,6 +3102,11 @@ mod tests {
         assert!(
             schema.pointer("/properties/data").is_some(),
             "Claude schema should wrap the contract payload under properties.data"
+        );
+        assert_eq!(
+            schema.pointer("/properties/__rb_wrapped/const"),
+            Some(&serde_json::json!(true)),
+            "Claude schema should require the wrapper sentinel"
         );
         assert!(
             schema.get("definitions").is_none(),
