@@ -1005,6 +1005,36 @@ fn render_bead_task_prompt_extracts_numbered_lists_from_colon_suffixed_markdown_
 }
 
 #[test]
+fn render_bead_task_prompt_preserves_nested_list_indentation_in_extracted_sections() {
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the contract explicit\n\nNon-goals:\n- do not broaden the bead scope\n - keep follow-up docs in a sibling bead\n\n## Acceptance Criteria\n- preserve the canonical contract shape\n - keep supporting rationale nested under the primary criterion\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let acceptance_start = prompt
+        .find("## Acceptance Criteria")
+        .expect("acceptance section should exist");
+    let planned_start = prompt
+        .find("## Already Planned Elsewhere")
+        .expect("planned elsewhere section should exist");
+    let non_goals_section = &prompt[non_goals_start..acceptance_start];
+    let acceptance_section = &prompt[acceptance_start..planned_start];
+
+    assert!(non_goals_section
+        .contains("- do not broaden the bead scope\n     - keep follow-up docs in a sibling bead"));
+    assert!(!non_goals_section.contains("\n- keep follow-up docs in a sibling bead"));
+    assert!(acceptance_section.contains("- preserve the canonical contract shape\n     - keep supporting rationale nested under the primary criterion"));
+    assert!(!acceptance_section
+        .contains("\n- keep supporting rationale nested under the primary criterion"));
+}
+
+#[test]
 fn render_bead_task_prompt_ignores_embedded_section_labels_inside_fenced_code_blocks() {
     let mut context = sample_bead_context();
     context.bead_description = Some(
@@ -1076,7 +1106,7 @@ fn render_bead_task_prompt_puts_fence_first_bullet_items_on_indented_lines() {
         .expect("review policy section should exist");
     let planned_section = &prompt[planned_start..review_start];
 
-    assert!(planned_section.contains("-\n  ```md\n  ## Review Policy\n  ```"));
+    assert!(planned_section.contains("-\n    ```md\n    ## Review Policy\n    ```"));
     assert!(!planned_section.contains("- ```md"));
     assert!(
         ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
@@ -1114,9 +1144,9 @@ fn rendered_bead_task_prompt_indents_multiline_milestone_fields_without_breaking
     let prompt = render_bead_task_prompt(&context);
 
     assert!(prompt.contains("- Summary: Ship the prompt contract update."));
-    assert!(prompt.contains("  ## Acceptance Criteria"));
+    assert!(prompt.contains("    ## Acceptance Criteria"));
     assert!(prompt.contains("- ms-alpha.bead-9 handles follow-up validation."));
-    assert!(prompt.contains("  ## Review Policy"));
+    assert!(prompt.contains("    ## Review Policy"));
     assert!(
         ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
             .is_ok()
@@ -1132,7 +1162,7 @@ fn rendered_bead_task_prompt_indents_heading_like_lines_inside_must_do_scope() {
 
     let prompt = render_bead_task_prompt(&context);
 
-    assert!(prompt.contains("  ## Review Policy"));
+    assert!(prompt.contains("    ## Review Policy"));
     assert!(
         !prompt.contains("\n\n## Review Policy\n\nKeep this example heading inside must-do scope.")
     );
@@ -1253,7 +1283,7 @@ fn create_project_from_bead_context_accepts_multiline_canonical_fields() {
     assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
     assert!(captured
         .prompt_contents
-        .contains("  ## Acceptance Criteria"));
+        .contains("    ## Acceptance Criteria"));
 }
 
 #[test]
@@ -1280,7 +1310,7 @@ fn create_project_from_bead_context_accepts_fence_first_bullet_fields() {
     assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
     assert!(captured
         .prompt_contents
-        .contains("-\n  ```md\n  ## Review Policy\n  ```"));
+        .contains("-\n    ```md\n    ## Review Policy\n    ```"));
 }
 
 #[test]
@@ -1359,6 +1389,45 @@ fn create_project_from_bead_context_accepts_colon_suffixed_markdown_sections_and
 }
 
 #[test]
+fn create_project_from_bead_context_preserves_nested_list_indentation_in_extracted_sections() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the task scoped to the active bead\n\n## Non-goals:\n- do not broaden the active bead\n - keep follow-up docs in a sibling bead\n\n## Acceptance Criteria:\n- preserve the canonical contract shape\n - keep supporting rationale nested under the primary criterion\n".to_owned(),
+    );
+
+    let record = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: None,
+            prompt_override: None,
+            created_at: test_timestamp(),
+            context,
+        },
+    )
+    .expect("nested section lists should preserve indentation");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
+    assert!(captured.prompt_contents.contains(
+        "- do not broaden the active bead\n     - keep follow-up docs in a sibling bead"
+    ));
+    assert!(!captured
+        .prompt_contents
+        .contains("\n- keep follow-up docs in a sibling bead"));
+    assert!(captured.prompt_contents.contains(
+        "- preserve the canonical contract shape\n     - keep supporting rationale nested under the primary criterion"
+    ));
+    assert!(!captured
+        .prompt_contents
+        .contains("\n- keep supporting rationale nested under the primary criterion"));
+}
+
+#[test]
 fn create_project_from_bead_context_accepts_heading_like_lines_in_must_do_scope() {
     let store = RecordingProjectStore::empty();
     let journal_store = FakeJournalStore;
@@ -1383,7 +1452,9 @@ fn create_project_from_bead_context_accepts_heading_like_lines_in_must_do_scope(
 
     let captured = store.captured();
     assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
-    assert!(captured.prompt_contents.contains("  ## Milestone Summary"));
+    assert!(captured
+        .prompt_contents
+        .contains("    ## Milestone Summary"));
 }
 
 #[test]

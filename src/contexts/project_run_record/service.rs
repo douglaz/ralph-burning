@@ -514,13 +514,14 @@ fn section_kind_for_bead_description_line(line: &str) -> Option<BeadDescriptionS
         .and_then(bead_description_section_kind_from_label)
 }
 
-fn strip_markdown_list_marker(line: &str) -> Option<&str> {
-    let trimmed = line.trim_start();
+fn strip_markdown_list_marker(line: &str) -> Option<(usize, &str)> {
+    let leading_indent = line.len() - line.trim_start().len();
+    let trimmed = &line[leading_indent..];
     if let Some(item) = trimmed
         .strip_prefix("- ")
         .or_else(|| trimmed.strip_prefix("* "))
     {
-        return Some(item);
+        return Some((leading_indent, item));
     }
 
     let bytes = trimmed.as_bytes();
@@ -534,9 +535,25 @@ fn strip_markdown_list_marker(line: &str) -> Option<&str> {
     }
 
     if matches!(bytes[marker_len], b'.' | b')') && bytes[marker_len + 1] == b' ' {
-        Some(&trimmed[marker_len + 2..])
+        Some((leading_indent, &trimmed[marker_len + 2..]))
     } else {
         None
+    }
+}
+
+fn append_section_item_line(current: &mut String, line: &str) {
+    let trimmed_end = line.trim_end();
+    if current.is_empty() {
+        current.push_str(trimmed_end.trim_start());
+        return;
+    }
+
+    if current.contains('\n') || trimmed_end != trimmed_end.trim_start() {
+        current.push('\n');
+        current.push_str(trimmed_end);
+    } else {
+        current.push(' ');
+        current.push_str(trimmed_end.trim_start());
     }
 }
 
@@ -566,8 +583,8 @@ fn collect_section_items(lines: &[String]) -> Vec<String> {
             continue;
         }
 
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        let trimmed_end = line.trim_end();
+        if trimmed_end.trim().is_empty() {
             if !current.is_empty() {
                 items.push(current.trim().to_owned());
                 current.clear();
@@ -575,23 +592,20 @@ fn collect_section_items(lines: &[String]) -> Vec<String> {
             continue;
         }
 
-        if let Some(item) = strip_markdown_list_marker(trimmed) {
+        if let Some((leading_indent, item)) = strip_markdown_list_marker(trimmed_end) {
+            if leading_indent > 0 {
+                append_section_item_line(&mut current, trimmed_end);
+                continue;
+            }
             if !current.is_empty() {
                 items.push(current.trim().to_owned());
                 current.clear();
             }
-            current.push_str(item.trim());
+            current.push_str(item.trim_end());
             continue;
         }
 
-        if !current.is_empty() {
-            if current.contains('\n') {
-                current.push('\n');
-            } else {
-                current.push(' ');
-            }
-        }
-        current.push_str(trimmed);
+        append_section_item_line(&mut current, trimmed_end);
     }
 
     if !current.is_empty() {
@@ -693,7 +707,7 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
     fn render_bullet_item(prefix: &str, value: &str) -> String {
         let mut lines = value.lines();
         let first_line = lines.next().unwrap_or_default();
-        let continuation_indent = " ".repeat(prefix.len());
+        let continuation_indent = " ".repeat(prefix.len().max(4));
         let mut rendered =
             if !first_line.is_empty() && opening_fence_delimiter(first_line).is_some() {
                 format!(
@@ -736,7 +750,7 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
                 if line.is_empty() {
                     String::new()
                 } else {
-                    format!("  {line}")
+                    format!("    {line}")
                 }
             })
             .collect::<Vec<_>>()

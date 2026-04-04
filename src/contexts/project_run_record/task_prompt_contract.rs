@@ -59,11 +59,23 @@ fn contract_identifier() -> String {
     )
 }
 
-fn canonical_section_heading_index(line: &str) -> Option<usize> {
-    let title = line.trim_end().strip_prefix("## ")?;
-    BEAD_TASK_PROMPT_SECTION_TITLES
+fn markdown_canonical_section_heading(line: &str) -> Option<(usize, usize)> {
+    let trimmed_end = line.trim_end();
+    let leading_spaces = trimmed_end.chars().take_while(|ch| *ch == ' ').count();
+    if leading_spaces > 3 {
+        return None;
+    }
+
+    let title = trimmed_end[leading_spaces..].strip_prefix("## ")?;
+    let section_index = BEAD_TASK_PROMPT_SECTION_TITLES
         .iter()
-        .position(|section| *section == title)
+        .position(|section| *section == title)?;
+    Some((section_index, leading_spaces))
+}
+
+fn canonical_section_heading_index(line: &str) -> Option<usize> {
+    let (section_index, leading_spaces) = markdown_canonical_section_heading(line)?;
+    (leading_spaces == 0).then_some(section_index)
 }
 
 fn consumer_guidance_body() -> String {
@@ -178,19 +190,9 @@ pub fn prompt_review_consumer_guidance_for_prompt(prompt: &str) -> String {
 /// Validate that a prompt preserves the canonical marker and section order.
 pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
-    let has_contract_marker = has_top_level_contract_marker(prompt);
-    if !has_contract_marker {
-        errors.push(format!(
-            "missing exact contract marker `{}`",
-            contract_marker()
-        ));
-    } else if !prompt_uses_contract(prompt) {
-        errors.push(format!(
-            "contract marker `{}` must appear before the canonical section block",
-            contract_marker()
-        ));
-    }
-
+    let marker = contract_marker();
+    let mut marker_line_index = None;
+    let mut first_canonical_heading_line_index = None;
     let mut seen_positions = vec![None; BEAD_TASK_PROMPT_SECTION_TITLES.len()];
     let mut reported_missing = vec![false; BEAD_TASK_PROMPT_SECTION_TITLES.len()];
     let mut expected_index = 0usize;
@@ -209,9 +211,24 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
             continue;
         }
 
-        let Some(found_index) = canonical_section_heading_index(line) else {
+        if line.trim_start() == line && line.trim_end() == marker {
+            marker_line_index.get_or_insert(line_index);
+            continue;
+        }
+
+        let Some((found_index, leading_spaces)) = markdown_canonical_section_heading(line) else {
             continue;
         };
+
+        first_canonical_heading_line_index.get_or_insert(line_index);
+
+        if leading_spaces > 0 {
+            let heading = format!("## {}", BEAD_TASK_PROMPT_SECTION_TITLES[found_index]);
+            errors.push(format!(
+                "canonical heading `{heading}` must start at column 1; found {leading_spaces} leading space(s)"
+            ));
+            continue;
+        }
 
         if expected_index < BEAD_TASK_PROMPT_SECTION_TITLES.len() && found_index == expected_index {
             seen_positions[found_index] = Some(line_index);
@@ -239,6 +256,18 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
                 "unexpected canonical heading `{heading}` before `{expected_heading}`"
             ));
         }
+    }
+
+    if marker_line_index.is_none() {
+        errors.push(format!("missing exact contract marker `{}`", marker));
+    } else if matches!(
+        (marker_line_index, first_canonical_heading_line_index),
+        (Some(marker_line_index), Some(first_heading_line_index)) if marker_line_index > first_heading_line_index
+    ) {
+        errors.push(format!(
+            "contract marker `{}` must appear before the canonical section block",
+            marker
+        ));
     }
 
     for (index, section) in BEAD_TASK_PROMPT_SECTION_TITLES.iter().enumerate() {
@@ -399,6 +428,25 @@ mod tests {
     }
 
     #[test]
+    fn canonical_prompt_shape_reports_missing_early_sections_without_marker_noise() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("missing section heading `## Milestone Summary`")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("missing section heading `## Current Bead Details`")));
+        assert!(!errors
+            .iter()
+            .any(|error| error.contains("must appear before the canonical section block")));
+    }
+
+    #[test]
     fn canonical_prompt_shape_allows_verbatim_agents_guidance_with_canonical_heading_lines() {
         let prompt = format!(
             "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
@@ -429,9 +477,22 @@ mod tests {
     }
 
     #[test]
-    fn canonical_prompt_shape_ignores_indented_canonical_heading_like_lines_in_section_bodies() {
+    fn canonical_prompt_shape_rejects_markdown_valid_indented_canonical_heading_lines() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n  ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert!(errors.iter().any(|error| {
+            error.contains("canonical heading `## Acceptance Criteria` must start at column 1")
+        }));
+    }
+
+    #[test]
+    fn canonical_prompt_shape_allows_four_space_indented_heading_like_lines_in_section_bodies() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n    ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
