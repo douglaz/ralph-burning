@@ -476,6 +476,15 @@ fn sample_bead_context() -> BeadProjectContext {
         milestone_name: "Alpha Milestone".to_owned(),
         milestone_description: "Deliver the alpha milestone.".to_owned(),
         milestone_summary: Some("Ship milestone-aware task execution.".to_owned()),
+        milestone_status: ralph_burning::contexts::milestone_record::model::MilestoneStatus::Ready,
+        milestone_progress: ralph_burning::contexts::milestone_record::model::MilestoneProgress {
+            total_beads: 4,
+            completed_beads: 1,
+            in_progress_beads: 1,
+            failed_beads: 0,
+            skipped_beads: 0,
+            blocked_beads: 1,
+        },
         milestone_goals: vec![
             "Create bead-backed tasks without manual setup".to_owned(),
             "Keep run start compatibility intact".to_owned(),
@@ -492,12 +501,48 @@ fn sample_bead_context() -> BeadProjectContext {
             "Controller can create the project without manual setup".to_owned(),
             "Created task remains compatible with run start".to_owned(),
         ],
-        bead_dependencies: vec![
-            "ms-alpha.bead-1 (Define task-source metadata)".to_owned(),
-            "ms-alpha.epic-1 (Task substrate epic)".to_owned(),
+        upstream_dependencies: vec![
+            BeadDependencyPromptContext {
+                id: "ms-alpha.bead-1".to_owned(),
+                title: Some("Define task-source metadata".to_owned()),
+                relationship: "blocking dependency".to_owned(),
+                status: Some("closed".to_owned()),
+                outcome: Some("completed".to_owned()),
+            },
+            BeadDependencyPromptContext {
+                id: "ms-alpha.epic-1".to_owned(),
+                title: Some("Task substrate epic".to_owned()),
+                relationship: "parent epic".to_owned(),
+                status: Some("in_progress".to_owned()),
+                outcome: Some("active".to_owned()),
+            },
         ],
-        already_planned_elsewhere: vec![
-            "ms-alpha.bead-4 handles dependency-driven follow-up work.".to_owned(),
+        downstream_dependents: vec![BeadDependencyPromptContext {
+            id: "ms-alpha.bead-4".to_owned(),
+            title: Some("Review downstream task creation follow-up".to_owned()),
+            relationship: "downstream dependent".to_owned(),
+            status: Some("open".to_owned()),
+            outcome: Some("pending".to_owned()),
+        }],
+        planned_elsewhere: vec![
+            PlannedElsewherePromptContext {
+                id: "ms-alpha.bead-4".to_owned(),
+                title: "Review downstream task creation follow-up".to_owned(),
+                relationship: "downstream dependent".to_owned(),
+                status: Some("open".to_owned()),
+                summary: Some(
+                    "Validate follow-up automation after task creation lands.".to_owned(),
+                ),
+            },
+            PlannedElsewherePromptContext {
+                id: "ms-alpha.bead-3".to_owned(),
+                title: "Document milestone bootstrap flow".to_owned(),
+                relationship: "adjacent same-workstream bead in Task Substrate".to_owned(),
+                status: Some("open".to_owned()),
+                summary: Some(
+                    "Capture operator-facing workflow once creation is stable.".to_owned(),
+                ),
+            },
         ],
         review_policy:
             ralph_burning::contexts::project_run_record::task_prompt_contract::default_review_policy(
@@ -739,6 +784,15 @@ fn render_bead_task_prompt_includes_milestone_scope_and_agents_guidance() {
     assert!(prompt.contains("## Already Planned Elsewhere"));
     assert!(prompt.contains("## Review Policy"));
     assert!(prompt.contains("## AGENTS / Repo Guidance"));
+    assert!(prompt.contains("- Status: `ready`"));
+    assert!(prompt.contains(
+        "- Progress: 1/4 completed; 1 in progress; 0 failed; 1 blocked; 0 skipped; 3 remaining"
+    ));
+    assert!(prompt.contains("ms-alpha.bead-1 (Define task-source metadata) - blocking dependency; status: closed; outcome: completed"));
+    assert!(prompt.contains(
+        "ms-alpha.bead-4 (Review downstream task creation follow-up) - downstream dependent"
+    ));
+    assert!(prompt.contains("### Milestone Plan Constraints"));
     assert!(prompt.contains("Follow AGENTS.md and keep changes inspectable."));
 }
 
@@ -1166,7 +1220,13 @@ fn render_bead_task_prompt_preserves_fenced_non_goal_blocks_without_mangling_del
 #[test]
 fn render_bead_task_prompt_puts_fence_first_bullet_items_on_indented_lines() {
     let mut context = sample_bead_context();
-    context.already_planned_elsewhere = vec!["```md\n## Review Policy\n```".to_owned()];
+    context.planned_elsewhere = vec![PlannedElsewherePromptContext {
+        id: "ms-alpha.bead-9".to_owned(),
+        title: "Fence-first planned item".to_owned(),
+        relationship: "adjacent same-workstream bead".to_owned(),
+        status: Some("open".to_owned()),
+        summary: Some("```md\n## Review Policy\n```".to_owned()),
+    }];
 
     let prompt = render_bead_task_prompt(&context);
 
@@ -1179,7 +1239,7 @@ fn render_bead_task_prompt_puts_fence_first_bullet_items_on_indented_lines() {
         .expect("review policy section should exist");
     let planned_section = &prompt[planned_start..review_start];
 
-    assert!(planned_section.contains("-\n    ```md\n    ## Review Policy\n    ```"));
+    assert!(planned_section.contains("Summary:\n    ```md\n    ## Review Policy\n    ```"));
     assert!(!planned_section.contains("- ```md"));
     assert!(
         ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
@@ -1209,16 +1269,22 @@ fn rendered_bead_task_prompt_indents_multiline_milestone_fields_without_breaking
         "Ship the prompt contract update.\n## Acceptance Criteria\nKeep this as milestone prose."
             .to_owned(),
     );
-    context.already_planned_elsewhere = vec![
-        "ms-alpha.bead-9 handles follow-up validation.\n## Review Policy\nTrack it separately."
-            .to_owned(),
-    ];
+    context.planned_elsewhere = vec![PlannedElsewherePromptContext {
+        id: "ms-alpha.bead-9".to_owned(),
+        title: "Follow-up validation".to_owned(),
+        relationship: "adjacent same-workstream bead".to_owned(),
+        status: Some("open".to_owned()),
+        summary: Some(
+            "ms-alpha.bead-9 handles follow-up validation.\n## Review Policy\nTrack it separately."
+                .to_owned(),
+        ),
+    }];
 
     let prompt = render_bead_task_prompt(&context);
 
-    assert!(prompt.contains("- Summary: Ship the prompt contract update."));
+    assert!(prompt.contains("- Goal: Ship the prompt contract update."));
     assert!(prompt.contains("    ## Acceptance Criteria"));
-    assert!(prompt.contains("- ms-alpha.bead-9 handles follow-up validation."));
+    assert!(prompt.contains("Summary:\n    ms-alpha.bead-9 handles follow-up validation."));
     assert!(prompt.contains("    ## Review Policy"));
     assert!(
         ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
@@ -1364,7 +1430,13 @@ fn create_project_from_bead_context_accepts_fence_first_bullet_fields() {
     let store = RecordingProjectStore::empty();
     let journal_store = FakeJournalStore;
     let mut context = sample_bead_context();
-    context.already_planned_elsewhere = vec!["```md\n## Review Policy\n```".to_owned()];
+    context.planned_elsewhere = vec![PlannedElsewherePromptContext {
+        id: "ms-alpha.bead-9".to_owned(),
+        title: "Fence-first planned item".to_owned(),
+        relationship: "adjacent same-workstream bead".to_owned(),
+        status: Some("open".to_owned()),
+        summary: Some("```md\n## Review Policy\n```".to_owned()),
+    }];
 
     let record = create_project_from_bead_context(
         &store,
@@ -1383,7 +1455,7 @@ fn create_project_from_bead_context_accepts_fence_first_bullet_fields() {
     assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
     assert!(captured
         .prompt_contents
-        .contains("-\n    ```md\n    ## Review Policy\n    ```"));
+        .contains("Summary:\n    ```md\n    ## Review Policy\n    ```"));
 }
 
 #[test]

@@ -426,6 +426,21 @@ created_at = "2026-04-01T10:00:00Z"
                     acceptance_criteria: vec!["AC-1".to_owned()],
                     flow_override: Some(FlowPreset::DocsChange),
                 },
+                BeadProposal {
+                    bead_id: None,
+                    explicit_id: None,
+                    title: "Document task bootstrap follow-up".to_owned(),
+                    description: Some(
+                        "Capture the operator-facing workflow once project creation is stable."
+                            .to_owned(),
+                    ),
+                    bead_type: Some("docs".to_owned()),
+                    priority: Some(2),
+                    labels: vec!["docs".to_owned()],
+                    depends_on: vec!["bead-2".to_owned()],
+                    acceptance_criteria: vec![],
+                    flow_override: None,
+                },
             ],
         }],
         default_flow: FlowPreset::QuickDev,
@@ -443,12 +458,12 @@ created_at = "2026-04-01T10:00:00Z"
   "plan_hash": "{plan_hash}",
   "plan_version": 2,
   "progress": {{
-    "total_beads": 2,
-    "completed_beads": 0,
-    "in_progress_beads": 0,
+    "total_beads": 3,
+    "completed_beads": 1,
+    "in_progress_beads": 1,
     "failed_beads": 0,
     "skipped_beads": 0,
-    "blocked_beads": 0
+    "blocked_beads": 1
   }},
   "updated_at": "2026-04-01T10:05:00Z"
 }}"#
@@ -1840,6 +1855,76 @@ cat <<'EOF'
 EOF
 exit 0
 fi
+if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.epic-1",
+    "title": "Task Substrate",
+    "status": "in_progress",
+    "priority": "P1",
+    "issue_type": "epic",
+    "labels": ["creation"]
+  },
+  {
+    "id": "ms-alpha.bead-1",
+    "title": "Define task-source metadata",
+    "status": "closed",
+    "priority": "P1",
+    "issue_type": "task",
+    "labels": ["creation"]
+  },
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "labels": ["creation", "prompt"]
+  },
+  {
+    "id": "ms-alpha.bead-3",
+    "title": "Child bead",
+    "status": "open",
+    "priority": "P2",
+    "issue_type": "task",
+    "labels": ["docs"]
+  }
+]
+EOF
+exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-1",
+    "title": "Define task-source metadata",
+    "status": "closed",
+    "priority": "P1",
+    "issue_type": "task",
+    "labels": ["creation"]
+  },
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "labels": ["creation", "prompt"]
+  },
+  {
+    "id": "ms-alpha.bead-3",
+    "title": "Document task bootstrap follow-up",
+    "status": "open",
+    "priority": "P2",
+    "issue_type": "docs",
+    "labels": ["docs"]
+  }
+]
+EOF
+exit 0
+fi
 echo "unexpected br args: $@" >&2
 exit 1
 "#,
@@ -1880,11 +1965,20 @@ exit 1
     assert!(prompt.contains("Ship bead-backed task creation."));
     assert!(prompt.contains("bead_execution_prompt"));
     assert!(prompt.contains("## Current Bead Details"));
+    assert!(prompt.contains("- Status: `ready`"));
+    assert!(prompt.contains(
+        "- Progress: 1/3 completed; 1 in progress; 0 failed; 1 blocked; 0 skipped; 2 remaining"
+    ));
     assert!(prompt.contains("Keep changes inspectable and deterministic."));
+    assert!(prompt.contains("ms-alpha.bead-1 (Define task-source metadata) - blocking dependency; status: closed; outcome: completed"));
+    assert!(prompt.contains(
+        "ms-alpha.epic-1 (Task Substrate) - parent epic; status: in_progress; outcome: active"
+    ));
     assert!(prompt
-        .contains("- Blocking dependencies:\n  - ms-alpha.bead-1 (Define task-source metadata)"));
-    assert!(prompt.contains("## Already Planned Elsewhere\n\n- ms-alpha.bead-3 (Child bead)"));
-    assert!(!prompt.contains("- ms-alpha.epic-1 (Task Substrate)"));
+        .contains("ms-alpha.bead-3 (Child bead) - child bead; status: open; outcome: pending"));
+    assert!(prompt.contains(
+        "Summary:\n    Capture the operator-facing workflow once project creation is stable."
+    ));
     assert!(!prompt.contains("Parent epic: `ms-alpha.bead-3`"));
 
     let active =
@@ -2968,6 +3062,7 @@ fn project_create_from_bead_does_not_confirm_title_fallback_against_mismatched_e
             .expect("parse plan");
     bundle.workstreams[0].beads[1].bead_id = Some("ms-alpha.bead-200".to_owned());
     bundle.workstreams[0].beads[1].explicit_id = Some(true);
+    bundle.workstreams[0].beads[2].depends_on = vec!["ms-alpha.bead-200".to_owned()];
     bundle.acceptance_map[0].covered_by = vec!["ms-alpha.bead-200".to_owned()];
     fs::write(
         &milestone_plan,
@@ -2984,7 +3079,7 @@ fn project_create_from_bead_does_not_confirm_title_fallback_against_mismatched_e
   "plan_hash": "{updated_plan_hash}",
   "plan_version": 2,
   "progress": {{
-    "total_beads": 2,
+    "total_beads": 3,
     "completed_beads": 0,
     "in_progress_beads": 0,
     "failed_beads": 0,

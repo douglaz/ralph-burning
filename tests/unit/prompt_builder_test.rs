@@ -112,6 +112,15 @@ fn sample_bead_context() -> BeadProjectContext {
         milestone_name: "Alpha Milestone".to_owned(),
         milestone_description: "Deliver the alpha milestone.".to_owned(),
         milestone_summary: Some("Ship milestone-aware task execution.".to_owned()),
+        milestone_status: ralph_burning::contexts::milestone_record::model::MilestoneStatus::Ready,
+        milestone_progress: ralph_burning::contexts::milestone_record::model::MilestoneProgress {
+            total_beads: 4,
+            completed_beads: 1,
+            in_progress_beads: 1,
+            failed_beads: 0,
+            skipped_beads: 0,
+            blocked_beads: 1,
+        },
         milestone_goals: vec!["Create bead-backed tasks without manual setup".to_owned()],
         milestone_non_goals: vec!["Avoid unrelated milestone work".to_owned()],
         milestone_constraints: vec!["Reuse the current project substrate".to_owned()],
@@ -124,8 +133,33 @@ fn sample_bead_context() -> BeadProjectContext {
         bead_acceptance_criteria: vec![
             "Controller can create the project without manual setup".to_owned()
         ],
-        bead_dependencies: vec!["ms-alpha.bead-1 (Define task-source metadata)".to_owned()],
-        already_planned_elsewhere: vec!["ms-alpha.bead-4 handles follow-up automation.".to_owned()],
+        upstream_dependencies: vec![
+            ralph_burning::contexts::project_run_record::service::BeadDependencyPromptContext {
+                id: "ms-alpha.bead-1".to_owned(),
+                title: Some("Define task-source metadata".to_owned()),
+                relationship: "blocking dependency".to_owned(),
+                status: Some("closed".to_owned()),
+                outcome: Some("completed".to_owned()),
+            },
+        ],
+        downstream_dependents: vec![
+            ralph_burning::contexts::project_run_record::service::BeadDependencyPromptContext {
+                id: "ms-alpha.bead-4".to_owned(),
+                title: Some("Automate milestone follow-up".to_owned()),
+                relationship: "downstream dependent".to_owned(),
+                status: Some("open".to_owned()),
+                outcome: Some("pending".to_owned()),
+            },
+        ],
+        planned_elsewhere: vec![
+            ralph_burning::contexts::project_run_record::service::PlannedElsewherePromptContext {
+                id: "ms-alpha.bead-4".to_owned(),
+                title: "Automate milestone follow-up".to_owned(),
+                relationship: "downstream dependent".to_owned(),
+                status: Some("open".to_owned()),
+                summary: Some("Handle the next automation pass after creation works.".to_owned()),
+            },
+        ],
         review_policy: task_prompt_contract::default_review_policy(),
         parent_epic_id: Some("ms-alpha.epic-1".to_owned()),
         flow: FlowPreset::QuickDev,

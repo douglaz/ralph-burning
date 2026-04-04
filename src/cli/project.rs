@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -6,7 +7,7 @@ use clap::{ArgGroup, Args, Subcommand};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::adapters::br_models::{BeadDetail, BeadStatus, DependencyKind};
+use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary, DependencyKind};
 use crate::adapters::br_process::{BrAdapter, BrCommand, BrError};
 use crate::adapters::fs::{
     FileSystem, FsActiveProjectStore, FsAmendmentQueueStore, FsDaemonStore, FsJournalStore,
@@ -25,8 +26,8 @@ use crate::contexts::milestone_record::service::{
 };
 use crate::contexts::project_run_record::model::{ProjectDetail, ProjectStatusSummary, RunStatus};
 use crate::contexts::project_run_record::service::{
-    self, BeadProjectContext, CreateProjectFromBeadContextInput, CreateProjectInput,
-    ProjectStorePort, RunSnapshotPort,
+    self, BeadDependencyPromptContext, BeadProjectContext, CreateProjectFromBeadContextInput,
+    CreateProjectInput, PlannedElsewherePromptContext, ProjectStorePort, RunSnapshotPort,
 };
 use crate::contexts::requirements_drafting::model::{
     ProjectSeedPayload, RequirementsOutputKind, RequirementsStatus, SUPPORTED_SEED_VERSIONS,
@@ -292,6 +293,7 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
     let milestone_snapshot = snapshot_store.read_snapshot(&current_dir, &milestone_id)?;
     let milestone_bundle = load_milestone_bundle(&plan_store, &current_dir, &milestone_id)?;
     let bead = load_bead_detail(&current_dir, &args.bead_id).await?;
+    let bead_summaries = load_bead_summaries(&current_dir).await.unwrap_or_default();
     let flow_override = parse_flow_override(args.flow.as_deref())?;
     ensure_bead_belongs_to_milestone(&milestone_id, &bead)?;
     ensure_bead_creation_targets_are_actionable(&milestone_id, milestone_snapshot.status, &bead)?;
@@ -323,6 +325,8 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         milestone_name: milestone.name.clone(),
         milestone_description: milestone.description.clone(),
         milestone_summary: Some(milestone_bundle.bundle.executive_summary.clone()),
+        milestone_status: milestone_snapshot.status,
+        milestone_progress: milestone_snapshot.progress.clone(),
         milestone_goals: milestone_bundle.bundle.goals.clone(),
         milestone_non_goals: milestone_bundle.bundle.non_goals.clone(),
         milestone_constraints: milestone_bundle.bundle.constraints.clone(),
@@ -331,17 +335,15 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         bead_title: bead.title.clone(),
         bead_description: bead.description.clone(),
         bead_acceptance_criteria: bead.acceptance_criteria.clone(),
-        bead_dependencies: bead
-            .dependencies
-            .iter()
-            .filter(|dependency| dependency.kind == DependencyKind::Blocks)
-            .map(format_dependency_reference)
-            .collect(),
-        already_planned_elsewhere: bead
-            .dependents
-            .iter()
-            .map(format_dependency_reference)
-            .collect(),
+        upstream_dependencies: build_dependency_prompt_context(&bead.dependencies, &bead_summaries),
+        downstream_dependents: build_dependent_prompt_context(&bead.dependents, &bead_summaries),
+        planned_elsewhere: build_planned_elsewhere_context(
+            &milestone_bundle.bundle,
+            &milestone_id,
+            &bead,
+            &bead_plan,
+            &bead_summaries,
+        ),
         review_policy:
             crate::contexts::project_run_record::task_prompt_contract::default_review_policy(),
         parent_epic_id: infer_parent_epic_id(&bead),
@@ -735,6 +737,27 @@ async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetai
     }
 }
 
+async fn load_bead_summaries(base_dir: &Path) -> AppResult<BTreeMap<String, BeadSummary>> {
+    let summaries: Vec<BeadSummary> = BrAdapter::new()
+        .with_working_dir(base_dir.to_path_buf())
+        .exec_json(&BrCommand::list())
+        .await
+        .map_err(|error| match error {
+            BrError::BrExitError { stderr, .. } => AppError::Io(std::io::Error::other(format!(
+                "failed to load bead summaries: {stderr}"
+            ))),
+            other => AppError::Io(std::io::Error::other(format!(
+                "failed to load bead summaries: {other}"
+            ))),
+        })?;
+
+    Ok(BTreeMap::from_iter(
+        summaries
+            .into_iter()
+            .map(|summary| (summary.id.clone(), summary)),
+    ))
+}
+
 fn load_optional_prompt_override(
     base_dir: &Path,
     path: Option<&Path>,
@@ -771,6 +794,8 @@ fn infer_parent_epic_id(bead: &BeadDetail) -> Option<String> {
 struct ResolvedBeadPlan {
     flow_override: Option<FlowPreset>,
     membership_confirmed: bool,
+    matched_workstream_index: Option<usize>,
+    matched_bead_index: Option<usize>,
 }
 
 fn ensure_bead_belongs_to_milestone(
@@ -804,30 +829,32 @@ fn resolve_bead_plan(
     let mut matching_by_title = Vec::new();
     let mut authoritative_implicit_match = None;
 
-    for workstream in &bundle.workstreams {
-        for proposal in &workstream.beads {
+    for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
+        for (bead_index, proposal) in workstream.beads.iter().enumerate() {
             let implicit_bead_id = format!("{}.bead-{}", milestone_id.as_str(), next_implicit_bead);
             next_implicit_bead += 1;
 
             if proposal_matches_bead_id(proposal, milestone_id, bead) {
-                matching_by_id.push(proposal);
+                matching_by_id.push((workstream_index, bead_index, proposal));
             }
             if proposal_is_title_fallback_candidate(proposal, milestone_id, &implicit_bead_id)
                 && proposal.title == bead.title
             {
                 if bead_matches_implicit_slot(&bead.id, milestone_id.as_str(), &implicit_bead_id) {
-                    authoritative_implicit_match = Some(proposal);
+                    authoritative_implicit_match = Some((workstream_index, bead_index, proposal));
                 }
-                matching_by_title.push(proposal);
+                matching_by_title.push((workstream_index, bead_index, proposal));
             }
         }
     }
 
     match matching_by_id.as_slice() {
-        [proposal] => {
+        [(workstream_index, bead_index, proposal)] => {
             return Ok(ResolvedBeadPlan {
                 flow_override: proposal.flow_override,
                 membership_confirmed: true,
+                matched_workstream_index: Some(*workstream_index),
+                matched_bead_index: Some(*bead_index),
             });
         }
         [] => {}
@@ -842,21 +869,27 @@ fn resolve_bead_plan(
         }
     }
 
-    if let Some(proposal) = authoritative_implicit_match {
+    if let Some((workstream_index, bead_index, proposal)) = authoritative_implicit_match {
         return Ok(ResolvedBeadPlan {
             flow_override: proposal.flow_override,
             membership_confirmed: true,
+            matched_workstream_index: Some(workstream_index),
+            matched_bead_index: Some(bead_index),
         });
     }
 
     match matching_by_title.as_slice() {
-        [proposal] => Ok(ResolvedBeadPlan {
+        [(workstream_index, bead_index, proposal)] => Ok(ResolvedBeadPlan {
             flow_override: proposal.flow_override,
             membership_confirmed: false,
+            matched_workstream_index: Some(*workstream_index),
+            matched_bead_index: Some(*bead_index),
         }),
         [] => Ok(ResolvedBeadPlan {
             flow_override: None,
             membership_confirmed: false,
+            matched_workstream_index: None,
+            matched_bead_index: None,
         }),
         _ => Err(AppError::CorruptRecord {
             file: format!("milestones/{}/plan.json", milestone_id),
@@ -906,11 +939,200 @@ fn proposal_is_title_fallback_candidate(
         })
 }
 
-fn format_dependency_reference(dependency: &crate::adapters::br_models::DependencyRef) -> String {
-    match dependency.title.as_deref() {
-        Some(title) if !title.trim().is_empty() => format!("{} ({title})", dependency.id),
-        _ => dependency.id.clone(),
+fn canonical_proposal_id(
+    milestone_id: &MilestoneId,
+    proposal: &crate::contexts::milestone_record::bundle::BeadProposal,
+    implicit_index: usize,
+) -> String {
+    match proposal.bead_id.as_deref() {
+        Some(candidate) if candidate.starts_with(&format!("{}.", milestone_id.as_str())) => {
+            candidate.to_owned()
+        }
+        Some(candidate) => format!("{}.{}", milestone_id.as_str(), candidate),
+        None => format!("{}.bead-{}", milestone_id.as_str(), implicit_index),
     }
+}
+
+fn compact_planned_elsewhere_summary(value: Option<&str>) -> Option<String> {
+    value.and_then(|raw| {
+        raw.lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn bead_status_label(status: &BeadStatus) -> &'static str {
+    match status {
+        BeadStatus::Open => "open",
+        BeadStatus::InProgress => "in_progress",
+        BeadStatus::Closed => "closed",
+        BeadStatus::Deferred => "deferred",
+    }
+}
+
+fn bead_status_outcome(status: &BeadStatus) -> &'static str {
+    match status {
+        BeadStatus::Open => "pending",
+        BeadStatus::InProgress => "active",
+        BeadStatus::Closed => "completed",
+        BeadStatus::Deferred => "deferred",
+    }
+}
+
+fn relationship_label(kind: &DependencyKind, upstream: bool) -> &'static str {
+    match (kind, upstream) {
+        (DependencyKind::Blocks, true) => "blocking dependency",
+        (DependencyKind::Blocks, false) => "downstream dependent",
+        (DependencyKind::ParentChild, true) => "parent epic",
+        (DependencyKind::ParentChild, false) => "child bead",
+    }
+}
+
+fn build_dependency_prompt_context(
+    relations: &[crate::adapters::br_models::DependencyRef],
+    bead_summaries: &BTreeMap<String, BeadSummary>,
+) -> Vec<BeadDependencyPromptContext> {
+    relations
+        .iter()
+        .map(|relation| {
+            let summary = bead_summaries.get(&relation.id);
+            BeadDependencyPromptContext {
+                id: relation.id.clone(),
+                title: summary
+                    .map(|entry| entry.title.clone())
+                    .or_else(|| relation.title.clone()),
+                relationship: relationship_label(&relation.kind, true).to_owned(),
+                status: summary.map(|entry| bead_status_label(&entry.status).to_owned()),
+                outcome: summary.map(|entry| bead_status_outcome(&entry.status).to_owned()),
+            }
+        })
+        .collect()
+}
+
+fn build_dependent_prompt_context(
+    relations: &[crate::adapters::br_models::DependencyRef],
+    bead_summaries: &BTreeMap<String, BeadSummary>,
+) -> Vec<BeadDependencyPromptContext> {
+    relations
+        .iter()
+        .map(|relation| {
+            let summary = bead_summaries.get(&relation.id);
+            BeadDependencyPromptContext {
+                id: relation.id.clone(),
+                title: summary
+                    .map(|entry| entry.title.clone())
+                    .or_else(|| relation.title.clone()),
+                relationship: relationship_label(&relation.kind, false).to_owned(),
+                status: summary.map(|entry| bead_status_label(&entry.status).to_owned()),
+                outcome: summary.map(|entry| bead_status_outcome(&entry.status).to_owned()),
+            }
+        })
+        .collect()
+}
+
+fn build_planned_elsewhere_context(
+    bundle: &MilestoneBundle,
+    milestone_id: &MilestoneId,
+    bead: &BeadDetail,
+    bead_plan: &ResolvedBeadPlan,
+    bead_summaries: &BTreeMap<String, BeadSummary>,
+) -> Vec<PlannedElsewherePromptContext> {
+    let dependent_ids = BTreeSet::from_iter(bead.dependents.iter().map(|item| item.id.clone()));
+    let upstream_ids = BTreeSet::from_iter(bead.dependencies.iter().map(|item| item.id.clone()));
+    let mut items = Vec::new();
+    let mut seen_ids = BTreeSet::new();
+
+    let mut add_item = |item: PlannedElsewherePromptContext| {
+        if seen_ids.insert(item.id.clone()) {
+            items.push(item);
+        }
+    };
+
+    let mut next_implicit_bead = 1usize;
+    let mut proposal_lookup = BTreeMap::new();
+    for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
+        for (bead_index, proposal) in workstream.beads.iter().enumerate() {
+            let proposal_id = canonical_proposal_id(milestone_id, proposal, next_implicit_bead);
+            next_implicit_bead += 1;
+            proposal_lookup.insert(
+                proposal_id,
+                (
+                    workstream_index,
+                    bead_index,
+                    workstream.name.as_str(),
+                    proposal,
+                ),
+            );
+        }
+    }
+
+    for dependent in &bead.dependents {
+        let summary = bead_summaries.get(&dependent.id);
+        let plan_summary = proposal_lookup
+            .get(&dependent.id)
+            .and_then(|(_, _, _, proposal)| {
+                compact_planned_elsewhere_summary(proposal.description.as_deref())
+            });
+        add_item(PlannedElsewherePromptContext {
+            id: dependent.id.clone(),
+            title: summary
+                .map(|entry| entry.title.clone())
+                .or_else(|| dependent.title.clone())
+                .unwrap_or_else(|| dependent.id.clone()),
+            relationship: relationship_label(&dependent.kind, false).to_owned(),
+            status: summary.map(|entry| bead_status_label(&entry.status).to_owned()),
+            summary: plan_summary,
+        });
+    }
+
+    let (Some(workstream_index), Some(current_bead_index)) = (
+        bead_plan.matched_workstream_index,
+        bead_plan.matched_bead_index,
+    ) else {
+        return items;
+    };
+
+    let workstream = &bundle.workstreams[workstream_index];
+    let neighbor_range_start = current_bead_index.saturating_sub(1);
+    let neighbor_range_end = usize::min(workstream.beads.len(), current_bead_index + 2);
+
+    let mut implicit_index = 1usize;
+    for (candidate_workstream_index, candidate_workstream) in bundle.workstreams.iter().enumerate()
+    {
+        for (candidate_bead_index, proposal) in candidate_workstream.beads.iter().enumerate() {
+            let proposal_id = canonical_proposal_id(milestone_id, proposal, implicit_index);
+            implicit_index += 1;
+
+            if candidate_workstream_index != workstream_index
+                || candidate_bead_index == current_bead_index
+                || candidate_bead_index < neighbor_range_start
+                || candidate_bead_index >= neighbor_range_end
+            {
+                continue;
+            }
+
+            let relation = if dependent_ids.contains(&proposal_id) {
+                "downstream dependent already planned elsewhere"
+            } else if upstream_ids.contains(&proposal_id) {
+                "upstream dependency already planned elsewhere"
+            } else {
+                "adjacent same-workstream bead"
+            };
+            let summary = bead_summaries.get(&proposal_id);
+            add_item(PlannedElsewherePromptContext {
+                id: proposal_id.clone(),
+                title: summary
+                    .map(|entry| entry.title.clone())
+                    .unwrap_or_else(|| proposal.title.clone()),
+                relationship: format!("{relation} in {}", workstream.name),
+                status: summary.map(|entry| bead_status_label(&entry.status).to_owned()),
+                summary: compact_planned_elsewhere_summary(proposal.description.as_deref()),
+            });
+        }
+    }
+
+    items
 }
 
 fn parse_flow_override(raw: Option<&str>) -> AppResult<Option<FlowPreset>> {

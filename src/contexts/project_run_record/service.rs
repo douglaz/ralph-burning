@@ -3,6 +3,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 
 use crate::adapters::fs::FileSystem;
+use crate::contexts::milestone_record::model::{MilestoneProgress, MilestoneStatus};
 use crate::contexts::requirements_drafting::service::SeedHandoff;
 use crate::contexts::workflow_composition;
 use crate::contexts::workspace_governance::config::{
@@ -243,11 +244,31 @@ pub struct CreateProjectInput {
 
 /// Bead-backed execution context used to bootstrap a project from milestone state.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeadDependencyPromptContext {
+    pub id: String,
+    pub title: Option<String>,
+    pub relationship: String,
+    pub status: Option<String>,
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedElsewherePromptContext {
+    pub id: String,
+    pub title: String,
+    pub relationship: String,
+    pub status: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BeadProjectContext {
     pub milestone_id: String,
     pub milestone_name: String,
     pub milestone_description: String,
     pub milestone_summary: Option<String>,
+    pub milestone_status: MilestoneStatus,
+    pub milestone_progress: MilestoneProgress,
     pub milestone_goals: Vec<String>,
     pub milestone_non_goals: Vec<String>,
     pub milestone_constraints: Vec<String>,
@@ -256,8 +277,9 @@ pub struct BeadProjectContext {
     pub bead_title: String,
     pub bead_description: Option<String>,
     pub bead_acceptance_criteria: Vec<String>,
-    pub bead_dependencies: Vec<String>,
-    pub already_planned_elsewhere: Vec<String>,
+    pub upstream_dependencies: Vec<BeadDependencyPromptContext>,
+    pub downstream_dependents: Vec<BeadDependencyPromptContext>,
+    pub planned_elsewhere: Vec<PlannedElsewherePromptContext>,
     pub review_policy: Vec<String>,
     pub parent_epic_id: Option<String>,
     pub flow: FlowPreset,
@@ -819,6 +841,71 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
             .join("\n")
     }
 
+    fn format_milestone_progress(progress: &MilestoneProgress) -> String {
+        format!(
+            "{}/{} completed; {} in progress; {} failed; {} blocked; {} skipped; {} remaining",
+            progress.completed_beads,
+            progress.total_beads,
+            progress.in_progress_beads,
+            progress.failed_beads,
+            progress.blocked_beads,
+            progress.skipped_beads,
+            progress.remaining()
+        )
+    }
+
+    fn format_dependency_context(items: &[BeadDependencyPromptContext]) -> String {
+        if items.is_empty() {
+            return "None.".to_owned();
+        }
+
+        bullet_lines(
+            &items
+                .iter()
+                .map(|item| {
+                    let mut line = match item.title.as_deref() {
+                        Some(title) if !title.trim().is_empty() => {
+                            format!("{} ({title})", item.id)
+                        }
+                        _ => item.id.clone(),
+                    };
+                    line.push_str(&format!(" - {}", item.relationship));
+                    if let Some(status) = item.status.as_deref() {
+                        line.push_str(&format!("; status: {status}"));
+                    }
+                    if let Some(outcome) = item.outcome.as_deref() {
+                        line.push_str(&format!("; outcome: {outcome}"));
+                    }
+                    line
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn format_planned_elsewhere(items: &[PlannedElsewherePromptContext]) -> String {
+        if items.is_empty() {
+            return "No explicit planned-elsewhere items were supplied. Do not absorb adjacent bead work unless it is required to satisfy this bead's acceptance criteria.".to_owned();
+        }
+
+        bullet_lines(
+            &items
+                .iter()
+                .map(|item| {
+                    let mut line = format!("{} ({}) - {}", item.id, item.title, item.relationship);
+                    if let Some(status) = item.status.as_deref() {
+                        line.push_str(&format!("; status: {status}"));
+                    }
+                    if let Some(summary) = item.summary.as_deref() {
+                        line.push_str("\nSummary:");
+                        line.push('\n');
+                        line.push_str(summary);
+                    }
+                    line
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
     let (bead_must_do_scope, bead_local_non_goals, bead_local_acceptance_criteria) = context
         .bead_description
         .as_deref()
@@ -829,9 +916,21 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         let mut lines = vec![
             render_bullet_item("- Milestone ID: ", &format!("`{}`", context.milestone_id)),
             render_bullet_item("- Milestone Name: ", &context.milestone_name),
+            render_bullet_item(
+                "- Status: ",
+                &format!("`{}`", context.milestone_status.as_str()),
+            ),
+            render_bullet_item(
+                "- Total beads: ",
+                &context.milestone_progress.total_beads.to_string(),
+            ),
+            render_bullet_item(
+                "- Progress: ",
+                &format_milestone_progress(&context.milestone_progress),
+            ),
         ];
         if let Some(summary) = &context.milestone_summary {
-            lines.push(render_bullet_item("- Summary: ", summary));
+            lines.push(render_bullet_item("- Goal: ", summary));
         }
         lines.push(render_bullet_item(
             "- Description: ",
@@ -888,17 +987,17 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         } else {
             lines.push("- Plan version: None.".to_owned());
         }
-        if context.bead_dependencies.is_empty() {
-            lines.push("- Blocking dependencies: None.".to_owned());
-        } else {
-            lines.push("- Blocking dependencies:".to_owned());
-            lines.extend(
-                context
-                    .bead_dependencies
-                    .iter()
-                    .map(|dependency| render_bullet_item("  - ", dependency)),
-            );
-        }
+        lines.push(String::new());
+        lines.push("### Dependency Context".to_owned());
+        lines.push(String::new());
+        lines.push("- Upstream dependencies:".to_owned());
+        lines.push(indent_section_body(&format_dependency_context(
+            &context.upstream_dependencies,
+        )));
+        lines.push("- Downstream dependents:".to_owned());
+        lines.push(indent_section_body(&format_dependency_context(
+            &context.downstream_dependents,
+        )));
         lines.join("\n")
     };
 
@@ -918,14 +1017,21 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         &merged_acceptance_criteria,
         "No explicit acceptance criteria were supplied.",
     );
-    let planned_elsewhere = bullet_lines_or_default(
-        &context.already_planned_elsewhere,
-        "No explicit planned-elsewhere items were supplied. Do not absorb adjacent bead work unless it is required to satisfy this bead's acceptance criteria.",
-    );
-    let review_policy = bullet_lines_or_default(
-        &context.review_policy,
-        "Use the active bead scope as the review boundary.",
-    );
+    let planned_elsewhere = format_planned_elsewhere(&context.planned_elsewhere);
+    let review_policy = {
+        let review_policy = bullet_lines_or_default(
+            &context.review_policy,
+            "Use the active bead scope as the review boundary.",
+        );
+        if context.milestone_constraints.is_empty() {
+            review_policy
+        } else {
+            format!(
+                "{review_policy}\n\n### Milestone Plan Constraints\n\n{}",
+                bullet_lines(&context.milestone_constraints)
+            )
+        }
+    };
     let repo_guidance = match &context.agents_guidance {
         Some(guidance) => format!(
             "Follow the repository AGENTS.md instructions for this repo.\n\n{guidance}"
