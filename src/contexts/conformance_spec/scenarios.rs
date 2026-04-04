@@ -637,7 +637,7 @@ fn write_run_query_history_fixture(ws: &TempWorkspace, project_id: &str) -> Resu
 }
 
 fn set_workspace_stream_output(ws: &TempWorkspace, enabled: bool) -> Result<(), String> {
-    let workspace_toml = ws.path().join(".ralph-burning/workspace.toml");
+    let workspace_toml = workspace_config_path(ws.path());
     let mut workspace: crate::shared::domain::WorkspaceConfig = toml::from_str(
         &std::fs::read_to_string(&workspace_toml)
             .map_err(|e| format!("read workspace.toml: {e}"))?,
@@ -871,9 +871,7 @@ fn read_rollback_points(
     ws: &TempWorkspace,
     project_id: &str,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let dir = ws
-        .path()
-        .join(format!(".ralph-burning/projects/{project_id}/rollback"));
+    let dir = project_root(ws.path(), project_id).join("rollback");
     let mut points = Vec::new();
     for entry in std::fs::read_dir(&dir).map_err(|e| format!("read rollback dir: {e}"))? {
         let path = entry
@@ -974,7 +972,7 @@ fn register_workspace_init(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         let out = run_cli(&["init"], ws.path())?;
         assert_success(&out)?;
-        if !ws.path().join(".ralph-burning/workspace.toml").is_file() {
+        if !workspace_config_path(ws.path()).is_file() {
             return Err("workspace.toml not created".into());
         }
         Ok(())
@@ -1041,7 +1039,7 @@ fn register_workspace_config(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         let out = run_cli(&["config", "set", "default_flow", "quick_dev"], ws.path())?;
         assert_success(&out)?;
-        let toml = std::fs::read_to_string(ws.path().join(".ralph-burning/workspace.toml"))
+        let toml = std::fs::read_to_string(workspace_config_path(ws.path()))
             .map_err(|e| e.to_string())?;
         assert_contains(&toml, "quick_dev", "workspace.toml")?;
         Ok(())
@@ -1096,7 +1094,7 @@ fn register_workspace_config(m: &mut HashMap<String, ScenarioExecutor>) {
                 String::from_utf8_lossy(&out.stderr)
             ));
         }
-        let toml = std::fs::read_to_string(ws.path().join(".ralph-burning/workspace.toml"))
+        let toml = std::fs::read_to_string(workspace_config_path(ws.path()))
             .map_err(|e| e.to_string())?;
         assert_contains(&toml, "claude", "workspace.toml")?;
         Ok(())
@@ -1152,7 +1150,7 @@ fn register_backend_policy(m: &mut HashMap<String, ScenarioExecutor>) {
             let mut workspace = crate::shared::domain::WorkspaceConfig::new(created_at);
             workspace.settings.default_backend = Some("claude".to_owned());
             std::fs::write(
-                ws.path().join(".ralph-burning/workspace.toml"),
+                workspace_config_path(ws.path()),
                 toml::to_string_pretty(&workspace).unwrap(),
             )
             .map_err(|e| format!("write workspace config: {e}"))?;
@@ -1355,7 +1353,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
         )?;
         assert_success(&out)?;
-        let proj_dir = ws.path().join(".ralph-burning/projects/test-proj");
+        let proj_dir = conformance_project_root(&ws, "test-proj");
         if !proj_dir.join("project.toml").is_file() {
             return Err("project.toml not created".into());
         }
@@ -1416,8 +1414,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         create_project_fixture(ws.path(), "fixed-flow", "standard");
         // Verify the project.toml has flow = standard
         let toml = std::fs::read_to_string(
-            ws.path()
-                .join(".ralph-burning/projects/fixed-flow/project.toml"),
+            conformance_project_root(&ws, "fixed-flow").join("project.toml"),
         )
         .map_err(|e| e.to_string())?;
         assert_contains(&toml, "flow = \"standard\"", "project.toml")?;
@@ -1464,7 +1461,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         create_project_fixture(ws.path(), "del-proj", "standard");
         let out = run_cli(&["project", "delete", "del-proj"], ws.path())?;
         assert_success(&out)?;
-        if ws.path().join(".ralph-burning/projects/del-proj").exists() {
+        if project_root(ws.path(), "del-proj").exists() {
             return Err("project directory should be removed".into());
         }
         Ok(())
@@ -1494,8 +1491,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         // Set up an active run with stage_cursor (canonical shape)
         let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running"}"#;
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/running-proj/run.json"),
+            conformance_project_root(&ws, "running-proj").join("run.json"),
             run_json,
         )
         .map_err(|e| e.to_string())?;
@@ -1526,7 +1522,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         )?;
         assert_success(&out)?;
         // If successful, all canonical files should exist
-        let dir = ws.path().join(".ralph-burning/projects/atomic-proj");
+        let dir = conformance_project_root(&ws, "atomic-proj");
         for f in &[
             "project.toml",
             "run.json",
@@ -1545,7 +1541,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         // Corrupt workspace version
-        let config_path = ws.path().join(".ralph-burning/workspace.toml");
+        let config_path = workspace_config_path(ws.path());
         let config = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
         let updated = config.replace("version = 1", "version = 99");
         std::fs::write(&config_path, updated).map_err(|e| e.to_string())?;
@@ -1630,7 +1626,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli(&["project", "delete", "txn-del"], ws.path())?;
         assert_success(&out)?;
         // After successful delete, the project directory should be gone
-        if ws.path().join(".ralph-burning/projects/txn-del").exists() {
+        if project_root(ws.path(), "txn-del").exists() {
             return Err("project directory should be removed after delete".into());
         }
         Ok(())
@@ -1641,8 +1637,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "schema-proj", "standard");
         let run_json = std::fs::read_to_string(
-            ws.path()
-                .join(".ralph-burning/projects/schema-proj/run.json"),
+            conformance_project_root(&ws, "schema-proj").join("run.json"),
         )
         .map_err(|e| e.to_string())?;
         let parsed: serde_json::Value =
@@ -1665,8 +1660,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "corrupt-show", "standard");
         std::fs::remove_file(
-            ws.path()
-                .join(".ralph-burning/projects/corrupt-show/project.toml"),
+            conformance_project_root(&ws, "corrupt-show").join("project.toml"),
         )
         .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "show", "corrupt-show"], ws.path())?;
@@ -1679,8 +1673,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "corrupt-list", "standard");
         std::fs::remove_file(
-            ws.path()
-                .join(".ralph-burning/projects/corrupt-list/project.toml"),
+            conformance_project_root(&ws, "corrupt-list").join("project.toml"),
         )
         .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "list"], ws.path())?;
@@ -1693,8 +1686,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "corrupt-del", "standard");
         std::fs::remove_file(
-            ws.path()
-                .join(".ralph-burning/projects/corrupt-del/project.toml"),
+            conformance_project_root(&ws, "corrupt-del").join("project.toml"),
         )
         .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "delete", "corrupt-del"], ws.path())?;
@@ -1724,8 +1716,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         )?;
         assert_success(&out)?;
         let toml = std::fs::read_to_string(
-            ws.path()
-                .join(".ralph-burning/projects/ref-proj/project.toml"),
+            conformance_project_root(&ws, "ref-proj").join("project.toml"),
         )
         .map_err(|e| e.to_string())?;
         assert_contains(&toml, "prompt_reference", "project.toml")?;
@@ -1748,8 +1739,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         create_project_fixture(ws.path(), "bad-schema", "standard");
         // Write invalid project.toml
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/bad-schema/project.toml"),
+            conformance_project_root(&ws, "bad-schema").join("project.toml"),
             "this is not valid project toml",
         )
         .map_err(|e| e.to_string())?;
@@ -1767,7 +1757,7 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         create_project_fixture(ws.path(), "ptr-survive", "standard");
         select_project(ws.path(), "ptr-survive");
         // Verify pointer is set
-        let ptr = std::fs::read_to_string(ws.path().join(".ralph-burning/active-project"))
+        let ptr = std::fs::read_to_string(active_project_path(ws.path()))
             .map_err(|e| e.to_string())?;
         assert_contains(&ptr, "ptr-survive", "active-project pointer")?;
         Ok(())
@@ -2054,11 +2044,8 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "gamma", "standard")?;
         let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running"}"#;
-        std::fs::write(
-            ws.path().join(".ralph-burning/projects/gamma/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "gamma").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "not_started", "stderr")?;
@@ -2069,11 +2056,8 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "delta", "standard")?;
         let run_json = r#"{"active_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#;
-        std::fs::write(
-            ws.path().join(".ralph-burning/projects/delta/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "delta").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "not_started", "stderr")?;
@@ -2083,7 +2067,7 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-START-005", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let config_path = ws.path().join(".ralph-burning/workspace.toml");
+        let config_path = workspace_config_path(ws.path());
         let config = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
         let updated = config.replace("version = 1", "version = 99");
         std::fs::write(&config_path, updated).map_err(|e| e.to_string())?;
@@ -2189,9 +2173,8 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "runtime-logs", "standard")?;
         // Runtime logs directory exists but is separate from durable state
-        if !ws
-            .path()
-            .join(".ralph-burning/projects/runtime-logs/runtime/logs")
+        if !project_root(ws.path(), "runtime-logs")
+            .join("runtime/logs")
             .is_dir()
         {
             return Err("runtime/logs directory should exist".into());
@@ -2202,11 +2185,8 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-START-014", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "seq-check", "standard")?;
-        let journal = std::fs::read_to_string(
-            ws.path()
-                .join(".ralph-burning/projects/seq-check/journal.ndjson"),
-        )
-        .map_err(|e| e.to_string())?;
+        let journal = std::fs::read_to_string(project_root(ws.path(), "seq-check").join("journal.ndjson"))
+            .map_err(|e| e.to_string())?;
         let first_event: serde_json::Value =
             serde_json::from_str(journal.lines().next().unwrap_or("{}"))
                 .map_err(|e| e.to_string())?;
@@ -2346,9 +2326,7 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "mid-fail", "standard")?;
         // Verify no partial durable history in a fresh project
-        let history_dir = ws
-            .path()
-            .join(".ralph-burning/projects/mid-fail/history/payloads");
+        let history_dir = project_root(ws.path(), "mid-fail").join("history/payloads");
         let entries = std::fs::read_dir(&history_dir).map_err(|e| e.to_string())?;
         if entries.count() > 0 {
             return Err("fresh project should have no payload history".into());
@@ -2570,11 +2548,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-active", "standard")?;
         let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running"}"#;
-        std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-active/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "rq-active").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "running", "stdout")?;
@@ -2611,8 +2586,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "rq-tail-logs", "standard")?;
         // Create a runtime log
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-tail-logs/runtime/logs/latest.log"),
+            project_root(ws.path(), "rq-tail-logs").join("runtime/logs/latest.log"),
             "debug: test log line\n",
         )
         .map_err(|e| e.to_string())?;
@@ -2624,12 +2598,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-007", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-corrupt", "standard")?;
-        std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-corrupt/run.json"),
-            "not json",
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "rq-corrupt").join("run.json"), "not json")
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2639,8 +2609,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-journal-corrupt", "standard")?;
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-journal-corrupt/journal.ndjson"),
+            project_root(ws.path(), "rq-journal-corrupt").join("journal.ndjson"),
             "not json\n",
         )
         .map_err(|e| e.to_string())?;
@@ -2669,7 +2638,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-011", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-no-run", "standard")?;
-        std::fs::remove_file(ws.path().join(".ralph-burning/projects/rq-no-run/run.json"))
+        std::fs::remove_file(project_root(ws.path(), "rq-no-run").join("run.json"))
             .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_failure(&out)?;
@@ -2679,11 +2648,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-012", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-no-journal", "standard")?;
-        std::fs::remove_file(
-            ws.path()
-                .join(".ralph-burning/projects/rq-no-journal/journal.ndjson"),
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::remove_file(project_root(ws.path(), "rq-no-journal").join("journal.ndjson"))
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "history"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2709,12 +2675,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-completed", "standard")?;
         let run_json = r#"{"active_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#;
-        std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-completed/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "rq-completed").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "completed", "stdout")?;
@@ -2725,11 +2687,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-failed", "standard")?;
         let run_json = r#"{"active_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#;
-        std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-failed/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "rq-failed").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "failed", "stdout")?;
@@ -2741,12 +2700,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "rq-inconsist", "standard")?;
         // Write semantically inconsistent run.json (active_run but status is completed)
         let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#;
-        std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-inconsist/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "rq-inconsist").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         // Should fail fast on semantic inconsistency
         assert_failure(&out)?;
@@ -2758,12 +2713,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-del-paused", "standard")?;
         let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running"}"#;
-        std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-del-paused/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "rq-del-paused").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "delete", "rq-del-paused"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2773,8 +2724,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-corrupt-toml", "standard")?;
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-corrupt-toml/project.toml"),
+            project_root(ws.path(), "rq-corrupt-toml").join("project.toml"),
             "not valid toml {{{",
         )
         .map_err(|e| e.to_string())?;
@@ -2787,8 +2737,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-corrupt-hist", "standard")?;
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-corrupt-hist/project.toml"),
+            project_root(ws.path(), "rq-corrupt-hist").join("project.toml"),
             "not valid toml {{{",
         )
         .map_err(|e| e.to_string())?;
@@ -2801,8 +2750,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-corrupt-tail", "standard")?;
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-corrupt-tail/project.toml"),
+            project_root(ws.path(), "rq-corrupt-tail").join("project.toml"),
             "not valid toml {{{",
         )
         .map_err(|e| e.to_string())?;
@@ -2815,8 +2763,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-show-corrupt", "standard")?;
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-show-corrupt/project.toml"),
+            project_root(ws.path(), "rq-show-corrupt").join("project.toml"),
             "not valid toml {{{",
         )
         .map_err(|e| e.to_string())?;
@@ -2828,11 +2775,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-023", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-missing-toml", "standard")?;
-        std::fs::remove_file(
-            ws.path()
-                .join(".ralph-burning/projects/rq-missing-toml/project.toml"),
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::remove_file(project_root(ws.path(), "rq-missing-toml").join("project.toml"))
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2841,12 +2785,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-024", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-empty-j-show", "standard")?;
-        std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-empty-j-show/journal.ndjson"),
-            "",
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "rq-empty-j-show").join("journal.ndjson"), "")
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "show", "rq-empty-j-show"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2855,12 +2795,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-025", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-empty-j-hist", "standard")?;
-        std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-empty-j-hist/journal.ndjson"),
-            "",
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "rq-empty-j-hist").join("journal.ndjson"), "")
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "history"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2869,12 +2805,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-026", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-empty-j-tail", "standard")?;
-        std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rq-empty-j-tail/journal.ndjson"),
-            "",
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "rq-empty-j-tail").join("journal.ndjson"), "")
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "tail"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2884,9 +2816,10 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-bad-first", "standard")?;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-bad-first/journal.ndjson"),
+            project_root(ws.path(), "rq-bad-first").join("journal.ndjson"),
             r#"{"sequence":1,"timestamp":"2026-03-11T19:00:00Z","event_type":"run_started","details":{"run_id":"r1"}}"#,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "show", "rq-bad-first"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2895,9 +2828,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-028", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-tail-newest", "standard")?;
-        let log_dir = ws
-            .path()
-            .join(".ralph-burning/projects/rq-tail-newest/runtime/logs");
+        let log_dir = project_root(ws.path(), "rq-tail-newest").join("runtime/logs");
         std::fs::write(log_dir.join("old.log"), "old log\n").map_err(|e| e.to_string())?;
         std::fs::write(log_dir.join("newest.log"), "newest log\n").map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "tail", "--logs"], ws.path())?;
@@ -3741,9 +3672,7 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "cr-guard", "standard")?;
 
         // Pre-plant a durable amendment file on disk
-        let amend_dir = ws
-            .path()
-            .join(".ralph-burning/projects/cr-guard/amendments");
+        let amend_dir = project_root(ws.path(), "cr-guard").join("amendments");
         std::fs::write(
             amend_dir.join("orphaned-amendment.json"),
             r#"{"amendment_id":"orphan-1","source_stage":"completion_panel","source_cycle":1,"source_completion_round":1,"body":"Orphan: Stale amendment","created_at":"2026-03-11T20:00:00Z","batch_sequence":0}"#,
@@ -3783,17 +3712,11 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         let run_json = format!(
             r#"{{"active_run":null,"interrupted_run":{{"run_id":"run-snap-1","stage_cursor":{{"stage":"completion_panel","cycle":1,"attempt":1,"completion_round":1}},"started_at":"2026-03-11T19:00:00Z","prompt_hash_at_cycle_start":"{prompt_hash}","prompt_hash_at_stage_start":"{prompt_hash}","qa_iterations_current_cycle":0,"review_iterations_current_cycle":0,"final_review_restart_count":0}},"status":"failed","cycle_history":[],"completion_rounds":1,"rollback_point_meta":{{"last_rollback_id":null,"rollback_count":0}},"amendment_queue":{{"pending":[{{"amendment_id":"snap-1","source_stage":"completion_panel","source_cycle":1,"source_completion_round":1,"body":"Snap amend: in snapshot only","created_at":"2026-03-11T20:00:00Z","batch_sequence":0}}],"processed_count":0}},"status_summary":"failed"}}"#
         );
-        std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/cr-snap-guard/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "cr-snap-guard").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
 
         // Append run_started and run_failed events so resume can find the run_started event
-        let journal_path = ws
-            .path()
-            .join(".ralph-burning/projects/cr-snap-guard/journal.ndjson");
+        let journal_path = project_root(ws.path(), "cr-snap-guard").join("journal.ndjson");
         let mut journal = std::fs::read_to_string(&journal_path).map_err(|e| e.to_string())?;
         journal.push('\n');
         journal.push_str(r#"{"sequence":2,"timestamp":"2026-03-11T19:01:00Z","event_type":"run_started","details":{"run_id":"run-snap-1","first_stage":"planning"}}"#);
@@ -3802,9 +3725,7 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(&journal_path, journal).map_err(|e| e.to_string())?;
 
         // Verify no amendment files exist on disk
-        let amend_dir = ws
-            .path()
-            .join(".ralph-burning/projects/cr-snap-guard/amendments");
+        let amend_dir = project_root(ws.path(), "cr-snap-guard").join("amendments");
         let disk_files: Vec<_> = std::fs::read_dir(&amend_dir)
             .map_err(|e| e.to_string())?
             .filter_map(|e| e.ok())
@@ -3869,17 +3790,11 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         let run_json = format!(
             r#"{{"active_run":null,"interrupted_run":{{"run_id":"run-resume-1","stage_cursor":{{"stage":"completion_panel","cycle":1,"attempt":1,"completion_round":2}},"started_at":"2026-03-11T19:00:00Z","prompt_hash_at_cycle_start":"{prompt_hash}","prompt_hash_at_stage_start":"{prompt_hash}","qa_iterations_current_cycle":0,"review_iterations_current_cycle":0,"final_review_restart_count":0}},"status":"failed","cycle_history":[],"completion_rounds":2,"rollback_point_meta":{{"last_rollback_id":null,"rollback_count":0}},"amendment_queue":{{"pending":[],"processed_count":0}},"status_summary":"failed"}}"#
         );
-        std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/cr-resume-amend/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "cr-resume-amend").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
 
         // Append run_started and run_failed events so resume can find the run_started event
-        let journal_path = ws
-            .path()
-            .join(".ralph-burning/projects/cr-resume-amend/journal.ndjson");
+        let journal_path = project_root(ws.path(), "cr-resume-amend").join("journal.ndjson");
         let mut journal = std::fs::read_to_string(&journal_path).map_err(|e| e.to_string())?;
         journal.push('\n');
         journal.push_str(r#"{"sequence":2,"timestamp":"2026-03-11T19:01:00Z","event_type":"run_started","details":{"run_id":"run-resume-1","first_stage":"planning"}}"#);
@@ -3888,9 +3803,7 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(&journal_path, journal).map_err(|e| e.to_string())?;
 
         // Plant amendment files on disk for reconciliation
-        let amend_dir = ws
-            .path()
-            .join(".ralph-burning/projects/cr-resume-amend/amendments");
+        let amend_dir = project_root(ws.path(), "cr-resume-amend").join("amendments");
         std::fs::write(
             amend_dir.join("resume-amend-1.json"),
             r#"{"amendment_id":"resume-1","source_stage":"completion_panel","source_cycle":1,"source_completion_round":1,"body":"Resume fix: Fix from prior round","created_at":"2026-03-11T20:00:00Z","batch_sequence":0}"#,
@@ -4076,9 +3989,7 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "cr-resumable", "standard")?;
 
         // Pre-plant orphaned amendment on disk so the guard fires
-        let amend_dir = ws
-            .path()
-            .join(".ralph-burning/projects/cr-resumable/amendments");
+        let amend_dir = project_root(ws.path(), "cr-resumable").join("amendments");
         std::fs::write(
             amend_dir.join("guard-amend.json"),
             r#"{"amendment_id":"guard-1","source_stage":"completion_panel","source_cycle":1,"source_completion_round":1,"body":"Guard: Blocks completion","created_at":"2026-03-11T20:00:00Z","batch_sequence":0}"#,
@@ -4750,11 +4661,8 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // completed → resume should fail
         let completed_json = r#"{"active_run":null,"status":"completed","cycle_history":[],"completion_rounds":1,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#;
-        std::fs::write(
-            ws.path().join(".ralph-burning/projects/golf/run.json"),
-            completed_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "golf").join("run.json"), completed_json)
+            .map_err(|e| e.to_string())?;
         let out2 = run_cli(&["run", "resume"], ws.path())?;
         assert_failure(&out2)?;
         Ok(())
@@ -4765,11 +4673,8 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "hotel", "standard")?;
         let run_json = r#"{"active_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#;
-        std::fs::write(
-            ws.path().join(".ralph-burning/projects/hotel/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "hotel").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "resume", "stderr")?;
@@ -4832,19 +4737,16 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "india-lock", "standard")?;
 
         // Snapshot run.json and journal before the attempt
-        let run_before = std::fs::read_to_string(
-            ws.path()
-                .join(".ralph-burning/projects/india-lock/run.json"),
-        )
-        .map_err(|e| format!("read run.json before: {e}"))?;
+        let run_before =
+            std::fs::read_to_string(project_root(ws.path(), "india-lock").join("run.json"))
+                .map_err(|e| format!("read run.json before: {e}"))?;
         let journal_before = std::fs::read_to_string(
-            ws.path()
-                .join(".ralph-burning/projects/india-lock/journal.ndjson"),
+            project_root(ws.path(), "india-lock").join("journal.ndjson"),
         )
         .map_err(|e| format!("read journal before: {e}"))?;
 
         // Pre-create the writer lock
-        let lock_dir = ws.path().join(".ralph-burning/daemon/leases");
+        let lock_dir = daemon_root(ws.path()).join("leases");
         std::fs::create_dir_all(&lock_dir).map_err(|e| format!("create lock dir: {e}"))?;
         std::fs::write(lock_dir.join("writer-india-lock.lock"), "held-by-test")
             .map_err(|e| format!("write lock: {e}"))?;
@@ -4853,14 +4755,11 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_contains(&out.stderr, "writer lock", "stderr")?;
 
         // Verify no run-state mutation occurred
-        let run_after = std::fs::read_to_string(
-            ws.path()
-                .join(".ralph-burning/projects/india-lock/run.json"),
-        )
-        .map_err(|e| format!("read run.json after: {e}"))?;
+        let run_after =
+            std::fs::read_to_string(project_root(ws.path(), "india-lock").join("run.json"))
+                .map_err(|e| format!("read run.json after: {e}"))?;
         let journal_after = std::fs::read_to_string(
-            ws.path()
-                .join(".ralph-burning/projects/india-lock/journal.ndjson"),
+            project_root(ws.path(), "india-lock").join("journal.ndjson"),
         )
         .map_err(|e| format!("read journal after: {e}"))?;
 
@@ -5079,14 +4978,10 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "ns-docs-amend", "docs_change")?;
 
-        let marker = ws
-            .path()
-            .join(".ralph-burning/projects/ns-docs-amend/runtime/temp/docs_marker");
+        let marker = project_root(ws.path(), "ns-docs-amend").join("runtime/temp/docs_marker");
         let marker_str = marker.display().to_string();
         let cmd = format!("test -f {marker_str} || (touch {marker_str} && exit 1)");
-        let config_path = ws
-            .path()
-            .join(".ralph-burning/projects/ns-docs-amend/config.toml");
+        let config_path = project_root(ws.path(), "ns-docs-amend").join("config.toml");
         std::fs::write(
             &config_path,
             format!("[validation]\ndocs_commands = [\"{cmd}\"]\n"),
@@ -5118,14 +5013,10 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "ns-ci-amend", "ci_improvement")?;
 
-        let marker = ws
-            .path()
-            .join(".ralph-burning/projects/ns-ci-amend/runtime/temp/ci_marker");
+        let marker = project_root(ws.path(), "ns-ci-amend").join("runtime/temp/ci_marker");
         let marker_str = marker.display().to_string();
         let cmd = format!("test -f {marker_str} || (touch {marker_str} && exit 1)");
-        let config_path = ws
-            .path()
-            .join(".ralph-burning/projects/ns-ci-amend/config.toml");
+        let config_path = project_root(ws.path(), "ns-ci-amend").join("config.toml");
         std::fs::write(
             &config_path,
             format!("[validation]\nci_commands = [\"{cmd}\"]\n"),
@@ -5361,7 +5252,7 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             snap["active_run"] = serde_json::json!(null);
             snap["status_summary"] = serde_json::json!("failed for rollback test");
             std::fs::write(
-                ws.path().join(".ralph-burning/projects/rb-soft/run.json"),
+                project_root(ws.path(), "rb-soft").join("run.json"),
                 serde_json::to_string_pretty(&snap).unwrap(),
             )
             .map_err(|e| e.to_string())?;
@@ -5450,7 +5341,7 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         snap["active_run"] = serde_json::json!(null);
         snap["status_summary"] = serde_json::json!("paused for rollback test");
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rb-hard/run.json"),
+            project_root(ws.path(), "rb-hard").join("run.json"),
             serde_json::to_string_pretty(&snap).unwrap(),
         )
         .map_err(|e| e.to_string())?;
@@ -5552,12 +5443,8 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rb-bad-stage", "standard")?;
         let run_json = r#"{"active_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#;
-        std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rb-bad-stage/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "rb-bad-stage").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
         // ci_plan is not part of the standard flow
         let out = run_cli(&["run", "rollback", "--to", "ci_plan"], ws.path())?;
         assert_failure(&out)?;
@@ -5570,12 +5457,8 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rb-no-point", "standard")?;
         let run_json = r#"{"active_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#;
-        std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rb-no-point/run.json"),
-            run_json,
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(project_root(ws.path(), "rb-no-point").join("run.json"), run_json)
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "rollback", "--to", "review"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "rollback point", "stderr")?;
@@ -5627,7 +5510,7 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         snap["status"] = serde_json::json!("failed");
         snap["active_run"] = serde_json::json!(null);
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rb-multi/run.json"),
+            project_root(ws.path(), "rb-multi").join("run.json"),
             serde_json::to_string_pretty(&snap).unwrap(),
         )
         .map_err(|e| e.to_string())?;
@@ -5684,7 +5567,7 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         let mut snap1_mut = snap1.clone();
         snap1_mut["status"] = serde_json::json!("failed");
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rb-multi/run.json"),
+            project_root(ws.path(), "rb-multi").join("run.json"),
             serde_json::to_string_pretty(&snap1_mut).unwrap(),
         )
         .map_err(|e| e.to_string())?;
@@ -5802,7 +5685,7 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         snap["status"] = serde_json::json!("failed");
         snap["active_run"] = serde_json::json!(null);
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rb-resume/run.json"),
+            project_root(ws.path(), "rb-resume").join("run.json"),
             serde_json::to_string_pretty(&snap).unwrap(),
         )
         .map_err(|e| e.to_string())?;
@@ -5962,8 +5845,35 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("rollback_created must record a real git_sha for this test".into());
         }
 
-        // Now destroy the git repo so that `git reset --hard <sha>` will fail
-        std::fs::remove_dir_all(ws.path().join(".git")).map_err(|e| format!("remove .git: {e}"))?;
+        let git_path_output = std::process::Command::new("sh")
+            .args(["-lc", "command -v git"])
+            .output()
+            .map_err(|e| format!("resolve git path: {e}"))?;
+        if !git_path_output.status.success() {
+            return Err("failed to resolve git path".into());
+        }
+        let git_path = String::from_utf8_lossy(&git_path_output.stdout)
+            .trim()
+            .to_owned();
+        if git_path.is_empty() {
+            return Err("resolved git path was empty".into());
+        }
+        let fake_bin = ws.path().join("fake-bin");
+        std::fs::create_dir_all(&fake_bin).map_err(|e| format!("create fake-bin: {e}"))?;
+        let fake_git = fake_bin.join("git");
+        write_script_with_mode(
+            &fake_git,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"reset\" ] && [ \"$2\" = \"--hard\" ]; then\n  echo 'simulated git reset failure' >&2\n  exit 1\nfi\nexec \"{git_path}\" \"$@\"\n"
+            ),
+            0o755,
+        )?;
+        let inherited_path = std::env::var("PATH").unwrap_or_default();
+        let fake_path = if inherited_path.is_empty() {
+            fake_bin.display().to_string()
+        } else {
+            format!("{}:{inherited_path}", fake_bin.display())
+        };
 
         // Set to failed
         let snap = read_run_snapshot(&ws, "rb-hard-fail")?;
@@ -5971,17 +5881,17 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         snap["status"] = serde_json::json!("failed");
         snap["active_run"] = serde_json::json!(null);
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/rb-hard-fail/run.json"),
+            project_root(ws.path(), "rb-hard-fail").join("run.json"),
             serde_json::to_string_pretty(&snap).unwrap(),
         )
         .map_err(|e| e.to_string())?;
 
         // Hard rollback to implementation — the rollback point has a valid SHA but
         // git reset will fail because the .git directory no longer exists.
-        let rb = run_cli(
+        let rb = run_cli_with_env(
             &["run", "rollback", "--to", "implementation", "--hard"],
             ws.path(),
+            &[("PATH", &fake_path)],
         )?;
         // The command should fail with a git-reset error
         assert_failure(&rb)?;
@@ -6088,8 +5998,7 @@ fn register_workflow_checkpoint(m: &mut HashMap<String, ScenarioExecutor>) {
         snapshot["active_run"] = serde_json::json!(null);
         snapshot["status_summary"] = serde_json::json!("paused for checkpoint rollback");
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/wf-checkpoint-hard/run.json"),
+            project_root(ws.path(), "wf-checkpoint-hard").join("run.json"),
             serde_json::to_string_pretty(&snapshot).unwrap(),
         )
         .map_err(|e| format!("write paused run.json: {e}"))?;
@@ -8271,8 +8180,7 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_contains(&out.stdout, "Project: stub-project (active)", "stdout")?;
 
         let project_toml = std::fs::read_to_string(
-            ws.path()
-                .join(".ralph-burning/projects/stub-project/project.toml"),
+            project_root(ws.path(), "stub-project").join("project.toml"),
         )
         .map_err(|e| format!("read project.toml: {e}"))?;
         assert_contains(&project_toml, "id = \"stub-project\"", "project.toml")?;
@@ -8285,8 +8193,7 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
         )?;
 
         let prompt = std::fs::read_to_string(
-            ws.path()
-                .join(".ralph-burning/projects/stub-project/prompt.md"),
+            project_root(ws.path(), "stub-project").join("prompt.md"),
         )
         .map_err(|e| format!("read prompt.md: {e}"))?;
         if prompt != "Stub prompt body for the project." {
@@ -10182,9 +10089,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Verify the project was actually created on disk
-        let project_path = ws
-            .path()
-            .join(format!(".ralph-burning/projects/{}", task.project_id));
+        let project_path = project_root(ws.path(), &task.project_id);
         if !project_path.join("project.toml").is_file() {
             return Err(format!(
                 "project directory missing at {}",
@@ -10718,9 +10623,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         if task2.project_id.is_empty() {
             return Err("project_id should be populated after resume".to_owned());
         }
-        let project_path = ws
-            .path()
-            .join(format!(".ralph-burning/projects/{}", task2.project_id));
+        let project_path = project_root(ws.path(), &task2.project_id);
         if !project_path.join("project.toml").is_file() {
             return Err(format!(
                 "project directory missing at {}",
@@ -10931,7 +10834,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // prompt.original.md must exist after accept (prompt was replaced).
-        let project_dir = ws.path().join(".ralph-burning/projects/pr-accept");
+        let project_dir = project_root(ws.path(), "pr-accept");
         if !project_dir.join("prompt.original.md").exists() {
             return Err("prompt.original.md missing after prompt-review accept".to_owned());
         }
@@ -11041,7 +10944,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "pr-min-rev", "standard")?;
         // Overwrite workspace.toml to set min_reviewers=3 with only 2 validators.
-        let ws_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let ws_toml = workspace_config_path(ws.path());
         let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
         let patched = if content.contains("[prompt_review]") {
             content.replace(
@@ -11099,7 +11002,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "pr-opt-skip", "standard")?;
         // Add optional openrouter validator that will be skipped (not available
         // in stub mode by default). Required validators still satisfy min.
-        let ws_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let ws_toml = workspace_config_path(ws.path());
         let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
         let patched = if content.contains("[prompt_review]") {
             content.replace(
@@ -11131,9 +11034,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify the executed reviewer count reflects only available
         // validators (2 required) — not all 3 configured.
-        let payloads_dir = ws
-            .path()
-            .join(".ralph-burning/projects/pr-opt-skip/history/payloads");
+        let payloads_dir = project_root(ws.path(), "pr-opt-skip").join("history/payloads");
         if payloads_dir.exists() {
             // Count validator supporting records (exclude refiner and primary).
             let validator_count = std::fs::read_dir(&payloads_dir)
@@ -11164,11 +11065,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             setup_workspace_with_project(&ws, "wp-replace", "standard")?;
 
             // Read the original prompt before the run.
-            let project_dir = ws
-                .path()
-                .join(".ralph-burning")
-                .join("projects")
-                .join("wp-replace");
+            let project_dir = project_root(ws.path(), "wp-replace");
             let prompt_path = project_dir.join("prompt.md");
             let original_prompt = std::fs::read_to_string(&prompt_path)
                 .map_err(|e| format!("read prompt.md before run: {e}"))?;
@@ -11321,9 +11218,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             }
 
             // Verify the persisted aggregate payload has verdict "complete".
-            let payloads_dir = ws
-                .path()
-                .join(".ralph-burning/projects/cp-complete/history/payloads");
+            let payloads_dir = project_root(ws.path(), "cp-complete").join("history/payloads");
             let aggregate_file = std::fs::read_dir(&payloads_dir)
                 .map_err(|e| format!("read payloads dir: {e}"))?
                 .filter_map(|e| e.ok())
@@ -11490,7 +11385,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         // ── Behavioral: configure optional completer, verify run succeeds ──
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cp-opt-skip", "standard")?;
-        let ws_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let ws_toml = workspace_config_path(ws.path());
         let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
         let patched = if content.contains("[completion]") {
             content.replace(
@@ -11522,9 +11417,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify the persisted aggregate only counts executed voters
         // (2 of the 3 configured, since the optional one was skipped).
-        let payloads_dir = ws
-            .path()
-            .join(".ralph-burning/projects/cp-opt-skip/history/payloads");
+        let payloads_dir = project_root(ws.path(), "cp-opt-skip").join("history/payloads");
         let aggregate_file = std::fs::read_dir(&payloads_dir)
             .map_err(|e| format!("read payloads dir: {e}"))?
             .filter_map(|e| e.ok())
@@ -11584,7 +11477,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         // to fail with BackendUnavailable before any invocations occur.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cp-req-fail", "standard")?;
-        let ws_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let ws_toml = workspace_config_path(ws.path());
         let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
         let patched = if content.contains("[completion]") {
             content.replace(
@@ -11609,9 +11502,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         // Verify the error is about backend unavailability, not an
         // invocation failure, by checking that no completion supporting
         // records were persisted (resolution failed before any invocations).
-        let payloads_dir = ws
-            .path()
-            .join(".ralph-burning/projects/cp-req-fail/history/payloads");
+        let payloads_dir = project_root(ws.path(), "cp-req-fail").join("history/payloads");
         if payloads_dir.exists() {
             let completer_records = std::fs::read_dir(&payloads_dir)
                 .map_err(|e| format!("read payloads: {e}"))?
@@ -11658,7 +11549,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "cp-thresh", "standard")?;
         // Set consensus_threshold very high so default stub votes trigger continue_work
         // on the first round, then complete on the second.
-        let ws_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let ws_toml = workspace_config_path(ws.path());
         let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
         let patched = if content.contains("[completion]") {
             content.replace(
@@ -11716,7 +11607,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         // ── Behavioral: workspace with min_completers=3, only 2 completer backends ──
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cp-min-comp", "standard")?;
-        let ws_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let ws_toml = workspace_config_path(ws.path());
         let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
         let patched = if content.contains("[completion]") {
             content.replace(
@@ -11788,7 +11679,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             // Change implementer backend config to force drift. Default
             // implementer for cycle 1 is claude (same as planner=claude),
             // so switching to codex produces an actual target change.
-            let ws_toml = ws.path().join(".ralph-burning/workspace.toml");
+            let ws_toml = workspace_config_path(ws.path());
             let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
             let patched = if content.contains("[workflow]") {
                 content.replace("[workflow]", "[workflow]\nimplementer_backend = \"codex\"")
@@ -11879,7 +11770,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&out)?;
 
         // Change QA backend config.
-        let ws_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let ws_toml = workspace_config_path(ws.path());
         let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
         let patched = if content.contains("[workflow]") {
             content.replace("[workflow]", "[workflow]\nqa_backend = \"claude\"")
@@ -11957,7 +11848,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             // Change reviewer backend config. Default reviewer for cycle 1 is
             // codex (opposite of planner=claude), so switching to claude
             // produces an actual target change.
-            let ws_toml = ws.path().join(".ralph-burning/workspace.toml");
+            let ws_toml = workspace_config_path(ws.path());
             let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
             let patched = if content.contains("[workflow]") {
                 content.replace("[workflow]", "[workflow]\nreviewer_backend = \"claude\"")
@@ -12077,7 +11968,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             assert_failure(&out)?;
 
             // Change completion backend config.
-            let ws_toml = ws.path().join(".ralph-burning/workspace.toml");
+            let ws_toml = workspace_config_path(ws.path());
             let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
             let patched = if content.contains("[completion]") {
                 content.replace(
@@ -13369,8 +13260,7 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
         )?;
         assert_success(&config_out)?;
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/prompt-continue/prompt.md"),
+            conformance_project_root(&ws, "prompt-continue").join("prompt.md"),
             "# Fixture prompt\n\nPrompt changed before resume.\n",
         )
         .map_err(|e| format!("write changed prompt: {e}"))?;
@@ -13421,8 +13311,7 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
         )?;
         assert_success(&config_out)?;
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/prompt-abort/prompt.md"),
+            conformance_project_root(&ws, "prompt-abort").join("prompt.md"),
             "# Fixture prompt\n\nPrompt changed before resume.\n",
         )
         .map_err(|e| format!("write changed prompt: {e}"))?;
@@ -13459,8 +13348,7 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
         )?;
         assert_success(&config_out)?;
         std::fs::write(
-            ws.path()
-                .join(".ralph-burning/projects/prompt-restart/prompt.md"),
+            conformance_project_root(&ws, "prompt-restart").join("prompt.md"),
             "# Fixture prompt\n\nPrompt changed before resume.\n",
         )
         .map_err(|e| format!("write changed prompt: {e}"))?;
@@ -13640,9 +13528,7 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "vd-pass", "docs_change")?;
 
         // Configure docs_commands to a command that always passes.
-        let config_path = ws
-            .path()
-            .join(".ralph-burning/projects/vd-pass/config.toml");
+        let config_path = project_root(ws.path(), "vd-pass").join("config.toml");
         std::fs::write(&config_path, "[validation]\ndocs_commands = [\"true\"]\n")
             .map_err(|e| format!("write config: {e}"))?;
 
@@ -13667,9 +13553,7 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
             setup_workspace_with_project(&ws, "vd-fail", "docs_change")?;
 
             // Configure docs_commands to a command that always fails.
-            let config_path = ws
-                .path()
-                .join(".ralph-burning/projects/vd-fail/config.toml");
+            let config_path = project_root(ws.path(), "vd-fail").join("config.toml");
             std::fs::write(&config_path, "[validation]\ndocs_commands = [\"false\"]\n")
                 .map_err(|e| format!("write config: {e}"))?;
 
@@ -13699,9 +13583,7 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "vc-pass", "ci_improvement")?;
 
-        let config_path = ws
-            .path()
-            .join(".ralph-burning/projects/vc-pass/config.toml");
+        let config_path = project_root(ws.path(), "vc-pass").join("config.toml");
         std::fs::write(&config_path, "[validation]\nci_commands = [\"true\"]\n")
             .map_err(|e| format!("write config: {e}"))?;
 
@@ -13722,9 +13604,7 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "vc-fail", "ci_improvement")?;
 
-        let config_path = ws
-            .path()
-            .join(".ralph-burning/projects/vc-fail/config.toml");
+        let config_path = project_root(ws.path(), "vc-fail").join("config.toml");
         std::fs::write(&config_path, "[validation]\nci_commands = [\"false\"]\n")
             .map_err(|e| format!("write config: {e}"))?;
 
@@ -13753,7 +13633,7 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
             let ws = TempWorkspace::new()?;
             setup_workspace_with_project(&ws, "vs-ctx", "standard")?;
 
-            let config_path = ws.path().join(".ralph-burning/projects/vs-ctx/config.toml");
+            let config_path = project_root(ws.path(), "vs-ctx").join("config.toml");
             std::fs::write(
                 &config_path,
                 "[validation]\nstandard_commands = [\"echo validation-evidence-marker\"]\npre_commit_fmt = false\npre_commit_clippy = false\n",
@@ -13780,9 +13660,7 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "vp-disabled", "standard")?;
 
-        let config_path = ws
-            .path()
-            .join(".ralph-burning/projects/vp-disabled/config.toml");
+        let config_path = project_root(ws.path(), "vp-disabled").join("config.toml");
         std::fs::write(
             &config_path,
             "[validation]\npre_commit_fmt = false\npre_commit_clippy = false\npre_commit_nix_build = false\n",
@@ -13806,9 +13684,7 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
             let ws = TempWorkspace::new()?;
             setup_workspace_with_project(&ws, "vp-nocargo", "standard")?;
 
-            let config_path = ws
-                .path()
-                .join(".ralph-burning/projects/vp-nocargo/config.toml");
+            let config_path = project_root(ws.path(), "vp-nocargo").join("config.toml");
             std::fs::write(
                 &config_path,
                 "[validation]\npre_commit_fmt = true\npre_commit_clippy = true\npre_commit_nix_build = false\n",
@@ -14026,6 +13902,37 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             if !worktrees_dir.is_dir() {
                 return Err("worktrees directory not created".into());
             }
+
+            let git_path_output = std::process::Command::new("sh")
+                .args(["-lc", "command -v git"])
+                .output()
+                .map_err(|e| format!("resolve git path: {e}"))?;
+            if !git_path_output.status.success() {
+                return Err("failed to resolve git path".into());
+            }
+            let git_path = String::from_utf8_lossy(&git_path_output.stdout)
+                .trim()
+                .to_owned();
+            if git_path.is_empty() {
+                return Err("resolved git path was empty".into());
+            }
+            let fake_bin = ws.path().join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).map_err(|e| format!("create fake-bin: {e}"))?;
+            let fake_git = fake_bin.join("git");
+            write_script_with_mode(
+                &fake_git,
+                &format!(
+                    "#!/bin/sh\nif [ \"$1\" = \"clone\" ] && [ \"$2\" = \"https://github.com/acme/widgets.git\" ]; then\n  echo 'simulated clone failure' >&2\n  exit 1\nfi\nexec \"{git_path}\" \"$@\"\n"
+                ),
+                0o755,
+            )?;
+            let inherited_path = std::env::var("PATH").unwrap_or_default();
+            let fake_path = if inherited_path.is_empty() {
+                fake_bin.display().to_string()
+            } else {
+                format!("{}:{inherited_path}", fake_bin.display())
+            };
+            let _path_guard = ScenarioEnvGuard::set(&[("PATH", &fake_path)]);
 
             // Bootstrap on a fresh empty checkout dir should attempt clone,
             // which will fail in tests (no real GitHub), verifying bootstrap
@@ -18773,7 +18680,7 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         // Simulate a writer lock by writing a lock file at the real path
         // used by CliWriterLeaseGuard: .ralph-burning/daemon/leases/writer-{id}.lock
         let project_id = "stub-project";
-        let leases_dir = ws.path().join(".ralph-burning/daemon/leases");
+        let leases_dir = daemon_root(ws.path()).join("leases");
         std::fs::create_dir_all(&leases_dir).ok();
         let lock_path = leases_dir.join(format!("writer-{project_id}.lock"));
         std::fs::write(&lock_path, "held-by-test").ok();
@@ -18828,7 +18735,7 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
 
         // Simulate a writer lock.
         let project_id = "stub-project";
-        let leases_dir = ws.path().join(".ralph-burning/daemon/leases");
+        let leases_dir = daemon_root(ws.path()).join("leases");
         std::fs::create_dir_all(&leases_dir).ok();
         let lock_path = leases_dir.join(format!("writer-{project_id}.lock"));
         std::fs::write(&lock_path, "held-by-test").ok();
@@ -18874,7 +18781,7 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
 
         // Simulate a writer lock.
         let project_id = "stub-project";
-        let leases_dir = ws.path().join(".ralph-burning/daemon/leases");
+        let leases_dir = daemon_root(ws.path()).join("leases");
         std::fs::create_dir_all(&leases_dir).ok();
         let lock_path = leases_dir.join(format!("writer-{project_id}.lock"));
         std::fs::write(&lock_path, "held-by-test").ok();
@@ -19777,11 +19684,10 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-TMUX-004", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let workspace_root = ws.path().join(".ralph-burning");
         let mut workspace = crate::shared::domain::WorkspaceConfig::new(chrono::Utc::now());
         workspace.execution.mode = Some(crate::shared::domain::ExecutionMode::Tmux);
         crate::adapters::fs::FileSystem::write_atomic(
-            &workspace_root.join("workspace.toml"),
+            &workspace_config_path(ws.path()),
             &toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
         )
         .map_err(|e| format!("write workspace config: {e}"))?;
@@ -19813,7 +19719,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-TMUX-005", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "alpha", "standard")?;
-        let workspace_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let workspace_toml = workspace_config_path(ws.path());
         let mut workspace: crate::shared::domain::WorkspaceConfig = toml::from_str(
             &std::fs::read_to_string(&workspace_toml)
                 .map_err(|e| format!("read workspace.toml: {e}"))?,
@@ -19985,7 +19891,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-TMUX-009", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "watchable-stream", "standard")?;
-        let workspace_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let workspace_toml = workspace_config_path(ws.path());
         let mut workspace: crate::shared::domain::WorkspaceConfig = toml::from_str(
             &std::fs::read_to_string(&workspace_toml)
                 .map_err(|e| format!("read workspace.toml: {e}"))?,
@@ -20095,7 +20001,7 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
         create_project_fixture(ws.path(), "tpl-proj", "standard");
         let pid = crate::shared::domain::ProjectId::new("tpl-proj".to_owned())
             .map_err(|e| format!("pid: {e}"))?;
-        let proj_templates = ws.path().join(".ralph-burning/projects/tpl-proj/templates");
+        let proj_templates = project_root(ws.path(), "tpl-proj").join("templates");
         std::fs::create_dir_all(&proj_templates)
             .map_err(|e| format!("create proj templates: {e}"))?;
         std::fs::write(
@@ -20125,7 +20031,7 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
             "WS: {{base_context}}",
         )
         .map_err(|e| format!("write ws override: {e}"))?;
-        let proj_templates = ws.path().join(".ralph-burning/projects/tpl-prec/templates");
+        let proj_templates = project_root(ws.path(), "tpl-prec").join("templates");
         std::fs::create_dir_all(&proj_templates)
             .map_err(|e| format!("create proj templates: {e}"))?;
         std::fs::write(
@@ -20202,7 +20108,7 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
             "WS valid: {{base_context}}",
         )
         .map_err(|e| format!("write ws override: {e}"))?;
-        let proj_templates = ws.path().join(".ralph-burning/projects/tpl-nofb/templates");
+        let proj_templates = project_root(ws.path(), "tpl-nofb").join("templates");
         std::fs::create_dir_all(&proj_templates)
             .map_err(|e| format!("create proj templates: {e}"))?;
         std::fs::write(
