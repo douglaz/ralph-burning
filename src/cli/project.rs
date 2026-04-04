@@ -955,12 +955,60 @@ fn canonical_proposal_id(
     }
 }
 
+fn opening_fence_delimiter(line: &str) -> Option<(char, usize)> {
+    let trimmed = line.trim();
+    let marker = trimmed.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+
+    let count = trimmed.chars().take_while(|ch| *ch == marker).count();
+    if count < 3 {
+        return None;
+    }
+
+    Some((marker, count))
+}
+
+fn closes_fence(line: &str, opening: (char, usize)) -> bool {
+    let Some(candidate) = opening_fence_delimiter(line) else {
+        return false;
+    };
+
+    if candidate.0 != opening.0 || candidate.1 < opening.1 {
+        return false;
+    }
+
+    let trimmed = line.trim();
+    trimmed[candidate.1..].trim().is_empty()
+}
+
 fn compact_planned_elsewhere_summary(value: Option<&str>) -> Option<String> {
     value.and_then(|raw| {
-        raw.lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .map(str::to_owned)
+        let mut active_fence = None;
+
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Some(opening) = active_fence {
+                if closes_fence(trimmed, opening) {
+                    active_fence = None;
+                }
+                continue;
+            }
+
+            if let Some(opening) = opening_fence_delimiter(trimmed) {
+                active_fence = Some(opening);
+                continue;
+            }
+
+            return Some(trimmed.to_owned());
+        }
+
+        None
     })
 }
 
@@ -1119,8 +1167,13 @@ fn build_planned_elsewhere_context(
     }
 
     let location_hint = bead_plan
-        .matched_workstream_index
-        .zip(bead_plan.matched_bead_index)
+        .membership_confirmed
+        .then_some(())
+        .and(
+            bead_plan
+                .matched_workstream_index
+                .zip(bead_plan.matched_bead_index),
+        )
         .or_else(|| infer_implicit_slot_hint(bundle, milestone_id, &bead.id));
     let Some((workstream_index, current_bead_index)) = location_hint else {
         return items;
@@ -1141,6 +1194,7 @@ fn build_planned_elsewhere_context(
                 || candidate_bead_index == current_bead_index
                 || candidate_bead_index < neighbor_range_start
                 || candidate_bead_index >= neighbor_range_end
+                || proposal_id == bead.id
             {
                 continue;
             }
@@ -1725,9 +1779,9 @@ fn truncate_utf8(s: &str, max_chars: usize) -> String {
 mod tests {
     use super::{
         backfill_legacy_explicit_bead_flags, build_planned_elsewhere_context,
-        ensure_bead_belongs_to_milestone, ensure_bead_creation_targets_are_actionable,
-        infer_parent_epic_id, load_milestone_bundle, resolve_bead_plan,
-        validate_milestone_plan_snapshot,
+        compact_planned_elsewhere_summary, ensure_bead_belongs_to_milestone,
+        ensure_bead_creation_targets_are_actionable, infer_parent_epic_id, load_milestone_bundle,
+        resolve_bead_plan, validate_milestone_plan_snapshot,
     };
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -2021,6 +2075,40 @@ mod tests {
             planned_elsewhere[0].summary.as_deref(),
             Some("Define metadata before project creation.")
         );
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_ignores_unconfirmed_title_fallback_location() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.workstreams[0].beads.swap(0, 1);
+        bundle.workstreams[0].beads[0].description =
+            Some("This proposal title still matches the live bead.".to_owned());
+        bundle.workstreams[0].beads[1].description =
+            Some("This is the real adjacent slot neighbor.".to_owned());
+        let bead = sample_bead();
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(planned_elsewhere.len(), 1);
+        assert_eq!(planned_elsewhere[0].id, "ms-alpha.bead-1");
+        assert_ne!(planned_elsewhere[0].id, bead.id);
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_skips_fenced_openers() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "```md\n## Review Policy\nKeep this example fenced.\n```\nCapture the real follow-up text.",
+        ));
+
+        assert_eq!(summary.as_deref(), Some("Capture the real follow-up text."));
     }
 
     #[test]
