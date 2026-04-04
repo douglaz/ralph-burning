@@ -20,6 +20,7 @@ use serde_json::Value;
 
 use std::time::Duration;
 
+use crate::adapters::process_backend::processed_contract_schema_value;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
@@ -393,8 +394,13 @@ where
         cursor.completion_round
     );
 
-    let schema = super::panel_contracts::panel_json_schema(stage_id, role_label);
-    let schema_str = serde_json::to_string_pretty(&schema)?;
+    let schema_str = serde_json::to_string_pretty(&processed_contract_schema_value(
+        &InvocationContract::Panel {
+            stage_id,
+            role: role_label.to_owned(),
+        },
+        target.backend.family,
+    ))?;
     let prompt = build_prompt_review_member_prompt(
         base_dir,
         project_id,

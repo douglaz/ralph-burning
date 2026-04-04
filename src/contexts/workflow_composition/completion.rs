@@ -19,6 +19,7 @@ use std::time::Duration;
 use chrono::Utc;
 use serde_json::Value;
 
+use crate::adapters::process_backend::processed_contract_schema_value;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
@@ -266,8 +267,13 @@ where
         cursor.completion_round
     );
 
-    let schema = super::panel_contracts::panel_json_schema(stage_id, "completer");
-    let schema_str = serde_json::to_string_pretty(&schema)?;
+    let schema_str = serde_json::to_string_pretty(&processed_contract_schema_value(
+        &InvocationContract::Panel {
+            stage_id,
+            role: "completer".to_owned(),
+        },
+        target.backend.family,
+    ))?;
 
     let prompt = build_completer_prompt(base_dir, project_id, prompt_text, &schema_str)?;
 
@@ -366,10 +372,46 @@ fn persist_supporting_record(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::time::Duration;
 
     use tempfile::tempdir;
 
     use super::*;
+    use crate::adapters::process_backend::{
+        processed_contract_schema_value, ProcessBackendAdapter,
+    };
+    use crate::contexts::agent_execution::model::{
+        CancellationToken, InvocationPayload, InvocationRequest,
+    };
+    use crate::shared::domain::{ResolvedBackendTarget, SessionPolicy};
+
+    fn extract_prompt_schema(prompt: &str) -> serde_json::Value {
+        let (_, after_heading) = prompt
+            .split_once("## Authoritative JSON Schema")
+            .expect("prompt should contain authoritative schema heading");
+        let (_, after_open) = after_heading
+            .split_once("```json\n")
+            .expect("prompt should contain schema code fence");
+        let (schema_text, _) = after_open
+            .split_once("\n```")
+            .expect("prompt schema fence should close");
+        serde_json::from_str(schema_text).expect("prompt schema should parse")
+    }
+
+    fn extract_transport_schema(args: &[String]) -> serde_json::Value {
+        let schema_idx = args
+            .iter()
+            .position(|arg| arg == "--json-schema")
+            .expect("claude transport should include --json-schema");
+        serde_json::from_str(&args[schema_idx + 1]).expect("transport schema should parse")
+    }
+
+    fn extract_stdin_schema(stdin_payload: &str) -> serde_json::Value {
+        let (_, schema_text) = stdin_payload
+            .split_once("Return ONLY valid JSON matching the following schema:\n")
+            .expect("stdin should contain schema marker");
+        serde_json::from_str(schema_text.trim()).expect("stdin schema should parse")
+    }
 
     #[test]
     fn build_completer_prompt_surfaces_task_prompt_contract_guidance() {
@@ -411,6 +453,58 @@ mod tests {
 
         assert!(prompt.starts_with("LEGACY COMPLETER"));
         assert!(prompt.contains("# Prompt"));
+    }
+
+    #[tokio::test]
+    async fn build_completer_prompt_keeps_claude_prompt_schema_in_sync_with_transport_schema() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_completer_prompt(
+            tmp.path(),
+            None,
+            "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            &serde_json::to_string_pretty(&processed_contract_schema_value(
+                &InvocationContract::Panel {
+                    stage_id: StageId::CompletionPanel,
+                    role: "completer".to_owned(),
+                },
+                BackendFamily::Claude,
+            ))
+            .expect("schema"),
+        )
+        .expect("render prompt");
+
+        let request = InvocationRequest {
+            invocation_id: "completion-schema-sync".to_owned(),
+            project_root: tmp.path().to_path_buf(),
+            working_dir: tmp.path().to_path_buf(),
+            contract: InvocationContract::Panel {
+                stage_id: StageId::CompletionPanel,
+                role: "completer".to_owned(),
+            },
+            role: BackendRole::Planner,
+            resolved_target: ResolvedBackendTarget::new(BackendFamily::Claude, "claude-test"),
+            payload: InvocationPayload {
+                prompt: prompt.clone(),
+                context: Value::Null,
+            },
+            timeout: Duration::from_secs(30),
+            cancellation_token: CancellationToken::new(),
+            session_policy: SessionPolicy::NewSession,
+            prior_session: None,
+            attempt_number: 1,
+        };
+
+        let adapter = ProcessBackendAdapter::new();
+        let prepared = adapter
+            .build_command(&request)
+            .await
+            .expect("prepare command");
+        let prompt_schema = extract_prompt_schema(&prompt);
+        let transport_schema = extract_transport_schema(prepared.args());
+        let stdin_schema = extract_stdin_schema(prepared.stdin_payload());
+
+        assert_eq!(prompt_schema, transport_schema);
+        assert_eq!(stdin_schema, transport_schema);
     }
 }
 

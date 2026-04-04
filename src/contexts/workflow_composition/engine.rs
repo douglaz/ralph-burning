@@ -11,6 +11,7 @@ use crate::adapters::fs::{
     FileSystem, FsArtifactStore, FsMilestoneJournalStore, FsMilestoneSnapshotStore, FsProjectStore,
     FsRollbackPointStore, FsTaskRunLineageStore,
 };
+use crate::adapters::process_backend::processed_contract_schema_value;
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
@@ -79,6 +80,7 @@ pub fn build_stage_prompt(
     project_id: &ProjectId,
     project_root: &Path,
     prompt_reference: &str,
+    backend_family: BackendFamily,
     role: BackendRole,
     contract: &contracts::StageContract,
     run_id: &RunId,
@@ -104,8 +106,10 @@ pub fn build_stage_prompt(
         run_id,
         cursor,
     )?;
-    let schema =
-        serde_json::to_string_pretty(&InvocationContract::Stage(*contract).json_schema_value())?;
+    let schema = serde_json::to_string_pretty(&processed_contract_schema_value(
+        &InvocationContract::Stage(*contract),
+        backend_family,
+    ))?;
     let task_prompt_contract_block =
         task_prompt_contract::stage_consumer_guidance_for_prompt(&project_prompt);
 
@@ -4704,6 +4708,7 @@ where
             project_id,
             project_root,
             prompt_reference,
+            resolved_target.backend.family,
             stage_entry.role,
             &stage_entry.contract,
             run_id,

@@ -1,11 +1,17 @@
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::json;
 use tempfile::tempdir;
 
-use ralph_burning::contexts::agent_execution::model::InvocationContract;
+use ralph_burning::adapters::process_backend::ProcessBackendAdapter;
+use ralph_burning::contexts::agent_execution::model::{
+    CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
+};
+use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
 use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{
     ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, QueuedAmendment,
@@ -18,7 +24,8 @@ use ralph_burning::contexts::workflow_composition::contracts::contract_for_stage
 use ralph_burning::contexts::workflow_composition::engine::build_stage_prompt;
 use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::shared::domain::{
-    BackendRole, FlowPreset, ProjectId, RunId, StageCursor, StageId,
+    BackendFamily, BackendRole, FlowPreset, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
+    StageCursor, StageId,
 };
 use ralph_burning::shared::error::{AppError, AppResult};
 
@@ -127,6 +134,55 @@ fn sample_bead_context() -> BeadProjectContext {
     }
 }
 
+fn extract_prompt_schema(prompt: &str) -> serde_json::Value {
+    let (_, after_heading) = prompt
+        .split_once("## Authoritative JSON Schema")
+        .expect("prompt should contain authoritative schema heading");
+    let (_, after_open) = after_heading
+        .split_once("```json\n")
+        .expect("prompt should contain schema code fence");
+    let (schema_text, _) = after_open
+        .split_once("\n```")
+        .expect("prompt schema fence should close");
+    serde_json::from_str(schema_text).expect("prompt schema should parse")
+}
+
+fn write_executable(path: &Path, contents: &str) {
+    fs::write(path, contents).expect("write executable");
+    let mut permissions = fs::metadata(path).expect("stat executable").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("chmod executable");
+}
+
+fn extract_stdin_schema(stdin_payload: &str) -> serde_json::Value {
+    let (_, schema_text) = stdin_payload
+        .split_once("Return ONLY valid JSON matching the following schema:\n")
+        .expect("stdin should contain schema marker");
+    serde_json::from_str(schema_text.trim()).expect("stdin schema should parse")
+}
+
+fn write_fake_claude(bin_dir: &Path, envelope_json: &str) {
+    write_executable(
+        &bin_dir.join("claude"),
+        &format!(
+            r#"#!/bin/sh
+next_is_schema=0
+for arg in "$@"; do
+    if [ "$next_is_schema" = "1" ]; then
+        printf '%s' "$arg" > "$PWD/claude-json-schema.json"
+        next_is_schema=0
+    fi
+    if [ "$arg" = "--json-schema" ]; then
+        next_is_schema=1
+    fi
+done
+cat > "$PWD/claude-stdin.txt"
+printf '%s' '{envelope_json}'
+"#
+        ),
+    );
+}
+
 #[test]
 fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_amendments_and_schema()
 {
@@ -218,6 +274,7 @@ fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_ame
         &project_id,
         &project_root(base_dir, &project_id),
         prompt_reference,
+        BackendFamily::Claude,
         BackendRole::Implementer,
         &contract,
         &run_id,
@@ -240,10 +297,8 @@ fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_ame
     assert!(prompt.contains("### Pending Amendments"));
     assert!(prompt.contains("Tighten the validation copy"));
     assert!(prompt.contains("## Authoritative JSON Schema"));
-    assert!(prompt.contains(
-        &serde_json::to_string_pretty(&InvocationContract::Stage(contract).json_schema_value())
-            .expect("serialize schema"),
-    ));
+    assert!(prompt.contains("\"__rb_wrapped\""));
+    assert!(prompt.contains("\"additionalProperties\": false"));
 
     let first_index = prompt.find("first-output").expect("first prior output");
     let second_index = prompt.find("second-output").expect("second prior output");
@@ -251,6 +306,84 @@ fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_ame
         first_index < second_index,
         "prior outputs should preserve journal order"
     );
+}
+
+#[tokio::test]
+async fn build_stage_prompt_keeps_claude_prompt_schema_in_sync_with_transport_schema() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-builder-claude-schema-sync").unwrap();
+    let run_id = RunId::new("run-20260314193209").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::PlanAndImplement);
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
+    ];
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        &render_bead_task_prompt(&sample_bead_context()),
+        &events,
+    );
+
+    let artifact_store = InMemoryArtifactStore { payloads: vec![] };
+    let prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendFamily::Claude,
+        BackendRole::Implementer,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("build prompt");
+
+    let request = InvocationRequest {
+        invocation_id: "stage-schema-sync".to_owned(),
+        project_root: project_root(base_dir, &project_id),
+        working_dir: base_dir.to_path_buf(),
+        contract: InvocationContract::Stage(contract),
+        role: BackendRole::Implementer,
+        resolved_target: ResolvedBackendTarget::new(BackendFamily::Claude, "claude-test"),
+        payload: InvocationPayload {
+            prompt: prompt.clone(),
+            context: json!({ "kind": "stage" }),
+        },
+        timeout: Duration::from_secs(30),
+        cancellation_token: CancellationToken::new(),
+        session_policy: SessionPolicy::NewSession,
+        prior_session: None,
+        attempt_number: 1,
+    };
+
+    let bin_dir = tempdir().expect("bin dir");
+    write_fake_claude(
+        bin_dir.path(),
+        r#"{"type":"result","session_id":"sess-stage","structured_output":{"__rb_wrapped":true,"data":{"change_summary":"ok","outstanding_risks":[],"steps":[{"description":"done","order":1,"status":"completed"}],"validation_evidence":[]}}}"#,
+    );
+    let adapter = ProcessBackendAdapter::with_search_paths(vec![bin_dir.path().to_path_buf()]);
+    adapter.invoke(request).await.expect("invoke stage prompt");
+    let prompt_schema = extract_prompt_schema(&prompt);
+    let transport_schema: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(base_dir.join("claude-json-schema.json"))
+            .expect("transport schema log"),
+    )
+    .expect("transport schema should parse");
+    let stdin_schema = extract_stdin_schema(
+        &fs::read_to_string(base_dir.join("claude-stdin.txt")).expect("stdin log"),
+    );
+
+    assert_eq!(prompt_schema, transport_schema);
+    assert_eq!(stdin_schema, transport_schema);
 }
 
 #[test]
@@ -305,6 +438,7 @@ fn build_stage_prompt_omits_prior_outputs_section_when_current_cycle_has_no_comp
         &project_id,
         &project_root(base_dir, &project_id),
         prompt_reference,
+        BackendFamily::Claude,
         BackendRole::Implementer,
         &contract,
         &run_id,
@@ -347,6 +481,7 @@ fn build_stage_prompt_surfaces_shared_bead_task_prompt_contract_guidance() {
         &project_id,
         &project_root(base_dir, &project_id),
         prompt_reference,
+        BackendFamily::Claude,
         BackendRole::Implementer,
         &contract,
         &run_id,
@@ -399,6 +534,7 @@ fn build_stage_prompt_allows_legacy_override_without_task_prompt_contract_placeh
         &project_id,
         &project_root(base_dir, &project_id),
         prompt_reference,
+        BackendFamily::Claude,
         BackendRole::Implementer,
         &contract,
         &run_id,
@@ -519,6 +655,7 @@ fn build_stage_prompt_excludes_rolled_back_prior_outputs() {
         &project_id,
         &project_root(base_dir, &project_id),
         prompt_reference,
+        BackendFamily::Claude,
         BackendRole::Implementer,
         &contract,
         &run_id,
@@ -589,6 +726,7 @@ fn build_stage_prompt_omits_remediation_and_amendments_section_when_inputs_are_e
         &project_id,
         &project_root(base_dir, &project_id),
         prompt_reference,
+        BackendFamily::Claude,
         BackendRole::QaValidator,
         &contract,
         &run_id,
@@ -643,6 +781,7 @@ fn build_stage_prompt_returns_diagnostic_error_when_journal_references_missing_p
         &project_id,
         &project_root(base_dir, &project_id),
         prompt_reference,
+        BackendFamily::Claude,
         BackendRole::Implementer,
         &contract,
         &run_id,
@@ -704,6 +843,7 @@ fn build_stage_prompt_with_workspace_template_override() {
         &project_id,
         &project_root(base_dir, &project_id),
         prompt_reference,
+        BackendFamily::Claude,
         BackendRole::Planner,
         &contract,
         &run_id,
@@ -760,6 +900,7 @@ fn build_stage_prompt_fails_on_malformed_workspace_override() {
         &project_id,
         &project_root(base_dir, &project_id),
         prompt_reference,
+        BackendFamily::Claude,
         BackendRole::Planner,
         &contract,
         &run_id,

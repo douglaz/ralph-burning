@@ -666,14 +666,7 @@ impl ProcessBackendAdapter {
     }
 
     fn contract_schema_for_backend(request: &InvocationRequest) -> serde_json::Value {
-        let mut schema_value = request.contract.json_schema_value();
-        enforce_strict_mode_schema(&mut schema_value);
-        inline_schema_refs(&mut schema_value);
-        if request.resolved_target.backend.family == BackendFamily::Claude {
-            wrap_claude_structured_output_schema(schema_value)
-        } else {
-            schema_value
-        }
+        processed_contract_schema_value(&request.contract, request.resolved_target.backend.family)
     }
 
     /// Build the stdin payload from prompt + context using the same
@@ -1632,6 +1625,20 @@ fn wrap_claude_structured_output_schema(schema: serde_json::Value) -> serde_json
         "required": ["__rb_wrapped", "data"],
         "additionalProperties": false,
     })
+}
+
+pub(crate) fn processed_contract_schema_value(
+    contract: &InvocationContract,
+    backend_family: BackendFamily,
+) -> serde_json::Value {
+    let mut schema_value = contract.json_schema_value();
+    enforce_strict_mode_schema(&mut schema_value);
+    inline_schema_refs(&mut schema_value);
+    if backend_family == BackendFamily::Claude {
+        wrap_claude_structured_output_schema(schema_value)
+    } else {
+        schema_value
+    }
 }
 
 fn unwrap_claude_structured_output_payload(value: serde_json::Value) -> serde_json::Value {
