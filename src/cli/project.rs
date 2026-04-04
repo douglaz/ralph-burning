@@ -318,15 +318,32 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         .membership_confirmed
         .then_some(confirmed_plan_version)
         .flatten();
-    let bead_summaries = match load_bead_summaries(&current_dir).await {
-        Ok(summaries) => summaries,
-        Err(error @ AppError::CorruptRecord { .. }) => return Err(error),
-        Err(error @ AppError::Io(_)) => {
-            ensure_direct_relations_have_statuses_for_prompt(&bead, &error)?;
-            BTreeMap::new()
-        }
-        Err(other) => return Err(other),
-    };
+    let (upstream_dependencies, downstream_dependents, planned_elsewhere) =
+        if prompt_override.is_some() {
+            (Vec::new(), Vec::new(), Vec::new())
+        } else {
+            let bead_summaries = match load_bead_summaries(&current_dir).await {
+                Ok(summaries) => summaries,
+                Err(error @ AppError::CorruptRecord { .. }) => return Err(error),
+                Err(error @ AppError::Io(_)) => {
+                    ensure_direct_relations_have_statuses_for_prompt(&bead, &error)?;
+                    BTreeMap::new()
+                }
+                Err(other) => return Err(other),
+            };
+
+            (
+                build_dependency_prompt_context(&bead.dependencies, &bead_summaries),
+                build_dependent_prompt_context(&bead.dependents, &bead_summaries),
+                build_planned_elsewhere_context(
+                    &milestone_bundle.bundle,
+                    &milestone_id,
+                    &bead,
+                    &bead_plan,
+                    &bead_summaries,
+                ),
+            )
+        };
 
     let context = BeadProjectContext {
         milestone_id: milestone.id.to_string(),
@@ -343,15 +360,9 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         bead_title: bead.title.clone(),
         bead_description: bead.description.clone(),
         bead_acceptance_criteria: bead.acceptance_criteria.clone(),
-        upstream_dependencies: build_dependency_prompt_context(&bead.dependencies, &bead_summaries),
-        downstream_dependents: build_dependent_prompt_context(&bead.dependents, &bead_summaries),
-        planned_elsewhere: build_planned_elsewhere_context(
-            &milestone_bundle.bundle,
-            &milestone_id,
-            &bead,
-            &bead_plan,
-            &bead_summaries,
-        ),
+        upstream_dependencies,
+        downstream_dependents,
+        planned_elsewhere,
         review_policy:
             crate::contexts::project_run_record::task_prompt_contract::default_review_policy(),
         parent_epic_id: infer_parent_epic_id(&bead),
@@ -1069,10 +1080,20 @@ fn closes_fence(line: &str, opening: (char, usize)) -> bool {
 fn markdown_heading_title(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
-    if hash_count < 2 {
+    if !(1..=6).contains(&hash_count) {
         return None;
     }
-    Some(trimmed[hash_count..].trim())
+    let rest = &trimmed[hash_count..];
+    if !rest.is_empty()
+        && !rest
+            .chars()
+            .next()
+            .map(char::is_whitespace)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    Some(rest.trim().trim_end_matches('#').trim())
 }
 
 fn normalized_summary_label(label: &str) -> String {
@@ -1339,7 +1360,10 @@ fn build_planned_elsewhere_context(
         }
 
         for related_bead_id in covered_by {
-            if related_bead_id == bead.id || upstream_ids.contains(&related_bead_id) {
+            if related_bead_id == bead.id
+                || upstream_ids.contains(&related_bead_id)
+                || dependent_ids.contains(&related_bead_id)
+            {
                 continue;
             }
 
@@ -2634,6 +2658,52 @@ mod tests {
     }
 
     #[test]
+    fn build_planned_elsewhere_context_prefers_downstream_dependent_relationship_over_shared_acceptance_ownership(
+    ) {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_three_bead_bundle();
+        bundle.acceptance_map[0].covered_by = vec!["bead-2".to_owned(), "bead-3".to_owned()];
+        let resolved =
+            resolve_bead_plan(&bundle, &milestone_id, &sample_bead()).expect("resolve bead");
+        let bead_summaries = BTreeMap::from([(
+            "ms-alpha.bead-3".to_owned(),
+            BeadSummary {
+                id: "ms-alpha.bead-3".to_owned(),
+                title: "Document task bootstrap follow-up".to_owned(),
+                status: BeadStatus::Open,
+                priority: BeadPriority::new(2),
+                bead_type: BeadType::Docs,
+                labels: Vec::new(),
+            },
+        )]);
+        let mut bead = sample_bead();
+        bead.dependents.push(DependencyRef {
+            id: "ms-alpha.bead-3".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Document task bootstrap follow-up".to_owned()),
+            status: Some(BeadStatus::Open),
+        });
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &bead_summaries,
+        );
+
+        let matching = planned_elsewhere
+            .iter()
+            .filter(|item| item.id == "ms-alpha.bead-3")
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].relationship, "downstream dependent");
+        assert!(!matching[0]
+            .relationship
+            .contains("shared milestone acceptance ownership"));
+    }
+
+    #[test]
     fn compact_planned_elsewhere_summary_skips_fenced_openers() {
         let summary = compact_planned_elsewhere_summary(Some(
             "```md\n## Review Policy\nKeep this example fenced.\n```\nCapture the real follow-up text.",
@@ -2657,6 +2727,18 @@ mod tests {
     fn compact_planned_elsewhere_summary_uses_inline_scope_label_body() {
         let summary = compact_planned_elsewhere_summary(Some(
             "Scope: Capture the operator-facing workflow once project creation is stable.",
+        ));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("Capture the operator-facing workflow once project creation is stable.")
+        );
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_skips_level_one_heading() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "# Planned Follow-up\nCapture the operator-facing workflow once project creation is stable.",
         ));
 
         assert_eq!(
