@@ -553,7 +553,6 @@ async fn service_does_not_reuse_sessions_for_roles_that_disallow_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn service_emits_invocation_completed_trace_with_token_fields() {
     let capture = log_capture();
-    capture.clear();
 
     let temp_dir = tempdir().expect("create temp dir");
     let project_root = project_root_fixture(temp_dir.path());
@@ -570,7 +569,11 @@ async fn service_emits_invocation_completed_trace_with_token_fields() {
         CancellationToken::new(),
     );
 
-    let _envelope = service.invoke(request).await.expect("invoke succeeds");
+    capture
+        .in_scope_async(async {
+            let _envelope = service.invoke(request).await.expect("invoke succeeds");
+        })
+        .await;
 
     let event = capture.assert_event_has_fields(&[
         ("invocation_id", "trace-invoke-1"),

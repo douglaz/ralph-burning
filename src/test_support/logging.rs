@@ -6,8 +6,9 @@
 //! use ralph_burning::test_support::logging::log_capture;
 //!
 //! let capture = log_capture();
-//! capture.clear();
-//! tracing::info!(operation = "sync_flush", bead_id = "bead-1", "mutation finished");
+//! capture.in_scope(|| {
+//!     tracing::info!(operation = "sync_flush", bead_id = "bead-1", "mutation finished");
+//! });
 //! capture.assert_event_has_fields(&[
 //!     ("operation", "sync_flush"),
 //!     ("bead_id", "bead-1"),
@@ -16,10 +17,12 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::future::Future;
+use std::sync::{Arc, Mutex};
 
 use tracing::field::{Field, Visit};
-use tracing::{Event, Subscriber};
+use tracing::instrument::WithSubscriber;
+use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::prelude::*;
 
@@ -46,6 +49,26 @@ impl StructuredLogCapture {
     /// Clear all previously captured events.
     pub fn clear(&self) {
         self.0.lock().expect("log capture lock poisoned").clear();
+    }
+
+    fn dispatch(&self) -> Dispatch {
+        Dispatch::new(tracing_subscriber::registry().with(CaptureLayer { sink: self.clone() }))
+    }
+
+    /// Run synchronous test code inside this capture's tracing scope.
+    pub fn in_scope<T>(&self, body: impl FnOnce() -> T) -> T {
+        self.clear();
+        let dispatch = self.dispatch();
+        tracing::dispatcher::with_default(&dispatch, body)
+    }
+
+    /// Run async test code inside this capture's tracing scope.
+    pub async fn in_scope_async<F>(&self, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        self.clear();
+        future.with_subscriber(self.dispatch()).await
     }
 
     /// Return a snapshot of all captured events.
@@ -165,21 +188,9 @@ fn render_events(events: &[CapturedLogEvent]) -> String {
     rendered
 }
 
-/// Return the process-wide tracing capture sink used by tests.
+/// Return a fresh structured tracing capture for a single test scope.
 pub fn log_capture() -> StructuredLogCapture {
-    static LOG_CAPTURE: OnceLock<StructuredLogCapture> = OnceLock::new();
-
-    LOG_CAPTURE
-        .get_or_init(|| {
-            let capture = StructuredLogCapture::default();
-            let subscriber = tracing_subscriber::registry().with(CaptureLayer {
-                sink: capture.clone(),
-            });
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("initialize global test log capture");
-            capture
-        })
-        .clone()
+    StructuredLogCapture::default()
 }
 
 #[cfg(test)]
@@ -189,14 +200,14 @@ mod tests {
     #[test]
     fn log_capture_asserts_on_structured_fields() {
         let capture = log_capture();
-        capture.clear();
-
-        tracing::info!(
-            operation = "update_bead_status",
-            bead_id = "bead-2",
-            duration_ms = 7u64,
-            "br mutation completed"
-        );
+        capture.in_scope(|| {
+            tracing::info!(
+                operation = "update_bead_status",
+                bead_id = "bead-2",
+                duration_ms = 7u64,
+                "br mutation completed"
+            );
+        });
 
         let event = capture.assert_event_has_fields(&[
             ("operation", "update_bead_status"),
@@ -206,5 +217,42 @@ mod tests {
         ]);
 
         assert_eq!(event.level, "INFO");
+    }
+
+    #[test]
+    fn log_capture_scopes_events_per_capture() {
+        let outer = log_capture();
+        let inner = log_capture();
+
+        outer.in_scope(|| {
+            tracing::info!(scope = "outer", "outer event");
+
+            inner.in_scope(|| {
+                tracing::info!(scope = "inner", "inner event");
+            });
+
+            tracing::info!(scope = "outer", "outer event 2");
+        });
+
+        assert_eq!(outer.snapshot().len(), 2);
+        outer.assert_event_has_fields(&[("scope", "outer"), ("message", "outer event")]);
+        inner.assert_event_has_fields(&[("scope", "inner"), ("message", "inner event")]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn log_capture_supports_async_scopes() {
+        let capture = log_capture();
+
+        capture
+            .in_scope_async(async {
+                tracing::info!(scope = "async", attempt = 1u64, "async event");
+            })
+            .await;
+
+        capture.assert_event_has_fields(&[
+            ("scope", "async"),
+            ("attempt", "1"),
+            ("message", "async event"),
+        ]);
     }
 }
