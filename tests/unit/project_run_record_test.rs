@@ -849,6 +849,34 @@ fn render_bead_task_prompt_keeps_markdown_subsections_inside_non_goals() {
 }
 
 #[test]
+fn render_bead_task_prompt_resets_non_goals_when_a_new_scope_subsection_starts() {
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Scope:\n- update the canonical prompt generator\n\nNon-goals:\n- do not change CLI\n\nContract hardening notes:\n- preserve fix-now boundaries\n- keep planned-elsewhere work separate\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let acceptance_start = prompt
+        .find("## Acceptance Criteria")
+        .expect("acceptance section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+    let non_goals_section = &prompt[non_goals_start..acceptance_start];
+
+    assert!(must_do_section.contains("Contract hardening notes:"));
+    assert!(must_do_section.contains("preserve fix-now boundaries"));
+    assert!(must_do_section.contains("keep planned-elsewhere work separate"));
+    assert!(non_goals_section.contains("- do not change CLI"));
+    assert!(!non_goals_section.contains("Contract hardening notes:"));
+}
+
+#[test]
 fn render_bead_task_prompt_keeps_plain_subsections_inside_embedded_acceptance_criteria() {
     let mut context = sample_bead_context();
     context.bead_description = Some(
@@ -890,6 +918,29 @@ fn render_bead_task_prompt_keeps_markdown_subsections_inside_embedded_acceptance
     assert!(must_do_section.contains("Scope:"));
     assert!(!must_do_section.contains("### Notes"));
     assert!(!must_do_section.contains("keep the rendered contract stable"));
+}
+
+#[test]
+fn render_bead_task_prompt_uses_description_acceptance_criteria_when_structured_field_is_empty() {
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the contract explicit\n\n## Acceptance Criteria\n- preserve the canonical section order\n- keep prompt generation deterministic\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let acceptance_start = prompt
+        .find("## Acceptance Criteria")
+        .expect("acceptance section should exist");
+    let planned_start = prompt
+        .find("## Already Planned Elsewhere")
+        .expect("planned elsewhere section should exist");
+    let acceptance_section = &prompt[acceptance_start..planned_start];
+
+    assert!(acceptance_section.contains("- preserve the canonical section order"));
+    assert!(acceptance_section.contains("- keep prompt generation deterministic"));
+    assert!(!acceptance_section.contains("No explicit acceptance criteria were supplied."));
 }
 
 #[test]
@@ -1150,6 +1201,39 @@ fn create_project_from_bead_context_accepts_fence_first_bullet_fields() {
     assert!(captured
         .prompt_contents
         .contains("-\n  ```md\n  ## Review Policy\n  ```"));
+}
+
+#[test]
+fn create_project_from_bead_context_preserves_description_only_acceptance_criteria() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the task scoped to the active bead\n\n## Acceptance Criteria\n- preserve description-only acceptance criteria\n- do not emit the empty acceptance fallback\n".to_owned(),
+    );
+
+    let record = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: None,
+            prompt_override: None,
+            created_at: test_timestamp(),
+            context,
+        },
+    )
+    .expect("description-only acceptance criteria should bootstrap");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
+    assert!(captured
+        .prompt_contents
+        .contains("- preserve description-only acceptance criteria"));
+    assert!(!captured
+        .prompt_contents
+        .contains("No explicit acceptance criteria were supplied."));
 }
 
 #[test]
