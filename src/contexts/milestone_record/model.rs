@@ -221,7 +221,9 @@ impl MilestoneProgress {
     pub fn remaining(&self) -> u32 {
         self.total_beads
             .saturating_sub(self.completed_beads)
+            .saturating_sub(self.in_progress_beads)
             .saturating_sub(self.failed_beads)
+            .saturating_sub(self.blocked_beads)
             .saturating_sub(self.skipped_beads)
     }
 }
@@ -712,6 +714,21 @@ mod tests {
             failed_beads: 1,
             skipped_beads: 1,
             blocked_beads: 0,
+        };
+        assert_eq!(progress.remaining(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn progress_remaining_excludes_in_progress_and_blocked_beads(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let progress = MilestoneProgress {
+            total_beads: 6,
+            completed_beads: 1,
+            in_progress_beads: 2,
+            failed_beads: 0,
+            skipped_beads: 1,
+            blocked_beads: 1,
         };
         assert_eq!(progress.remaining(), 1);
         Ok(())

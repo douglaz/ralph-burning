@@ -786,7 +786,7 @@ fn render_bead_task_prompt_includes_milestone_scope_and_agents_guidance() {
     assert!(prompt.contains("## AGENTS / Repo Guidance"));
     assert!(prompt.contains("- Status: `ready`"));
     assert!(prompt.contains(
-        "- Progress: 1/4 completed; 1 in progress; 0 failed; 1 blocked; 0 skipped; 3 remaining"
+        "- Progress: 1/4 completed; 1 in progress; 0 failed; 1 blocked; 0 skipped; 1 remaining"
     ));
     assert!(prompt.contains("ms-alpha.bead-1 (Define task-source metadata) - blocking dependency; status: closed; outcome: completed"));
     assert!(prompt.contains(

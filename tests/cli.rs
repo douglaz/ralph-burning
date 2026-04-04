@@ -2049,7 +2049,7 @@ exit 1
     assert!(prompt.contains("## Current Bead Details"));
     assert!(prompt.contains("- Status: `ready`"));
     assert!(prompt.contains(
-        "- Progress: 1/3 completed; 1 in progress; 0 failed; 1 blocked; 0 skipped; 2 remaining"
+        "- Progress: 1/3 completed; 1 in progress; 0 failed; 1 blocked; 0 skipped; 0 remaining"
     ));
     assert!(prompt.contains("Keep changes inspectable and deterministic."));
     assert!(prompt.contains("ms-alpha.bead-1 (Define task-source metadata) - blocking dependency; status: closed; outcome: completed"));
@@ -2184,7 +2184,7 @@ EOF
 exit 0
 fi
 if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
-echo "simulated br list failure" >&2
+echo "failed to read .beads/issues.jsonl: No such file or directory" >&2
 exit 1
 fi
 echo "unexpected br args: $@" >&2

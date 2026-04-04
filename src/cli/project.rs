@@ -809,13 +809,13 @@ fn map_br_list_error(error: BrError) -> AppError {
 fn br_list_exit_error_looks_corrupt(stderr: &str) -> bool {
     let normalized = stderr.to_ascii_lowercase();
     [
-        ".beads/issues.jsonl",
-        "issues.jsonl",
         "corrupt",
         "failed to parse",
         "parse error",
         "invalid json",
         "malformed json",
+        "json parse",
+        "decode error",
     ]
     .iter()
     .any(|needle| normalized.contains(needle))
@@ -1124,6 +1124,8 @@ fn is_planned_elsewhere_scope_label(label: &str) -> bool {
             | "objective"
             | "objectives"
             | "description"
+            | "nongoals"
+            | "acceptancecriteria"
     )
 }
 
@@ -2752,6 +2754,30 @@ mod tests {
     }
 
     #[test]
+    fn compact_planned_elsewhere_summary_skips_non_goal_section_labels() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "Non-goals:\nLeave the current bead scoped to prompt generation.",
+        ));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("Leave the current bead scoped to prompt generation.")
+        );
+    }
+
+    #[test]
+    fn compact_planned_elsewhere_summary_skips_acceptance_criteria_labels() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "Acceptance Criteria:\nCapture the operator-facing handoff after prompt generation lands.",
+        ));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("Capture the operator-facing handoff after prompt generation lands.")
+        );
+    }
+
+    #[test]
     fn map_br_list_error_marks_corrupt_exit_output_as_corrupt_record() {
         let error = map_br_list_error(BrError::BrExitError {
             exit_code: 1,
@@ -2762,6 +2788,18 @@ mod tests {
 
         assert!(matches!(error, AppError::CorruptRecord { .. }));
         assert!(error.to_string().contains(".beads/issues.jsonl"));
+    }
+
+    #[test]
+    fn map_br_list_error_keeps_missing_issues_file_failures_degradable() {
+        let error = map_br_list_error(BrError::BrExitError {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "failed to read .beads/issues.jsonl: No such file or directory".to_owned(),
+            command: "br list --json".to_owned(),
+        });
+
+        assert!(matches!(error, AppError::Io(_)));
     }
 
     #[test]
