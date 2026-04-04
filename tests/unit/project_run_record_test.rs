@@ -793,6 +793,29 @@ fn render_bead_task_prompt_escapes_canonical_headings_inside_agents_guidance() {
 }
 
 #[test]
+fn render_bead_task_prompt_preserves_fenced_canonical_headings_inside_agents_guidance_verbatim() {
+    let mut context = sample_bead_context();
+    context.agents_guidance = Some(
+        "```md\n## Review Policy\nKeep this fenced example verbatim.\n\n## Acceptance Criteria\nStill example content.\n```"
+            .to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    assert!(prompt.contains(
+        "```md\n## Review Policy\nKeep this fenced example verbatim.\n\n## Acceptance Criteria\nStill example content.\n```"
+    ));
+    assert!(
+        !prompt.contains("```md\n    ## Review Policy")
+            && !prompt.contains("```md\n    ## Acceptance Criteria")
+    );
+    assert!(
+        ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
+            .is_ok()
+    );
+}
+
+#[test]
 fn render_bead_task_prompt_extracts_bead_local_non_goals_and_strips_embedded_contract_sections() {
     let mut context = sample_bead_context();
     context.bead_description = Some(

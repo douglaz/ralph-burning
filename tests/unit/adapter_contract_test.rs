@@ -29,11 +29,11 @@ fn test_timestamp() -> chrono::DateTime<Utc> {
 }
 
 fn live_workspace_root(base_dir: &Path) -> PathBuf {
-    base_dir.join(".git/ralph-burning-live")
+    FileSystem::live_workspace_root_path(base_dir)
 }
 
 fn audit_workspace_root(base_dir: &Path) -> PathBuf {
-    base_dir.join(".ralph-burning")
+    FileSystem::audit_workspace_root_path(base_dir)
 }
 
 fn workspace_root(base_dir: &Path) -> PathBuf {
@@ -175,10 +175,7 @@ fn project_store_list_prefers_live_project_when_audit_mirror_is_incomplete() {
     setup_workspace(tmp.path());
     create_project_on_disk(tmp.path(), "alpha");
 
-    fs::remove_file(
-        audit_project_root(tmp.path(), "alpha").join("project.toml"),
-    )
-    .unwrap();
+    fs::remove_file(audit_project_root(tmp.path(), "alpha").join("project.toml")).unwrap();
 
     let store = FsProjectStore;
     let ids = store.list_project_ids(tmp.path()).unwrap();
@@ -395,10 +392,7 @@ fn journal_store_missing_file_returns_corrupt() {
     setup_workspace(tmp.path());
     create_project_on_disk(tmp.path(), "alpha");
 
-    fs::remove_file(
-        project_root(tmp.path(), "alpha").join("journal.ndjson"),
-    )
-    .unwrap();
+    fs::remove_file(project_root(tmp.path(), "alpha").join("journal.ndjson")).unwrap();
 
     let store = FsJournalStore;
     let pid = ProjectId::new("alpha").unwrap();
@@ -413,11 +407,7 @@ fn journal_store_empty_file_returns_corrupt_error() {
     create_project_on_disk(tmp.path(), "alpha");
 
     // Truncate journal to empty
-    fs::write(
-        project_root(tmp.path(), "alpha").join("journal.ndjson"),
-        "",
-    )
-    .unwrap();
+    fs::write(project_root(tmp.path(), "alpha").join("journal.ndjson"), "").unwrap();
 
     let store = FsJournalStore;
     let pid = ProjectId::new("alpha").unwrap();
@@ -1162,8 +1152,7 @@ fn project_create_copies_prompt_and_records_canonical_reference() {
         .unwrap();
 
     // Verify the copied prompt.md contains the original content
-    let copied =
-        fs::read_to_string(project_root(tmp.path(), "alpha").join("prompt.md")).unwrap();
+    let copied = fs::read_to_string(project_root(tmp.path(), "alpha").join("prompt.md")).unwrap();
     assert_eq!(copied, "# External Prompt\nContent here.");
 
     // Verify project.toml records the canonical reference, not a source path

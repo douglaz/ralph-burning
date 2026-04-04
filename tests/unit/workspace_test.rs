@@ -1,17 +1,18 @@
 use chrono::TimeZone;
+use ralph_burning::adapters::fs::FileSystem;
 use ralph_burning::contexts::workspace_governance::{
-    initialize_workspace, load_workspace_config, REQUIRED_WORKSPACE_DIRECTORIES, WORKSPACE_DIR,
+    initialize_workspace, load_workspace_config, REQUIRED_WORKSPACE_DIRECTORIES,
 };
 use ralph_burning::shared::domain::{WorkspaceConfig, CURRENT_WORKSPACE_VERSION};
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 pub(crate) fn audit_workspace_root(base_dir: &Path) -> PathBuf {
-    base_dir.join(WORKSPACE_DIR)
+    FileSystem::audit_workspace_root_path(base_dir)
 }
 
 pub(crate) fn live_workspace_root(base_dir: &Path) -> PathBuf {
-    base_dir.join(".git/ralph-burning-live")
+    FileSystem::live_workspace_root_path(base_dir)
 }
 
 pub(crate) fn active_project_path(base_dir: &Path) -> PathBuf {
@@ -19,7 +20,9 @@ pub(crate) fn active_project_path(base_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn live_project_root(base_dir: &Path, project_id: &str) -> PathBuf {
-    live_workspace_root(base_dir).join("projects").join(project_id)
+    live_workspace_root(base_dir)
+        .join("projects")
+        .join(project_id)
 }
 
 #[test]
@@ -50,9 +53,13 @@ fn initialize_workspace_creates_required_directory_structure_and_config() {
     assert_eq!(live_workspace_root(temp_dir.path()), result.workspace_root);
     for required_directory in REQUIRED_WORKSPACE_DIRECTORIES {
         assert!(result.workspace_root.join(required_directory).is_dir());
-        assert!(audit_workspace_root(temp_dir.path()).join(required_directory).is_dir());
+        assert!(audit_workspace_root(temp_dir.path())
+            .join(required_directory)
+            .is_dir());
     }
-    assert!(audit_workspace_root(temp_dir.path()).join("workspace.toml").is_file());
+    assert!(audit_workspace_root(temp_dir.path())
+        .join("workspace.toml")
+        .is_file());
 
     let config = load_workspace_config(temp_dir.path()).expect("load workspace config");
     assert_eq!(created_at, config.created_at);

@@ -22,11 +22,11 @@ fn binary() -> &'static str {
 }
 
 fn live_workspace_root(base_dir: &std::path::Path) -> std::path::PathBuf {
-    base_dir.join(".git/ralph-burning-live")
+    ralph_burning::adapters::fs::FileSystem::live_workspace_root_path(base_dir)
 }
 
 fn audit_workspace_root(base_dir: &std::path::Path) -> std::path::PathBuf {
-    base_dir.join(".ralph-burning")
+    ralph_burning::adapters::fs::FileSystem::audit_workspace_root_path(base_dir)
 }
 
 fn workspace_config_path(base_dir: &std::path::Path) -> std::path::PathBuf {

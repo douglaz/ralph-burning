@@ -8,9 +8,9 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::{
-    FsAmendmentQueueStore, FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore,
-    FsProjectStore, FsRawOutputStore, FsRollbackPointStore, FsRunSnapshotStore,
-    FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
+    FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsJournalStore,
+    FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRollbackPointStore,
+    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
 };
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
 use ralph_burning::contexts::agent_execution::model::{
@@ -50,7 +50,7 @@ fn setup_workspace(base_dir: &Path) {
 }
 
 fn live_workspace_root(base_dir: &Path) -> PathBuf {
-    base_dir.join(".git/ralph-burning-live")
+    FileSystem::live_workspace_root_path(base_dir)
 }
 
 fn workspace_config_path(base_dir: &Path) -> PathBuf {

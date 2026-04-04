@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use nix::fcntl::{Flock, FlockArg};
+use sha2::{Digest, Sha256};
 
 use crate::contexts::agent_execution::model::RawOutputReference;
 use crate::contexts::agent_execution::service::RawOutputPort;
@@ -245,13 +246,11 @@ impl FileSystem {
         }
     }
 
-    /// Compute a simple hash of content for prompt integrity tracking.
+    /// Compute a stable SHA-256 digest for prompt integrity tracking.
     pub fn prompt_hash(contents: &str) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        contents.hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
+        let mut hasher = Sha256::new();
+        hasher.update(contents.as_bytes());
+        format!("{:x}", hasher.finalize())
     }
 
     /// Atomically update `prompt.md`, write `prompt.original.md`, and recompute
@@ -397,15 +396,15 @@ impl FileSystem {
         marker
     }
 
-    pub(crate) fn audit_workspace_root_path(base_dir: &Path) -> PathBuf {
+    pub fn audit_workspace_root_path(base_dir: &Path) -> PathBuf {
         base_dir.join(AUDIT_WORKSPACE_DIR)
     }
 
-    pub(crate) fn live_workspace_root_path(base_dir: &Path) -> PathBuf {
+    pub fn live_workspace_root_path(base_dir: &Path) -> PathBuf {
         Self::resolve_git_dir(base_dir).join(LIVE_WORKSPACE_DIR)
     }
 
-    pub(crate) fn workspace_root_path(base_dir: &Path) -> PathBuf {
+    pub fn workspace_root_path(base_dir: &Path) -> PathBuf {
         let live_root = Self::live_workspace_root_path(base_dir);
         if live_root.join("workspace.toml").is_file() {
             live_root
@@ -4358,6 +4357,29 @@ mod tests {
         assert_eq!(parsed.outcome_detail.as_deref(), Some("All checks passed"));
         // Re-render and confirm stability
         assert_eq!(parsed.render(), rendered);
+    }
+
+    #[test]
+    fn prompt_hash_uses_stable_sha256_digest() {
+        let prompt = "# Ralph Task Prompt\n\nStable prompt body.\n";
+        assert_eq!(
+            FileSystem::prompt_hash(prompt),
+            "87b3874a6af501c8b259ef3b85c6e65ad843c00be92f6179864626a96846fd12"
+        );
+    }
+
+    #[test]
+    fn live_workspace_root_path_resolves_gitdir_marker_files() {
+        let temp = tempdir().expect("tempdir");
+        let actual_git_dir = temp.path().join(".git-worktree");
+        std::fs::create_dir_all(&actual_git_dir).expect("create gitdir");
+        std::fs::write(temp.path().join(".git"), "gitdir: .git-worktree\n")
+            .expect("write gitdir marker");
+
+        assert_eq!(
+            FileSystem::live_workspace_root_path(temp.path()),
+            actual_git_dir.join(LIVE_WORKSPACE_DIR)
+        );
     }
 
     /// Regression: merge() must fill ALL optional fields from the requested

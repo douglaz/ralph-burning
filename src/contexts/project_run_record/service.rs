@@ -705,9 +705,22 @@ fn split_bead_description_scope(description: &str) -> (String, Vec<String>, Vec<
 
 pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
     fn escape_canonical_heading_lines(value: &str) -> String {
+        let mut active_fence = None;
         value
             .lines()
             .map(|line| {
+                if let Some(opening) = active_fence {
+                    if closes_fence(line, opening) {
+                        active_fence = None;
+                    }
+                    return line.to_owned();
+                }
+
+                if let Some(opening) = opening_fence_delimiter(line) {
+                    active_fence = Some(opening);
+                    return line.to_owned();
+                }
+
                 let trimmed_end = line.trim_end();
                 let leading_spaces = trimmed_end.chars().take_while(|ch| *ch == ' ').count();
                 let is_canonical_heading = leading_spaces <= 3
