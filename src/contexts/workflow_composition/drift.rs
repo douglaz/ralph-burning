@@ -23,6 +23,7 @@ use crate::shared::error::{AppError, AppResult};
 pub enum PromptChangeResumeDecision {
     NoChange {
         current_prompt_hash: String,
+        prompt_hash_at_cycle_start: String,
     },
     Continue {
         current_prompt_hash: String,
@@ -61,9 +62,26 @@ pub fn evaluate_prompt_change_on_resume(
     })?;
     let current_prompt_hash = FileSystem::prompt_hash(&prompt);
 
-    if current_prompt_hash == prompt_hash_at_cycle_start {
+    if let Some(matched_via_legacy_hash) =
+        prompt_matches_resume_baseline(&prompt, &current_prompt_hash, prompt_hash_at_cycle_start)
+    {
+        let effective_cycle_prompt_hash = if matched_via_legacy_hash {
+            sync_project_prompt_hash(base_dir, project_id, &current_prompt_hash)?;
+            migrate_snapshot_prompt_hashes(
+                run_snapshot_write,
+                base_dir,
+                project_id,
+                snapshot,
+                prompt_hash_at_cycle_start,
+                &current_prompt_hash,
+            )?;
+            current_prompt_hash.clone()
+        } else {
+            prompt_hash_at_cycle_start.to_owned()
+        };
         return Ok(PromptChangeResumeDecision::NoChange {
             current_prompt_hash,
+            prompt_hash_at_cycle_start: effective_cycle_prompt_hash,
         });
     }
 
@@ -139,6 +157,52 @@ pub fn evaluate_prompt_change_on_resume(
             })
         }
     }
+}
+
+fn prompt_matches_resume_baseline(
+    prompt: &str,
+    current_prompt_hash: &str,
+    persisted_prompt_hash: &str,
+) -> Option<bool> {
+    if current_prompt_hash == persisted_prompt_hash {
+        Some(false)
+    } else if FileSystem::legacy_prompt_hash(prompt) == persisted_prompt_hash {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+fn migrate_snapshot_prompt_hashes(
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    snapshot: &mut RunSnapshot,
+    legacy_prompt_hash: &str,
+    current_prompt_hash: &str,
+) -> AppResult<()> {
+    let mut changed = false;
+
+    for run in [&mut snapshot.active_run, &mut snapshot.interrupted_run] {
+        let Some(run) = run.as_mut() else {
+            continue;
+        };
+
+        if run.prompt_hash_at_cycle_start == legacy_prompt_hash {
+            run.prompt_hash_at_cycle_start = current_prompt_hash.to_owned();
+            changed = true;
+        }
+        if run.prompt_hash_at_stage_start == legacy_prompt_hash {
+            run.prompt_hash_at_stage_start = current_prompt_hash.to_owned();
+            changed = true;
+        }
+    }
+
+    if changed {
+        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
+    }
+
+    Ok(())
 }
 
 fn clear_abandoned_supporting_records(
@@ -567,6 +631,85 @@ mod tests {
         assert_eq!(
             read_audit_project_record(base_dir, &project_id).prompt_hash,
             FileSystem::prompt_hash("# Prompt\n\nChanged prompt.\n")
+        );
+    }
+
+    #[test]
+    fn legacy_cycle_prompt_hash_does_not_trigger_resume_drift_when_prompt_is_unchanged() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let (project_id, run_id, _current_prompt_hash) =
+            setup_project(base_dir, "prompt-legacy-baseline").expect("project setup");
+        let legacy_prompt_hash = FileSystem::legacy_prompt_hash("# Prompt\n\nOriginal prompt.\n");
+
+        let mut seq = 1;
+        let cursor = StageCursor::new(StageId::Review, 1, 1, 1).expect("cursor");
+        let mut snapshot = RunSnapshot::initial(20);
+        snapshot.interrupted_run = Some(crate::contexts::project_run_record::model::ActiveRun {
+            run_id: run_id.to_string(),
+            stage_cursor: cursor.clone(),
+            started_at: Utc::now(),
+            prompt_hash_at_cycle_start: legacy_prompt_hash.clone(),
+            prompt_hash_at_stage_start: legacy_prompt_hash.clone(),
+            qa_iterations_current_cycle: 0,
+            review_iterations_current_cycle: 0,
+            final_review_restart_count: 0,
+            stage_resolution_snapshot: None,
+        });
+        let decision = evaluate_prompt_change_on_resume(
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsRuntimeLogWriteStore,
+            base_dir,
+            &project_id,
+            &project_root(base_dir, &project_id),
+            "prompt.md",
+            &run_id,
+            &mut seq,
+            &mut snapshot,
+            &cursor,
+            &[StageId::Planning, StageId::Review],
+            StageId::Planning,
+            &legacy_prompt_hash,
+            PromptChangeAction::Abort,
+        )
+        .expect("legacy baseline should be accepted when the prompt is unchanged");
+
+        match decision {
+            PromptChangeResumeDecision::NoChange {
+                current_prompt_hash,
+                prompt_hash_at_cycle_start,
+            } => {
+                assert_eq!(
+                    current_prompt_hash,
+                    FileSystem::prompt_hash("# Prompt\n\nOriginal prompt.\n")
+                );
+                assert_eq!(prompt_hash_at_cycle_start, current_prompt_hash);
+            }
+            _ => panic!("expected no-change decision"),
+        }
+        assert_eq!(seq, 1);
+        assert_eq!(
+            read_project_record(base_dir, &project_id).prompt_hash,
+            FileSystem::prompt_hash("# Prompt\n\nOriginal prompt.\n")
+        );
+        assert_eq!(
+            read_audit_project_record(base_dir, &project_id).prompt_hash,
+            FileSystem::prompt_hash("# Prompt\n\nOriginal prompt.\n")
+        );
+        let interrupted = snapshot
+            .interrupted_run
+            .as_ref()
+            .expect("interrupted run should still be present");
+        assert_eq!(
+            interrupted.prompt_hash_at_cycle_start,
+            FileSystem::prompt_hash("# Prompt\n\nOriginal prompt.\n")
+        );
+        assert_eq!(
+            interrupted.prompt_hash_at_stage_start,
+            FileSystem::prompt_hash("# Prompt\n\nOriginal prompt.\n")
         );
     }
 

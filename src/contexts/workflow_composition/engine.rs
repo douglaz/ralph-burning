@@ -38,6 +38,7 @@ use crate::contexts::project_run_record::service::{
     ProjectStorePort, RollbackPointStorePort, RunSnapshotPort, RunSnapshotWritePort,
     RuntimeLogWritePort,
 };
+use crate::contexts::project_run_record::task_prompt_contract;
 use crate::contexts::workflow_composition::payloads::{
     ReviewOutcome, StagePayload, ValidationPayload,
 };
@@ -105,6 +106,8 @@ pub fn build_stage_prompt(
     )?;
     let schema =
         serde_json::to_string_pretty(&InvocationContract::Stage(*contract).json_schema_value())?;
+    let task_prompt_contract_block =
+        task_prompt_contract::stage_consumer_guidance_for_prompt(&project_prompt);
 
     // Pre-render optional sections
     let prior_outputs_block = if !prior_outputs.is_empty() {
@@ -159,6 +162,7 @@ pub fn build_stage_prompt(
         Some(project_id),
         &[
             ("role_instruction", &role_instruction),
+            ("task_prompt_contract", &task_prompt_contract_block),
             ("project_prompt", project_prompt.trim_end()),
             ("json_schema", &schema),
             ("prior_outputs", &prior_outputs_block),
@@ -1354,8 +1358,9 @@ where
         )? {
             PromptChangeResumeDecision::NoChange {
                 current_prompt_hash,
-            }
-            | PromptChangeResumeDecision::Continue {
+                prompt_hash_at_cycle_start,
+            } => (current_prompt_hash, prompt_hash_at_cycle_start),
+            PromptChangeResumeDecision::Continue {
                 current_prompt_hash,
             } => (current_prompt_hash, prompt_change_baseline.clone()),
             PromptChangeResumeDecision::RestartCycle {

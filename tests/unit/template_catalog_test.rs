@@ -56,7 +56,7 @@ fn workspace_override_takes_precedence_over_built_in() {
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::write(
         ws.join("planning.md"),
-        "Custom: {{role_instruction}} | {{project_prompt}} | {{json_schema}}",
+        "Custom: {{role_instruction}} | {{task_prompt_contract}} | {{project_prompt}} | {{json_schema}}",
     )
     .unwrap();
 
@@ -78,7 +78,7 @@ fn project_override_takes_precedence_over_workspace() {
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::write(
         ws.join("planning.md"),
-        "Workspace: {{role_instruction}} | {{project_prompt}} | {{json_schema}}",
+        "Workspace: {{role_instruction}} | {{task_prompt_contract}} | {{project_prompt}} | {{json_schema}}",
     )
     .unwrap();
 
@@ -92,7 +92,7 @@ fn project_override_takes_precedence_over_workspace() {
     std::fs::create_dir_all(&proj).unwrap();
     std::fs::write(
         proj.join("planning.md"),
-        "Project: {{role_instruction}} | {{project_prompt}} | {{json_schema}}",
+        "Project: {{role_instruction}} | {{task_prompt_contract}} | {{project_prompt}} | {{json_schema}}",
     )
     .unwrap();
 
@@ -114,7 +114,7 @@ fn workspace_override_used_when_no_project_override() {
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::write(
         ws.join("planning.md"),
-        "WS: {{role_instruction}} | {{project_prompt}} | {{json_schema}}",
+        "WS: {{role_instruction}} | {{task_prompt_contract}} | {{project_prompt}} | {{json_schema}}",
     )
     .unwrap();
 
@@ -193,6 +193,42 @@ fn missing_required_placeholder_rejected() {
     let err = result.unwrap_err().to_string();
     assert!(err.contains("missing required placeholder"));
     assert!(err.contains("base_context"));
+}
+
+#[test]
+fn stage_override_without_task_prompt_contract_placeholder_is_accepted() {
+    let tmp = tempdir().unwrap();
+    let ws = tmp.path().join(".ralph-burning").join("templates");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        ws.join("planning.md"),
+        "{{role_instruction}} and {{project_prompt}} and {{json_schema}}",
+    )
+    .unwrap();
+
+    let result = template_catalog::resolve("planning", tmp.path(), None);
+    assert!(
+        result.is_ok(),
+        "legacy stage override should stay compatible"
+    );
+}
+
+#[test]
+fn panel_override_without_task_prompt_contract_placeholder_is_accepted() {
+    let tmp = tempdir().unwrap();
+    let ws = tmp.path().join(".ralph-burning").join("templates");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        ws.join("completion_panel_completer.md"),
+        "{{prompt_text}} and {{json_schema}}",
+    )
+    .unwrap();
+
+    let result = template_catalog::resolve("completion_panel_completer", tmp.path(), None);
+    assert!(
+        result.is_ok(),
+        "legacy panel override should stay compatible"
+    );
 }
 
 #[test]
@@ -354,7 +390,7 @@ fn render_preserves_verbatim_pre_rendered_blocks() {
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::write(
         ws.join("planning.md"),
-        "HEADER\n\n{{role_instruction}}\n\n{{project_prompt}}\n\n{{json_schema}}",
+        "HEADER\n\n{{role_instruction}}\n\n{{task_prompt_contract}}\n\n{{project_prompt}}\n\n{{json_schema}}",
     )
     .unwrap();
 
@@ -367,6 +403,7 @@ fn render_preserves_verbatim_pre_rendered_blocks() {
         None,
         &[
             ("role_instruction", "You are the Planner."),
+            ("task_prompt_contract", "Contract guidance"),
             ("project_prompt", multi_line_prompt),
             ("json_schema", json_block),
         ],

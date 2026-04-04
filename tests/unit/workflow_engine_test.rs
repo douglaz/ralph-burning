@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -8,9 +8,9 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::{
-    FsAmendmentQueueStore, FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore,
-    FsProjectStore, FsRawOutputStore, FsRollbackPointStore, FsRunSnapshotStore,
-    FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
+    FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsJournalStore,
+    FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRollbackPointStore,
+    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
 };
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
 use ralph_burning::contexts::agent_execution::model::{
@@ -47,6 +47,20 @@ static FAILPOINT_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 fn setup_workspace(base_dir: &Path) {
     workspace_governance::initialize_workspace(base_dir, Utc::now()).unwrap();
+}
+
+fn live_workspace_root(base_dir: &Path) -> PathBuf {
+    FileSystem::live_workspace_root_path(base_dir)
+}
+
+fn workspace_config_path(base_dir: &Path) -> PathBuf {
+    live_workspace_root(base_dir).join("workspace.toml")
+}
+
+fn project_root(base_dir: &Path, project_id: &str) -> PathBuf {
+    live_workspace_root(base_dir)
+        .join("projects")
+        .join(project_id)
 }
 
 fn create_project_with_flow(base_dir: &Path, project_id: &str, flow: FlowPreset) -> ProjectId {
@@ -362,8 +376,8 @@ async fn happy_path_standard_run_completes() {
     );
 
     // Verify payloads and artifacts were written
-    let payloads_dir = base_dir.join(".ralph-burning/projects/happy-test/history/payloads");
-    let artifacts_dir = base_dir.join(".ralph-burning/projects/happy-test/history/artifacts");
+    let payloads_dir = project_root(base_dir, "happy-test").join("history/payloads");
+    let artifacts_dir = project_root(base_dir, "happy-test").join("history/artifacts");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     // prompt_review: 4 records (1 refiner + 2 validators + 1 primary)
@@ -409,7 +423,7 @@ async fn happy_path_prompt_review_disabled() {
     assert!(result.is_ok());
 
     // Verify 7 stages completed (no prompt_review)
-    let payloads_dir = base_dir.join(".ralph-burning/projects/no-pr-test/history/payloads");
+    let payloads_dir = project_root(base_dir, "no-pr-test").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     // completion_panel: 3 records (2 completers + 1 aggregate)
     // final_review: 3 records (2 reviewers + 1 aggregate)
@@ -464,7 +478,7 @@ async fn successful_stage_transitions_create_rollback_points() {
     .await
     .expect("run completes");
 
-    let rollback_dir = base_dir.join(".ralph-burning/projects/rollback-points/rollback");
+    let rollback_dir = project_root(base_dir, "rollback-points").join("rollback");
     let rollback_file_count = fs::read_dir(&rollback_dir).unwrap().count();
     assert_eq!(rollback_file_count, 8, "one checkpoint per completed stage");
 
@@ -502,7 +516,7 @@ async fn checkpoint_creation_failure_is_tolerated_and_logged() {
     .await
     .expect("run completes without git repo");
 
-    let rollback_dir = base_dir.join(".ralph-burning/projects/checkpoint-warn/rollback");
+    let rollback_dir = project_root(base_dir, "checkpoint-warn").join("rollback");
     let rollback_files: Vec<_> = fs::read_dir(&rollback_dir)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -524,7 +538,7 @@ async fn checkpoint_creation_failure_is_tolerated_and_logged() {
     }
 
     let runtime_logs = fs::read_to_string(
-        base_dir.join(".ralph-burning/projects/checkpoint-warn/runtime/logs/run.ndjson"),
+        project_root(base_dir, "checkpoint-warn").join("runtime/logs/run.ndjson"),
     )
     .expect("read runtime logs");
     let warning_count = runtime_logs
@@ -601,8 +615,8 @@ async fn resume_after_rollback_preserves_abandoned_payload_artifacts_on_disk() {
     .await;
     assert!(resume_result.is_ok(), "{resume_result:?}");
 
-    let payloads_dir = base_dir.join(".ralph-burning/projects/rollback-branch/history/payloads");
-    let artifacts_dir = base_dir.join(".ralph-burning/projects/rollback-branch/history/artifacts");
+    let payloads_dir = project_root(base_dir, "rollback-branch").join("history/payloads");
+    let artifacts_dir = project_root(base_dir, "rollback-branch").join("history/artifacts");
 
     let mut payload_files: Vec<_> = fs::read_dir(&payloads_dir)
         .unwrap()
@@ -726,12 +740,11 @@ async fn happy_path_docs_change_run_completes() {
         entered
     );
 
-    let payload_count =
-        fs::read_dir(base_dir.join(".ralph-burning/projects/docs-happy/history/payloads"))
-            .unwrap()
-            .count();
+    let payload_count = fs::read_dir(project_root(base_dir, "docs-happy").join("history/payloads"))
+        .unwrap()
+        .count();
     let artifact_count =
-        fs::read_dir(base_dir.join(".ralph-burning/projects/docs-happy/history/artifacts"))
+        fs::read_dir(project_root(base_dir, "docs-happy").join("history/artifacts"))
             .unwrap()
             .count();
     // 4 primary stage records + 1 local validation supporting record
@@ -838,14 +851,12 @@ async fn happy_path_ci_improvement_run_completes() {
         entered
     );
 
-    let payload_count =
-        fs::read_dir(base_dir.join(".ralph-burning/projects/ci-happy/history/payloads"))
-            .unwrap()
-            .count();
-    let artifact_count =
-        fs::read_dir(base_dir.join(".ralph-burning/projects/ci-happy/history/artifacts"))
-            .unwrap()
-            .count();
+    let payload_count = fs::read_dir(project_root(base_dir, "ci-happy").join("history/payloads"))
+        .unwrap()
+        .count();
+    let artifact_count = fs::read_dir(project_root(base_dir, "ci-happy").join("history/artifacts"))
+        .unwrap()
+        .count();
     // 4 primary stage records + 1 local validation supporting record
     assert_eq!(payload_count, 5);
     assert_eq!(artifact_count, 5);
@@ -869,7 +880,7 @@ async fn docs_change_remediation_restarts_from_docs_update() {
     );
 
     // Append docs_commands to workspace config so EffectiveConfig::load picks them up.
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str(&format!("\n[validation]\ndocs_commands = [{:?}]\n", cmd));
     fs::write(&ws_config_path, ws_config).unwrap();
@@ -929,7 +940,7 @@ async fn docs_change_local_validation_pass_completes_without_amendments() {
     let pid = create_project_with_flow(base_dir, "docs-conditional", FlowPreset::DocsChange);
 
     // Append docs_commands to workspace config.
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str("\n[validation]\ndocs_commands = [\"true\"]\n");
     fs::write(&ws_config_path, ws_config).unwrap();
@@ -997,7 +1008,7 @@ async fn ci_improvement_remediation_restarts_from_ci_update() {
     );
 
     // Append ci_commands to workspace config.
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str(&format!("\n[validation]\nci_commands = [{:?}]\n", cmd));
     fs::write(&ws_config_path, ws_config).unwrap();
@@ -1057,7 +1068,7 @@ async fn ci_improvement_always_failing_validation_fails_run() {
     let pid = create_project_with_flow(base_dir, "ci-rejected", FlowPreset::CiImprovement);
 
     // Append ci_commands to workspace config.
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str("\n[validation]\nci_commands = [\"false\"]\n");
     fs::write(&ws_config_path, ws_config).unwrap();
@@ -1292,14 +1303,12 @@ async fn happy_path_quick_dev_run_completes() {
         entered
     );
 
-    let payload_count =
-        fs::read_dir(base_dir.join(".ralph-burning/projects/qd-happy/history/payloads"))
-            .unwrap()
-            .count();
-    let artifact_count =
-        fs::read_dir(base_dir.join(".ralph-burning/projects/qd-happy/history/artifacts"))
-            .unwrap()
-            .count();
+    let payload_count = fs::read_dir(project_root(base_dir, "qd-happy").join("history/payloads"))
+        .unwrap()
+        .count();
+    let artifact_count = fs::read_dir(project_root(base_dir, "qd-happy").join("history/artifacts"))
+        .unwrap()
+        .count();
     assert_eq!(payload_count, 6);
     assert_eq!(artifact_count, 6);
 }
@@ -1596,7 +1605,7 @@ async fn quick_dev_preflight_failure_leaves_state_unchanged() {
     assert!(post_snapshot.active_run.is_none());
 
     let payload_count =
-        fs::read_dir(base_dir.join(".ralph-burning/projects/qd-preflight/history/payloads"))
+        fs::read_dir(project_root(base_dir, "qd-preflight").join("history/payloads"))
             .unwrap()
             .count();
     assert_eq!(payload_count, 0);
@@ -1756,7 +1765,7 @@ async fn preflight_failure_leaves_state_unchanged() {
     assert_eq!(events[0].event_type, JournalEventType::ProjectCreated);
 
     // Verify no payloads or artifacts created
-    let payloads_dir = base_dir.join(".ralph-burning/projects/preflight-test/history/payloads");
+    let payloads_dir = project_root(base_dir, "preflight-test").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(payload_count, 0);
 }
@@ -1817,7 +1826,7 @@ async fn preflight_check_validates_final_review_planner_member() {
     let temp = tempdir().unwrap();
     setup_workspace(temp.path());
 
-    let workspace_toml = temp.path().join(".ralph-burning/workspace.toml");
+    let workspace_toml = workspace_config_path(temp.path());
     let content = fs::read_to_string(&workspace_toml).unwrap();
     let patched = if content.contains("[workflow]") {
         content.replace("[workflow]", "[workflow]\nplanner_backend = \"openrouter\"")
@@ -2086,7 +2095,7 @@ async fn stage_entered_journal_failure_persists_failed_state() {
     );
 
     // No payload/artifact should exist
-    let payloads_dir = base_dir.join(".ralph-burning/projects/stage-entry-fail/history/payloads");
+    let payloads_dir = project_root(base_dir, "stage-entry-fail").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(payload_count, 0, "no payloads should exist");
 }
@@ -2136,7 +2145,7 @@ async fn run_started_journal_failure_persists_failed_state() {
     assert!(snapshot.active_run.is_none());
 
     // No payloads or artifacts should exist
-    let payloads_dir = base_dir.join(".ralph-burning/projects/run-started-fail/history/payloads");
+    let payloads_dir = project_root(base_dir, "run-started-fail").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(payload_count, 0, "no payloads should exist");
 }
@@ -2401,14 +2410,14 @@ async fn journal_failure_after_payload_rolls_back_and_fails_run() {
     // Panel dispatch writes supporting records (refiner + validators) before the
     // primary record. Journal failure rolls back only the primary pair. Supporting
     // records remain as durable evidence.
-    let payloads_dir = base_dir.join(".ralph-burning/projects/journal-fail/history/payloads");
+    let payloads_dir = project_root(base_dir, "journal-fail").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(
         payload_count, 3,
         "3 supporting records (refiner + 2 validators) should remain; primary rolled back"
     );
 
-    let artifacts_dir = base_dir.join(".ralph-burning/projects/journal-fail/history/artifacts");
+    let artifacts_dir = project_root(base_dir, "journal-fail").join("history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     assert_eq!(
         artifact_count, 3,
@@ -2476,14 +2485,14 @@ async fn snapshot_failure_during_stage_commit_rolls_back_without_journal_leak() 
 
     // The completed first stage (prompt_review panel) remains durable.
     // Panel dispatch writes 3 supporting + 1 primary = 4 records.
-    let payloads_dir = base_dir.join(".ralph-burning/projects/snap-fail/history/payloads");
+    let payloads_dir = project_root(base_dir, "snap-fail").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(
         payload_count, 4,
         "completed panel stage payloads should remain durable"
     );
 
-    let artifacts_dir = base_dir.join(".ralph-burning/projects/snap-fail/history/artifacts");
+    let artifacts_dir = project_root(base_dir, "snap-fail").join("history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     assert_eq!(
         artifact_count, 4,
@@ -2584,10 +2593,7 @@ impl PayloadArtifactWritePort for LeakingPayloadArtifactWriteStore {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
         if n == self.fail_on_call {
             // Deliberately write the payload to the canonical location to simulate a leak
-            let project_root = base_dir
-                .join(".ralph-burning")
-                .join("projects")
-                .join(project_id.as_str());
+            let project_root = project_root(base_dir, project_id.as_str());
             let payload_path = project_root
                 .join("history/payloads")
                 .join(format!("{}.json", payload.payload_id));
@@ -2664,7 +2670,7 @@ async fn leaked_payload_cleanup_on_write_failure() {
 
     // CRITICAL: No leaked payload should remain in canonical location.
     // The engine's defense-in-depth cleanup should have removed it.
-    let payloads_dir = base_dir.join(".ralph-burning/projects/leak-cleanup/history/payloads");
+    let payloads_dir = project_root(base_dir, "leak-cleanup").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(
         payload_count, 0,
@@ -2672,7 +2678,7 @@ async fn leaked_payload_cleanup_on_write_failure() {
         payload_count
     );
 
-    let artifacts_dir = base_dir.join(".ralph-burning/projects/leak-cleanup/history/artifacts");
+    let artifacts_dir = project_root(base_dir, "leak-cleanup").join("history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     assert_eq!(artifact_count, 0, "no artifacts should exist");
 
@@ -2732,14 +2738,14 @@ async fn payload_artifact_write_failure_persists_failed_state() {
     assert!(snapshot.active_run.is_none());
 
     // No payload/artifact should exist since the write failed
-    let payloads_dir = base_dir.join(".ralph-burning/projects/pa-write-fail/history/payloads");
+    let payloads_dir = project_root(base_dir, "pa-write-fail").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(
         payload_count, 0,
         "no payloads should exist after write failure"
     );
 
-    let artifacts_dir = base_dir.join(".ralph-burning/projects/pa-write-fail/history/artifacts");
+    let artifacts_dir = project_root(base_dir, "pa-write-fail").join("history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     assert_eq!(
         artifact_count, 0,
@@ -3488,10 +3494,7 @@ async fn resume_uses_interrupted_cycle_prompt_baseline_instead_of_project_record
 
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "resume-prompt-baseline");
-    let project_root = base_dir
-        .join(".ralph-burning")
-        .join("projects")
-        .join(pid.as_str());
+    let project_root = project_root(base_dir, pid.as_str());
     fs::write(
         project_root.join("config.toml"),
         "[workflow]\nprompt_change_action = \"abort\"\n",
@@ -3641,10 +3644,7 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_for_later_resumes(
 
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "resume-prompt-continue-baseline");
-    let project_root = base_dir
-        .join(".ralph-burning")
-        .join("projects")
-        .join(pid.as_str());
+    let project_root = project_root(base_dir, pid.as_str());
     fs::write(
         project_root.join("config.toml"),
         "[workflow]\nprompt_change_action = \"continue\"\n",
@@ -3855,10 +3855,7 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_after_completion_r
 
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "resume-prompt-continue-round-baseline");
-    let project_root = base_dir
-        .join(".ralph-burning")
-        .join("projects")
-        .join(pid.as_str());
+    let project_root = project_root(base_dir, pid.as_str());
     fs::write(
         project_root.join("config.toml"),
         "[workflow]\nprompt_change_action = \"continue\"\n",
@@ -4378,7 +4375,7 @@ async fn late_stage_conditionally_approved_triggers_completion_round_advancement
     assert_eq!(planning_entered.len(), 2, "planning entered twice");
 
     // Check that no amendment files remain on disk.
-    let amendments_dir = base_dir.join(".ralph-burning/projects/cr-alpha/amendments");
+    let amendments_dir = project_root(base_dir, "cr-alpha").join("amendments");
     if amendments_dir.is_dir() {
         let files: Vec<_> = std::fs::read_dir(&amendments_dir)
             .unwrap()
@@ -4784,7 +4781,7 @@ async fn completion_guard_produces_resumable_snapshot_when_disk_amendments_remai
     let pid = create_standard_project(base_dir, "guard-resume");
 
     // Place an orphaned amendment file on disk before running.
-    let amendments_dir = base_dir.join(".ralph-burning/projects/guard-resume/amendments");
+    let amendments_dir = project_root(base_dir, "guard-resume").join("amendments");
     fs::create_dir_all(&amendments_dir).unwrap();
     let orphaned = serde_json::json!({
         "amendment_id": "orphaned-amd-001",
@@ -5006,7 +5003,7 @@ async fn final_review_conditionally_approved_triggers_completion_round_advanceme
     assert_eq!(planning_entered.len(), 2, "planning entered twice");
 
     // No amendment files remain on disk.
-    let amendments_dir = base_dir.join(".ralph-burning/projects/fr-cond/amendments");
+    let amendments_dir = project_root(base_dir, "fr-cond").join("amendments");
     if amendments_dir.is_dir() {
         let files: Vec<_> = std::fs::read_dir(&amendments_dir)
             .unwrap()
@@ -5414,8 +5411,8 @@ async fn completion_round_restart_creates_distinct_round_aware_payload_artifact_
         .unwrap();
     assert_eq!(snapshot.completion_rounds, 2);
 
-    let payloads_dir = base_dir.join(".ralph-burning/projects/cr-ids/history/payloads");
-    let artifacts_dir = base_dir.join(".ralph-burning/projects/cr-ids/history/artifacts");
+    let payloads_dir = project_root(base_dir, "cr-ids").join("history/payloads");
+    let artifacts_dir = project_root(base_dir, "cr-ids").join("history/artifacts");
 
     let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
         .unwrap()
@@ -5629,7 +5626,7 @@ async fn resume_after_completion_aggregate_commit_failure_preserves_round() {
 
     // Supporting records from the completion panel should be durable.
     let payloads_dir =
-        base_dir.join(".ralph-burning/projects/cr-resume-after-append-fail/history/payloads");
+        project_root(base_dir, "cr-resume-after-append-fail").join("history/payloads");
     let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -5712,8 +5709,7 @@ async fn completion_stage_completed_append_failure_leaves_supporting_records() {
     assert_eq!(failed_snapshot.status, RunStatus::Failed);
 
     // Supporting records from the completion panel execution should be durable.
-    let payloads_dir =
-        base_dir.join(".ralph-burning/projects/cr-stage-completed-fail/history/payloads");
+    let payloads_dir = project_root(base_dir, "cr-stage-completed-fail").join("history/payloads");
     let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -6340,8 +6336,7 @@ async fn completion_panel_continue_then_complete_success() {
     );
 
     // Verify supporting and aggregate records exist.
-    let payloads_dir =
-        base_dir.join(".ralph-burning/projects/cr-full-batch-success/history/payloads");
+    let payloads_dir = project_root(base_dir, "cr-full-batch-success").join("history/payloads");
     let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -6468,7 +6463,7 @@ async fn standard_flow_review_invocation_context_contains_local_validation() {
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "review-ctx-validation");
 
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str(
         "\n[validation]\nstandard_commands = [\"echo validation-evidence-marker\"]\npre_commit_fmt = false\npre_commit_clippy = false\n",
@@ -6538,7 +6533,7 @@ async fn pre_commit_failure_remediation_survives_resume() {
     let pid = create_standard_project(base_dir, "precommit-resume");
 
     // Enable pre_commit_fmt (and disable others) in workspace config.
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str(
         "\n[validation]\npre_commit_fmt = true\npre_commit_clippy = false\npre_commit_nix_build = false\n",
@@ -6547,7 +6542,7 @@ async fn pre_commit_failure_remediation_survives_resume() {
 
     // Create a minimal Cargo project in the project root with intentionally
     // bad formatting so `cargo fmt --check` fails.
-    let project_root = base_dir.join(".ralph-burning/projects").join(pid.as_str());
+    let project_root = project_root(base_dir, pid.as_str());
     fs::write(
         project_root.join("Cargo.toml"),
         "[package]\nname = \"test-fmt\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",

@@ -324,6 +324,7 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         milestone_description: milestone.description.clone(),
         milestone_summary: Some(milestone_bundle.bundle.executive_summary.clone()),
         milestone_goals: milestone_bundle.bundle.goals.clone(),
+        milestone_non_goals: milestone_bundle.bundle.non_goals.clone(),
         milestone_constraints: milestone_bundle.bundle.constraints.clone(),
         agents_guidance: milestone_bundle.bundle.agents_guidance.clone(),
         bead_id: bead.id.clone(),
@@ -336,6 +337,13 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
             .filter(|dependency| dependency.kind == DependencyKind::Blocks)
             .map(format_dependency_reference)
             .collect(),
+        already_planned_elsewhere: bead
+            .dependents
+            .iter()
+            .map(format_dependency_reference)
+            .collect(),
+        review_policy:
+            crate::contexts::project_run_record::task_prompt_contract::default_review_policy(),
         parent_epic_id: infer_parent_epic_id(&bead),
         flow,
         plan_hash,

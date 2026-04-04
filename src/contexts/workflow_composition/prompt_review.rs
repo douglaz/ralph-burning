@@ -29,6 +29,7 @@ use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::project_run_record::model::{ArtifactRecord, PayloadRecord};
 use crate::contexts::project_run_record::service::{PayloadArtifactWritePort, RuntimeLogWritePort};
+use crate::contexts::project_run_record::task_prompt_contract;
 use crate::contexts::workflow_composition::panel_contracts::{
     PromptRefinementPayload, PromptReviewDecision, PromptReviewPrimaryPayload,
     PromptValidationPayload, RecordKind, RecordProducer,
@@ -123,6 +124,7 @@ where
             cursor,
             refiner_target,
             &original_prompt,
+            &original_prompt,
             "refiner",
             refiner_timeout,
             cancellation_token.clone(),
@@ -181,6 +183,7 @@ where
                 cursor,
                 validator_target,
                 &refinement.refined_prompt,
+                &original_prompt,
                 "validator",
                 validator_timeout,
                 cancellation_token.clone(),
@@ -228,6 +231,12 @@ where
             }
         }
 
+        let contract_drift_concerns =
+            canonical_contract_drift_concerns(&original_prompt, &refinement.refined_prompt);
+        if !contract_drift_concerns.is_empty() {
+            collected_concerns.extend(contract_drift_concerns);
+        }
+
         // ── Step 4: Enforce min_reviewers ──────────────────────────────────
         if executed_count < min_reviewers {
             return Err(AppError::InsufficientPanelMembers {
@@ -238,7 +247,7 @@ where
         }
 
         // ── Step 5: Check acceptance ───────────────────────────────────────
-        if reject_count == 0 {
+        if reject_count == 0 && collected_concerns.is_empty() {
             // Success: all validators accepted.
             let refined = refinement.refined_prompt.clone();
             let primary = PromptReviewPrimaryPayload {
@@ -265,12 +274,28 @@ where
         // refiner; otherwise fall through to the final rejection error.
         let is_last_round = round + 1 >= total_rounds;
         if is_last_round {
-            return Err(AppError::PromptReviewRejected {
-                details: format!(
+            let summary = if reject_count == 0 {
+                format!(
+                    "the refined prompt still violated the canonical bead task prompt contract \
+                     after {} refinement retries",
+                    max_refinement_retries
+                )
+            } else {
+                format!(
                     "{reject_count} of {executed_count} validators rejected the refined prompt \
                      (after {} refinement retries)",
                     max_refinement_retries
-                ),
+                )
+            };
+            let mut detail_parts = vec![summary];
+            if !collected_concerns.is_empty() {
+                detail_parts.push(format!(
+                    "remaining concerns: {}",
+                    collected_concerns.join("; ")
+                ));
+            }
+            return Err(AppError::PromptReviewRejected {
+                details: detail_parts.join("; "),
             });
         }
 
@@ -292,6 +317,48 @@ fn format_prior_concerns(concerns: &[String]) -> String {
     section
 }
 
+fn canonical_contract_drift_concerns(original_prompt: &str, refined_prompt: &str) -> Vec<String> {
+    if !task_prompt_contract::prompt_uses_contract(original_prompt) {
+        return Vec::new();
+    }
+
+    match task_prompt_contract::validate_canonical_prompt_shape(refined_prompt) {
+        Ok(()) => Vec::new(),
+        Err(errors) => vec![format!(
+            "Preserve the canonical bead task prompt contract exactly: {}",
+            errors.join("; ")
+        )],
+    }
+}
+
+fn build_prompt_review_member_prompt(
+    base_dir: &Path,
+    project_id: Option<&ProjectId>,
+    prompt_text: &str,
+    contract_reference_prompt: &str,
+    role_label: &str,
+    schema_str: &str,
+    extra_values: &[(&str, &str)],
+) -> AppResult<String> {
+    let template_id = if role_label == "refiner" {
+        "prompt_review_refiner"
+    } else {
+        "prompt_review_validator"
+    };
+    let task_prompt_contract_block =
+        task_prompt_contract::prompt_review_consumer_guidance_for_prompt(contract_reference_prompt);
+
+    let mut values: Vec<(&str, &str)> = vec![
+        ("role_label", role_label),
+        ("prompt_text", prompt_text),
+        ("task_prompt_contract", task_prompt_contract_block.as_str()),
+        ("json_schema", schema_str),
+    ];
+    values.extend_from_slice(extra_values);
+
+    template_catalog::resolve_and_render(template_id, base_dir, project_id, &values)
+}
+
 /// Invoke a single panel member (refiner or validator) and return the raw parsed payload.
 #[allow(clippy::too_many_arguments)]
 async fn invoke_panel_member<A, R, S>(
@@ -304,6 +371,7 @@ async fn invoke_panel_member<A, R, S>(
     cursor: &StageCursor,
     target: &ResolvedBackendTarget,
     prompt_text: &str,
+    contract_reference_prompt: &str,
     role_label: &str,
     timeout: Duration,
     cancellation_token: CancellationToken,
@@ -327,21 +395,15 @@ where
 
     let schema = super::panel_contracts::panel_json_schema(stage_id, role_label);
     let schema_str = serde_json::to_string_pretty(&schema)?;
-
-    let template_id = if role_label == "refiner" {
-        "prompt_review_refiner"
-    } else {
-        "prompt_review_validator"
-    };
-
-    let mut values: Vec<(&str, &str)> = vec![
-        ("role_label", role_label),
-        ("prompt_text", prompt_text),
-        ("json_schema", &schema_str),
-    ];
-    values.extend_from_slice(extra_values);
-
-    let prompt = template_catalog::resolve_and_render(template_id, base_dir, project_id, &values)?;
+    let prompt = build_prompt_review_member_prompt(
+        base_dir,
+        project_id,
+        prompt_text,
+        contract_reference_prompt,
+        role_label,
+        &schema_str,
+        extra_values,
+    )?;
 
     let request = InvocationRequest {
         invocation_id,
@@ -433,4 +495,143 @@ fn persist_supporting_record(
         &payload_record,
         &artifact_record,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    const CANONICAL_PROMPT: &str = "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH";
+
+    #[test]
+    fn build_prompt_review_member_prompt_surfaces_contract_guidance() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_prompt_review_member_prompt(
+            tmp.path(),
+            None,
+            CANONICAL_PROMPT,
+            CANONICAL_PROMPT,
+            "refiner",
+            "{}",
+            &[],
+        )
+        .expect("render prompt");
+
+        assert!(prompt.contains("## Task Prompt Contract"));
+        assert!(prompt.contains("preserve the exact contract marker line"));
+    }
+
+    #[test]
+    fn build_prompt_review_member_prompt_omits_contract_guidance_for_generic_prompt() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_prompt_review_member_prompt(
+            tmp.path(),
+            None,
+            "# Prompt\n\nGeneric.",
+            "# Prompt\n\nGeneric.",
+            "validator",
+            "{}",
+            &[],
+        )
+        .expect("render prompt");
+
+        assert!(!prompt.contains("## Task Prompt Contract"));
+    }
+
+    #[test]
+    fn build_prompt_review_member_prompt_keeps_contract_guidance_for_refined_prompt_without_marker()
+    {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_prompt_review_member_prompt(
+            tmp.path(),
+            None,
+            "# Refined Prompt\n\nDropped the canonical marker by mistake.",
+            CANONICAL_PROMPT,
+            "validator",
+            "{}",
+            &[],
+        )
+        .expect("render prompt");
+
+        assert!(prompt.contains("## Task Prompt Contract"));
+        assert!(prompt.contains("preserve the exact contract marker line"));
+        assert!(prompt.contains("# Refined Prompt"));
+    }
+
+    #[test]
+    fn build_prompt_review_member_prompt_allows_legacy_override_without_task_prompt_contract_placeholder(
+    ) {
+        let tmp = tempdir().expect("tempdir");
+        let template_dir = tmp.path().join(".ralph-burning").join("templates");
+        fs::create_dir_all(&template_dir).expect("template dir");
+        fs::write(
+            template_dir.join("prompt_review_validator.md"),
+            "LEGACY VALIDATOR\n\n{{role_label}}\n\n{{prompt_text}}\n\n{{json_schema}}",
+        )
+        .expect("template override");
+
+        let prompt = build_prompt_review_member_prompt(
+            tmp.path(),
+            None,
+            "# Prompt\n\nGeneric.",
+            "# Prompt\n\nGeneric.",
+            "validator",
+            "{}",
+            &[],
+        )
+        .expect("render prompt");
+
+        assert!(prompt.starts_with("LEGACY VALIDATOR"));
+        assert!(prompt.contains("# Prompt"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_becomes_retryable_concern() {
+        let concerns = canonical_contract_drift_concerns(
+            CANONICAL_PROMPT,
+            "# Refined Prompt\n\nMissing the canonical sections.",
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("Preserve the canonical bead task prompt contract exactly"));
+        assert!(concerns[0].contains("missing exact contract marker"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_still_applies_when_original_prompt_keeps_only_marker() {
+        let concerns = canonical_contract_drift_concerns(
+            "# Drifted Prompt\n\n<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n\n## Acceptance Criteria\n\nLater section only.",
+            "# Refined Prompt\n\nNo canonical marker here.",
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("Preserve the canonical bead task prompt contract exactly"));
+        assert!(concerns[0].contains("missing exact contract marker"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_flags_misplaced_top_level_marker() {
+        let concerns = canonical_contract_drift_concerns(
+            CANONICAL_PROMPT,
+            "# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n\n<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->",
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("must appear before the canonical section block"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_flags_extra_canonical_heading_after_agents_guidance() {
+        let concerns = canonical_contract_drift_concerns(
+            CANONICAL_PROMPT,
+            "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n\n## Acceptance Criteria\n\nduplicate drift",
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("unexpected extra canonical heading `## Acceptance Criteria`"));
+    }
 }

@@ -290,7 +290,7 @@ impl StubBackendAdapter {
                         );
                     }
                 }
-                canned_panel_payload(*stage_id, role)
+                canned_panel_payload(*stage_id, role, &request.payload.prompt)
             }
         }
     }
@@ -563,8 +563,10 @@ fn translate_to_panel_payload(stage_id: StageId, role: &str, raw: Value, prompt:
                 .and_then(|v| v.as_str())
                 .unwrap_or("No changes")
                 .to_string();
+            let refined_prompt = extract_canonical_prompt_from_review_prompt(prompt)
+                .unwrap_or_else(|| "Stub refined prompt text.".to_owned());
             json!({
-                "refined_prompt": "Stub refined prompt text.",
+                "refined_prompt": refined_prompt,
                 "refinement_summary": summary,
                 "improvements": []
             })
@@ -656,11 +658,30 @@ fn extract_final_review_amendment_ids(prompt: &str) -> Vec<String> {
         .collect()
 }
 
+fn extract_canonical_prompt_from_review_prompt(prompt: &str) -> Option<String> {
+    let marker = crate::contexts::project_run_record::task_prompt_contract::contract_marker();
+    let marker_index = prompt.find(&marker)?;
+    let trailing = &prompt[marker_index..];
+    let end_marker = "\n\n## Authoritative JSON Schema";
+    let end_index = trailing.find(end_marker).unwrap_or(trailing.len());
+    let candidate = trailing[..end_index].trim_end();
+    if crate::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(
+        candidate,
+    )
+    .is_ok()
+    {
+        Some(candidate.to_owned())
+    } else {
+        None
+    }
+}
+
 /// Deterministic canned payloads for panel contracts (prompt-review and completion).
-fn canned_panel_payload(stage_id: StageId, role: &str) -> serde_json::Value {
+fn canned_panel_payload(stage_id: StageId, role: &str, prompt: &str) -> serde_json::Value {
     match (stage_id, role) {
         (StageId::PromptReview, "refiner") => json!({
-            "refined_prompt": "Stub refined prompt text.",
+            "refined_prompt": extract_canonical_prompt_from_review_prompt(prompt)
+                .unwrap_or_else(|| "Stub refined prompt text.".to_owned()),
             "refinement_summary": "No substantive changes needed.",
             "improvements": []
         }),

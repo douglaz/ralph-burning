@@ -19,8 +19,14 @@ fn initialize_workspace_fixture() -> tempfile::TempDir {
     temp_dir
 }
 
+fn live_workspace_root(base_dir: &std::path::Path) -> std::path::PathBuf {
+    ralph_burning::adapters::fs::FileSystem::live_workspace_root_path(base_dir)
+}
+
 fn project_root(base_dir: &std::path::Path, project_id: &str) -> std::path::PathBuf {
-    base_dir.join(".ralph-burning/projects").join(project_id)
+    live_workspace_root(base_dir)
+        .join("projects")
+        .join(project_id)
 }
 
 fn create_project_fixture(base_dir: &std::path::Path, project_id: &str) {
@@ -69,7 +75,7 @@ status_summary = "created"
 
 fn select_active_project_fixture(base_dir: &std::path::Path, project_id: &str) {
     fs::write(
-        base_dir.join(".ralph-burning/active-project"),
+        live_workspace_root(base_dir).join("active-project"),
         format!("{project_id}\n"),
     )
     .expect("write active project");

@@ -3,6 +3,7 @@
 /// for FsProjectStore, FsJournalStore, FsArtifactStore, FsRuntimeLogStore,
 /// FsRunSnapshotStore, and FsActiveProjectStore.
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use chrono::{TimeZone, Utc};
 use tempfile::tempdir;
@@ -27,6 +28,52 @@ fn test_timestamp() -> chrono::DateTime<Utc> {
         .expect("valid timestamp")
 }
 
+fn live_workspace_root(base_dir: &Path) -> PathBuf {
+    FileSystem::live_workspace_root_path(base_dir)
+}
+
+fn audit_workspace_root(base_dir: &Path) -> PathBuf {
+    FileSystem::audit_workspace_root_path(base_dir)
+}
+
+fn workspace_root(base_dir: &Path) -> PathBuf {
+    let live_root = live_workspace_root(base_dir);
+    if live_root.join("workspace.toml").is_file() {
+        live_root
+    } else {
+        audit_workspace_root(base_dir)
+    }
+}
+
+fn live_project_root(base_dir: &Path, id: &str) -> PathBuf {
+    live_workspace_root(base_dir).join("projects").join(id)
+}
+
+fn audit_project_root(base_dir: &Path, id: &str) -> PathBuf {
+    audit_workspace_root(base_dir).join("projects").join(id)
+}
+
+fn project_root(base_dir: &Path, id: &str) -> PathBuf {
+    let live_root = live_project_root(base_dir, id);
+    if live_root.exists() {
+        live_root
+    } else {
+        audit_project_root(base_dir, id)
+    }
+}
+
+fn live_pending_delete_path(base_dir: &Path, id: &str) -> PathBuf {
+    live_workspace_root(base_dir)
+        .join("projects")
+        .join(format!(".{id}.pending-delete"))
+}
+
+fn audit_pending_delete_path(base_dir: &Path, id: &str) -> PathBuf {
+    audit_workspace_root(base_dir)
+        .join("projects")
+        .join(format!(".{id}.pending-delete"))
+}
+
 fn make_project_record(id: &str) -> ProjectRecord {
     ProjectRecord {
         id: ProjectId::new(id).unwrap(),
@@ -41,11 +88,8 @@ fn make_project_record(id: &str) -> ProjectRecord {
 }
 
 fn setup_workspace(base_dir: &std::path::Path) {
-    let ws = base_dir.join(".ralph-burning");
-    fs::create_dir_all(ws.join("projects")).expect("create projects dir");
-    let config = ralph_burning::shared::domain::WorkspaceConfig::new(test_timestamp());
-    let rendered = FileSystem::render_workspace_config(&config).expect("render config");
-    FileSystem::write_atomic(&ws.join("workspace.toml"), &rendered).expect("write config");
+    ralph_burning::contexts::workspace_governance::initialize_workspace(base_dir, test_timestamp())
+        .expect("initialize workspace");
 }
 
 fn create_project_on_disk(base_dir: &std::path::Path, id: &str) {
@@ -131,11 +175,7 @@ fn project_store_list_prefers_live_project_when_audit_mirror_is_incomplete() {
     setup_workspace(tmp.path());
     create_project_on_disk(tmp.path(), "alpha");
 
-    fs::remove_file(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/project.toml"),
-    )
-    .unwrap();
+    fs::remove_file(audit_project_root(tmp.path(), "alpha").join("project.toml")).unwrap();
 
     let store = FsProjectStore;
     let ids = store.list_project_ids(tmp.path()).unwrap();
@@ -160,10 +200,8 @@ fn project_store_stage_and_commit_delete_removes_project() {
     store.commit_delete(tmp.path(), &pid).unwrap();
 
     // Verify pending-delete dir is also gone
-    let pending = tmp
-        .path()
-        .join(".ralph-burning/projects/.alpha.pending-delete");
-    assert!(!pending.exists());
+    assert!(!live_pending_delete_path(tmp.path(), "alpha").exists());
+    assert!(!audit_pending_delete_path(tmp.path(), "alpha").exists());
 }
 
 #[test]
@@ -216,7 +254,7 @@ fn project_store_commit_noop_when_no_pending_delete() {
 fn project_store_read_missing_project_toml_returns_corrupt() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
-    fs::create_dir_all(tmp.path().join(".ralph-burning/projects/alpha")).unwrap();
+    fs::create_dir_all(audit_project_root(tmp.path(), "alpha")).unwrap();
 
     let store = FsProjectStore;
     let pid = ProjectId::new("alpha").unwrap();
@@ -228,7 +266,7 @@ fn project_store_read_missing_project_toml_returns_corrupt() {
 fn project_store_exists_with_missing_project_toml_returns_corrupt() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
-    fs::create_dir_all(tmp.path().join(".ralph-burning/projects/alpha")).unwrap();
+    fs::create_dir_all(audit_project_root(tmp.path(), "alpha")).unwrap();
 
     let store = FsProjectStore;
     let pid = ProjectId::new("alpha").unwrap();
@@ -240,7 +278,7 @@ fn project_store_exists_with_missing_project_toml_returns_corrupt() {
 fn project_store_list_with_corrupt_project_toml_returns_error() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
-    fs::create_dir_all(tmp.path().join(".ralph-burning/projects/alpha")).unwrap();
+    fs::create_dir_all(audit_project_root(tmp.path(), "alpha")).unwrap();
 
     let store = FsProjectStore;
     let err = store.list_project_ids(tmp.path()).unwrap_err();
@@ -257,12 +295,12 @@ fn write_project_config_rejects_symlinks_while_seeding_live_workspace() {
     create_project_on_disk(tmp.path(), "alpha");
 
     let pid = ProjectId::new("alpha").unwrap();
-    let live_project_root = tmp.path().join(".git/.ralph-burning-live/projects/alpha");
+    let live_project_root = live_project_root(tmp.path(), "alpha");
     if live_project_root.exists() {
         fs::remove_dir_all(&live_project_root).unwrap();
     }
 
-    let audit_project_root = tmp.path().join(".ralph-burning/projects/alpha");
+    let audit_project_root = audit_project_root(tmp.path(), "alpha");
     let outside_file = tmp.path().join("outside.txt");
     fs::write(&outside_file, "secret").unwrap();
     symlink(&outside_file, audit_project_root.join("linked.txt")).unwrap();
@@ -277,7 +315,7 @@ fn write_project_config_rejects_symlinks_while_seeding_live_workspace() {
 fn project_store_read_malformed_toml_returns_corrupt() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
-    let project_root = tmp.path().join(".ralph-burning/projects/alpha");
+    let project_root = project_root(tmp.path(), "alpha");
     fs::create_dir_all(&project_root).unwrap();
     fs::write(
         project_root.join("project.toml"),
@@ -354,11 +392,7 @@ fn journal_store_missing_file_returns_corrupt() {
     setup_workspace(tmp.path());
     create_project_on_disk(tmp.path(), "alpha");
 
-    fs::remove_file(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/journal.ndjson"),
-    )
-    .unwrap();
+    fs::remove_file(project_root(tmp.path(), "alpha").join("journal.ndjson")).unwrap();
 
     let store = FsJournalStore;
     let pid = ProjectId::new("alpha").unwrap();
@@ -373,12 +407,7 @@ fn journal_store_empty_file_returns_corrupt_error() {
     create_project_on_disk(tmp.path(), "alpha");
 
     // Truncate journal to empty
-    fs::write(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/journal.ndjson"),
-        "",
-    )
-    .unwrap();
+    fs::write(project_root(tmp.path(), "alpha").join("journal.ndjson"), "").unwrap();
 
     let store = FsJournalStore;
     let pid = ProjectId::new("alpha").unwrap();
@@ -399,8 +428,7 @@ fn journal_store_corrupt_json_returns_error() {
     create_project_on_disk(tmp.path(), "alpha");
 
     fs::write(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/journal.ndjson"),
+        project_root(tmp.path(), "alpha").join("journal.ndjson"),
         "{not valid json}\n",
     )
     .unwrap();
@@ -435,7 +463,7 @@ fn run_snapshot_store_preserves_missing_legacy_max_completion_rounds() {
     setup_workspace(tmp.path());
     create_project_on_disk(tmp.path(), "alpha");
 
-    let run_json_path = tmp.path().join(".ralph-burning/projects/alpha/run.json");
+    let run_json_path = project_root(tmp.path(), "alpha").join("run.json");
     let legacy_snapshot = serde_json::json!({
         "active_run": null,
         "status": "not_started",
@@ -471,7 +499,7 @@ fn run_snapshot_store_missing_file_returns_corrupt() {
     setup_workspace(tmp.path());
     create_project_on_disk(tmp.path(), "alpha");
 
-    fs::remove_file(tmp.path().join(".ralph-burning/projects/alpha/run.json")).unwrap();
+    fs::remove_file(project_root(tmp.path(), "alpha").join("run.json")).unwrap();
 
     let store = FsRunSnapshotStore;
     let pid = ProjectId::new("alpha").unwrap();
@@ -486,7 +514,7 @@ fn run_snapshot_store_corrupt_json_returns_error() {
     create_project_on_disk(tmp.path(), "alpha");
 
     fs::write(
-        tmp.path().join(".ralph-burning/projects/alpha/run.json"),
+        project_root(tmp.path(), "alpha").join("run.json"),
         "not json at all",
     )
     .unwrap();
@@ -514,7 +542,7 @@ fn run_snapshot_store_semantically_inconsistent_returns_corrupt() {
         "status_summary": "running"
     });
     fs::write(
-        tmp.path().join(".ralph-burning/projects/alpha/run.json"),
+        project_root(tmp.path(), "alpha").join("run.json"),
         serde_json::to_string_pretty(&bad_snapshot).unwrap(),
     )
     .unwrap();
@@ -581,9 +609,7 @@ fn rollback_point_store_preserves_missing_legacy_max_completion_rounds() {
     setup_workspace(tmp.path());
     create_project_on_disk(tmp.path(), "alpha");
 
-    let rollback_path = tmp
-        .path()
-        .join(".ralph-burning/projects/alpha/rollback/rb-planning.json");
+    let rollback_path = project_root(tmp.path(), "alpha").join("rollback/rb-planning.json");
     let legacy_point = serde_json::json!({
         "rollback_id": "rb-planning",
         "created_at": "2026-03-11T19:00:00Z",
@@ -662,8 +688,7 @@ fn artifact_store_round_trip_payload() {
     };
     let payload_json = serde_json::to_string_pretty(&payload).unwrap();
     fs::write(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/history/payloads/p1.json"),
+        project_root(tmp.path(), "alpha").join("history/payloads/p1.json"),
         payload_json,
     )
     .unwrap();
@@ -693,8 +718,7 @@ fn artifact_store_round_trip_artifact() {
     };
     let artifact_json = serde_json::to_string_pretty(&artifact).unwrap();
     fs::write(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/history/artifacts/a1.json"),
+        project_root(tmp.path(), "alpha").join("history/artifacts/a1.json"),
         artifact_json,
     )
     .unwrap();
@@ -714,8 +738,7 @@ fn artifact_store_corrupt_payload_returns_error() {
     create_project_on_disk(tmp.path(), "alpha");
 
     fs::write(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/history/payloads/bad.json"),
+        project_root(tmp.path(), "alpha").join("history/payloads/bad.json"),
         "not valid json",
     )
     .unwrap();
@@ -733,8 +756,7 @@ fn artifact_store_corrupt_artifact_returns_error() {
     create_project_on_disk(tmp.path(), "alpha");
 
     fs::write(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/history/artifacts/bad.json"),
+        project_root(tmp.path(), "alpha").join("history/artifacts/bad.json"),
         "not valid json",
     )
     .unwrap();
@@ -775,8 +797,7 @@ fn runtime_log_store_reads_ndjson_entries() {
     };
     let line = serde_json::to_string(&entry).unwrap();
     fs::write(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/runtime/logs/session-1.ndjson"),
+        project_root(tmp.path(), "alpha").join("runtime/logs/session-1.ndjson"),
         format!("{line}\n"),
     )
     .unwrap();
@@ -803,8 +824,7 @@ fn runtime_log_store_skips_malformed_lines() {
     let good_line = serde_json::to_string(&entry).unwrap();
     let content = format!("not json\n{good_line}\nalso bad\n");
     fs::write(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/runtime/logs/session-1.ndjson"),
+        project_root(tmp.path(), "alpha").join("runtime/logs/session-1.ndjson"),
         content,
     )
     .unwrap();
@@ -837,9 +857,7 @@ fn runtime_log_store_reads_only_newest_file() {
     let old_line = serde_json::to_string(&old_entry).unwrap();
     let new_line = serde_json::to_string(&new_entry).unwrap();
 
-    let logs_dir = tmp
-        .path()
-        .join(".ralph-burning/projects/alpha/runtime/logs");
+    let logs_dir = project_root(tmp.path(), "alpha").join("runtime/logs");
     fs::write(logs_dir.join("001.ndjson"), format!("{old_line}\n")).unwrap();
     fs::write(logs_dir.join("002.ndjson"), format!("{new_line}\n")).unwrap();
 
@@ -868,7 +886,7 @@ fn active_project_store_round_trip() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
 
-    FileSystem::write_active_project(&tmp.path().join(".ralph-burning"), "alpha").unwrap();
+    FileSystem::write_active_project(&workspace_root(tmp.path()), "alpha").unwrap();
 
     let store = FsActiveProjectStore;
     let id = store.read_active_project_id(tmp.path()).unwrap();
@@ -880,7 +898,7 @@ fn active_project_store_clear() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
 
-    FileSystem::write_active_project(&tmp.path().join(".ralph-burning"), "alpha").unwrap();
+    FileSystem::write_active_project(&workspace_root(tmp.path()), "alpha").unwrap();
 
     let store = FsActiveProjectStore;
     store.clear_active_project(tmp.path()).unwrap();
@@ -937,12 +955,8 @@ fn payload_artifact_write_pair_round_trip() {
         .unwrap();
 
     // Verify both files exist
-    let payload_path = tmp
-        .path()
-        .join(".ralph-burning/projects/alpha/history/payloads/p1.json");
-    let artifact_path = tmp
-        .path()
-        .join(".ralph-burning/projects/alpha/history/artifacts/a1.json");
+    let payload_path = project_root(tmp.path(), "alpha").join("history/payloads/p1.json");
+    let artifact_path = project_root(tmp.path(), "alpha").join("history/artifacts/a1.json");
     assert!(payload_path.is_file());
     assert!(artifact_path.is_file());
 }
@@ -984,12 +998,8 @@ fn payload_artifact_remove_pair_removes_both_files() {
         .remove_payload_artifact_pair(tmp.path(), &pid, "p1", "a1")
         .unwrap();
 
-    let payload_path = tmp
-        .path()
-        .join(".ralph-burning/projects/alpha/history/payloads/p1.json");
-    let artifact_path = tmp
-        .path()
-        .join(".ralph-burning/projects/alpha/history/artifacts/a1.json");
+    let payload_path = project_root(tmp.path(), "alpha").join("history/payloads/p1.json");
+    let artifact_path = project_root(tmp.path(), "alpha").join("history/artifacts/a1.json");
     assert!(!payload_path.exists());
     assert!(!artifact_path.exists());
 }
@@ -1045,9 +1055,7 @@ fn payload_artifact_remove_pair_propagates_removal_error() {
 
     // Replace the payload file with a non-empty directory so fs::remove_file
     // fails with "is a directory" — works regardless of user (including root).
-    let payload_path = tmp
-        .path()
-        .join(".ralph-burning/projects/alpha/history/payloads/p1.json");
+    let payload_path = project_root(tmp.path(), "alpha").join("history/payloads/p1.json");
     fs::remove_file(&payload_path).unwrap();
     fs::create_dir(&payload_path).unwrap();
     fs::write(payload_path.join("block"), "prevent removal").unwrap();
@@ -1096,9 +1104,7 @@ fn payload_artifact_write_pair_cleans_up_on_artifact_failure() {
     };
 
     // Make the artifacts directory a file so artifact write fails
-    let artifacts_dir = tmp
-        .path()
-        .join(".ralph-burning/projects/alpha/history/artifacts");
+    let artifacts_dir = project_root(tmp.path(), "alpha").join("history/artifacts");
     fs::remove_dir(&artifacts_dir).unwrap();
     fs::write(&artifacts_dir, "not a directory").unwrap();
 
@@ -1109,9 +1115,7 @@ fn payload_artifact_write_pair_cleans_up_on_artifact_failure() {
     );
 
     // Payload should have been cleaned up — no leaked file
-    let payload_path = tmp
-        .path()
-        .join(".ralph-burning/projects/alpha/history/payloads/p1.json");
+    let payload_path = project_root(tmp.path(), "alpha").join("history/payloads/p1.json");
     assert!(
         !payload_path.exists(),
         "payload should be cleaned up when artifact write fails"
@@ -1148,8 +1152,7 @@ fn project_create_copies_prompt_and_records_canonical_reference() {
         .unwrap();
 
     // Verify the copied prompt.md contains the original content
-    let copied =
-        fs::read_to_string(tmp.path().join(".ralph-burning/projects/alpha/prompt.md")).unwrap();
+    let copied = fs::read_to_string(project_root(tmp.path(), "alpha").join("prompt.md")).unwrap();
     assert_eq!(copied, "# External Prompt\nContent here.");
 
     // Verify project.toml records the canonical reference, not a source path
@@ -1347,7 +1350,7 @@ fn amendment_queue_corrupt_json_returns_error() {
     setup_workspace(tmp.path());
     create_project_on_disk(tmp.path(), "alpha");
 
-    let amendments_dir = tmp.path().join(".ralph-burning/projects/alpha/amendments");
+    let amendments_dir = project_root(tmp.path(), "alpha").join("amendments");
     fs::create_dir_all(&amendments_dir).unwrap();
     fs::write(amendments_dir.join("bad.json"), "not valid json").unwrap();
 

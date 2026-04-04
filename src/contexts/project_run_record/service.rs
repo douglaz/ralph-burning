@@ -11,6 +11,7 @@ use crate::contexts::workspace_governance::config::{
 use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
 use crate::shared::error::{AppError, AppResult};
 
+use super::fence_util::{closes_fence, opening_fence_delimiter};
 use super::journal;
 use super::model::{
     ActiveRun, AmendmentSource, ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord,
@@ -20,6 +21,7 @@ use super::model::{
 use super::queries::{
     self, RunHistoryView, RunRollbackTargetView, RunStatusJsonView, RunStatusView, RunTailView,
 };
+use super::task_prompt_contract;
 
 /// Port for reading and writing project records.
 pub trait ProjectStorePort {
@@ -247,6 +249,7 @@ pub struct BeadProjectContext {
     pub milestone_description: String,
     pub milestone_summary: Option<String>,
     pub milestone_goals: Vec<String>,
+    pub milestone_non_goals: Vec<String>,
     pub milestone_constraints: Vec<String>,
     pub agents_guidance: Option<String>,
     pub bead_id: String,
@@ -254,6 +257,8 @@ pub struct BeadProjectContext {
     pub bead_description: Option<String>,
     pub bead_acceptance_criteria: Vec<String>,
     pub bead_dependencies: Vec<String>,
+    pub already_planned_elsewhere: Vec<String>,
+    pub review_policy: Vec<String>,
     pub parent_epic_id: Option<String>,
     pub flow: FlowPreset,
     pub plan_hash: Option<String>,
@@ -370,10 +375,24 @@ pub fn create_project_from_bead_context(
         &context.milestone_id,
         &context.bead_id,
     )?);
-    let prompt_contents = match prompt_override {
-        Some(prompt) => prompt,
-        None => render_bead_task_prompt(&context),
+    let (prompt_contents, prompt_path) = match prompt_override {
+        Some(prompt) => (prompt, "<prompt override>".to_owned()),
+        None => (
+            render_bead_task_prompt(&context),
+            "generated bead task prompt".to_owned(),
+        ),
     };
+    if task_prompt_contract::prompt_declares_contract(&prompt_contents) {
+        task_prompt_contract::validate_canonical_prompt_shape(&prompt_contents).map_err(
+            |errors| AppError::InvalidPrompt {
+                path: prompt_path.clone(),
+                reason: format!(
+                    "canonical bead task contract violated: {}",
+                    errors.join("; ")
+                ),
+            },
+        )?;
+    }
     let prompt_hash = FileSystem::prompt_hash(&prompt_contents);
 
     let mut initial_details = serde_json::Map::from_iter([
@@ -451,74 +470,523 @@ pub fn create_project_from_bead_context(
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BeadDescriptionSectionKind {
+    AcceptanceCriteria,
+    NonGoals,
+}
+
+fn markdown_heading_title(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if hash_count < 2 {
+        return None;
+    }
+    Some(trimmed[hash_count..].trim())
+}
+
+fn normalized_section_label(label: &str) -> String {
+    label
+        .trim()
+        .trim_end_matches(':')
+        .chars()
+        .filter(|ch| !matches!(ch, '-' | '_' | ' '))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn bead_description_section_kind_from_label(label: &str) -> Option<BeadDescriptionSectionKind> {
+    match normalized_section_label(label).as_str() {
+        "acceptancecriteria" => Some(BeadDescriptionSectionKind::AcceptanceCriteria),
+        "nongoals" => Some(BeadDescriptionSectionKind::NonGoals),
+        _ => None,
+    }
+}
+
+fn section_kind_for_bead_description_line(line: &str) -> Option<BeadDescriptionSectionKind> {
+    let trimmed = line.trim();
+    if let Some(title) = markdown_heading_title(trimmed) {
+        return bead_description_section_kind_from_label(title);
+    }
+
+    trimmed
+        .strip_suffix(':')
+        .and_then(bead_description_section_kind_from_label)
+}
+
+fn strip_markdown_list_marker(line: &str) -> Option<(usize, &str)> {
+    let leading_indent = line.len() - line.trim_start().len();
+    let trimmed = &line[leading_indent..];
+    if let Some(item) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+    {
+        return Some((leading_indent, item));
+    }
+
+    let bytes = trimmed.as_bytes();
+    let mut marker_len = 0usize;
+    while marker_len < bytes.len() && bytes[marker_len].is_ascii_digit() {
+        marker_len += 1;
+    }
+
+    if marker_len == 0 || marker_len + 1 >= bytes.len() {
+        return None;
+    }
+
+    if matches!(bytes[marker_len], b'.' | b')') && bytes[marker_len + 1] == b' ' {
+        Some((leading_indent, &trimmed[marker_len + 2..]))
+    } else {
+        None
+    }
+}
+
+fn append_section_item_line(current: &mut String, line: &str) {
+    let trimmed_end = line.trim_end();
+    if current.is_empty() {
+        current.push_str(trimmed_end.trim_start());
+        return;
+    }
+
+    if current.contains('\n') || trimmed_end != trimmed_end.trim_start() {
+        current.push('\n');
+        current.push_str(trimmed_end);
+    } else {
+        current.push(' ');
+        current.push_str(trimmed_end.trim_start());
+    }
+}
+
+fn is_indented_continuation_line(line: &str) -> bool {
+    !line.trim().is_empty() && line.trim_start() != line
+}
+
+fn collect_section_items(lines: &[String]) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut active_fence = None;
+    let mut index = 0usize;
+
+    while index < lines.len() {
+        let line = &lines[index];
+        if let Some(opening) = active_fence {
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(line);
+            if closes_fence(line, opening) {
+                active_fence = None;
+            }
+            index += 1;
+            continue;
+        }
+
+        if let Some(opening) = opening_fence_delimiter(line) {
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(line);
+            active_fence = Some(opening);
+            index += 1;
+            continue;
+        }
+
+        let trimmed_end = line.trim_end();
+        if trimmed_end.trim().is_empty() {
+            let preserves_current_item = !current.is_empty()
+                && lines
+                    .get(index + 1)
+                    .map(|next| is_indented_continuation_line(next))
+                    .unwrap_or(false);
+            if preserves_current_item {
+                current.push('\n');
+                index += 1;
+                continue;
+            }
+            if !current.is_empty() {
+                items.push(current.trim().to_owned());
+                current.clear();
+            }
+            index += 1;
+            continue;
+        }
+
+        if let Some((leading_indent, item)) = strip_markdown_list_marker(trimmed_end) {
+            if leading_indent > 0 {
+                append_section_item_line(&mut current, trimmed_end);
+                index += 1;
+                continue;
+            }
+            if !current.is_empty() {
+                items.push(current.trim().to_owned());
+                current.clear();
+            }
+            current.push_str(item.trim_end());
+            index += 1;
+            continue;
+        }
+
+        append_section_item_line(&mut current, trimmed_end);
+        index += 1;
+    }
+
+    if !current.is_empty() {
+        items.push(current.trim().to_owned());
+    }
+
+    items
+}
+
+fn merge_unique_lines(primary: &[String], secondary: &[String]) -> Vec<String> {
+    let mut merged = Vec::new();
+    for item in primary.iter().chain(secondary.iter()) {
+        if !merged.iter().any(|existing: &String| existing == item) {
+            merged.push(item.clone());
+        }
+    }
+    merged
+}
+
+fn is_standalone_plain_subsection_label(line: &str) -> bool {
+    let trimmed_end = line.trim_end();
+    if trimmed_end.is_empty() || trimmed_end != line.trim_start() || !trimmed_end.ends_with(':') {
+        return false;
+    }
+
+    if strip_markdown_list_marker(trimmed_end).is_some() {
+        return false;
+    }
+
+    let label = trimmed_end[..trimmed_end.len() - 1].trim_end();
+    if label.is_empty() {
+        return false;
+    }
+
+    label.split_whitespace().count() >= 2
+}
+
+fn is_bead_description_subsection_boundary(line: &str) -> bool {
+    markdown_heading_title(line).is_some() || is_standalone_plain_subsection_label(line)
+}
+
+fn split_bead_description_scope(description: &str) -> (String, Vec<String>, Vec<String>) {
+    let mut must_do_lines = Vec::new();
+    let mut non_goal_lines = Vec::new();
+    let mut acceptance_criteria_lines = Vec::new();
+    let mut active_section = None;
+    let mut active_fence = None;
+    let mut previous_line_blank = true;
+
+    let mut push_line = |section: Option<BeadDescriptionSectionKind>, line: &str| match section {
+        Some(BeadDescriptionSectionKind::AcceptanceCriteria) => {
+            acceptance_criteria_lines.push(line.to_owned())
+        }
+        Some(BeadDescriptionSectionKind::NonGoals) => non_goal_lines.push(line.to_owned()),
+        None => must_do_lines.push(line.to_owned()),
+    };
+
+    for line in description.lines() {
+        if let Some(opening) = active_fence {
+            push_line(active_section, line);
+            if closes_fence(line, opening) {
+                active_fence = None;
+            }
+            previous_line_blank = line.trim().is_empty();
+            continue;
+        }
+
+        if let Some(opening) = opening_fence_delimiter(line) {
+            push_line(active_section, line);
+            active_fence = Some(opening);
+            previous_line_blank = line.trim().is_empty();
+            continue;
+        }
+
+        if let Some(section_kind) = section_kind_for_bead_description_line(line) {
+            active_section = Some(section_kind);
+            previous_line_blank = false;
+            continue;
+        }
+
+        // Only a subsection label after a blank line ends an active embedded
+        // Non-goals / Acceptance Criteria block. Adjacent labels stay inside
+        // the section so examples like `Details:` or `### Notes` can be kept as
+        // body content instead of snapping back into must-do scope mid-list.
+        if active_section.is_some()
+            && previous_line_blank
+            && is_bead_description_subsection_boundary(line)
+        {
+            active_section = None;
+        }
+
+        push_line(active_section, line);
+        previous_line_blank = line.trim().is_empty();
+    }
+
+    let must_do_scope = must_do_lines.join("\n").trim().to_owned();
+    let non_goals = collect_section_items(&non_goal_lines);
+    let acceptance_criteria = collect_section_items(&acceptance_criteria_lines);
+    (must_do_scope, non_goals, acceptance_criteria)
+}
+
 pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
-    fn bullet_lines(items: &[String]) -> String {
-        items
-            .iter()
-            .map(|item| format!("- {item}"))
+    fn escape_canonical_heading_lines(value: &str) -> String {
+        let mut active_fence = None;
+        value
+            .lines()
+            .map(|line| {
+                if let Some(opening) = active_fence {
+                    if closes_fence(line, opening) {
+                        active_fence = None;
+                    }
+                    return line.to_owned();
+                }
+
+                if let Some(opening) = opening_fence_delimiter(line) {
+                    active_fence = Some(opening);
+                    return line.to_owned();
+                }
+
+                let trimmed_end = line.trim_end();
+                let leading_spaces = trimmed_end.chars().take_while(|ch| *ch == ' ').count();
+                let is_canonical_heading = leading_spaces <= 3
+                    && trimmed_end[leading_spaces..]
+                        .strip_prefix("## ")
+                        .map(|title| {
+                            task_prompt_contract::BEAD_TASK_PROMPT_SECTION_TITLES.contains(&title)
+                        })
+                        .unwrap_or(false);
+                if is_canonical_heading {
+                    format!("    {line}")
+                } else {
+                    line.to_owned()
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
 
-    let mut sections = vec![
-        format!(
-            "# Ralph Task Prompt\n\nThis project executes bead `{}` for milestone `{}`.",
-            context.bead_id, context.milestone_id
-        ),
-        format!(
-            "## Milestone\n\n- ID: `{}`\n- Name: {}\n\n{}",
-            context.milestone_id, context.milestone_name, context.milestone_description
-        ),
-    ];
-
-    if let Some(summary) = &context.milestone_summary {
-        sections.push(format!("## Milestone Summary\n\n{summary}"));
-    }
-    if !context.milestone_goals.is_empty() {
-        sections.push(format!(
-            "## Milestone Goals\n\n{}",
-            bullet_lines(&context.milestone_goals)
-        ));
-    }
-    if !context.milestone_constraints.is_empty() {
-        sections.push(format!(
-            "## Constraints\n\n{}",
-            bullet_lines(&context.milestone_constraints)
-        ));
+    fn render_bullet_item(prefix: &str, value: &str) -> String {
+        let mut lines = value.lines();
+        let first_line = lines.next().unwrap_or_default();
+        let continuation_indent = " ".repeat(prefix.len().max(4));
+        let mut rendered =
+            if !first_line.is_empty() && opening_fence_delimiter(first_line).is_some() {
+                format!(
+                    "{}\n{}{}",
+                    prefix.trim_end(),
+                    continuation_indent,
+                    first_line
+                )
+            } else {
+                format!("{prefix}{first_line}")
+            };
+        for line in lines {
+            rendered.push('\n');
+            rendered.push_str(&continuation_indent);
+            rendered.push_str(line);
+        }
+        rendered
     }
 
-    let mut bead_header = format!(
-        "## Active Bead\n\n- ID: `{}`\n- Title: {}",
-        context.bead_id, context.bead_title
+    fn bullet_lines(items: &[String]) -> String {
+        items
+            .iter()
+            .map(|item| render_bullet_item("- ", item))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn bullet_lines_or_default(items: &[String], default: &str) -> String {
+        if items.is_empty() {
+            default.to_owned()
+        } else {
+            bullet_lines(items)
+        }
+    }
+
+    fn indent_section_body(value: &str) -> String {
+        value
+            .lines()
+            .map(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("    {line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    let (bead_must_do_scope, bead_local_non_goals, bead_local_acceptance_criteria) = context
+        .bead_description
+        .as_deref()
+        .map(split_bead_description_scope)
+        .unwrap_or_else(|| (String::new(), Vec::new(), Vec::new()));
+
+    let milestone_summary = {
+        let mut lines = vec![
+            render_bullet_item("- Milestone ID: ", &format!("`{}`", context.milestone_id)),
+            render_bullet_item("- Milestone Name: ", &context.milestone_name),
+        ];
+        if let Some(summary) = &context.milestone_summary {
+            lines.push(render_bullet_item("- Summary: ", summary));
+        }
+        lines.push(render_bullet_item(
+            "- Description: ",
+            &context.milestone_description,
+        ));
+        if !context.milestone_goals.is_empty() {
+            lines.push("- Goals:".to_owned());
+            lines.extend(
+                context
+                    .milestone_goals
+                    .iter()
+                    .map(|goal| render_bullet_item("  - ", goal)),
+            );
+        }
+        if !context.milestone_constraints.is_empty() {
+            lines.push("- Constraints:".to_owned());
+            lines.extend(
+                context
+                    .milestone_constraints
+                    .iter()
+                    .map(|constraint| render_bullet_item("  - ", constraint)),
+            );
+        }
+        lines.join("\n")
+    };
+
+    let current_bead_details = {
+        let mut lines = vec![
+            render_bullet_item("- Bead ID: ", &format!("`{}`", context.bead_id)),
+            render_bullet_item("- Title: ", &context.bead_title),
+            render_bullet_item("- Flow: ", &format!("`{}`", context.flow.as_str())),
+        ];
+        if let Some(parent_epic_id) = &context.parent_epic_id {
+            lines.push(render_bullet_item(
+                "- Parent epic: ",
+                &format!("`{parent_epic_id}`"),
+            ));
+        } else {
+            lines.push("- Parent epic: None.".to_owned());
+        }
+        if let Some(plan_hash) = &context.plan_hash {
+            lines.push(render_bullet_item(
+                "- Plan hash: ",
+                &format!("`{plan_hash}`"),
+            ));
+        } else {
+            lines.push("- Plan hash: None.".to_owned());
+        }
+        if let Some(plan_version) = context.plan_version {
+            lines.push(render_bullet_item(
+                "- Plan version: ",
+                &plan_version.to_string(),
+            ));
+        } else {
+            lines.push("- Plan version: None.".to_owned());
+        }
+        if context.bead_dependencies.is_empty() {
+            lines.push("- Blocking dependencies: None.".to_owned());
+        } else {
+            lines.push("- Blocking dependencies:".to_owned());
+            lines.extend(
+                context
+                    .bead_dependencies
+                    .iter()
+                    .map(|dependency| render_bullet_item("  - ", dependency)),
+            );
+        }
+        lines.join("\n")
+    };
+
+    let must_do_scope = if bead_must_do_scope.is_empty() {
+        "No explicit scope description was supplied. Use the bead title and acceptance criteria as the required scope boundary.".to_owned()
+    } else {
+        bead_must_do_scope
+    };
+    let merged_non_goals = merge_unique_lines(&bead_local_non_goals, &context.milestone_non_goals);
+    let non_goals =
+        bullet_lines_or_default(&merged_non_goals, "None captured in the milestone plan.");
+    let merged_acceptance_criteria = merge_unique_lines(
+        &context.bead_acceptance_criteria,
+        &bead_local_acceptance_criteria,
     );
-    if let Some(parent_epic_id) = &context.parent_epic_id {
-        bead_header.push_str(&format!("\n- Parent epic: `{parent_epic_id}`"));
-    }
-    if let Some(plan_version) = context.plan_version {
-        bead_header.push_str(&format!("\n- Plan version: {plan_version}"));
-    }
-    sections.push(bead_header);
+    let acceptance_criteria = bullet_lines_or_default(
+        &merged_acceptance_criteria,
+        "No explicit acceptance criteria were supplied.",
+    );
+    let planned_elsewhere = bullet_lines_or_default(
+        &context.already_planned_elsewhere,
+        "No explicit planned-elsewhere items were supplied. Do not absorb adjacent bead work unless it is required to satisfy this bead's acceptance criteria.",
+    );
+    let review_policy = bullet_lines_or_default(
+        &context.review_policy,
+        "Use the active bead scope as the review boundary.",
+    );
+    let repo_guidance = match &context.agents_guidance {
+        Some(guidance) => format!(
+            "Follow the repository AGENTS.md instructions for this repo.\n\n{guidance}"
+        ),
+        None => "Follow the repository AGENTS.md instructions for this repo.\n\nNo milestone-specific AGENTS guidance was supplied.".to_owned(),
+    };
+    let repo_guidance = escape_canonical_heading_lines(&repo_guidance);
 
-    if let Some(description) = &context.bead_description {
-        sections.push(format!("## Scope\n\n{description}"));
-    }
-    if !context.bead_dependencies.is_empty() {
-        sections.push(format!(
-            "## Dependencies\n\n{}",
-            bullet_lines(&context.bead_dependencies)
-        ));
-    }
-    if !context.bead_acceptance_criteria.is_empty() {
-        sections.push(format!(
-            "## Acceptance Criteria\n\n{}",
-            bullet_lines(&context.bead_acceptance_criteria)
-        ));
-    }
-    if let Some(guidance) = &context.agents_guidance {
-        sections.push(format!("## AGENTS Guidance\n\n{guidance}"));
-    }
-
-    sections.join("\n\n")
+    vec![
+        format!(
+            "# Ralph Task Prompt\n\n{}\n\n- Contract: `{}`\n- Version: `{}`\n- Milestone: `{}`\n- Bead: `{}`\n\nThis project executes bead `{}` for milestone `{}`.",
+            task_prompt_contract::contract_marker(),
+            task_prompt_contract::BEAD_TASK_PROMPT_CONTRACT_NAME,
+            task_prompt_contract::BEAD_TASK_PROMPT_CONTRACT_VERSION,
+            context.milestone_id,
+            context.bead_id,
+            context.bead_id,
+            context.milestone_id
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_MILESTONE_SUMMARY,
+            milestone_summary
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_CURRENT_BEAD_DETAILS,
+            current_bead_details
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_MUST_DO_SCOPE,
+            indent_section_body(&must_do_scope)
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_EXPLICIT_NON_GOALS,
+            non_goals
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_ACCEPTANCE_CRITERIA,
+            acceptance_criteria
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_ALREADY_PLANNED_ELSEWHERE,
+            planned_elsewhere
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_REVIEW_POLICY,
+            review_policy
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_AGENTS_REPO_GUIDANCE,
+            repo_guidance
+        ),
+    ]
+    .join("\n\n")
 }
 
 fn default_project_id_for_bead(milestone_id: &str, bead_id: &str) -> AppResult<ProjectId> {

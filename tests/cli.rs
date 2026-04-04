@@ -22,11 +22,11 @@ fn binary() -> &'static str {
 }
 
 fn live_workspace_root(base_dir: &std::path::Path) -> std::path::PathBuf {
-    base_dir.join(".git/ralph-burning-live")
+    ralph_burning::adapters::fs::FileSystem::live_workspace_root_path(base_dir)
 }
 
 fn audit_workspace_root(base_dir: &std::path::Path) -> std::path::PathBuf {
-    base_dir.join(".ralph-burning")
+    ralph_burning::adapters::fs::FileSystem::audit_workspace_root_path(base_dir)
 }
 
 fn workspace_config_path(base_dir: &std::path::Path) -> std::path::PathBuf {
@@ -1878,15 +1878,95 @@ exit 1
 
     let prompt = fs::read_to_string(project_root.join("prompt.md")).expect("read prompt");
     assert!(prompt.contains("Ship bead-backed task creation."));
-    assert!(prompt.contains("## Active Bead"));
+    assert!(prompt.contains("bead_execution_prompt"));
+    assert!(prompt.contains("## Current Bead Details"));
     assert!(prompt.contains("Keep changes inspectable and deterministic."));
-    assert!(prompt.contains("## Dependencies\n\n- ms-alpha.bead-1 (Define task-source metadata)"));
+    assert!(prompt
+        .contains("- Blocking dependencies:\n  - ms-alpha.bead-1 (Define task-source metadata)"));
+    assert!(prompt.contains("## Already Planned Elsewhere\n\n- ms-alpha.bead-3 (Child bead)"));
     assert!(!prompt.contains("- ms-alpha.epic-1 (Task Substrate)"));
     assert!(!prompt.contains("Parent epic: `ms-alpha.bead-3`"));
 
     let active =
         fs::read_to_string(active_project_path(temp_dir.path())).expect("read active project");
     assert_eq!(active.trim(), "task-ms-alpha-bead-2");
+}
+
+#[test]
+fn project_create_from_bead_preserves_description_only_acceptance_criteria_and_hardening_notes() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Goal:\nKeep prompt generation aligned with live bead descriptions.\n\nNon-goals:\n- do not broaden the task beyond the active bead\n\nContract hardening notes:\n- preserve fix-now boundaries in the prompt\n- keep later-bead work out of explicit non-goals\n\n## Acceptance Criteria\n\n- preserve description-only acceptance criteria\n- do not emit the empty acceptance fallback",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let prompt =
+        fs::read_to_string(project_root(temp_dir.path(), "task-ms-alpha-bead-2").join("prompt.md"))
+            .expect("read prompt");
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let acceptance_start = prompt
+        .find("## Acceptance Criteria")
+        .expect("acceptance section should exist");
+    let planned_start = prompt
+        .find("## Already Planned Elsewhere")
+        .expect("planned elsewhere section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+    let non_goals_section = &prompt[non_goals_start..acceptance_start];
+    let acceptance_section = &prompt[acceptance_start..planned_start];
+
+    assert!(must_do_section.contains("Contract hardening notes:"));
+    assert!(must_do_section.contains("preserve fix-now boundaries in the prompt"));
+    assert!(!non_goals_section.contains("Contract hardening notes:"));
+    assert!(acceptance_section.contains("- preserve description-only acceptance criteria"));
+    assert!(acceptance_section.contains("- do not emit the empty acceptance fallback"));
+    assert!(!acceptance_section.contains("No explicit acceptance criteria were supplied."));
 }
 
 #[test]
@@ -7599,7 +7679,7 @@ fn conformance_run_fail_fast_stops_and_reports_not_run() {
     let output = Command::new(binary())
         .env(
             "RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR",
-            "workspace-init-fresh",
+            "active-project-select-existing",
         )
         .args(["conformance", "run"])
         .output()
