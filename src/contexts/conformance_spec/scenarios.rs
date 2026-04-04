@@ -307,11 +307,31 @@ fn run_daemon_iteration_with_process_backend(
     )
 }
 
+fn live_workspace_root(base_dir: &Path) -> PathBuf {
+    crate::adapters::fs::FileSystem::live_workspace_root_path(base_dir)
+}
+
+fn active_project_path(base_dir: &Path) -> PathBuf {
+    live_workspace_root(base_dir).join("active-project")
+}
+
+fn workspace_config_path(base_dir: &Path) -> PathBuf {
+    live_workspace_root(base_dir).join("workspace.toml")
+}
+
+fn daemon_root(base_dir: &Path) -> PathBuf {
+    live_workspace_root(base_dir).join("daemon")
+}
+
+fn project_root(base_dir: &Path, project_id: &str) -> PathBuf {
+    live_workspace_root(base_dir)
+        .join("projects")
+        .join(project_id)
+}
+
 fn read_runtime_logs(ws: &TempWorkspace, project_id: &str) -> Result<String, String> {
-    std::fs::read_to_string(ws.path().join(format!(
-        ".ralph-burning/projects/{project_id}/runtime/logs/run.ndjson"
-    )))
-    .map_err(|e| format!("read runtime logs: {e}"))
+    std::fs::read_to_string(project_root(ws.path(), project_id).join("runtime/logs/run.ndjson"))
+        .map_err(|e| format!("read runtime logs: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -319,9 +339,7 @@ fn read_runtime_logs(ws: &TempWorkspace, project_id: &str) -> Result<String, Str
 // ---------------------------------------------------------------------------
 
 fn read_journal(ws: &TempWorkspace, project_id: &str) -> Result<Vec<serde_json::Value>, String> {
-    let path = ws.path().join(format!(
-        ".ralph-burning/projects/{project_id}/journal.ndjson"
-    ));
+    let path = project_root(ws.path(), project_id).join("journal.ndjson");
     let content = std::fs::read_to_string(&path).map_err(|e| format!("read journal: {e}"))?;
     content
         .lines()
@@ -331,9 +349,7 @@ fn read_journal(ws: &TempWorkspace, project_id: &str) -> Result<Vec<serde_json::
 }
 
 fn read_run_snapshot(ws: &TempWorkspace, project_id: &str) -> Result<serde_json::Value, String> {
-    let path = ws
-        .path()
-        .join(format!(".ralph-burning/projects/{project_id}/run.json"));
+    let path = project_root(ws.path(), project_id).join("run.json");
     let content = std::fs::read_to_string(&path).map_err(|e| format!("read run.json: {e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("parse run.json: {e}"))
 }
@@ -383,9 +399,7 @@ fn read_requirements_run_json(
 }
 
 fn count_payload_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, String> {
-    let dir = ws.path().join(format!(
-        ".ralph-burning/projects/{project_id}/history/payloads"
-    ));
+    let dir = project_root(ws.path(), project_id).join("history/payloads");
     let count = std::fs::read_dir(&dir)
         .map_err(|e| format!("read payloads dir: {e}"))?
         .filter_map(|e| e.ok())
@@ -395,9 +409,7 @@ fn count_payload_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, St
 }
 
 fn count_artifact_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, String> {
-    let dir = ws.path().join(format!(
-        ".ralph-burning/projects/{project_id}/history/artifacts"
-    ));
+    let dir = project_root(ws.path(), project_id).join("history/artifacts");
     let count = std::fs::read_dir(&dir)
         .map_err(|e| format!("read artifacts dir: {e}"))?
         .filter_map(|e| e.ok())
@@ -489,7 +501,7 @@ fn conformance_daemon_dir(data_dir: &Path) -> PathBuf {
 }
 
 fn create_project_fixture(base_dir: &Path, project_id: &str, flow: &str) {
-    let project_root = base_dir.join(".ralph-burning/projects").join(project_id);
+    let project_root = project_root(base_dir, project_id);
     std::fs::create_dir_all(&project_root).expect("create project directory");
     let prompt_contents = "# Fixture prompt\n";
     let project_toml = format!(
@@ -531,11 +543,8 @@ status_summary = "created"
 }
 
 fn select_project(base_dir: &Path, project_id: &str) {
-    std::fs::write(
-        base_dir.join(".ralph-burning/active-project"),
-        format!("{project_id}\n"),
-    )
-    .expect("write active-project");
+    std::fs::write(active_project_path(base_dir), format!("{project_id}\n"))
+        .expect("write active-project");
 }
 
 fn setup_workspace_with_project(
@@ -550,8 +559,7 @@ fn setup_workspace_with_project(
 }
 
 fn conformance_project_root(ws: &TempWorkspace, project_id: &str) -> PathBuf {
-    ws.path()
-        .join(format!(".ralph-burning/projects/{project_id}"))
+    project_root(ws.path(), project_id)
 }
 
 fn write_run_query_history_fixture(ws: &TempWorkspace, project_id: &str) -> Result<(), String> {
@@ -8362,7 +8370,7 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
         )?;
         assert_success(&out)?;
 
-        let project_root = ws.path().join(".ralph-burning/projects/stub-project");
+        let project_root = conformance_project_root(&ws, "stub-project");
         let project_toml = std::fs::read_to_string(project_root.join("project.toml"))
             .map_err(|e| format!("read project.toml: {e}"))?;
         assert_contains(&project_toml, "flow = \"quick_dev\"", "project.toml")?;
@@ -8438,11 +8446,9 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("requirements quick did not use file contents as idea input".into());
         }
 
-        let project_toml = std::fs::read_to_string(
-            ws.path()
-                .join(".ralph-burning/projects/stub-project/project.toml"),
-        )
-        .map_err(|e| format!("read project.toml: {e}"))?;
+        let project_toml =
+            std::fs::read_to_string(conformance_project_root(&ws, "stub-project").join("project.toml"))
+                .map_err(|e| format!("read project.toml: {e}"))?;
         assert_contains(&project_toml, "flow = \"quick_dev\"", "project.toml")?;
 
         Ok(())
@@ -8452,10 +8458,7 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "keep-active", "standard");
-        std::fs::write(
-            ws.path().join(".ralph-burning/active-project"),
-            "keep-active\n",
-        )
+        std::fs::write(active_project_path(ws.path()), "keep-active\n")
         .map_err(|e| format!("write active-project: {e}"))?;
 
         let run_id = "req-awaiting";
@@ -8494,7 +8497,7 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&out)?;
         assert_contains(&out.stderr, "expected 'completed'", "stderr")?;
 
-        let active = std::fs::read_to_string(ws.path().join(".ralph-burning/active-project"))
+        let active = std::fs::read_to_string(active_project_path(ws.path()))
             .map_err(|e| format!("read active-project: {e}"))?;
         if active.trim() != "keep-active" {
             return Err(format!(
@@ -8502,11 +8505,7 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
                 active.trim()
             ));
         }
-        if ws
-            .path()
-            .join(".ralph-burning/projects/stub-project")
-            .exists()
-        {
+        if conformance_project_root(&ws, "stub-project").exists() {
             return Err("project directory should not exist after pre-creation failure".into());
         }
 
@@ -8520,7 +8519,7 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
             let ws = TempWorkspace::new()?;
             init_workspace(&ws)?;
 
-            let workspace_toml = ws.path().join(".ralph-burning/workspace.toml");
+            let workspace_toml = workspace_config_path(ws.path());
             let original = std::fs::read_to_string(&workspace_toml)
                 .map_err(|e| format!("read workspace.toml: {e}"))?;
             let mutated = format!(
@@ -8546,7 +8545,7 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
                 "stderr",
             )?;
 
-            let active = std::fs::read_to_string(ws.path().join(".ralph-burning/active-project"))
+            let active = std::fs::read_to_string(active_project_path(ws.path()))
                 .map_err(|e| format!("read active-project: {e}"))?;
             if active.trim() != "stub-project" {
                 return Err(format!(
@@ -8554,9 +8553,8 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
                     active.trim()
                 ));
             }
-            if !ws
-                .path()
-                .join(".ralph-burning/projects/stub-project/project.toml")
+            if !conformance_project_root(&ws, "stub-project")
+                .join("project.toml")
                 .is_file()
             {
                 return Err("project should still exist after start failure".into());
@@ -9695,9 +9693,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "resolved_flow": "standard",
             "routing_source": "default_flow"
         });
-        let task1_path = ws
-            .path()
-            .join(".ralph-burning/daemon/tasks/locked-task.json");
+        let task1_path = daemon_root(ws.path()).join("tasks/locked-task.json");
         std::fs::write(
             &task1_path,
             serde_json::to_string_pretty(&task1_json).unwrap(),
@@ -9705,9 +9701,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         .map_err(|e| format!("write task1: {e}"))?;
 
         // Hold the writer lock for locked-proj
-        let lock_path = ws
-            .path()
-            .join(".ralph-burning/daemon/leases/writer-locked-proj.lock");
+        let lock_path = daemon_root(ws.path()).join("leases/writer-locked-proj.lock");
         std::fs::write(&lock_path, "external-holder").map_err(|e| format!("write lock: {e}"))?;
 
         // Task 2: no lock contention (different project), later created_at
@@ -9724,7 +9718,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "resolved_flow": "standard",
             "routing_source": "default_flow"
         });
-        let task2_path = ws.path().join(".ralph-burning/daemon/tasks/free-task.json");
+        let task2_path = daemon_root(ws.path()).join("tasks/free-task.json");
         std::fs::write(
             &task2_path,
             serde_json::to_string_pretty(&task2_json).unwrap(),
@@ -9814,9 +9808,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "resolved_flow": "standard",
             "routing_source": "default_flow"
         });
-        let task_path = ws
-            .path()
-            .join(".ralph-burning/daemon/tasks/cwd-test-task.json");
+        let task_path = daemon_root(ws.path()).join("tasks/cwd-test-task.json");
         std::fs::write(
             &task_path,
             serde_json::to_string_pretty(&task_json).unwrap(),
@@ -19153,7 +19145,7 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
 
         // Write config with disabled base backend
         std::fs::write(
-            ws.path().join(".ralph-burning/workspace.toml"),
+            workspace_config_path(ws.path()),
             "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
         ).map_err(|e| format!("write config: {e}"))?;
 
@@ -19173,7 +19165,7 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
         }
 
         // Verify read-only: no project state created
-        let projects_dir = ws.path().join(".ralph-burning/projects");
+        let projects_dir = live_workspace_root(ws.path()).join("projects");
         if projects_dir.is_dir() {
             let entries: Vec<_> = std::fs::read_dir(&projects_dir)
                 .map_err(|e| format!("read projects dir: {e}"))?
@@ -19310,7 +19302,7 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
 
         // Verify probe failure semantics: disabled required backend exits non-zero
         std::fs::write(
-            ws.path().join(".ralph-burning/workspace.toml"),
+            workspace_config_path(ws.path()),
             "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
         ).map_err(|e| format!("write config: {e}"))?;
 
@@ -19381,7 +19373,7 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
 
         // Verify probe failure semantics: disabled required backend exits non-zero
         std::fs::write(
-            ws.path().join(".ralph-burning/workspace.toml"),
+            workspace_config_path(ws.path()),
             "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
         ).map_err(|e| format!("write config: {e}"))?;
 

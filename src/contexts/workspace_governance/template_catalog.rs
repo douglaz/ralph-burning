@@ -15,10 +15,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::adapters::fs::FileSystem;
 use crate::shared::domain::{ProjectId, StageId};
 use crate::shared::error::{AppError, AppResult};
-
-use super::WORKSPACE_DIR;
 
 // ── Template IDs ────────────────────────────────────────────────────────────
 
@@ -571,26 +570,87 @@ pub fn requirements_template_id(stage_id_str: &str) -> String {
 
 // ── Resolution ──────────────────────────────────────────────────────────────
 
-/// Filesystem path for a workspace-level template override.
+/// Filesystem path for the preferred workspace-level template override.
 pub fn workspace_template_path(base_dir: &Path, template_id: &str) -> PathBuf {
-    base_dir
-        .join(WORKSPACE_DIR)
+    FileSystem::workspace_root_path(base_dir)
         .join("templates")
         .join(format!("{template_id}.md"))
 }
 
-/// Filesystem path for a project-level template override.
+fn workspace_template_candidate_paths(base_dir: &Path, template_id: &str) -> Vec<PathBuf> {
+    [
+        FileSystem::live_workspace_root_path(base_dir),
+        FileSystem::audit_workspace_root_path(base_dir),
+    ]
+    .into_iter()
+    .map(|root| root.join("templates").join(format!("{template_id}.md")))
+    .fold(Vec::new(), |mut acc, path| {
+        if !acc.contains(&path) {
+            acc.push(path);
+        }
+        acc
+    })
+}
+
+/// Filesystem path for the preferred project-level template override.
 pub fn project_template_path(
     base_dir: &Path,
     project_id: &ProjectId,
     template_id: &str,
 ) -> PathBuf {
-    base_dir
-        .join(WORKSPACE_DIR)
-        .join("projects")
-        .join(project_id.as_str())
+    FileSystem::project_root(base_dir, project_id)
         .join("templates")
         .join(format!("{template_id}.md"))
+}
+
+fn project_template_candidate_paths(
+    base_dir: &Path,
+    project_id: &ProjectId,
+    template_id: &str,
+) -> Vec<PathBuf> {
+    [
+        FileSystem::live_workspace_root_path(base_dir)
+            .join("projects")
+            .join(project_id.as_str()),
+        FileSystem::audit_workspace_root_path(base_dir)
+            .join("projects")
+            .join(project_id.as_str()),
+    ]
+    .into_iter()
+    .map(|root| root.join("templates").join(format!("{template_id}.md")))
+    .fold(Vec::new(), |mut acc, path| {
+        if !acc.contains(&path) {
+            acc.push(path);
+        }
+        acc
+    })
+}
+
+fn resolve_override_candidate(
+    path: &Path,
+    manifest: &TemplateManifest,
+) -> AppResult<Option<String>> {
+    match path.try_exists() {
+        Ok(true) => {
+            let content = read_override_file(path)?;
+            validate_template(&content, manifest, path)?;
+            Ok(Some(content))
+        }
+        Ok(false) => {
+            if path.symlink_metadata().is_ok() {
+                Err(AppError::MalformedTemplate {
+                    path: path.display().to_string(),
+                    reason: "template override is a broken symlink".to_owned(),
+                })
+            } else {
+                Ok(None)
+            }
+        }
+        Err(e) => Err(AppError::MalformedTemplate {
+            path: path.display().to_string(),
+            reason: format!("template override is inaccessible: {e}"),
+        }),
+    }
 }
 
 /// Resolve a template by precedence: project override → workspace override → built-in.
@@ -612,11 +672,8 @@ pub fn resolve(
     //    (broken symlink, permission denied). Inaccessible overrides are
     //    hard errors — no silent fallback to lower precedence.
     if let Some(pid) = project_id {
-        let path = project_template_path(base_dir, pid, template_id);
-        match path.try_exists() {
-            Ok(true) => {
-                let content = read_override_file(&path)?;
-                validate_template(&content, &manifest, &path)?;
+        for path in project_template_candidate_paths(base_dir, pid, template_id) {
+            if let Some(content) = resolve_override_candidate(&path, &manifest)? {
                 return Ok(ResolvedTemplate {
                     template_id: template_id.to_owned(),
                     source: TemplateSource::ProjectOverride(path),
@@ -624,45 +681,12 @@ pub fn resolve(
                     manifest,
                 });
             }
-            Ok(false) => {
-                // Also check if a symlink exists but is broken (dangling).
-                // symlink_metadata succeeds for broken symlinks; try_exists returns false.
-                if path.symlink_metadata().is_ok() {
-                    return Err(AppError::MalformedTemplate {
-                        path: path.display().to_string(),
-                        reason: "project template override is a broken symlink".to_owned(),
-                    });
-                }
-            }
-            Err(e) => {
-                return Err(AppError::MalformedTemplate {
-                    path: path.display().to_string(),
-                    reason: format!("project template override is inaccessible: {e}"),
-                });
-            }
         }
     }
 
     // 2. Check workspace override
-    let ws_path = workspace_template_path(base_dir, template_id);
-    match ws_path.try_exists() {
-        Ok(false) => {
-            if ws_path.symlink_metadata().is_ok() {
-                return Err(AppError::MalformedTemplate {
-                    path: ws_path.display().to_string(),
-                    reason: "workspace template override is a broken symlink".to_owned(),
-                });
-            }
-        }
-        Err(e) => {
-            return Err(AppError::MalformedTemplate {
-                path: ws_path.display().to_string(),
-                reason: format!("workspace template override is inaccessible: {e}"),
-            });
-        }
-        Ok(true) => {
-            let content = read_override_file(&ws_path)?;
-            validate_template(&content, &manifest, &ws_path)?;
+    for ws_path in workspace_template_candidate_paths(base_dir, template_id) {
+        if let Some(content) = resolve_override_candidate(&ws_path, &manifest)? {
             return Ok(ResolvedTemplate {
                 template_id: template_id.to_owned(),
                 source: TemplateSource::WorkspaceOverride(ws_path),
@@ -887,11 +911,16 @@ pub fn resolve_and_render(
 /// Check whether any override exists for a template ID without reading it.
 pub fn has_override(template_id: &str, base_dir: &Path, project_id: Option<&ProjectId>) -> bool {
     if let Some(pid) = project_id {
-        if project_template_path(base_dir, pid, template_id).exists() {
+        if project_template_candidate_paths(base_dir, pid, template_id)
+            .iter()
+            .any(|path| path.exists())
+        {
             return true;
         }
     }
-    workspace_template_path(base_dir, template_id).exists()
+    workspace_template_candidate_paths(base_dir, template_id)
+        .iter()
+        .any(|path| path.exists())
 }
 
 #[cfg(test)]

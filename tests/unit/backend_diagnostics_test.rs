@@ -13,10 +13,10 @@ use ralph_burning::shared::domain::{
 };
 
 use super::env_test_support::{lock_path_mutex, PathGuard};
-use super::workspace_test::initialize_workspace_fixture;
+use super::workspace_test::{initialize_workspace_fixture, live_workspace_root};
 
 fn write_workspace_config(base_dir: &std::path::Path, config: &WorkspaceConfig) {
-    let workspace_root = base_dir.join(".ralph-burning");
+    let workspace_root = live_workspace_root(base_dir);
     FileSystem::write_atomic(
         &workspace_root.join("workspace.toml"),
         &toml::to_string_pretty(config).expect("serialize workspace config"),
