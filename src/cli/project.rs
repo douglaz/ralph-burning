@@ -1562,11 +1562,7 @@ fn fit_planned_elsewhere_item_to_budget(
         truncate_with_ascii_ellipsis(summary, PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES)
     });
 
-    let base_bytes = planned_elsewhere_serialized_bytes_without_summary(&fitted);
-    if base_bytes > remaining_bytes {
-        return None;
-    }
-
+    let mut fitted = fit_planned_elsewhere_base_to_budget(&fitted, remaining_bytes)?;
     let Some(summary) = fitted.summary.clone() else {
         return Some(fitted);
     };
@@ -1596,6 +1592,71 @@ fn fit_planned_elsewhere_item_to_budget(
         fitted.summary = None;
         (planned_elsewhere_serialized_bytes(&fitted) <= remaining_bytes).then_some(fitted)
     })
+}
+
+fn fit_planned_elsewhere_base_to_budget(
+    item: &PlannedElsewherePromptContext,
+    remaining_bytes: usize,
+) -> Option<PlannedElsewherePromptContext> {
+    let mut base_only = PlannedElsewherePromptContext {
+        summary: None,
+        ..item.clone()
+    };
+    if planned_elsewhere_serialized_bytes_without_summary(&base_only) <= remaining_bytes {
+        return Some(item.clone());
+    }
+
+    let mut best_fit = base_only.clone();
+    best_fit.title = "...".to_owned();
+    best_fit.relationship = "...".to_owned();
+    if planned_elsewhere_serialized_bytes_without_summary(&best_fit) > remaining_bytes {
+        return None;
+    }
+
+    let mut low = 1usize;
+    let mut high = item.relationship.len();
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let Some(truncated_relationship) = truncate_with_ascii_ellipsis(&item.relationship, mid)
+        else {
+            break;
+        };
+        let mut candidate = best_fit.clone();
+        candidate.relationship = truncated_relationship;
+        if planned_elsewhere_serialized_bytes_without_summary(&candidate) <= remaining_bytes {
+            best_fit = candidate;
+            low = mid.saturating_add(1);
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    base_only = best_fit.clone();
+    let mut low = 1usize;
+    let mut high = item.title.len();
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let Some(truncated_title) = truncate_with_ascii_ellipsis(&item.title, mid) else {
+            break;
+        };
+        let mut candidate = base_only.clone();
+        candidate.title = truncated_title;
+        if planned_elsewhere_serialized_bytes_without_summary(&candidate) <= remaining_bytes {
+            best_fit = candidate;
+            low = mid.saturating_add(1);
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    let mut output = item.clone();
+    output.title = best_fit.title;
+    output.relationship = best_fit.relationship;
+    Some(output)
 }
 
 fn planned_elsewhere_serialized_bytes(item: &PlannedElsewherePromptContext) -> usize {
@@ -2249,7 +2310,7 @@ mod tests {
         infer_parent_epic_id, load_milestone_bundle, map_br_list_error,
         planned_elsewhere_serialized_bytes, planned_elsewhere_serialized_bytes_without_summary,
         resolve_bead_plan, validate_milestone_plan_snapshot, PlannedElsewhereCandidate,
-        PlannedElsewherePriority, PLANNED_ELSEWHERE_MAX_BYTES,
+        PlannedElsewherePriority, PLANNED_ELSEWHERE_MAX_BYTES, PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES,
     };
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -3078,20 +3139,24 @@ mod tests {
         assert_eq!(
             budgeted
                 .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "ms-alpha.bead-10",
-                "ms-alpha.bead-11",
-                "ms-alpha.bead-20",
-                "ms-alpha.bead-21",
-            ]
+                .filter(|item| {
+                    matches!(
+                        item.id.as_str(),
+                        "ms-alpha.bead-10"
+                            | "ms-alpha.bead-11"
+                            | "ms-alpha.bead-20"
+                            | "ms-alpha.bead-21"
+                    )
+                })
+                .count(),
+            4
         );
-        assert!(budgeted.iter().all(|item| item
-            .summary
-            .as_deref()
-            .unwrap_or_default()
-            .ends_with("...")));
+        assert!(budgeted.iter().all(|item| {
+            item.summary
+                .as_ref()
+                .map(|summary| summary.len() <= PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES)
+                .unwrap_or(true)
+        }));
         assert!(
             budgeted
                 .iter()
@@ -3253,6 +3318,34 @@ mod tests {
             },
         ]);
 
+        assert!(
+            render_planned_elsewhere_block(&budgeted).len() <= PLANNED_ELSEWHERE_MAX_BYTES,
+            "rendered bytes: {}",
+            render_planned_elsewhere_block(&budgeted).len()
+        );
+    }
+
+    #[test]
+    fn apply_planned_elsewhere_budget_keeps_truncated_base_line_when_item_exceeds_budget() {
+        let oversized = "oversized context ".repeat(220);
+        let budgeted = apply_planned_elsewhere_budget(vec![PlannedElsewhereCandidate {
+            item: PlannedElsewherePromptContext {
+                id: "ms-alpha.bead-10".to_owned(),
+                title: format!("Direct dependent {oversized}"),
+                relationship: format!(
+                    "shared milestone acceptance ownership in Validation ({oversized})"
+                ),
+                status: Some("open".to_owned()),
+                summary: Some(oversized),
+            },
+            priority: PlannedElsewherePriority::DirectDependent,
+        }]);
+
+        assert_eq!(budgeted.len(), 1);
+        assert_eq!(budgeted[0].id, "ms-alpha.bead-10");
+        assert_eq!(budgeted[0].status.as_deref(), Some("open"));
+        assert!(render_planned_elsewhere_block(&budgeted).contains("ms-alpha.bead-10"));
+        assert!(render_planned_elsewhere_block(&budgeted).contains("status: open"));
         assert!(
             render_planned_elsewhere_block(&budgeted).len() <= PLANNED_ELSEWHERE_MAX_BYTES,
             "rendered bytes: {}",

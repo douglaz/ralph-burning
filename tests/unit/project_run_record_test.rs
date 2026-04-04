@@ -833,6 +833,61 @@ fn render_bead_task_prompt_caps_dependency_sections_for_prompt_budget() {
 }
 
 #[test]
+fn render_bead_task_prompt_keeps_single_long_dependency_visible_under_budget() {
+    let mut context = sample_bead_context();
+    context.upstream_dependencies = vec![BeadDependencyPromptContext {
+        id: "ms-alpha.long-upstream".to_owned(),
+        title: Some(format!(
+            "Long upstream dependency title {}",
+            "x".repeat(2200)
+        )),
+        relationship: format!("blocking dependency {}", "relationship detail ".repeat(120)),
+        status: Some("closed".to_owned()),
+        outcome: Some("completed".to_owned()),
+    }];
+    context.downstream_dependents.clear();
+
+    let prompt = render_bead_task_prompt(&context);
+
+    assert!(prompt.contains("ms-alpha.long-upstream"));
+    assert!(prompt.contains("status: closed"));
+    assert!(prompt.contains("outcome: completed"));
+    assert!(!prompt.contains("1 additional upstream dependencies omitted for prompt budget."));
+}
+
+#[test]
+fn render_bead_task_prompt_reports_exact_omitted_dependency_count() {
+    let mut context = sample_bead_context();
+    context.upstream_dependencies = (1..=20)
+        .map(|index| BeadDependencyPromptContext {
+            id: format!("ms-alpha.upstream-{index:02}"),
+            title: Some(format!(
+                "Long upstream dependency title {index} {}",
+                "detail ".repeat(18)
+            )),
+            relationship: "blocking dependency".to_owned(),
+            status: Some("closed".to_owned()),
+            outcome: Some("completed".to_owned()),
+        })
+        .collect();
+    context.downstream_dependents.clear();
+
+    let prompt = render_bead_task_prompt(&context);
+    let included_count = (1..=20)
+        .filter(|index| prompt.contains(&format!("ms-alpha.upstream-{index:02}")))
+        .count();
+    let omitted_count = 20usize.saturating_sub(included_count);
+
+    assert!(
+        omitted_count > 0,
+        "prompt should omit some upstream dependencies"
+    );
+    assert!(prompt.contains(&format!(
+        "{omitted_count} additional upstream dependencies omitted for prompt budget."
+    )));
+}
+
+#[test]
 fn render_bead_task_prompt_is_deterministic_for_hashing_and_drift_checks() {
     let context = sample_bead_context();
     let first = render_bead_task_prompt(&context);
