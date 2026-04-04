@@ -762,6 +762,9 @@ fn split_bead_description_scope(description: &str) -> (String, Vec<String>, Vec<
 }
 
 pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
+    const DEPENDENCY_CONTEXT_MAX_ITEMS: usize = 8;
+    const DEPENDENCY_CONTEXT_MAX_BYTES: usize = 1536;
+
     fn escape_canonical_heading_lines(value: &str) -> String {
         let mut active_fence = None;
         value
@@ -837,6 +840,22 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         }
     }
 
+    fn bullet_item_bytes(prefix: &str, value: &str) -> usize {
+        render_bullet_item(prefix, value).len()
+    }
+
+    fn bullet_block_bytes(items: &[String]) -> usize {
+        if items.is_empty() {
+            0
+        } else {
+            items
+                .iter()
+                .map(|item| bullet_item_bytes("- ", item))
+                .sum::<usize>()
+                + (items.len() - 1)
+        }
+    }
+
     fn indent_section_body(value: &str) -> String {
         value
             .lines()
@@ -864,32 +883,79 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         )
     }
 
-    fn format_dependency_context(items: &[BeadDependencyPromptContext]) -> String {
+    fn dependency_context_item(item: &BeadDependencyPromptContext) -> String {
+        let mut line = match item.title.as_deref() {
+            Some(title) if !title.trim().is_empty() => {
+                format!("{} ({title})", item.id)
+            }
+            _ => item.id.clone(),
+        };
+        line.push_str(&format!(" - {}", item.relationship));
+        if let Some(status) = item.status.as_deref() {
+            line.push_str(&format!("; status: {status}"));
+        }
+        if let Some(outcome) = item.outcome.as_deref() {
+            line.push_str(&format!("; outcome: {outcome}"));
+        }
+        line
+    }
+
+    fn omitted_dependency_context_line(count: usize, label: &str) -> String {
+        format!("{count} additional {label} omitted for prompt budget.")
+    }
+
+    fn format_dependency_context(items: &[BeadDependencyPromptContext], label: &str) -> String {
         if items.is_empty() {
             return "None.".to_owned();
         }
 
-        bullet_lines(
-            &items
-                .iter()
-                .map(|item| {
-                    let mut line = match item.title.as_deref() {
-                        Some(title) if !title.trim().is_empty() => {
-                            format!("{} ({title})", item.id)
-                        }
-                        _ => item.id.clone(),
-                    };
-                    line.push_str(&format!(" - {}", item.relationship));
-                    if let Some(status) = item.status.as_deref() {
-                        line.push_str(&format!("; status: {status}"));
-                    }
-                    if let Some(outcome) = item.outcome.as_deref() {
-                        line.push_str(&format!("; outcome: {outcome}"));
-                    }
-                    line
-                })
-                .collect::<Vec<_>>(),
-        )
+        let rendered_items = items
+            .iter()
+            .map(dependency_context_item)
+            .collect::<Vec<_>>();
+        if rendered_items.len() <= DEPENDENCY_CONTEXT_MAX_ITEMS
+            && bullet_block_bytes(&rendered_items) <= DEPENDENCY_CONTEXT_MAX_BYTES
+        {
+            return bullet_lines(&rendered_items);
+        }
+
+        let mut selected = Vec::new();
+        for item in &rendered_items {
+            if selected.len() >= DEPENDENCY_CONTEXT_MAX_ITEMS {
+                break;
+            }
+
+            let mut candidate = selected.clone();
+            candidate.push(item.clone());
+            let omitted_count = rendered_items.len().saturating_sub(candidate.len());
+            if omitted_count > 0 {
+                candidate.push(omitted_dependency_context_line(omitted_count, label));
+            }
+
+            if bullet_block_bytes(&candidate) > DEPENDENCY_CONTEXT_MAX_BYTES {
+                break;
+            }
+
+            selected.push(item.clone());
+        }
+
+        let omitted_count = rendered_items.len().saturating_sub(selected.len());
+        if omitted_count == 0 {
+            return bullet_lines(&selected);
+        }
+
+        let omission_line = omitted_dependency_context_line(omitted_count, label);
+        while !selected.is_empty() {
+            let mut candidate = selected.clone();
+            candidate.push(omission_line.clone());
+            if bullet_block_bytes(&candidate) <= DEPENDENCY_CONTEXT_MAX_BYTES {
+                selected = candidate;
+                return bullet_lines(&selected);
+            }
+            selected.pop();
+        }
+
+        bullet_lines(&[omission_line])
     }
 
     fn format_planned_elsewhere(items: &[PlannedElsewherePromptContext]) -> String {
@@ -994,10 +1060,12 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         lines.push("- Upstream dependencies:".to_owned());
         lines.push(indent_section_body(&format_dependency_context(
             &context.upstream_dependencies,
+            "upstream dependencies",
         )));
         lines.push("- Downstream dependents:".to_owned());
         lines.push(indent_section_body(&format_dependency_context(
             &context.downstream_dependents,
+            "downstream dependents",
         )));
         lines.join("\n")
     };

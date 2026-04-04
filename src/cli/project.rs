@@ -1145,11 +1145,15 @@ fn strip_markdown_list_marker(line: &str) -> Option<&str> {
 fn compact_planned_elsewhere_summary(value: Option<&str>) -> Option<String> {
     value.and_then(|raw| {
         let mut active_fence = None;
+        let mut lines = Vec::new();
 
         for line in raw.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
-                continue;
+                if lines.is_empty() {
+                    continue;
+                }
+                break;
             }
 
             if let Some(opening) = active_fence {
@@ -1160,31 +1164,45 @@ fn compact_planned_elsewhere_summary(value: Option<&str>) -> Option<String> {
             }
 
             if let Some(opening) = opening_fence_delimiter(trimmed) {
-                active_fence = Some(opening);
-                continue;
+                if lines.is_empty() {
+                    active_fence = Some(opening);
+                    continue;
+                }
+                break;
             }
 
             if markdown_heading_title(trimmed).is_some() {
-                continue;
+                if lines.is_empty() {
+                    continue;
+                }
+                break;
             }
 
             if let Some((label, rest)) = trimmed.split_once(':') {
                 if is_planned_elsewhere_scope_label(label) {
                     if !rest.trim().is_empty() {
-                        return Some(rest.trim().to_owned());
+                        lines.push(rest.trim().to_owned());
                     }
                     continue;
                 }
             }
 
             if let Some(item) = strip_markdown_list_marker(trimmed) {
-                return Some(item.trim().to_owned());
+                if lines.is_empty() {
+                    lines.push(item.trim().to_owned());
+                    continue;
+                }
+                break;
             }
 
-            return Some(trimmed.to_owned());
+            lines.push(trimmed.to_owned());
         }
 
-        None
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
     })
 }
 
@@ -1516,11 +1534,14 @@ fn apply_planned_elsewhere_budget(
             break;
         }
 
-        let remaining_bytes = PLANNED_ELSEWHERE_MAX_BYTES - used_bytes;
+        let separator_bytes = usize::from(!selected.is_empty());
+        let remaining_bytes = PLANNED_ELSEWHERE_MAX_BYTES
+            .saturating_sub(used_bytes)
+            .saturating_sub(separator_bytes);
         let Some(item) = fit_planned_elsewhere_item_to_budget(&item.item, remaining_bytes) else {
             continue;
         };
-        used_bytes += planned_elsewhere_serialized_bytes(&item);
+        used_bytes += separator_bytes + planned_elsewhere_serialized_bytes(&item);
         selected.push(item);
     }
 
@@ -1546,36 +1567,78 @@ fn fit_planned_elsewhere_item_to_budget(
         return None;
     }
 
-    let Some(summary) = fitted.summary.as_deref() else {
+    let Some(summary) = fitted.summary.clone() else {
         return Some(fitted);
     };
 
-    let remaining_summary_bytes = remaining_bytes.saturating_sub(base_bytes + "\nSummary:\n".len());
-    if remaining_summary_bytes == 0 {
-        fitted.summary = None;
+    if planned_elsewhere_serialized_bytes(&fitted) <= remaining_bytes {
         return Some(fitted);
     }
 
-    fitted.summary = truncate_with_ascii_ellipsis(summary, remaining_summary_bytes);
-    Some(fitted)
+    let mut best_fit = None;
+    let mut low = 0usize;
+    let mut high = summary.len();
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let mut candidate = fitted.clone();
+        candidate.summary = truncate_with_ascii_ellipsis(&summary, mid);
+        if planned_elsewhere_serialized_bytes(&candidate) <= remaining_bytes {
+            best_fit = Some(candidate);
+            low = mid.saturating_add(1);
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    best_fit.or_else(|| {
+        fitted.summary = None;
+        (planned_elsewhere_serialized_bytes(&fitted) <= remaining_bytes).then_some(fitted)
+    })
 }
 
 fn planned_elsewhere_serialized_bytes(item: &PlannedElsewherePromptContext) -> usize {
-    planned_elsewhere_serialized_bytes_without_summary(item)
-        + item
-            .summary
-            .as_deref()
-            .map(|summary| "\nSummary:\n".len() + summary.len())
-            .unwrap_or(0)
+    planned_elsewhere_rendered_bytes(&planned_elsewhere_item_body(item))
 }
 
 fn planned_elsewhere_serialized_bytes_without_summary(
     item: &PlannedElsewherePromptContext,
 ) -> usize {
-    let mut bytes = item.id.len() + item.title.len() + item.relationship.len() + " () - ".len();
-    if let Some(status) = item.status.as_deref() {
-        bytes += "; status: ".len() + status.len();
+    planned_elsewhere_rendered_bytes(&planned_elsewhere_item_body_without_summary(item))
+}
+
+fn planned_elsewhere_item_body(item: &PlannedElsewherePromptContext) -> String {
+    let mut line = planned_elsewhere_item_body_without_summary(item);
+    if let Some(summary) = item.summary.as_deref() {
+        line.push_str("\nSummary:\n");
+        line.push_str(summary);
     }
+    line
+}
+
+fn planned_elsewhere_item_body_without_summary(item: &PlannedElsewherePromptContext) -> String {
+    let mut line = format!("{} ({}) - {}", item.id, item.title, item.relationship);
+    if let Some(status) = item.status.as_deref() {
+        line.push_str(&format!("; status: {status}"));
+    }
+    line
+}
+
+fn planned_elsewhere_rendered_bytes(item_body: &str) -> usize {
+    let mut lines = item_body.lines();
+    let first_line = lines.next().unwrap_or_default();
+    let continuation_indent = "- ".len().max(4);
+    let mut bytes = if !first_line.is_empty() && opening_fence_delimiter(first_line).is_some() {
+        "-".len() + 1 + continuation_indent + first_line.len()
+    } else {
+        "- ".len() + first_line.len()
+    };
+
+    for line in lines {
+        bytes += 1 + continuation_indent + line.len();
+    }
+
     bytes
 }
 
@@ -2184,8 +2247,9 @@ mod tests {
         build_planned_elsewhere_context, compact_planned_elsewhere_summary,
         ensure_bead_belongs_to_milestone, ensure_bead_creation_targets_are_actionable,
         infer_parent_epic_id, load_milestone_bundle, map_br_list_error,
-        planned_elsewhere_serialized_bytes, resolve_bead_plan, validate_milestone_plan_snapshot,
-        PlannedElsewhereCandidate, PlannedElsewherePriority, PLANNED_ELSEWHERE_MAX_BYTES,
+        planned_elsewhere_serialized_bytes, planned_elsewhere_serialized_bytes_without_summary,
+        resolve_bead_plan, validate_milestone_plan_snapshot, PlannedElsewhereCandidate,
+        PlannedElsewherePriority, PLANNED_ELSEWHERE_MAX_BYTES,
     };
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -2330,6 +2394,34 @@ mod tests {
             created_at: None,
             updated_at: None,
         }
+    }
+
+    fn render_planned_elsewhere_item(item: &PlannedElsewherePromptContext) -> String {
+        let mut line = format!("{} ({}) - {}", item.id, item.title, item.relationship);
+        if let Some(status) = item.status.as_deref() {
+            line.push_str(&format!("; status: {status}"));
+        }
+        if let Some(summary) = item.summary.as_deref() {
+            line.push_str("\nSummary:\n");
+            line.push_str(summary);
+        }
+        let mut lines = line.lines();
+        let first_line = lines.next().unwrap_or_default();
+        let mut rendered = format!("- {first_line}");
+        for continuation in lines {
+            rendered.push('\n');
+            rendered.push_str("    ");
+            rendered.push_str(continuation);
+        }
+        rendered
+    }
+
+    fn render_planned_elsewhere_block(items: &[PlannedElsewherePromptContext]) -> String {
+        items
+            .iter()
+            .map(render_planned_elsewhere_item)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -3021,6 +3113,20 @@ mod tests {
     }
 
     #[test]
+    fn compact_planned_elsewhere_summary_preserves_continuation_lines_in_same_paragraph() {
+        let summary = compact_planned_elsewhere_summary(Some(
+            "Goal:\nCapture the operator-facing workflow once project creation is stable,\nincluding the follow-up validation handoff.\n\nNon-goals:\nLeave execution wiring unchanged.",
+        ));
+
+        assert_eq!(
+            summary.as_deref(),
+            Some(
+                "Capture the operator-facing workflow once project creation is stable,\nincluding the follow-up validation handoff."
+            )
+        );
+    }
+
+    #[test]
     fn compact_planned_elsewhere_summary_uses_inline_scope_label_body() {
         let summary = compact_planned_elsewhere_summary(Some(
             "Scope: Capture the operator-facing workflow once project creation is stable.",
@@ -3065,6 +3171,92 @@ mod tests {
         assert_eq!(
             summary.as_deref(),
             Some("Capture the operator-facing handoff after prompt generation lands.")
+        );
+    }
+
+    #[test]
+    fn planned_elsewhere_serialized_bytes_match_rendered_bullet_output() {
+        let item = PlannedElsewherePromptContext {
+            id: "ms-alpha.bead-3".to_owned(),
+            title: "Document milestone bootstrap flow".to_owned(),
+            relationship: "adjacent same-workstream bead in Task Substrate".to_owned(),
+            status: Some("open".to_owned()),
+            summary: Some(
+                "Capture the operator-facing workflow once project creation is stable,\nincluding the follow-up validation handoff.".to_owned(),
+            ),
+        };
+
+        let without_summary = PlannedElsewherePromptContext {
+            summary: None,
+            ..item.clone()
+        };
+
+        assert_eq!(
+            planned_elsewhere_serialized_bytes_without_summary(&item),
+            render_planned_elsewhere_item(&without_summary).len()
+        );
+        assert_eq!(
+            planned_elsewhere_serialized_bytes(&item),
+            render_planned_elsewhere_item(&item).len()
+        );
+    }
+
+    #[test]
+    fn apply_planned_elsewhere_budget_accounts_for_rendered_multiline_overhead() {
+        let multiline_summary =
+            "Capture deterministic scope context for execution.\nKeep the related validation handoff nearby without absorbing it."
+                .repeat(8);
+        let budgeted = apply_planned_elsewhere_budget(vec![
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-10".to_owned(),
+                    title: "Direct dependent follow-up alpha".to_owned(),
+                    relationship: "downstream dependent".to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(multiline_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::DirectDependent,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-11".to_owned(),
+                    title: "Direct dependent follow-up beta".to_owned(),
+                    relationship: "downstream dependent".to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(multiline_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::DirectDependent,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-20".to_owned(),
+                    title: "Shared acceptance validation alpha".to_owned(),
+                    relationship:
+                        "shared milestone acceptance ownership in Validation (AC-1, AC-2)"
+                            .to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(multiline_summary.clone()),
+                },
+                priority: PlannedElsewherePriority::SharedAcceptance,
+            },
+            PlannedElsewhereCandidate {
+                item: PlannedElsewherePromptContext {
+                    id: "ms-alpha.bead-21".to_owned(),
+                    title: "Shared acceptance validation beta".to_owned(),
+                    relationship:
+                        "shared milestone acceptance ownership in Validation (AC-3, AC-4)"
+                            .to_owned(),
+                    status: Some("open".to_owned()),
+                    summary: Some(multiline_summary),
+                },
+                priority: PlannedElsewherePriority::SharedAcceptance,
+            },
+        ]);
+
+        assert!(
+            render_planned_elsewhere_block(&budgeted).len() <= PLANNED_ELSEWHERE_MAX_BYTES,
+            "rendered bytes: {}",
+            render_planned_elsewhere_block(&budgeted).len()
         );
     }
 

@@ -803,6 +803,36 @@ fn render_bead_task_prompt_includes_milestone_scope_and_agents_guidance() {
 }
 
 #[test]
+fn render_bead_task_prompt_caps_dependency_sections_for_prompt_budget() {
+    let mut context = sample_bead_context();
+    context.upstream_dependencies = (1..=20)
+        .map(|index| BeadDependencyPromptContext {
+            id: format!("ms-alpha.bead-{index:02}"),
+            title: Some(format!("Long upstream dependency title {index}")),
+            relationship: "blocking dependency".to_owned(),
+            status: Some("closed".to_owned()),
+            outcome: Some("completed".to_owned()),
+        })
+        .collect();
+    context.downstream_dependents = (21..=40)
+        .map(|index| BeadDependencyPromptContext {
+            id: format!("ms-alpha.bead-{index:02}"),
+            title: Some(format!("Long downstream dependent title {index}")),
+            relationship: "downstream dependent".to_owned(),
+            status: Some("open".to_owned()),
+            outcome: Some("pending".to_owned()),
+        })
+        .collect();
+
+    let prompt = render_bead_task_prompt(&context);
+
+    assert!(prompt.contains("additional upstream dependencies omitted for prompt budget."));
+    assert!(prompt.contains("additional downstream dependents omitted for prompt budget."));
+    assert!(!prompt.contains("ms-alpha.bead-20 (Long upstream dependency title 20)"));
+    assert!(!prompt.contains("ms-alpha.bead-40 (Long downstream dependent title 40)"));
+}
+
+#[test]
 fn render_bead_task_prompt_is_deterministic_for_hashing_and_drift_checks() {
     let context = sample_bead_context();
     let first = render_bead_task_prompt(&context);
