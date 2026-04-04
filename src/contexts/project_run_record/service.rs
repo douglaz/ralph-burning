@@ -501,10 +501,20 @@ enum BeadDescriptionSectionKind {
 fn markdown_heading_title(line: &str) -> Option<&str> {
     let trimmed = line.trim();
     let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
-    if hash_count < 2 {
+    if !(1..=6).contains(&hash_count) {
         return None;
     }
-    Some(trimmed[hash_count..].trim())
+    let rest = &trimmed[hash_count..];
+    if !rest.is_empty()
+        && !rest
+            .chars()
+            .next()
+            .map(char::is_whitespace)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    Some(rest.trim().trim_end_matches('#').trim())
 }
 
 fn normalized_section_label(label: &str) -> String {

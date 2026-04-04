@@ -1106,6 +1106,39 @@ fn render_bead_task_prompt_extracts_numbered_lists_from_colon_suffixed_markdown_
 }
 
 #[test]
+fn render_bead_task_prompt_extracts_level_one_markdown_section_headings() {
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the contract explicit\n\n# Non-goals\n- do not broaden the bead scope\n\n# Acceptance Criteria\n- preserve level-one heading extraction\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let acceptance_start = prompt
+        .find("## Acceptance Criteria")
+        .expect("acceptance section should exist");
+    let planned_start = prompt
+        .find("## Already Planned Elsewhere")
+        .expect("planned elsewhere section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+    let non_goals_section = &prompt[non_goals_start..acceptance_start];
+    let acceptance_section = &prompt[acceptance_start..planned_start];
+
+    assert!(!must_do_section.contains("# Non-goals"));
+    assert!(!must_do_section.contains("# Acceptance Criteria"));
+    assert!(non_goals_section.contains("- do not broaden the bead scope"));
+    assert!(acceptance_section.contains("- preserve level-one heading extraction"));
+    assert!(!acceptance_section.contains("No explicit acceptance criteria were supplied."));
+}
+
+#[test]
 fn render_bead_task_prompt_preserves_nested_list_indentation_in_extracted_sections() {
     let mut context = sample_bead_context();
     context.bead_acceptance_criteria.clear();
@@ -1534,6 +1567,53 @@ fn create_project_from_bead_context_accepts_colon_suffixed_markdown_sections_and
     assert!(captured
         .prompt_contents
         .contains("- avoid the empty acceptance fallback"));
+    assert!(!captured
+        .prompt_contents
+        .contains("No explicit acceptance criteria were supplied."));
+}
+
+#[test]
+fn create_project_from_bead_context_extracts_level_one_markdown_sections() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the task scoped to the active bead\n\n# Non-goals\n- do not broaden the active bead\n\n# Acceptance Criteria\n- preserve level-one heading extraction\n".to_owned(),
+    );
+
+    let record = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: None,
+            prompt_override: None,
+            created_at: test_timestamp(),
+            context,
+        },
+    )
+    .expect("level-one markdown sections should bootstrap");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
+    let must_do_start = captured
+        .prompt_contents
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = captured
+        .prompt_contents
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let must_do_section = &captured.prompt_contents[must_do_start..non_goals_start];
+    assert!(captured
+        .prompt_contents
+        .contains("- do not broaden the active bead"));
+    assert!(captured
+        .prompt_contents
+        .contains("- preserve level-one heading extraction"));
+    assert!(!must_do_section.contains("# Non-goals"));
+    assert!(!must_do_section.contains("# Acceptance Criteria"));
     assert!(!captured
         .prompt_contents
         .contains("No explicit acceptance criteria were supplied."));
