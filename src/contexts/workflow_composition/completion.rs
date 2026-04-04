@@ -365,6 +365,8 @@ fn persist_supporting_record(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::tempdir;
 
     use super::*;
@@ -391,6 +393,24 @@ mod tests {
             .expect("render prompt");
 
         assert!(!prompt.contains("## Task Prompt Contract"));
+    }
+
+    #[test]
+    fn build_completer_prompt_allows_legacy_override_without_task_prompt_contract_placeholder() {
+        let tmp = tempdir().expect("tempdir");
+        let template_dir = tmp.path().join(".ralph-burning").join("templates");
+        fs::create_dir_all(&template_dir).expect("template dir");
+        fs::write(
+            template_dir.join("completion_panel_completer.md"),
+            "LEGACY COMPLETER\n\n{{prompt_text}}\n\n{{json_schema}}",
+        )
+        .expect("template override");
+
+        let prompt = build_completer_prompt(tmp.path(), None, "# Prompt\n\nGeneric.", "{}")
+            .expect("render prompt");
+
+        assert!(prompt.starts_with("LEGACY COMPLETER"));
+        assert!(prompt.contains("# Prompt"));
     }
 }
 

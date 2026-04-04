@@ -1446,6 +1446,38 @@ fn create_project_from_bead_context_allows_generic_override_that_quotes_marker()
 }
 
 #[test]
+fn create_project_from_bead_context_rejects_misplaced_top_level_contract_marker_override() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let marker =
+        ralph_burning::contexts::project_run_record::task_prompt_contract::contract_marker();
+
+    let error = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: Some(ProjectId::new("misplaced-marker").unwrap()),
+            prompt_override: Some(format!(
+                "# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n\n{}",
+                marker
+            )),
+            created_at: test_timestamp(),
+            context: sample_bead_context(),
+        },
+    )
+    .expect_err("misplaced canonical marker should fail");
+
+    assert!(matches!(
+        error,
+        AppError::InvalidPrompt { ref path, ref reason }
+            if path == "<prompt override>"
+                && reason.contains("canonical bead task contract violated")
+                && reason.contains("must appear before the canonical section block")
+    ));
+}
+
+#[test]
 fn list_projects_returns_entries_with_active_flag() {
     let store = FakeProjectStore::with_existing(&["alpha", "beta"]);
     let active_store = FakeActiveProjectStore::with_active("alpha");

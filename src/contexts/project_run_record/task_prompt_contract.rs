@@ -106,6 +106,12 @@ fn has_top_level_contract_marker(prompt: &str) -> bool {
     top_level_lines(prompt).any(|line| line.trim_start() == line && line.trim_end() == marker)
 }
 
+/// Return whether the prompt declares the canonical contract marker as a
+/// top-level line outside fenced blocks.
+pub fn prompt_declares_contract(prompt: &str) -> bool {
+    has_top_level_contract_marker(prompt)
+}
+
 /// Return whether the prompt declares the canonical bead task prompt contract.
 pub fn prompt_uses_contract(prompt: &str) -> bool {
     let marker = contract_marker();
@@ -172,9 +178,15 @@ pub fn prompt_review_consumer_guidance_for_prompt(prompt: &str) -> String {
 /// Validate that a prompt preserves the canonical marker and section order.
 pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
-    if !has_top_level_contract_marker(prompt) {
+    let has_contract_marker = has_top_level_contract_marker(prompt);
+    if !has_contract_marker {
         errors.push(format!(
             "missing exact contract marker `{}`",
+            contract_marker()
+        ));
+    } else if !prompt_uses_contract(prompt) {
+        errors.push(format!(
+            "contract marker `{}` must appear before the canonical section block",
             contract_marker()
         ));
     }
@@ -328,6 +340,19 @@ mod tests {
         assert!(errors
             .iter()
             .any(|error| error.contains("## Current Bead Details")));
+    }
+
+    #[test]
+    fn canonical_prompt_shape_rejects_marker_after_canonical_section_block() {
+        let prompt = format!(
+            "# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n\n{}",
+            contract_marker()
+        );
+
+        let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert!(errors
+            .iter()
+            .any(|error| { error.contains("must appear before the canonical section block") }));
     }
 
     #[test]

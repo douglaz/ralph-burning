@@ -2168,6 +2168,22 @@ mod tests {
         assert!(prompt.contains("## Already Planned Elsewhere"));
     }
 
+    #[test]
+    fn build_reviewer_prompt_allows_legacy_override_without_task_prompt_contract_placeholder() {
+        let tmp = tempdir().expect("tempdir");
+        write_workspace_template_override(
+            tmp.path(),
+            "final_review_reviewer",
+            "LEGACY REVIEWER\n\n{{project_prompt}}\n\n{{json_schema}}",
+        );
+
+        let prompt = build_reviewer_prompt("# Prompt\n\nGeneric.", tmp.path(), None)
+            .expect("reviewer prompt");
+
+        assert!(prompt.starts_with("LEGACY REVIEWER"));
+        assert!(prompt.contains("# Prompt"));
+    }
+
     fn proposal_record(reviewer_id: &str, body: &str) -> ReviewerProposalRecord {
         ReviewerProposalRecord {
             member_index: reviewer_id

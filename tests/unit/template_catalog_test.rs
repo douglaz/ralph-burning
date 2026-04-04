@@ -196,7 +196,7 @@ fn missing_required_placeholder_rejected() {
 }
 
 #[test]
-fn stage_override_missing_task_prompt_contract_placeholder_rejected() {
+fn stage_override_without_task_prompt_contract_placeholder_is_accepted() {
     let tmp = tempdir().unwrap();
     let ws = tmp.path().join(".ralph-burning").join("templates");
     std::fs::create_dir_all(&ws).unwrap();
@@ -207,14 +207,14 @@ fn stage_override_missing_task_prompt_contract_placeholder_rejected() {
     .unwrap();
 
     let result = template_catalog::resolve("planning", tmp.path(), None);
-    assert!(result.is_err());
-    let err = result.unwrap_err().to_string();
-    assert!(err.contains("missing required placeholder"));
-    assert!(err.contains("task_prompt_contract"));
+    assert!(
+        result.is_ok(),
+        "legacy stage override should stay compatible"
+    );
 }
 
 #[test]
-fn panel_override_missing_task_prompt_contract_placeholder_rejected() {
+fn panel_override_without_task_prompt_contract_placeholder_is_accepted() {
     let tmp = tempdir().unwrap();
     let ws = tmp.path().join(".ralph-burning").join("templates");
     std::fs::create_dir_all(&ws).unwrap();
@@ -225,10 +225,10 @@ fn panel_override_missing_task_prompt_contract_placeholder_rejected() {
     .unwrap();
 
     let result = template_catalog::resolve("completion_panel_completer", tmp.path(), None);
-    assert!(result.is_err());
-    let err = result.unwrap_err().to_string();
-    assert!(err.contains("missing required placeholder"));
-    assert!(err.contains("task_prompt_contract"));
+    assert!(
+        result.is_ok(),
+        "legacy panel override should stay compatible"
+    );
 }
 
 #[test]

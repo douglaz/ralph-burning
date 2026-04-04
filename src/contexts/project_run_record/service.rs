@@ -382,7 +382,7 @@ pub fn create_project_from_bead_context(
             "generated bead task prompt".to_owned(),
         ),
     };
-    if task_prompt_contract::prompt_uses_contract(&prompt_contents) {
+    if task_prompt_contract::prompt_declares_contract(&prompt_contents) {
         task_prompt_contract::validate_canonical_prompt_shape(&prompt_contents).map_err(
             |errors| AppError::InvalidPrompt {
                 path: prompt_path.clone(),

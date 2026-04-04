@@ -499,6 +499,8 @@ fn persist_supporting_record(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::tempdir;
 
     use super::*;
@@ -561,6 +563,33 @@ mod tests {
     }
 
     #[test]
+    fn build_prompt_review_member_prompt_allows_legacy_override_without_task_prompt_contract_placeholder(
+    ) {
+        let tmp = tempdir().expect("tempdir");
+        let template_dir = tmp.path().join(".ralph-burning").join("templates");
+        fs::create_dir_all(&template_dir).expect("template dir");
+        fs::write(
+            template_dir.join("prompt_review_validator.md"),
+            "LEGACY VALIDATOR\n\n{{role_label}}\n\n{{prompt_text}}\n\n{{json_schema}}",
+        )
+        .expect("template override");
+
+        let prompt = build_prompt_review_member_prompt(
+            tmp.path(),
+            None,
+            "# Prompt\n\nGeneric.",
+            "# Prompt\n\nGeneric.",
+            "validator",
+            "{}",
+            &[],
+        )
+        .expect("render prompt");
+
+        assert!(prompt.starts_with("LEGACY VALIDATOR"));
+        assert!(prompt.contains("# Prompt"));
+    }
+
+    #[test]
     fn canonical_contract_drift_becomes_retryable_concern() {
         let concerns = canonical_contract_drift_concerns(
             CANONICAL_PROMPT,
@@ -570,5 +599,16 @@ mod tests {
         assert_eq!(concerns.len(), 1);
         assert!(concerns[0].contains("Preserve the canonical bead task prompt contract exactly"));
         assert!(concerns[0].contains("missing exact contract marker"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_flags_misplaced_top_level_marker() {
+        let concerns = canonical_contract_drift_concerns(
+            CANONICAL_PROMPT,
+            "# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n\n<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->",
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("must appear before the canonical section block"));
     }
 }

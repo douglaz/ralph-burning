@@ -363,6 +363,56 @@ fn build_stage_prompt_surfaces_shared_bead_task_prompt_contract_guidance() {
 }
 
 #[test]
+fn build_stage_prompt_allows_legacy_override_without_task_prompt_contract_placeholder() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-builder-legacy-override").unwrap();
+    let run_id = RunId::new("run-20260314193208").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::PlanAndImplement);
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
+    ];
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        &render_bead_task_prompt(&sample_bead_context()),
+        &events,
+    );
+
+    let ws_templates = base_dir.join(".ralph-burning").join("templates");
+    fs::create_dir_all(&ws_templates).expect("create templates dir");
+    fs::write(
+        ws_templates.join("plan_and_implement.md"),
+        "LEGACY STAGE\n\n{{role_instruction}}\n\n{{project_prompt}}\n\n{{json_schema}}",
+    )
+    .expect("write override");
+
+    let artifact_store = InMemoryArtifactStore { payloads: vec![] };
+    let prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendRole::Implementer,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("legacy override should still render");
+
+    assert!(prompt.starts_with("LEGACY STAGE"));
+    assert!(prompt.contains("Ralph Task Prompt"));
+}
+
+#[test]
 fn build_stage_prompt_excludes_rolled_back_prior_outputs() {
     let temp_dir = tempdir().expect("create temp dir");
     let base_dir = temp_dir.path();
