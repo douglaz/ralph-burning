@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -47,6 +47,14 @@ static FAILPOINT_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 fn setup_workspace(base_dir: &Path) {
     workspace_governance::initialize_workspace(base_dir, Utc::now()).unwrap();
+}
+
+fn live_workspace_root(base_dir: &Path) -> PathBuf {
+    base_dir.join(".git/ralph-burning-live")
+}
+
+fn workspace_config_path(base_dir: &Path) -> PathBuf {
+    live_workspace_root(base_dir).join("workspace.toml")
 }
 
 fn create_project_with_flow(base_dir: &Path, project_id: &str, flow: FlowPreset) -> ProjectId {
@@ -869,7 +877,7 @@ async fn docs_change_remediation_restarts_from_docs_update() {
     );
 
     // Append docs_commands to workspace config so EffectiveConfig::load picks them up.
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str(&format!("\n[validation]\ndocs_commands = [{:?}]\n", cmd));
     fs::write(&ws_config_path, ws_config).unwrap();
@@ -929,7 +937,7 @@ async fn docs_change_local_validation_pass_completes_without_amendments() {
     let pid = create_project_with_flow(base_dir, "docs-conditional", FlowPreset::DocsChange);
 
     // Append docs_commands to workspace config.
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str("\n[validation]\ndocs_commands = [\"true\"]\n");
     fs::write(&ws_config_path, ws_config).unwrap();
@@ -997,7 +1005,7 @@ async fn ci_improvement_remediation_restarts_from_ci_update() {
     );
 
     // Append ci_commands to workspace config.
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str(&format!("\n[validation]\nci_commands = [{:?}]\n", cmd));
     fs::write(&ws_config_path, ws_config).unwrap();
@@ -1057,7 +1065,7 @@ async fn ci_improvement_always_failing_validation_fails_run() {
     let pid = create_project_with_flow(base_dir, "ci-rejected", FlowPreset::CiImprovement);
 
     // Append ci_commands to workspace config.
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str("\n[validation]\nci_commands = [\"false\"]\n");
     fs::write(&ws_config_path, ws_config).unwrap();
@@ -1817,7 +1825,7 @@ async fn preflight_check_validates_final_review_planner_member() {
     let temp = tempdir().unwrap();
     setup_workspace(temp.path());
 
-    let workspace_toml = temp.path().join(".ralph-burning/workspace.toml");
+    let workspace_toml = workspace_config_path(temp.path());
     let content = fs::read_to_string(&workspace_toml).unwrap();
     let patched = if content.contains("[workflow]") {
         content.replace("[workflow]", "[workflow]\nplanner_backend = \"openrouter\"")
@@ -6468,7 +6476,7 @@ async fn standard_flow_review_invocation_context_contains_local_validation() {
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "review-ctx-validation");
 
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str(
         "\n[validation]\nstandard_commands = [\"echo validation-evidence-marker\"]\npre_commit_fmt = false\npre_commit_clippy = false\n",
@@ -6538,7 +6546,7 @@ async fn pre_commit_failure_remediation_survives_resume() {
     let pid = create_standard_project(base_dir, "precommit-resume");
 
     // Enable pre_commit_fmt (and disable others) in workspace config.
-    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let ws_config_path = workspace_config_path(base_dir);
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
     ws_config.push_str(
         "\n[validation]\npre_commit_fmt = true\npre_commit_clippy = false\npre_commit_nix_build = false\n",

@@ -6,6 +6,22 @@ use ralph_burning::shared::domain::{WorkspaceConfig, CURRENT_WORKSPACE_VERSION};
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
+pub(crate) fn audit_workspace_root(base_dir: &Path) -> PathBuf {
+    base_dir.join(WORKSPACE_DIR)
+}
+
+pub(crate) fn live_workspace_root(base_dir: &Path) -> PathBuf {
+    base_dir.join(".git/ralph-burning-live")
+}
+
+pub(crate) fn active_project_path(base_dir: &Path) -> PathBuf {
+    live_workspace_root(base_dir).join("active-project")
+}
+
+pub(crate) fn live_project_root(base_dir: &Path, project_id: &str) -> PathBuf {
+    live_workspace_root(base_dir).join("projects").join(project_id)
+}
+
 #[test]
 fn workspace_config_serialization_round_trip() {
     let created_at = chrono::Utc
@@ -31,10 +47,12 @@ fn initialize_workspace_creates_required_directory_structure_and_config() {
 
     let result = initialize_workspace(temp_dir.path(), created_at).expect("initialize workspace");
 
-    assert_eq!(temp_dir.path().join(WORKSPACE_DIR), result.workspace_root);
+    assert_eq!(live_workspace_root(temp_dir.path()), result.workspace_root);
     for required_directory in REQUIRED_WORKSPACE_DIRECTORIES {
         assert!(result.workspace_root.join(required_directory).is_dir());
+        assert!(audit_workspace_root(temp_dir.path()).join(required_directory).is_dir());
     }
+    assert!(audit_workspace_root(temp_dir.path()).join("workspace.toml").is_file());
 
     let config = load_workspace_config(temp_dir.path()).expect("load workspace config");
     assert_eq!(created_at, config.created_at);
