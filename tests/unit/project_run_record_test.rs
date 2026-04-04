@@ -877,6 +877,32 @@ fn render_bead_task_prompt_resets_non_goals_when_a_new_scope_subsection_starts()
 }
 
 #[test]
+fn render_bead_task_prompt_keeps_single_word_labels_inside_non_goals_after_blank_lines() {
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Scope:\n- update the canonical prompt generator\n\nNon-goals:\n- do not change CLI\n\nDetails:\n- preserve the nested rationale inside explicit non-goals\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let acceptance_start = prompt
+        .find("## Acceptance Criteria")
+        .expect("acceptance section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+    let non_goals_section = &prompt[non_goals_start..acceptance_start];
+
+    assert!(!must_do_section.contains("Details:"));
+    assert!(non_goals_section.contains("Details:"));
+    assert!(non_goals_section.contains("preserve the nested rationale inside explicit non-goals"));
+}
+
+#[test]
 fn render_bead_task_prompt_keeps_plain_subsections_inside_embedded_acceptance_criteria() {
     let mut context = sample_bead_context();
     context.bead_description = Some(
@@ -940,6 +966,41 @@ fn render_bead_task_prompt_uses_description_acceptance_criteria_when_structured_
 
     assert!(acceptance_section.contains("- preserve the canonical section order"));
     assert!(acceptance_section.contains("- keep prompt generation deterministic"));
+    assert!(!acceptance_section.contains("No explicit acceptance criteria were supplied."));
+}
+
+#[test]
+fn render_bead_task_prompt_extracts_numbered_lists_from_colon_suffixed_markdown_sections() {
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the contract explicit\n\n## Non-goals:\n1. do not redesign unrelated workflow stages\n2. do not broaden the bead scope\n\n## Acceptance Criteria:\n1. preserve numbered acceptance criteria\n2. avoid the fallback acceptance message\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let acceptance_start = prompt
+        .find("## Acceptance Criteria")
+        .expect("acceptance section should exist");
+    let planned_start = prompt
+        .find("## Already Planned Elsewhere")
+        .expect("planned elsewhere section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+    let non_goals_section = &prompt[non_goals_start..acceptance_start];
+    let acceptance_section = &prompt[acceptance_start..planned_start];
+
+    assert!(!must_do_section.contains("## Non-goals:"));
+    assert!(!must_do_section.contains("## Acceptance Criteria:"));
+    assert!(non_goals_section.contains("- do not redesign unrelated workflow stages"));
+    assert!(non_goals_section.contains("- do not broaden the bead scope"));
+    assert!(acceptance_section.contains("- preserve numbered acceptance criteria"));
+    assert!(acceptance_section.contains("- avoid the fallback acceptance message"));
     assert!(!acceptance_section.contains("No explicit acceptance criteria were supplied."));
 }
 
@@ -1056,6 +1117,25 @@ fn rendered_bead_task_prompt_indents_multiline_milestone_fields_without_breaking
     assert!(prompt.contains("  ## Acceptance Criteria"));
     assert!(prompt.contains("- ms-alpha.bead-9 handles follow-up validation."));
     assert!(prompt.contains("  ## Review Policy"));
+    assert!(
+        ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
+            .is_ok()
+    );
+}
+
+#[test]
+fn rendered_bead_task_prompt_indents_heading_like_lines_inside_must_do_scope() {
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Ship the prompt contract update.\n\n## Review Policy\nKeep this example heading inside must-do scope.".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    assert!(prompt.contains("  ## Review Policy"));
+    assert!(
+        !prompt.contains("\n\n## Review Policy\n\nKeep this example heading inside must-do scope.")
+    );
     assert!(
         ralph_burning::contexts::project_run_record::task_prompt_contract::validate_canonical_prompt_shape(&prompt)
             .is_ok()
@@ -1234,6 +1314,76 @@ fn create_project_from_bead_context_preserves_description_only_acceptance_criter
     assert!(!captured
         .prompt_contents
         .contains("No explicit acceptance criteria were supplied."));
+}
+
+#[test]
+fn create_project_from_bead_context_accepts_colon_suffixed_markdown_sections_and_numbered_lists() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let mut context = sample_bead_context();
+    context.bead_acceptance_criteria.clear();
+    context.bead_description = Some(
+        "Scope:\n- keep the task scoped to the active bead\n\n## Non-goals:\n1. do not broaden the active bead\n2. do not absorb later milestone work\n\n## Acceptance Criteria:\n1. preserve numbered acceptance criteria\n2. avoid the empty acceptance fallback\n".to_owned(),
+    );
+
+    let record = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: None,
+            prompt_override: None,
+            created_at: test_timestamp(),
+            context,
+        },
+    )
+    .expect("colon-suffixed sections should bootstrap");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
+    assert!(captured
+        .prompt_contents
+        .contains("- do not broaden the active bead"));
+    assert!(captured
+        .prompt_contents
+        .contains("- do not absorb later milestone work"));
+    assert!(captured
+        .prompt_contents
+        .contains("- preserve numbered acceptance criteria"));
+    assert!(captured
+        .prompt_contents
+        .contains("- avoid the empty acceptance fallback"));
+    assert!(!captured
+        .prompt_contents
+        .contains("No explicit acceptance criteria were supplied."));
+}
+
+#[test]
+fn create_project_from_bead_context_accepts_heading_like_lines_in_must_do_scope() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Ship the prompt contract update.\n\n## Milestone Summary\nKeep this as bead prose."
+            .to_owned(),
+    );
+
+    let record = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: None,
+            prompt_override: None,
+            created_at: test_timestamp(),
+            context,
+        },
+    )
+    .expect("heading-like must-do lines should still validate");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "task-ms-alpha-bead-2");
+    assert!(captured.prompt_contents.contains("  ## Milestone Summary"));
 }
 
 #[test]

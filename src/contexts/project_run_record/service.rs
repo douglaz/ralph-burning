@@ -487,6 +487,8 @@ fn markdown_heading_title(line: &str) -> Option<&str> {
 
 fn normalized_section_label(label: &str) -> String {
     label
+        .trim()
+        .trim_end_matches(':')
         .chars()
         .filter(|ch| !matches!(ch, '-' | '_' | ' '))
         .flat_map(char::to_lowercase)
@@ -510,6 +512,32 @@ fn section_kind_for_bead_description_line(line: &str) -> Option<BeadDescriptionS
     trimmed
         .strip_suffix(':')
         .and_then(bead_description_section_kind_from_label)
+}
+
+fn strip_markdown_list_marker(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if let Some(item) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+    {
+        return Some(item);
+    }
+
+    let bytes = trimmed.as_bytes();
+    let mut marker_len = 0usize;
+    while marker_len < bytes.len() && bytes[marker_len].is_ascii_digit() {
+        marker_len += 1;
+    }
+
+    if marker_len == 0 || marker_len + 1 >= bytes.len() {
+        return None;
+    }
+
+    if matches!(bytes[marker_len], b'.' | b')') && bytes[marker_len + 1] == b' ' {
+        Some(&trimmed[marker_len + 2..])
+    } else {
+        None
+    }
 }
 
 fn collect_section_items(lines: &[String]) -> Vec<String> {
@@ -547,10 +575,7 @@ fn collect_section_items(lines: &[String]) -> Vec<String> {
             continue;
         }
 
-        let bullet = trimmed
-            .strip_prefix("- ")
-            .or_else(|| trimmed.strip_prefix("* "));
-        if let Some(item) = bullet {
+        if let Some(item) = strip_markdown_list_marker(trimmed) {
             if !current.is_empty() {
                 items.push(current.trim().to_owned());
                 current.clear();
@@ -586,8 +611,26 @@ fn merge_unique_lines(primary: &[String], secondary: &[String]) -> Vec<String> {
     merged
 }
 
+fn is_standalone_plain_subsection_label(line: &str) -> bool {
+    let trimmed_end = line.trim_end();
+    if trimmed_end.is_empty() || trimmed_end != line.trim_start() || !trimmed_end.ends_with(':') {
+        return false;
+    }
+
+    if strip_markdown_list_marker(trimmed_end).is_some() {
+        return false;
+    }
+
+    let label = trimmed_end[..trimmed_end.len() - 1].trim_end();
+    if label.is_empty() {
+        return false;
+    }
+
+    label.split_whitespace().count() >= 2
+}
+
 fn is_bead_description_subsection_boundary(line: &str) -> bool {
-    markdown_heading_title(line).is_some() || line.trim().ends_with(':')
+    markdown_heading_title(line).is_some() || is_standalone_plain_subsection_label(line)
 }
 
 fn split_bead_description_scope(description: &str) -> (String, Vec<String>, Vec<String>) {
@@ -684,6 +727,20 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         } else {
             bullet_lines(items)
         }
+    }
+
+    fn indent_section_body(value: &str) -> String {
+        value
+            .lines()
+            .map(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     let (bead_must_do_scope, bead_local_non_goals, bead_local_acceptance_criteria) = context
@@ -824,7 +881,7 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         format!(
             "## {}\n\n{}",
             task_prompt_contract::SECTION_MUST_DO_SCOPE,
-            must_do_scope
+            indent_section_body(&must_do_scope)
         ),
         format!(
             "## {}\n\n{}",
