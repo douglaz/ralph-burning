@@ -1,8 +1,0 @@
-[workflow]
-implementer_backend = "codex(gpt-5.4-high)"
-max_completion_rounds = 30
-
-[final_review]
-planner_backend = "codex(gpt-5.4-high)"
-backends = ["claude(claude-opus-4-6)", "codex(gpt-5.4-xhigh)"]
-arbiter_backend = "codex(gpt-5.4-xhigh)"

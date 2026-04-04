@@ -2,6 +2,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
+use ralph_burning::test_support::fixtures::TempWorkspaceBuilder;
 use tempfile::tempdir;
 
 fn binary() -> &'static str {
@@ -9,14 +10,10 @@ fn binary() -> &'static str {
 }
 
 fn initialize_workspace_fixture() -> tempfile::TempDir {
-    let temp_dir = tempdir().expect("create temp dir");
-    let output = Command::new(binary())
-        .arg("init")
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("run init");
-    assert!(output.status.success());
-    temp_dir
+    TempWorkspaceBuilder::new()
+        .build()
+        .expect("workspace fixture")
+        .into_temp_dir()
 }
 
 fn live_workspace_root(base_dir: &std::path::Path) -> std::path::PathBuf {
