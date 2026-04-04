@@ -186,7 +186,7 @@ impl PreparedCommand {
                         .ok()
                         .filter(|val| !looks_like_claude_envelope(val))
                     {
-                        Some(val) => val,
+                        Some(val) => unwrap_claude_structured_output_payload(val),
                         None => {
                             self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
@@ -665,8 +665,19 @@ impl ProcessBackendAdapter {
         }
     }
 
+    fn contract_schema_for_backend(request: &InvocationRequest) -> serde_json::Value {
+        let mut schema_value = request.contract.json_schema_value();
+        enforce_strict_mode_schema(&mut schema_value);
+        inline_schema_refs(&mut schema_value);
+        if request.resolved_target.backend.family == BackendFamily::Claude {
+            wrap_claude_structured_output_schema(schema_value)
+        } else {
+            schema_value
+        }
+    }
+
     /// Build the stdin payload from prompt + context.
-    fn assemble_stdin(request: &InvocationRequest) -> String {
+    fn assemble_stdin(request: &InvocationRequest, schema_value: &serde_json::Value) -> String {
         let contract_label = request.contract.label();
         let role = request.role.display_name();
         let prompt = &request.payload.prompt;
@@ -686,9 +697,8 @@ impl ProcessBackendAdapter {
             input.push('\n');
         }
 
-        let schema_json = request.contract.json_schema_value();
         let schema_json =
-            serde_json::to_string_pretty(&schema_json).unwrap_or_else(|_| "{}".to_owned());
+            serde_json::to_string_pretty(schema_value).unwrap_or_else(|_| "{}".to_owned());
 
         input.push_str("\nReturn ONLY valid JSON matching the following schema:\n");
         input.push_str(&schema_json);
@@ -704,10 +714,7 @@ impl ProcessBackendAdapter {
         match request.resolved_target.backend.family {
             BackendFamily::Claude => {
                 let model_id = &request.resolved_target.model.model_id;
-                let mut schema_value = request.contract.json_schema_value();
-                enforce_strict_mode_schema(&mut schema_value);
-                inline_schema_refs(&mut schema_value);
-                let schema_value = wrap_claude_structured_output_schema(schema_value);
+                let schema_value = Self::contract_schema_for_backend(request);
                 let schema_json =
                     serde_json::to_string(&schema_value).unwrap_or_else(|_| "{}".to_owned());
                 let session_resuming =
@@ -738,7 +745,7 @@ impl ProcessBackendAdapter {
                 Ok(PreparedCommand {
                     binary: self.resolve_binary("claude")?,
                     args,
-                    stdin_payload: Self::assemble_stdin(request),
+                    stdin_payload: Self::assemble_stdin(request, &schema_value),
                     response_decoder: ResponseDecoder::Claude { session_resuming },
                     env_overrides: Vec::new(),
                 })
@@ -760,9 +767,7 @@ impl ProcessBackendAdapter {
                 let message_path =
                     temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
-                let mut schema_value = request.contract.json_schema_value();
-                enforce_strict_mode_schema(&mut schema_value);
-                inline_schema_refs(&mut schema_value);
+                let schema_value = Self::contract_schema_for_backend(request);
                 let schema_json =
                     serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
 
@@ -793,7 +798,7 @@ impl ProcessBackendAdapter {
                 Ok(PreparedCommand {
                     binary,
                     args,
-                    stdin_payload: Self::assemble_stdin(request),
+                    stdin_payload: Self::assemble_stdin(request, &schema_value),
                     response_decoder: ResponseDecoder::Codex {
                         schema_path,
                         message_path,
@@ -842,9 +847,7 @@ impl ProcessBackendAdapter {
                 let message_path =
                     temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
-                let mut schema_value = request.contract.json_schema_value();
-                enforce_strict_mode_schema(&mut schema_value);
-                inline_schema_refs(&mut schema_value);
+                let schema_value = Self::contract_schema_for_backend(request);
                 let schema_json =
                     serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
 
@@ -875,7 +878,7 @@ impl ProcessBackendAdapter {
                 Ok(PreparedCommand {
                     binary,
                     args,
-                    stdin_payload: Self::assemble_stdin(request),
+                    stdin_payload: Self::assemble_stdin(request, &schema_value),
                     response_decoder: ResponseDecoder::Codex {
                         schema_path,
                         message_path,
@@ -2574,6 +2577,31 @@ mod tests {
     fn extract_json_from_text_no_json_returns_error() {
         let text = "No JSON here at all.";
         assert!(extract_json_from_text(text).is_err());
+    }
+
+    #[test]
+    fn claude_structured_output_retry_failure_detects_subtype() {
+        let stdout = br#"{"subtype":"error_max_structured_output_retries"}"#;
+        assert!(is_claude_structured_output_retry_failure(stdout));
+    }
+
+    #[test]
+    fn claude_structured_output_retry_failure_detects_errors_array_message() {
+        let stdout = br#"{"errors":["Failed to provide valid structured output after retries"]}"#;
+        assert!(is_claude_structured_output_retry_failure(stdout));
+    }
+
+    #[test]
+    fn claude_structured_output_retry_failure_rejects_non_matching_json() {
+        let stdout = br#"{"subtype":"different_error","errors":["something else"]}"#;
+        assert!(!is_claude_structured_output_retry_failure(stdout));
+    }
+
+    #[test]
+    fn claude_structured_output_retry_failure_rejects_non_json_stdout() {
+        assert!(!is_claude_structured_output_retry_failure(
+            b"not json at all"
+        ));
     }
 
     #[test]

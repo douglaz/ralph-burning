@@ -1039,8 +1039,8 @@ fn register_workspace_config(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         let out = run_cli(&["config", "set", "default_flow", "quick_dev"], ws.path())?;
         assert_success(&out)?;
-        let toml = std::fs::read_to_string(workspace_config_path(ws.path()))
-            .map_err(|e| e.to_string())?;
+        let toml =
+            std::fs::read_to_string(workspace_config_path(ws.path())).map_err(|e| e.to_string())?;
         assert_contains(&toml, "quick_dev", "workspace.toml")?;
         Ok(())
     });
@@ -1094,8 +1094,8 @@ fn register_workspace_config(m: &mut HashMap<String, ScenarioExecutor>) {
                 String::from_utf8_lossy(&out.stderr)
             ));
         }
-        let toml = std::fs::read_to_string(workspace_config_path(ws.path()))
-            .map_err(|e| e.to_string())?;
+        let toml =
+            std::fs::read_to_string(workspace_config_path(ws.path())).map_err(|e| e.to_string())?;
         assert_contains(&toml, "claude", "workspace.toml")?;
         Ok(())
     });
@@ -1636,10 +1636,9 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "schema-proj", "standard");
-        let run_json = std::fs::read_to_string(
-            conformance_project_root(&ws, "schema-proj").join("run.json"),
-        )
-        .map_err(|e| e.to_string())?;
+        let run_json =
+            std::fs::read_to_string(conformance_project_root(&ws, "schema-proj").join("run.json"))
+                .map_err(|e| e.to_string())?;
         let parsed: serde_json::Value =
             serde_json::from_str(&run_json).map_err(|e| e.to_string())?;
         // Verify required fields exist in the run snapshot
@@ -1659,10 +1658,8 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "corrupt-show", "standard");
-        std::fs::remove_file(
-            conformance_project_root(&ws, "corrupt-show").join("project.toml"),
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::remove_file(conformance_project_root(&ws, "corrupt-show").join("project.toml"))
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "show", "corrupt-show"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1672,10 +1669,8 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "corrupt-list", "standard");
-        std::fs::remove_file(
-            conformance_project_root(&ws, "corrupt-list").join("project.toml"),
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::remove_file(conformance_project_root(&ws, "corrupt-list").join("project.toml"))
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "list"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1685,10 +1680,8 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "corrupt-del", "standard");
-        std::fs::remove_file(
-            conformance_project_root(&ws, "corrupt-del").join("project.toml"),
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::remove_file(conformance_project_root(&ws, "corrupt-del").join("project.toml"))
+            .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "delete", "corrupt-del"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1715,10 +1708,9 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
         )?;
         assert_success(&out)?;
-        let toml = std::fs::read_to_string(
-            conformance_project_root(&ws, "ref-proj").join("project.toml"),
-        )
-        .map_err(|e| e.to_string())?;
+        let toml =
+            std::fs::read_to_string(conformance_project_root(&ws, "ref-proj").join("project.toml"))
+                .map_err(|e| e.to_string())?;
         assert_contains(&toml, "prompt_reference", "project.toml")?;
         Ok(())
     });
@@ -1757,8 +1749,8 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         create_project_fixture(ws.path(), "ptr-survive", "standard");
         select_project(ws.path(), "ptr-survive");
         // Verify pointer is set
-        let ptr = std::fs::read_to_string(active_project_path(ws.path()))
-            .map_err(|e| e.to_string())?;
+        let ptr =
+            std::fs::read_to_string(active_project_path(ws.path())).map_err(|e| e.to_string())?;
         assert_contains(&ptr, "ptr-survive", "active-project pointer")?;
         Ok(())
     });
@@ -2185,8 +2177,9 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-START-014", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "seq-check", "standard")?;
-        let journal = std::fs::read_to_string(project_root(ws.path(), "seq-check").join("journal.ndjson"))
-            .map_err(|e| e.to_string())?;
+        let journal =
+            std::fs::read_to_string(project_root(ws.path(), "seq-check").join("journal.ndjson"))
+                .map_err(|e| e.to_string())?;
         let first_event: serde_json::Value =
             serde_json::from_str(journal.lines().next().unwrap_or("{}"))
                 .map_err(|e| e.to_string())?;
@@ -2548,8 +2541,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-active", "standard")?;
         let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running"}"#;
-        std::fs::write(project_root(ws.path(), "rq-active").join("run.json"), run_json)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "rq-active").join("run.json"),
+            run_json,
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "running", "stdout")?;
@@ -2598,8 +2594,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-007", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-corrupt", "standard")?;
-        std::fs::write(project_root(ws.path(), "rq-corrupt").join("run.json"), "not json")
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "rq-corrupt").join("run.json"),
+            "not json",
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2675,8 +2674,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-completed", "standard")?;
         let run_json = r#"{"active_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#;
-        std::fs::write(project_root(ws.path(), "rq-completed").join("run.json"), run_json)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "rq-completed").join("run.json"),
+            run_json,
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "completed", "stdout")?;
@@ -2687,8 +2689,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-failed", "standard")?;
         let run_json = r#"{"active_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#;
-        std::fs::write(project_root(ws.path(), "rq-failed").join("run.json"), run_json)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "rq-failed").join("run.json"),
+            run_json,
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "failed", "stdout")?;
@@ -2700,8 +2705,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "rq-inconsist", "standard")?;
         // Write semantically inconsistent run.json (active_run but status is completed)
         let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#;
-        std::fs::write(project_root(ws.path(), "rq-inconsist").join("run.json"), run_json)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "rq-inconsist").join("run.json"),
+            run_json,
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         // Should fail fast on semantic inconsistency
         assert_failure(&out)?;
@@ -2713,8 +2721,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-del-paused", "standard")?;
         let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running"}"#;
-        std::fs::write(project_root(ws.path(), "rq-del-paused").join("run.json"), run_json)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "rq-del-paused").join("run.json"),
+            run_json,
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "delete", "rq-del-paused"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2785,8 +2796,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-024", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-empty-j-show", "standard")?;
-        std::fs::write(project_root(ws.path(), "rq-empty-j-show").join("journal.ndjson"), "")
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "rq-empty-j-show").join("journal.ndjson"),
+            "",
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "show", "rq-empty-j-show"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2795,8 +2809,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-025", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-empty-j-hist", "standard")?;
-        std::fs::write(project_root(ws.path(), "rq-empty-j-hist").join("journal.ndjson"), "")
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "rq-empty-j-hist").join("journal.ndjson"),
+            "",
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "history"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -2805,8 +2822,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-026", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-empty-j-tail", "standard")?;
-        std::fs::write(project_root(ws.path(), "rq-empty-j-tail").join("journal.ndjson"), "")
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "rq-empty-j-tail").join("journal.ndjson"),
+            "",
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "tail"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -3712,8 +3732,11 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         let run_json = format!(
             r#"{{"active_run":null,"interrupted_run":{{"run_id":"run-snap-1","stage_cursor":{{"stage":"completion_panel","cycle":1,"attempt":1,"completion_round":1}},"started_at":"2026-03-11T19:00:00Z","prompt_hash_at_cycle_start":"{prompt_hash}","prompt_hash_at_stage_start":"{prompt_hash}","qa_iterations_current_cycle":0,"review_iterations_current_cycle":0,"final_review_restart_count":0}},"status":"failed","cycle_history":[],"completion_rounds":1,"rollback_point_meta":{{"last_rollback_id":null,"rollback_count":0}},"amendment_queue":{{"pending":[{{"amendment_id":"snap-1","source_stage":"completion_panel","source_cycle":1,"source_completion_round":1,"body":"Snap amend: in snapshot only","created_at":"2026-03-11T20:00:00Z","batch_sequence":0}}],"processed_count":0}},"status_summary":"failed"}}"#
         );
-        std::fs::write(project_root(ws.path(), "cr-snap-guard").join("run.json"), run_json)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "cr-snap-guard").join("run.json"),
+            run_json,
+        )
+        .map_err(|e| e.to_string())?;
 
         // Append run_started and run_failed events so resume can find the run_started event
         let journal_path = project_root(ws.path(), "cr-snap-guard").join("journal.ndjson");
@@ -3790,8 +3813,11 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         let run_json = format!(
             r#"{{"active_run":null,"interrupted_run":{{"run_id":"run-resume-1","stage_cursor":{{"stage":"completion_panel","cycle":1,"attempt":1,"completion_round":2}},"started_at":"2026-03-11T19:00:00Z","prompt_hash_at_cycle_start":"{prompt_hash}","prompt_hash_at_stage_start":"{prompt_hash}","qa_iterations_current_cycle":0,"review_iterations_current_cycle":0,"final_review_restart_count":0}},"status":"failed","cycle_history":[],"completion_rounds":2,"rollback_point_meta":{{"last_rollback_id":null,"rollback_count":0}},"amendment_queue":{{"pending":[],"processed_count":0}},"status_summary":"failed"}}"#
         );
-        std::fs::write(project_root(ws.path(), "cr-resume-amend").join("run.json"), run_json)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "cr-resume-amend").join("run.json"),
+            run_json,
+        )
+        .map_err(|e| e.to_string())?;
 
         // Append run_started and run_failed events so resume can find the run_started event
         let journal_path = project_root(ws.path(), "cr-resume-amend").join("journal.ndjson");
@@ -4661,8 +4687,11 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // completed → resume should fail
         let completed_json = r#"{"active_run":null,"status":"completed","cycle_history":[],"completion_rounds":1,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#;
-        std::fs::write(project_root(ws.path(), "golf").join("run.json"), completed_json)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "golf").join("run.json"),
+            completed_json,
+        )
+        .map_err(|e| e.to_string())?;
         let out2 = run_cli(&["run", "resume"], ws.path())?;
         assert_failure(&out2)?;
         Ok(())
@@ -4740,10 +4769,9 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         let run_before =
             std::fs::read_to_string(project_root(ws.path(), "india-lock").join("run.json"))
                 .map_err(|e| format!("read run.json before: {e}"))?;
-        let journal_before = std::fs::read_to_string(
-            project_root(ws.path(), "india-lock").join("journal.ndjson"),
-        )
-        .map_err(|e| format!("read journal before: {e}"))?;
+        let journal_before =
+            std::fs::read_to_string(project_root(ws.path(), "india-lock").join("journal.ndjson"))
+                .map_err(|e| format!("read journal before: {e}"))?;
 
         // Pre-create the writer lock
         let lock_dir = daemon_root(ws.path()).join("leases");
@@ -4758,10 +4786,9 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         let run_after =
             std::fs::read_to_string(project_root(ws.path(), "india-lock").join("run.json"))
                 .map_err(|e| format!("read run.json after: {e}"))?;
-        let journal_after = std::fs::read_to_string(
-            project_root(ws.path(), "india-lock").join("journal.ndjson"),
-        )
-        .map_err(|e| format!("read journal after: {e}"))?;
+        let journal_after =
+            std::fs::read_to_string(project_root(ws.path(), "india-lock").join("journal.ndjson"))
+                .map_err(|e| format!("read journal after: {e}"))?;
 
         if run_before != run_after {
             return Err(format!(
@@ -5443,8 +5470,11 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rb-bad-stage", "standard")?;
         let run_json = r#"{"active_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#;
-        std::fs::write(project_root(ws.path(), "rb-bad-stage").join("run.json"), run_json)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "rb-bad-stage").join("run.json"),
+            run_json,
+        )
+        .map_err(|e| e.to_string())?;
         // ci_plan is not part of the standard flow
         let out = run_cli(&["run", "rollback", "--to", "ci_plan"], ws.path())?;
         assert_failure(&out)?;
@@ -5457,8 +5487,11 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rb-no-point", "standard")?;
         let run_json = r#"{"active_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#;
-        std::fs::write(project_root(ws.path(), "rb-no-point").join("run.json"), run_json)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            project_root(ws.path(), "rb-no-point").join("run.json"),
+            run_json,
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "rollback", "--to", "review"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "rollback point", "stderr")?;
@@ -8179,10 +8212,9 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_success(&out)?;
         assert_contains(&out.stdout, "Project: stub-project (active)", "stdout")?;
 
-        let project_toml = std::fs::read_to_string(
-            project_root(ws.path(), "stub-project").join("project.toml"),
-        )
-        .map_err(|e| format!("read project.toml: {e}"))?;
+        let project_toml =
+            std::fs::read_to_string(project_root(ws.path(), "stub-project").join("project.toml"))
+                .map_err(|e| format!("read project.toml: {e}"))?;
         assert_contains(&project_toml, "id = \"stub-project\"", "project.toml")?;
         assert_contains(&project_toml, "name = \"Stub Project\"", "project.toml")?;
         assert_contains(&project_toml, "flow = \"standard\"", "project.toml")?;
@@ -8192,10 +8224,9 @@ fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
             "project.toml",
         )?;
 
-        let prompt = std::fs::read_to_string(
-            project_root(ws.path(), "stub-project").join("prompt.md"),
-        )
-        .map_err(|e| format!("read prompt.md: {e}"))?;
+        let prompt =
+            std::fs::read_to_string(project_root(ws.path(), "stub-project").join("prompt.md"))
+                .map_err(|e| format!("read prompt.md: {e}"))?;
         if prompt != "Stub prompt body for the project." {
             return Err(format!("unexpected prompt.md contents: {prompt}"));
         }

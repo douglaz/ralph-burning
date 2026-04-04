@@ -82,6 +82,15 @@ fn assert_no_ref_keys(value: &serde_json::Value, path: &str) {
     }
 }
 
+fn parse_schema_from_stdin(stdin_text: &str) -> serde_json::Value {
+    let marker = "Return ONLY valid JSON matching the following schema:\n";
+    let schema_text = stdin_text
+        .split_once(marker)
+        .map(|(_, tail)| tail.trim())
+        .expect("stdin should contain schema marker");
+    serde_json::from_str(schema_text).expect("stdin schema should be valid JSON")
+}
+
 fn process_exists(pid: u32) -> bool {
     Command::new("kill")
         .arg("-0")
@@ -571,6 +580,15 @@ async fn claude_command_construction_and_double_parse() {
     assert!(
         stdin_text.contains("Return ONLY valid JSON"),
         "stdin should contain schema instruction"
+    );
+    let stdin_schema = parse_schema_from_stdin(&stdin_text);
+    assert_eq!(
+        stdin_schema, schema,
+        "Claude stdin schema should match the wrapped transport schema exactly"
+    );
+    assert!(
+        stdin_schema.pointer("/properties/data").is_some(),
+        "Claude stdin schema should include the top-level data wrapper"
     );
 }
 
@@ -1730,6 +1748,11 @@ async fn stdin_payload_includes_contract_role_prompt_context_and_schema() {
     assert!(
         stdin_text.contains("Return ONLY valid JSON"),
         "should contain schema instruction"
+    );
+    let stdin_schema = parse_schema_from_stdin(&stdin_text);
+    assert!(
+        stdin_schema.pointer("/properties/data").is_some(),
+        "Claude stdin schema should describe the same wrapped data contract as transport"
     );
 }
 
