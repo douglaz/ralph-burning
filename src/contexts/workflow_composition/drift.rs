@@ -61,7 +61,7 @@ pub fn evaluate_prompt_change_on_resume(
     })?;
     let current_prompt_hash = FileSystem::prompt_hash(&prompt);
 
-    if current_prompt_hash == prompt_hash_at_cycle_start {
+    if prompt_matches_resume_baseline(&prompt, &current_prompt_hash, prompt_hash_at_cycle_start) {
         return Ok(PromptChangeResumeDecision::NoChange {
             current_prompt_hash,
         });
@@ -139,6 +139,15 @@ pub fn evaluate_prompt_change_on_resume(
             })
         }
     }
+}
+
+fn prompt_matches_resume_baseline(
+    prompt: &str,
+    current_prompt_hash: &str,
+    persisted_prompt_hash: &str,
+) -> bool {
+    current_prompt_hash == persisted_prompt_hash
+        || FileSystem::legacy_prompt_hash(prompt) == persisted_prompt_hash
 }
 
 fn clear_abandoned_supporting_records(
@@ -568,6 +577,52 @@ mod tests {
             read_audit_project_record(base_dir, &project_id).prompt_hash,
             FileSystem::prompt_hash("# Prompt\n\nChanged prompt.\n")
         );
+    }
+
+    #[test]
+    fn legacy_cycle_prompt_hash_does_not_trigger_resume_drift_when_prompt_is_unchanged() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let (project_id, run_id, _current_prompt_hash) =
+            setup_project(base_dir, "prompt-legacy-baseline").expect("project setup");
+        let legacy_prompt_hash = FileSystem::legacy_prompt_hash("# Prompt\n\nOriginal prompt.\n");
+
+        let mut seq = 1;
+        let mut snapshot = RunSnapshot::initial(20);
+        let cursor = StageCursor::new(StageId::Review, 1, 1, 1).expect("cursor");
+        let decision = evaluate_prompt_change_on_resume(
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsRuntimeLogWriteStore,
+            base_dir,
+            &project_id,
+            &project_root(base_dir, &project_id),
+            "prompt.md",
+            &run_id,
+            &mut seq,
+            &mut snapshot,
+            &cursor,
+            &[StageId::Planning, StageId::Review],
+            StageId::Planning,
+            &legacy_prompt_hash,
+            PromptChangeAction::Abort,
+        )
+        .expect("legacy baseline should be accepted when the prompt is unchanged");
+
+        match decision {
+            PromptChangeResumeDecision::NoChange {
+                current_prompt_hash,
+            } => {
+                assert_eq!(
+                    current_prompt_hash,
+                    FileSystem::prompt_hash("# Prompt\n\nOriginal prompt.\n")
+                );
+            }
+            _ => panic!("expected no-change decision"),
+        }
+        assert_eq!(seq, 1);
     }
 
     #[test]

@@ -253,6 +253,17 @@ impl FileSystem {
         format!("{:x}", hasher.finalize())
     }
 
+    /// Legacy 64-bit prompt hash retained only for resume compatibility with
+    /// snapshots and project metadata written before the SHA-256 migration.
+    pub(crate) fn legacy_prompt_hash(contents: &str) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        contents.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    }
+
     /// Atomically update `prompt.md`, write `prompt.original.md`, and recompute
     /// the prompt hash in `project.toml`. If any step fails, previously written
     /// files in this batch are best-effort cleaned up.
@@ -4366,6 +4377,12 @@ mod tests {
             FileSystem::prompt_hash(prompt),
             "87b3874a6af501c8b259ef3b85c6e65ad843c00be92f6179864626a96846fd12"
         );
+    }
+
+    #[test]
+    fn legacy_prompt_hash_matches_pre_sha256_digest() {
+        let prompt = "# Prompt\n\nOriginal prompt.\n";
+        assert_eq!(FileSystem::legacy_prompt_hash(prompt), "5b624debc08968f4");
     }
 
     #[test]

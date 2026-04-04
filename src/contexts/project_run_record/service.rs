@@ -686,6 +686,10 @@ fn split_bead_description_scope(description: &str) -> (String, Vec<String>, Vec<
             continue;
         }
 
+        // Only a subsection label after a blank line ends an active embedded
+        // Non-goals / Acceptance Criteria block. Adjacent labels stay inside
+        // the section so examples like `Details:` or `### Notes` can be kept as
+        // body content instead of snapping back into must-do scope mid-list.
         if active_section.is_some()
             && previous_line_blank
             && is_bead_description_subsection_boundary(line)
