@@ -40,6 +40,7 @@ use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
 use crate::shared::domain::{FlowPreset, ProjectId};
 use crate::shared::error::{AppError, AppResult};
+use crate::shared::text::truncate_with_ascii_ellipsis;
 
 const PLANNED_ELSEWHERE_MAX_ITEMS: usize = 6;
 const PLANNED_ELSEWHERE_MAX_BYTES: usize = 1536;
@@ -1701,50 +1702,6 @@ fn planned_elsewhere_rendered_bytes(item_body: &str) -> usize {
     }
 
     bytes
-}
-
-fn truncate_with_ascii_ellipsis(value: &str, max_bytes: usize) -> Option<String> {
-    if max_bytes == 0 {
-        return None;
-    }
-    if value.len() <= max_bytes {
-        return Some(value.to_owned());
-    }
-    if max_bytes <= 3 {
-        return Some(truncate_to_char_boundary(value, max_bytes).to_owned());
-    }
-
-    let truncated = truncate_to_char_boundary(value, max_bytes - 3);
-    Some(format!("{truncated}..."))
-}
-
-fn truncate_to_char_boundary(value: &str, max_bytes: usize) -> &str {
-    if value.len() <= max_bytes {
-        return value;
-    }
-
-    let mut end = 0usize;
-    for (index, _) in value.char_indices() {
-        if index > max_bytes {
-            break;
-        }
-        end = index;
-    }
-
-    if end == 0 && !value.is_empty() && max_bytes > 0 {
-        let first_char_end = value
-            .char_indices()
-            .nth(1)
-            .map(|(index, _)| index)
-            .unwrap_or(value.len());
-        if first_char_end <= max_bytes {
-            &value[..first_char_end]
-        } else {
-            ""
-        }
-    } else {
-        &value[..end]
-    }
 }
 
 fn parse_flow_override(raw: Option<&str>) -> AppResult<Option<FlowPreset>> {

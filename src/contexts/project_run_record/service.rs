@@ -11,6 +11,7 @@ use crate::contexts::workspace_governance::config::{
 };
 use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
 use crate::shared::error::{AppError, AppResult};
+use crate::shared::text::truncate_with_ascii_ellipsis;
 
 use super::fence_util::{closes_fence, opening_fence_delimiter};
 use super::journal;
@@ -898,46 +899,6 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
             line.push_str(&format!("; outcome: {outcome}"));
         }
         line
-    }
-
-    fn truncate_with_ascii_ellipsis(value: &str, max_bytes: usize) -> Option<String> {
-        if max_bytes == 0 {
-            return None;
-        }
-        if value.len() <= max_bytes {
-            return Some(value.to_owned());
-        }
-        if max_bytes <= 3 {
-            return Some(truncate_to_char_boundary(value, max_bytes).to_owned());
-        }
-
-        let truncated = truncate_to_char_boundary(value, max_bytes - 3);
-        Some(format!("{truncated}..."))
-    }
-
-    fn truncate_to_char_boundary(value: &str, max_bytes: usize) -> &str {
-        if value.len() <= max_bytes {
-            return value;
-        }
-
-        let mut end = 0usize;
-        for (index, _) in value.char_indices() {
-            if index > max_bytes {
-                break;
-            }
-            end = index;
-        }
-
-        if end == 0 && !value.is_empty() && max_bytes > 0 {
-            let first_char_end = value
-                .char_indices()
-                .nth(1)
-                .map(|(index, _)| index)
-                .unwrap_or(value.len());
-            return &value[..first_char_end.min(value.len())];
-        }
-
-        &value[..end.min(value.len())]
     }
 
     fn dependency_context_suffix(item: &BeadDependencyPromptContext) -> String {
