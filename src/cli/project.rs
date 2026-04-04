@@ -1325,6 +1325,7 @@ fn build_planned_elsewhere_context(
     bead_plan: &ResolvedBeadPlan,
     bead_summaries: &BTreeMap<String, BeadSummary>,
 ) -> Vec<PlannedElsewherePromptContext> {
+    let allow_plan_derived_enrichment = bead_plan.membership_confirmed;
     let dependent_ids = BTreeSet::from_iter(bead.dependents.iter().map(|item| item.id.clone()));
     let upstream_ids = BTreeSet::from_iter(bead.dependencies.iter().map(|item| item.id.clone()));
     let mut items = Vec::new();
@@ -1355,35 +1356,38 @@ fn build_planned_elsewhere_context(
     }
 
     let mut shared_acceptance_owners = BTreeMap::<String, Vec<String>>::new();
-    for criterion in &bundle.acceptance_map {
-        let covered_by = criterion
-            .covered_by
-            .iter()
-            .map(|bead_ref| canonicalize_bundle_bead_ref(milestone_id, bead_ref))
-            .collect::<Vec<_>>();
-        if !covered_by.iter().any(|covered_id| covered_id == &bead.id) {
-            continue;
-        }
-
-        for related_bead_id in covered_by {
-            if related_bead_id == bead.id
-                || upstream_ids.contains(&related_bead_id)
-                || dependent_ids.contains(&related_bead_id)
-            {
+    if allow_plan_derived_enrichment {
+        for criterion in &bundle.acceptance_map {
+            let covered_by = criterion
+                .covered_by
+                .iter()
+                .map(|bead_ref| canonicalize_bundle_bead_ref(milestone_id, bead_ref))
+                .collect::<Vec<_>>();
+            if !covered_by.iter().any(|covered_id| covered_id == &bead.id) {
                 continue;
             }
 
-            shared_acceptance_owners
-                .entry(related_bead_id)
-                .or_default()
-                .push(criterion.id.clone());
+            for related_bead_id in covered_by {
+                if related_bead_id == bead.id
+                    || upstream_ids.contains(&related_bead_id)
+                    || dependent_ids.contains(&related_bead_id)
+                {
+                    continue;
+                }
+
+                shared_acceptance_owners
+                    .entry(related_bead_id)
+                    .or_default()
+                    .push(criterion.id.clone());
+            }
         }
     }
 
     for dependent in &bead.dependents {
         let summary = bead_summaries.get(&dependent.id);
-        let plan_summary = proposal_lookup
-            .get(&dependent.id)
+        let plan_summary = allow_plan_derived_enrichment
+            .then(|| proposal_lookup.get(&dependent.id))
+            .flatten()
             .and_then(|(_, _, _, proposal)| {
                 compact_planned_elsewhere_summary(proposal.description.as_deref())
             });
@@ -2360,6 +2364,57 @@ mod tests {
             &bead,
             &resolved,
             &BTreeMap::new(),
+        );
+
+        assert!(planned_elsewhere.is_empty());
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_skips_shared_acceptance_owners_when_membership_is_unconfirmed(
+    ) {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.acceptance_map[0].covered_by = vec!["bead-2".to_owned(), "bead-4".to_owned()];
+        bundle.workstreams.push(Workstream {
+            name: "Validation".to_owned(),
+            description: Some("Confirm task bootstrap behavior.".to_owned()),
+            beads: vec![BeadProposal {
+                bead_id: Some("bead-4".to_owned()),
+                explicit_id: Some(true),
+                title: "Validate task bootstrap follow-up".to_owned(),
+                description: Some(
+                    "Confirm the shared acceptance outcome without expanding the current bead."
+                        .to_owned(),
+                ),
+                bead_type: Some("task".to_owned()),
+                priority: Some(1),
+                labels: Vec::new(),
+                depends_on: Vec::new(),
+                acceptance_criteria: vec!["AC-1".to_owned()],
+                flow_override: None,
+            }],
+        });
+        let mut bead = sample_bead();
+        bead.title = "Renamed live bead".to_owned();
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+        let bead_summaries = BTreeMap::from([(
+            "ms-alpha.bead-4".to_owned(),
+            BeadSummary {
+                id: "ms-alpha.bead-4".to_owned(),
+                title: "Validate task bootstrap follow-up".to_owned(),
+                status: BeadStatus::Open,
+                priority: BeadPriority::new(1),
+                bead_type: BeadType::Task,
+                labels: Vec::new(),
+            },
+        )]);
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &bead_summaries,
         );
 
         assert!(planned_elsewhere.is_empty());

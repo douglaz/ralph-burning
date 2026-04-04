@@ -4049,6 +4049,146 @@ fn project_create_from_bead_falls_back_to_milestone_default_flow_when_title_drif
 }
 
 #[test]
+fn project_create_from_bead_skips_shared_acceptance_owners_when_membership_is_unconfirmed() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_path = milestone_root(temp_dir.path(), "ms-alpha").join("plan.json");
+    let mut plan: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&plan_path).expect("read plan"))
+            .expect("parse plan");
+    plan["acceptance_map"][0]["covered_by"] = serde_json::json!(["bead-2", "bead-4"]);
+    plan["workstreams"]
+        .as_array_mut()
+        .expect("workstreams array")
+        .push(serde_json::json!({
+            "name": "Validation",
+            "description": "Confirm the acceptance handoff.",
+            "beads": [
+                {
+                    "bead_id": "bead-4",
+                    "explicit_id": true,
+                    "title": "Validate task bootstrap follow-up",
+                    "description": "Confirm the shared acceptance outcome without expanding the current bead.",
+                    "bead_type": "task",
+                    "priority": 1,
+                    "labels": ["validation"],
+                    "depends_on": [],
+                    "acceptance_criteria": ["AC-1"]
+                }
+            ]
+        }));
+    fs::write(
+        &plan_path,
+        serde_json::to_string_pretty(&plan).expect("serialize plan"),
+    )
+    .expect("write updated plan");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    fs::write(
+        milestone_root(temp_dir.path(), "ms-alpha").join("status.json"),
+        format!(
+            r#"{{
+  "status": "ready",
+  "plan_hash": "{plan_hash}",
+  "plan_version": 2,
+  "progress": {{
+    "total_beads": 4,
+    "completed_beads": 1,
+    "in_progress_beads": 1,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 1
+  }},
+  "updated_at": "2026-04-01T10:05:00Z"
+}}"#
+        ),
+    )
+    .expect("rewrite status");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Renamed live bead",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
+cat <<'EOF'
+{
+  "issues": [
+    {
+      "id": "ms-alpha.bead-2",
+      "title": "Renamed live bead",
+      "status": "open",
+      "priority": "P1",
+      "issue_type": "feature",
+      "labels": ["creation", "prompt"]
+    },
+    {
+      "id": "ms-alpha.bead-4",
+      "title": "Validate task bootstrap follow-up",
+      "status": "open",
+      "priority": "P1",
+      "issue_type": "task",
+      "labels": ["validation"]
+    }
+  ]
+}
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "unconfirmed-shared-acceptance-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let prompt = fs::read_to_string(
+        project_root(temp_dir.path(), "unconfirmed-shared-acceptance-project").join("prompt.md"),
+    )
+    .expect("read prompt");
+    assert!(!prompt.contains("ms-alpha.bead-4 (Validate task bootstrap follow-up)"));
+    assert!(!prompt.contains("shared milestone acceptance ownership in Validation (AC-1)"));
+    assert!(!prompt.contains(
+        "Summary:\n    Confirm the shared acceptance outcome without expanding the current bead."
+    ));
+}
+
+#[test]
 fn project_create_from_bead_does_not_confirm_title_fallback_against_mismatched_explicit_bead_id() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
