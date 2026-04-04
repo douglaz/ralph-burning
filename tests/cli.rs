@@ -2122,6 +2122,98 @@ exit 1
 }
 
 #[test]
+fn project_create_from_bead_fails_when_br_list_is_unavailable_and_relation_statuses_are_missing() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": [
+      {
+        "id": "ms-alpha.bead-1",
+        "dependency_type": "blocks",
+        "title": "Define task-source metadata"
+      }
+    ],
+    "dependents": [
+      {
+        "id": "ms-alpha.bead-3",
+        "dependency_type": "blocks",
+        "title": "Document task bootstrap follow-up"
+      }
+    ]
+  }
+]
+EOF
+exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+echo "simulated br list failure" >&2
+exit 1
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "missing-br-list-missing-status-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        !output.status.success(),
+        "expected create-from-bead to fail when relation statuses are missing, stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to load bead summaries"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("cannot render deterministic dependency status"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("dependency ms-alpha.bead-1"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("dependent ms-alpha.bead-3"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "missing-br-list-missing-status-project").exists(),
+        "project should not be created when direct relation statuses are unavailable"
+    );
+}
+
+#[test]
 fn project_create_from_bead_skips_fenced_planned_elsewhere_summary_openers() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");

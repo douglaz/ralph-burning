@@ -321,7 +321,10 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
     let bead_summaries = match load_bead_summaries(&current_dir).await {
         Ok(summaries) => summaries,
         Err(error @ AppError::CorruptRecord { .. }) => return Err(error),
-        Err(AppError::Io(_)) => BTreeMap::new(),
+        Err(error @ AppError::Io(_)) => {
+            ensure_direct_relations_have_statuses_for_prompt(&bead, &error)?;
+            BTreeMap::new()
+        }
         Err(other) => return Err(other),
     };
 
@@ -826,6 +829,34 @@ fn load_optional_prompt_override(
         });
     }
     Ok(Some(prompt))
+}
+
+fn ensure_direct_relations_have_statuses_for_prompt(
+    bead: &BeadDetail,
+    source_error: &AppError,
+) -> AppResult<()> {
+    let mut missing_relations = bead
+        .dependencies
+        .iter()
+        .filter(|relation| relation.status.is_none())
+        .map(|relation| format!("dependency {}", relation.id))
+        .collect::<Vec<_>>();
+    missing_relations.extend(
+        bead.dependents
+            .iter()
+            .filter(|relation| relation.status.is_none())
+            .map(|relation| format!("dependent {}", relation.id)),
+    );
+
+    if missing_relations.is_empty() {
+        return Ok(());
+    }
+
+    Err(AppError::Io(std::io::Error::other(format!(
+        "{source_error}; cannot render deterministic dependency status for bead '{}' because relation status is missing for {}",
+        bead.id,
+        missing_relations.join(", ")
+    ))))
 }
 
 fn infer_parent_epic_id(bead: &BeadDetail) -> Option<String> {
