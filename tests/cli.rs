@@ -3250,10 +3250,10 @@ exit 1
         project_root(temp_dir.path(), "renamed-live-bead-default-flow").join("prompt.md"),
     )
     .expect("read prompt");
-    assert!(prompt.contains(
+    assert!(!prompt.contains(
         "ms-alpha.bead-3 (Document task bootstrap follow-up) - adjacent same-workstream bead in Task Substrate; status: unknown"
     ));
-    assert!(prompt.contains(
+    assert!(!prompt.contains(
         "Summary:\n    Capture the operator-facing workflow once project creation is stable."
     ));
 }

@@ -1055,7 +1055,7 @@ fn build_dependency_prompt_context(
     relations: &[crate::adapters::br_models::DependencyRef],
     bead_summaries: &BTreeMap<String, BeadSummary>,
 ) -> Vec<BeadDependencyPromptContext> {
-    relations
+    let mut items: Vec<_> = relations
         .iter()
         .map(|relation| {
             let summary = bead_summaries.get(&relation.id);
@@ -1069,14 +1069,20 @@ fn build_dependency_prompt_context(
                 outcome: Some(prompt_bead_outcome(summary)),
             }
         })
-        .collect()
+        .collect();
+    items.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    items
 }
 
 fn build_dependent_prompt_context(
     relations: &[crate::adapters::br_models::DependencyRef],
     bead_summaries: &BTreeMap<String, BeadSummary>,
 ) -> Vec<BeadDependencyPromptContext> {
-    relations
+    let mut items: Vec<_> = relations
         .iter()
         .map(|relation| {
             let summary = bead_summaries.get(&relation.id);
@@ -1090,7 +1096,13 @@ fn build_dependent_prompt_context(
                 outcome: Some(prompt_bead_outcome(summary)),
             }
         })
-        .collect()
+        .collect();
+    items.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    items
 }
 
 fn infer_implicit_slot_hint(
@@ -1176,8 +1188,18 @@ fn build_planned_elsewhere_context(
                 .matched_workstream_index
                 .zip(bead_plan.matched_bead_index),
         )
-        .or_else(|| infer_implicit_slot_hint(bundle, milestone_id, &bead.id));
+        .or_else(|| {
+            bead_plan
+                .membership_confirmed
+                .then(|| infer_implicit_slot_hint(bundle, milestone_id, &bead.id))
+                .flatten()
+        });
     let Some((workstream_index, current_bead_index)) = location_hint else {
+        items.sort_by(|left, right| {
+            left.id
+                .cmp(&right.id)
+                .then_with(|| left.title.cmp(&right.title))
+        });
         return items;
     };
 
@@ -1221,6 +1243,11 @@ fn build_planned_elsewhere_context(
         }
     }
 
+    items.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.title.cmp(&right.title))
+    });
     items
 }
 
@@ -1780,7 +1807,8 @@ fn truncate_utf8(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        backfill_legacy_explicit_bead_flags, build_planned_elsewhere_context,
+        backfill_legacy_explicit_bead_flags, build_dependency_prompt_context,
+        build_dependent_prompt_context, build_planned_elsewhere_context,
         compact_planned_elsewhere_summary, ensure_bead_belongs_to_milestone,
         ensure_bead_creation_targets_are_actionable, infer_parent_epic_id, load_milestone_bundle,
         resolve_bead_plan, validate_milestone_plan_snapshot,
@@ -2067,7 +2095,7 @@ mod tests {
     }
 
     #[test]
-    fn build_planned_elsewhere_context_uses_implicit_slot_hint_when_live_title_drifted() {
+    fn build_planned_elsewhere_context_skips_neighbors_when_membership_is_unconfirmed() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
         let mut bundle = sample_two_bead_bundle();
         bundle.workstreams[0].beads[0].description =
@@ -2084,18 +2112,7 @@ mod tests {
             &BTreeMap::new(),
         );
 
-        assert_eq!(planned_elsewhere.len(), 1);
-        assert_eq!(planned_elsewhere[0].id, "ms-alpha.bead-1");
-        assert_eq!(planned_elsewhere[0].title, "Define task-source metadata");
-        assert_eq!(
-            planned_elsewhere[0].relationship,
-            "adjacent same-workstream bead in Creation"
-        );
-        assert_eq!(planned_elsewhere[0].status.as_deref(), Some("unknown"));
-        assert_eq!(
-            planned_elsewhere[0].summary.as_deref(),
-            Some("Define metadata before project creation.")
-        );
+        assert!(planned_elsewhere.is_empty());
     }
 
     #[test]
@@ -2118,9 +2135,7 @@ mod tests {
             &BTreeMap::new(),
         );
 
-        assert_eq!(planned_elsewhere.len(), 1);
-        assert_eq!(planned_elsewhere[0].id, "ms-alpha.bead-1");
-        assert_ne!(planned_elsewhere[0].id, bead.id);
+        assert!(planned_elsewhere.is_empty());
     }
 
     #[test]
@@ -2141,6 +2156,116 @@ mod tests {
         );
 
         assert!(planned_elsewhere.is_empty());
+    }
+
+    #[test]
+    fn build_dependency_prompt_context_sorts_items_by_id_and_title() {
+        let relations = vec![
+            DependencyRef {
+                id: "ms-alpha.bead-20".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Zulu".to_owned()),
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-3".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Bravo".to_owned()),
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-11".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Alpha".to_owned()),
+            },
+        ];
+
+        let prompt_context = build_dependency_prompt_context(&relations, &BTreeMap::new());
+
+        assert_eq!(
+            prompt_context
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ms-alpha.bead-11", "ms-alpha.bead-20", "ms-alpha.bead-3"]
+        );
+    }
+
+    #[test]
+    fn build_dependent_prompt_context_sorts_items_by_id_and_title() {
+        let relations = vec![
+            DependencyRef {
+                id: "ms-alpha.bead-9".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Zulu".to_owned()),
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-1".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Alpha".to_owned()),
+            },
+        ];
+
+        let prompt_context = build_dependent_prompt_context(&relations, &BTreeMap::new());
+
+        assert_eq!(
+            prompt_context
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ms-alpha.bead-1", "ms-alpha.bead-9"]
+        );
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_sorts_explicit_and_neighbor_items_by_id() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let bundle = sample_three_bead_bundle();
+        let mut bead = sample_bead();
+        bead.dependencies = vec![
+            DependencyRef {
+                id: "ms-alpha.bead-3".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Document task bootstrap follow-up".to_owned()),
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-1".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Define task-source metadata".to_owned()),
+            },
+        ];
+        bead.dependents = vec![
+            DependencyRef {
+                id: "ms-alpha.bead-9".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Later dependent".to_owned()),
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-4".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Sooner dependent".to_owned()),
+            },
+        ];
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(
+            planned_elsewhere
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ms-alpha.bead-1",
+                "ms-alpha.bead-3",
+                "ms-alpha.bead-4",
+                "ms-alpha.bead-9",
+            ]
+        );
     }
 
     #[test]
