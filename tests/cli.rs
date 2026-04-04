@@ -504,6 +504,21 @@ fn default_br_list_response() -> &'static str {
 }"#
 }
 
+fn default_ms_alpha_bead_2_show_response() -> &'static str {
+    r#"[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
+    "dependencies": []
+  }
+]"#
+}
+
 fn write_show_bead_script_with_default_list(
     base_dir: &std::path::Path,
     bead_id: &str,
@@ -2021,7 +2036,7 @@ exit 1
 }
 
 #[test]
-fn project_create_from_bead_fails_when_br_list_is_unavailable() {
+fn project_create_from_bead_falls_back_when_br_list_is_unavailable() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let fake_br = write_editor_script(
@@ -2087,15 +2102,23 @@ exit 1
         .expect("run project create-from-bead");
 
     assert!(
-        !output.status.success(),
-        "stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to load bead summaries"));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("simulated br list failure"));
-    assert!(!project_root(temp_dir.path(), "missing-br-list-project")
-        .join("prompt.md")
-        .exists());
+    let prompt = fs::read_to_string(
+        project_root(temp_dir.path(), "missing-br-list-project").join("prompt.md"),
+    )
+    .expect("read prompt");
+    assert!(prompt.contains(
+        "ms-alpha.bead-1 (Define task-source metadata) - blocking dependency; status: closed; outcome: completed"
+    ));
+    assert!(prompt.contains(
+        "ms-alpha.bead-3 (Document task bootstrap follow-up) - downstream dependent; status: open"
+    ));
+    assert!(prompt.contains(
+        "Summary:\n    Capture the operator-facing workflow once project creation is stable."
+    ));
 }
 
 #[test]
@@ -6556,30 +6579,10 @@ fn run_start_syncs_milestone_lineage_for_bead_backed_projects() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
-    let fake_br = write_editor_script(
+    let fake_br = write_show_bead_script_with_default_list(
         temp_dir.path(),
-        "br",
-        r#"#!/bin/sh
-if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
-cat <<'EOF'
-[
-  {
-    "id": "ms-alpha.bead-2",
-    "title": "Bootstrap bead-backed task creation",
-    "status": "open",
-    "priority": "P1",
-    "issue_type": "feature",
-    "description": "Create a Ralph project directly from milestone and bead context.",
-    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
-    "dependencies": []
-  }
-]
-EOF
-exit 0
-fi
-echo "unexpected br args: $@" >&2
-exit 1
-"#,
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
     );
     let path = prepend_path(fake_br.parent().expect("fake br parent"));
 
@@ -6639,30 +6642,10 @@ fn run_sync_milestone_repairs_completed_bead_backed_project() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
-    let fake_br = write_editor_script(
+    let fake_br = write_show_bead_script_with_default_list(
         temp_dir.path(),
-        "br",
-        r#"#!/bin/sh
-if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
-cat <<'EOF'
-[
-  {
-    "id": "ms-alpha.bead-2",
-    "title": "Bootstrap bead-backed task creation",
-    "status": "open",
-    "priority": "P1",
-    "issue_type": "feature",
-    "description": "Create a Ralph project directly from milestone and bead context.",
-    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
-    "dependencies": []
-  }
-]
-EOF
-exit 0
-fi
-echo "unexpected br args: $@" >&2
-exit 1
-"#,
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
     );
     let path = prepend_path(fake_br.parent().expect("fake br parent"));
 
@@ -6733,30 +6716,10 @@ fn run_sync_milestone_repairs_stale_terminal_outcome_with_original_timestamp() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
-    let fake_br = write_editor_script(
+    let fake_br = write_show_bead_script_with_default_list(
         temp_dir.path(),
-        "br",
-        r#"#!/bin/sh
-if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
-cat <<'EOF'
-[
-  {
-    "id": "ms-alpha.bead-2",
-    "title": "Bootstrap bead-backed task creation",
-    "status": "open",
-    "priority": "P1",
-    "issue_type": "feature",
-    "description": "Create a Ralph project directly from milestone and bead context.",
-    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
-    "dependencies": []
-  }
-]
-EOF
-exit 0
-fi
-echo "unexpected br args: $@" >&2
-exit 1
-"#,
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
     );
     let path = prepend_path(fake_br.parent().expect("fake br parent"));
 
@@ -6845,30 +6808,10 @@ fn run_sync_milestone_reconstructs_missing_lineage_for_terminal_project() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
-    let fake_br = write_editor_script(
+    let fake_br = write_show_bead_script_with_default_list(
         temp_dir.path(),
-        "br",
-        r#"#!/bin/sh
-if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
-cat <<'EOF'
-[
-  {
-    "id": "ms-alpha.bead-2",
-    "title": "Bootstrap bead-backed task creation",
-    "status": "open",
-    "priority": "P1",
-    "issue_type": "feature",
-    "description": "Create a Ralph project directly from milestone and bead context.",
-    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
-    "dependencies": []
-  }
-]
-EOF
-exit 0
-fi
-echo "unexpected br args: $@" >&2
-exit 1
-"#,
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
     );
     let path = prepend_path(fake_br.parent().expect("fake br parent"));
 
@@ -6938,30 +6881,10 @@ fn run_sync_milestone_errors_when_missing_lineage_is_ambiguous() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
-    let fake_br = write_editor_script(
+    let fake_br = write_show_bead_script_with_default_list(
         temp_dir.path(),
-        "br",
-        r#"#!/bin/sh
-if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
-cat <<'EOF'
-[
-  {
-    "id": "ms-alpha.bead-2",
-    "title": "Bootstrap bead-backed task creation",
-    "status": "open",
-    "priority": "P1",
-    "issue_type": "feature",
-    "description": "Create a Ralph project directly from milestone and bead context.",
-    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
-    "dependencies": []
-  }
-]
-EOF
-exit 0
-fi
-echo "unexpected br args: $@" >&2
-exit 1
-"#,
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
     );
     let path = prepend_path(fake_br.parent().expect("fake br parent"));
 
@@ -7043,30 +6966,10 @@ fn run_sync_milestone_fails_when_completed_project_lacks_run_completed_event() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
-    let fake_br = write_editor_script(
+    let fake_br = write_show_bead_script_with_default_list(
         temp_dir.path(),
-        "br",
-        r#"#!/bin/sh
-if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
-cat <<'EOF'
-[
-  {
-    "id": "ms-alpha.bead-2",
-    "title": "Bootstrap bead-backed task creation",
-    "status": "open",
-    "priority": "P1",
-    "issue_type": "feature",
-    "description": "Create a Ralph project directly from milestone and bead context.",
-    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
-    "dependencies": []
-  }
-]
-EOF
-exit 0
-fi
-echo "unexpected br args: $@" >&2
-exit 1
-"#,
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
     );
     let path = prepend_path(fake_br.parent().expect("fake br parent"));
 
@@ -7137,30 +7040,10 @@ fn run_sync_milestone_fails_when_failed_project_lacks_run_failed_event() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
-    let fake_br = write_editor_script(
+    let fake_br = write_show_bead_script_with_default_list(
         temp_dir.path(),
-        "br",
-        r#"#!/bin/sh
-if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
-cat <<'EOF'
-[
-  {
-    "id": "ms-alpha.bead-2",
-    "title": "Bootstrap bead-backed task creation",
-    "status": "open",
-    "priority": "P1",
-    "issue_type": "feature",
-    "description": "Create a Ralph project directly from milestone and bead context.",
-    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
-    "dependencies": []
-  }
-]
-EOF
-exit 0
-fi
-echo "unexpected br args: $@" >&2
-exit 1
-"#,
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
     );
     let path = prepend_path(fake_br.parent().expect("fake br parent"));
 

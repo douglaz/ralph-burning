@@ -318,7 +318,12 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         .membership_confirmed
         .then_some(confirmed_plan_version)
         .flatten();
-    let bead_summaries = load_bead_summaries(&current_dir).await?;
+    let bead_summaries = match load_bead_summaries(&current_dir).await {
+        Ok(summaries) => summaries,
+        Err(error @ AppError::CorruptRecord { .. }) => return Err(error),
+        Err(AppError::Io(_)) => BTreeMap::new(),
+        Err(other) => return Err(other),
+    };
 
     let context = BeadProjectContext {
         milestone_id: milestone.id.to_string(),
@@ -1303,7 +1308,7 @@ fn build_planned_elsewhere_context(
         }
 
         for related_bead_id in covered_by {
-            if related_bead_id == bead.id {
+            if related_bead_id == bead.id || upstream_ids.contains(&related_bead_id) {
                 continue;
             }
 
@@ -2551,6 +2556,49 @@ mod tests {
                     == Some(
                         "Confirm the shared acceptance outcome without expanding the current bead.",
                     )
+        }));
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_excludes_upstream_dependencies_from_shared_acceptance_owners(
+    ) {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned(), "bead-2".to_owned()];
+        let resolved =
+            resolve_bead_plan(&bundle, &milestone_id, &sample_bead()).expect("resolve bead");
+        let bead_summaries = BTreeMap::from([(
+            "ms-alpha.bead-1".to_owned(),
+            BeadSummary {
+                id: "ms-alpha.bead-1".to_owned(),
+                title: "Define task-source metadata".to_owned(),
+                status: BeadStatus::Closed,
+                priority: BeadPriority::new(1),
+                bead_type: BeadType::Task,
+                labels: Vec::new(),
+            },
+        )]);
+        let mut bead = sample_bead();
+        bead.dependencies.push(DependencyRef {
+            id: "ms-alpha.bead-1".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Define task-source metadata".to_owned()),
+            status: Some(BeadStatus::Closed),
+        });
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &bead_summaries,
+        );
+
+        assert!(planned_elsewhere.iter().all(|item| {
+            item.id != "ms-alpha.bead-1"
+                || !item
+                    .relationship
+                    .contains("shared milestone acceptance ownership")
         }));
     }
 
