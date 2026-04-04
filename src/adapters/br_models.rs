@@ -231,6 +231,8 @@ pub struct DependencyRef {
     pub kind: DependencyKind,
     #[serde(default)]
     pub title: Option<String>,
+    #[serde(default)]
+    pub status: Option<BeadStatus>,
 }
 
 // ── BeadSummary ─────────────────────────────────────────────────────────────
@@ -894,10 +896,13 @@ mod tests {
         assert_eq!(dep.id, "dep-1");
         assert_eq!(dep.kind, DependencyKind::Blocks);
         assert!(dep.title.is_none());
+        assert!(dep.status.is_none());
 
-        let json = r#"{"id": "dep-2", "kind": "parent_child", "title": "Parent"}"#;
+        let json =
+            r#"{"id": "dep-2", "kind": "parent_child", "title": "Parent", "status": "closed"}"#;
         let dep: DependencyRef = serde_json::from_str(json)?;
         assert_eq!(dep.title.as_deref(), Some("Parent"));
+        assert_eq!(dep.status, Some(BeadStatus::Closed));
         Ok(())
     }
 

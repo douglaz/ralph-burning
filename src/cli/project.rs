@@ -293,9 +293,11 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
     let milestone_snapshot = snapshot_store.read_snapshot(&current_dir, &milestone_id)?;
     let milestone_bundle = load_milestone_bundle(&plan_store, &current_dir, &milestone_id)?;
     let bead = load_bead_detail(&current_dir, &args.bead_id).await?;
-    let bead_summaries = load_bead_summaries(&current_dir)
-        .await
-        .unwrap_or_else(|_| BTreeMap::new());
+    let bead_summaries = match load_bead_summaries(&current_dir).await {
+        Ok(summaries) => summaries,
+        Err(AppError::Io(_)) => BTreeMap::new(),
+        Err(error) => return Err(error),
+    };
     let flow_override = parse_flow_override(args.flow.as_deref())?;
     ensure_bead_belongs_to_milestone(&milestone_id, &bead)?;
     ensure_bead_creation_targets_are_actionable(&milestone_id, milestone_snapshot.status, &bead)?;
@@ -698,6 +700,13 @@ enum BrShowResponse {
     Many(Vec<BeadDetail>),
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BrListResponse {
+    Envelope { issues: Vec<BeadSummary> },
+    Many(Vec<BeadSummary>),
+}
+
 async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetail> {
     let response: BrShowResponse = BrAdapter::new()
         .with_working_dir(base_dir.to_path_buf())
@@ -740,7 +749,7 @@ async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetai
 }
 
 async fn load_bead_summaries(base_dir: &Path) -> AppResult<BTreeMap<String, BeadSummary>> {
-    let summaries: Vec<BeadSummary> = BrAdapter::new()
+    let response: BrListResponse = BrAdapter::new()
         .with_working_dir(base_dir.to_path_buf())
         .exec_json(&BrCommand::list())
         .await
@@ -748,10 +757,18 @@ async fn load_bead_summaries(base_dir: &Path) -> AppResult<BTreeMap<String, Bead
             BrError::BrExitError { stderr, .. } => AppError::Io(std::io::Error::other(format!(
                 "failed to load bead summaries: {stderr}"
             ))),
+            BrError::BrParseError { details, .. } => AppError::CorruptRecord {
+                file: ".beads/issues.jsonl".to_owned(),
+                details: format!("failed to parse `br list --json` output: {details}"),
+            },
             other => AppError::Io(std::io::Error::other(format!(
                 "failed to load bead summaries: {other}"
             ))),
         })?;
+    let summaries = match response {
+        BrListResponse::Envelope { issues } => issues,
+        BrListResponse::Many(issues) => issues,
+    };
 
     Ok(BTreeMap::from_iter(
         summaries
@@ -1030,15 +1047,19 @@ fn bead_status_outcome(status: &BeadStatus) -> &'static str {
     }
 }
 
-fn prompt_bead_status(summary: Option<&BeadSummary>) -> String {
+fn prompt_bead_status(summary: Option<&BeadSummary>, fallback: Option<&BeadStatus>) -> String {
     summary
-        .map(|entry| bead_status_label(&entry.status).to_owned())
+        .map(|entry| &entry.status)
+        .or(fallback)
+        .map(|status| bead_status_label(status).to_owned())
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
-fn prompt_bead_outcome(summary: Option<&BeadSummary>) -> String {
+fn prompt_bead_outcome(summary: Option<&BeadSummary>, fallback: Option<&BeadStatus>) -> String {
     summary
-        .map(|entry| bead_status_outcome(&entry.status).to_owned())
+        .map(|entry| &entry.status)
+        .or(fallback)
+        .map(|status| bead_status_outcome(status).to_owned())
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
@@ -1065,8 +1086,8 @@ fn build_dependency_prompt_context(
                     .map(|entry| entry.title.clone())
                     .or_else(|| relation.title.clone()),
                 relationship: relationship_label(&relation.kind, true).to_owned(),
-                status: Some(prompt_bead_status(summary)),
-                outcome: Some(prompt_bead_outcome(summary)),
+                status: Some(prompt_bead_status(summary, relation.status.as_ref())),
+                outcome: Some(prompt_bead_outcome(summary, relation.status.as_ref())),
             }
         })
         .collect();
@@ -1092,8 +1113,8 @@ fn build_dependent_prompt_context(
                     .map(|entry| entry.title.clone())
                     .or_else(|| relation.title.clone()),
                 relationship: relationship_label(&relation.kind, false).to_owned(),
-                status: Some(prompt_bead_status(summary)),
-                outcome: Some(prompt_bead_outcome(summary)),
+                status: Some(prompt_bead_status(summary, relation.status.as_ref())),
+                outcome: Some(prompt_bead_outcome(summary, relation.status.as_ref())),
             }
         })
         .collect();
@@ -1175,7 +1196,7 @@ fn build_planned_elsewhere_context(
                 .or_else(|| dependent.title.clone())
                 .unwrap_or_else(|| dependent.id.clone()),
             relationship: relationship_label(&dependent.kind, false).to_owned(),
-            status: Some(prompt_bead_status(summary)),
+            status: Some(prompt_bead_status(summary, dependent.status.as_ref())),
             summary: plan_summary,
         });
     }
@@ -1237,7 +1258,7 @@ fn build_planned_elsewhere_context(
                     .map(|entry| entry.title.clone())
                     .unwrap_or_else(|| proposal.title.clone()),
                 relationship: format!("{relation} in {}", workstream.name),
-                status: Some(prompt_bead_status(summary)),
+                status: Some(prompt_bead_status(summary, None)),
                 summary: compact_planned_elsewhere_summary(proposal.description.as_deref()),
             });
         }
@@ -1947,6 +1968,7 @@ mod tests {
                 id: "ms-alpha.epic-1".to_owned(),
                 kind: DependencyKind::ParentChild,
                 title: Some("Parent".to_owned()),
+                status: None,
             }],
             dependents: Vec::new(),
             owner: None,
@@ -1963,6 +1985,7 @@ mod tests {
             id: "ms-alpha.bead-3".to_owned(),
             kind: DependencyKind::ParentChild,
             title: Some("Child bead".to_owned()),
+            status: None,
         });
 
         assert_eq!(infer_parent_epic_id(&bead), None);
@@ -2165,16 +2188,19 @@ mod tests {
                 id: "ms-alpha.bead-20".to_owned(),
                 kind: DependencyKind::Blocks,
                 title: Some("Zulu".to_owned()),
+                status: None,
             },
             DependencyRef {
                 id: "ms-alpha.bead-3".to_owned(),
                 kind: DependencyKind::Blocks,
                 title: Some("Bravo".to_owned()),
+                status: None,
             },
             DependencyRef {
                 id: "ms-alpha.bead-11".to_owned(),
                 kind: DependencyKind::Blocks,
                 title: Some("Alpha".to_owned()),
+                status: None,
             },
         ];
 
@@ -2196,11 +2222,13 @@ mod tests {
                 id: "ms-alpha.bead-9".to_owned(),
                 kind: DependencyKind::Blocks,
                 title: Some("Zulu".to_owned()),
+                status: None,
             },
             DependencyRef {
                 id: "ms-alpha.bead-1".to_owned(),
                 kind: DependencyKind::Blocks,
                 title: Some("Alpha".to_owned()),
+                status: None,
             },
         ];
 
@@ -2216,6 +2244,36 @@ mod tests {
     }
 
     #[test]
+    fn build_dependency_prompt_context_uses_relation_status_when_summary_missing() {
+        let relations = vec![DependencyRef {
+            id: "ms-alpha.bead-1".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Define task-source metadata".to_owned()),
+            status: Some(BeadStatus::Closed),
+        }];
+
+        let prompt_context = build_dependency_prompt_context(&relations, &BTreeMap::new());
+
+        assert_eq!(prompt_context[0].status.as_deref(), Some("closed"));
+        assert_eq!(prompt_context[0].outcome.as_deref(), Some("completed"));
+    }
+
+    #[test]
+    fn build_dependent_prompt_context_uses_relation_status_when_summary_missing() {
+        let relations = vec![DependencyRef {
+            id: "ms-alpha.bead-3".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Document task bootstrap follow-up".to_owned()),
+            status: Some(BeadStatus::InProgress),
+        }];
+
+        let prompt_context = build_dependent_prompt_context(&relations, &BTreeMap::new());
+
+        assert_eq!(prompt_context[0].status.as_deref(), Some("in_progress"));
+        assert_eq!(prompt_context[0].outcome.as_deref(), Some("active"));
+    }
+
+    #[test]
     fn build_planned_elsewhere_context_sorts_explicit_and_neighbor_items_by_id() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
         let bundle = sample_three_bead_bundle();
@@ -2225,11 +2283,13 @@ mod tests {
                 id: "ms-alpha.bead-3".to_owned(),
                 kind: DependencyKind::Blocks,
                 title: Some("Document task bootstrap follow-up".to_owned()),
+                status: None,
             },
             DependencyRef {
                 id: "ms-alpha.bead-1".to_owned(),
                 kind: DependencyKind::Blocks,
                 title: Some("Define task-source metadata".to_owned()),
+                status: None,
             },
         ];
         bead.dependents = vec![
@@ -2237,11 +2297,13 @@ mod tests {
                 id: "ms-alpha.bead-9".to_owned(),
                 kind: DependencyKind::Blocks,
                 title: Some("Later dependent".to_owned()),
+                status: None,
             },
             DependencyRef {
                 id: "ms-alpha.bead-4".to_owned(),
                 kind: DependencyKind::Blocks,
                 title: Some("Sooner dependent".to_owned()),
+                status: None,
             },
         ];
         let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");

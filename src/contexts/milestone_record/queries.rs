@@ -141,11 +141,13 @@ mod tests {
                 id: "ms-1.bead-0".to_owned(),
                 kind: DependencyKind::Blocks,
                 title: Some("Setup project".to_owned()),
+                status: None,
             }],
             dependents: vec![DependencyRef {
                 id: "ms-1.bead-2".to_owned(),
                 kind: DependencyKind::Blocks,
                 title: None,
+                status: None,
             }],
             acceptance_criteria: vec![
                 "All types derive Debug, Clone, PartialEq".to_owned(),

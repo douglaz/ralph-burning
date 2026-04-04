@@ -1857,40 +1857,42 @@ exit 0
 fi
 if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
 cat <<'EOF'
-[
-  {
-    "id": "ms-alpha.epic-1",
-    "title": "Task Substrate",
-    "status": "in_progress",
-    "priority": "P1",
-    "issue_type": "epic",
-    "labels": ["creation"]
-  },
-  {
-    "id": "ms-alpha.bead-1",
-    "title": "Define task-source metadata",
-    "status": "closed",
-    "priority": "P1",
-    "issue_type": "task",
-    "labels": ["creation"]
-  },
-  {
-    "id": "ms-alpha.bead-2",
-    "title": "Bootstrap bead-backed task creation",
-    "status": "open",
-    "priority": "P1",
-    "issue_type": "feature",
-    "labels": ["creation", "prompt"]
-  },
-  {
-    "id": "ms-alpha.bead-3",
-    "title": "Child bead",
-    "status": "open",
-    "priority": "P2",
-    "issue_type": "task",
-    "labels": ["docs"]
-  }
-]
+{
+  "issues": [
+    {
+      "id": "ms-alpha.epic-1",
+      "title": "Task Substrate",
+      "status": "in_progress",
+      "priority": "P1",
+      "issue_type": "epic",
+      "labels": ["creation"]
+    },
+    {
+      "id": "ms-alpha.bead-1",
+      "title": "Define task-source metadata",
+      "status": "closed",
+      "priority": "P1",
+      "issue_type": "task",
+      "labels": ["creation"]
+    },
+    {
+      "id": "ms-alpha.bead-2",
+      "title": "Bootstrap bead-backed task creation",
+      "status": "open",
+      "priority": "P1",
+      "issue_type": "feature",
+      "labels": ["creation", "prompt"]
+    },
+    {
+      "id": "ms-alpha.bead-3",
+      "title": "Child bead",
+      "status": "open",
+      "priority": "P2",
+      "issue_type": "task",
+      "labels": ["docs"]
+    }
+  ]
+}
 EOF
 exit 0
 fi
@@ -1978,14 +1980,16 @@ cat <<'EOF'
       {
         "id": "ms-alpha.bead-1",
         "dependency_type": "blocks",
-        "title": "Define task-source metadata"
+        "title": "Define task-source metadata",
+        "status": "closed"
       }
     ],
     "dependents": [
       {
         "id": "ms-alpha.bead-3",
         "dependency_type": "blocks",
-        "title": "Document task bootstrap follow-up"
+        "title": "Document task bootstrap follow-up",
+        "status": "open"
       }
     ]
   }
@@ -2030,10 +2034,10 @@ exit 1
     )
     .expect("read prompt");
     assert!(prompt.contains(
-        "ms-alpha.bead-1 (Define task-source metadata) - blocking dependency; status: unknown; outcome: unknown"
+        "ms-alpha.bead-1 (Define task-source metadata) - blocking dependency; status: closed; outcome: completed"
     ));
     assert!(prompt.contains(
-        "ms-alpha.bead-3 (Document task bootstrap follow-up) - downstream dependent; status: unknown"
+        "ms-alpha.bead-3 (Document task bootstrap follow-up) - downstream dependent; status: open; outcome: pending"
     ));
     assert!(prompt.contains(
         "Summary:\n    Capture the operator-facing workflow once project creation is stable."
@@ -2113,32 +2117,34 @@ exit 0
 fi
 if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
 cat <<'EOF'
-[
-  {
-    "id": "ms-alpha.bead-1",
-    "title": "Define task-source metadata",
-    "status": "closed",
-    "priority": "P1",
-    "issue_type": "task",
-    "labels": ["creation"]
-  },
-  {
-    "id": "ms-alpha.bead-2",
-    "title": "Bootstrap bead-backed task creation",
-    "status": "open",
-    "priority": "P1",
-    "issue_type": "feature",
-    "labels": ["creation", "prompt"]
-  },
-  {
-    "id": "ms-alpha.bead-3",
-    "title": "Document task bootstrap follow-up",
-    "status": "open",
-    "priority": "P2",
-    "issue_type": "docs",
-    "labels": ["docs"]
-  }
-]
+{
+  "issues": [
+    {
+      "id": "ms-alpha.bead-1",
+      "title": "Define task-source metadata",
+      "status": "closed",
+      "priority": "P1",
+      "issue_type": "task",
+      "labels": ["creation"]
+    },
+    {
+      "id": "ms-alpha.bead-2",
+      "title": "Bootstrap bead-backed task creation",
+      "status": "open",
+      "priority": "P1",
+      "issue_type": "feature",
+      "labels": ["creation", "prompt"]
+    },
+    {
+      "id": "ms-alpha.bead-3",
+      "title": "Document task bootstrap follow-up",
+      "status": "open",
+      "priority": "P2",
+      "issue_type": "docs",
+      "labels": ["docs"]
+    }
+  ]
+}
 EOF
 exit 0
 fi
