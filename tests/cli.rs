@@ -1894,37 +1894,6 @@ cat <<'EOF'
 EOF
 exit 0
 fi
-if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
-cat <<'EOF'
-[
-  {
-    "id": "ms-alpha.bead-1",
-    "title": "Define task-source metadata",
-    "status": "closed",
-    "priority": "P1",
-    "issue_type": "task",
-    "labels": ["creation"]
-  },
-  {
-    "id": "ms-alpha.bead-2",
-    "title": "Bootstrap bead-backed task creation",
-    "status": "open",
-    "priority": "P1",
-    "issue_type": "feature",
-    "labels": ["creation", "prompt"]
-  },
-  {
-    "id": "ms-alpha.bead-3",
-    "title": "Document task bootstrap follow-up",
-    "status": "open",
-    "priority": "P2",
-    "issue_type": "docs",
-    "labels": ["docs"]
-  }
-]
-EOF
-exit 0
-fi
 echo "unexpected br args: $@" >&2
 exit 1
 "#,
@@ -1984,6 +1953,91 @@ exit 1
     let active =
         fs::read_to_string(active_project_path(temp_dir.path())).expect("read active project");
     assert_eq!(active.trim(), "task-ms-alpha-bead-2");
+}
+
+#[test]
+fn project_create_from_bead_preserves_prompt_contract_when_br_list_fails() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": [
+      {
+        "id": "ms-alpha.bead-1",
+        "dependency_type": "blocks",
+        "title": "Define task-source metadata"
+      }
+    ],
+    "dependents": [
+      {
+        "id": "ms-alpha.bead-3",
+        "dependency_type": "blocks",
+        "title": "Document task bootstrap follow-up"
+      }
+    ]
+  }
+]
+EOF
+exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+echo "simulated br list failure" >&2
+exit 1
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "missing-br-list-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let prompt = fs::read_to_string(
+        project_root(temp_dir.path(), "missing-br-list-project").join("prompt.md"),
+    )
+    .expect("read prompt");
+    assert!(prompt.contains(
+        "ms-alpha.bead-1 (Define task-source metadata) - blocking dependency; status: unknown; outcome: unknown"
+    ));
+    assert!(prompt.contains(
+        "ms-alpha.bead-3 (Document task bootstrap follow-up) - downstream dependent; status: unknown"
+    ));
+    assert!(prompt.contains(
+        "Summary:\n    Capture the operator-facing workflow once project creation is stable."
+    ));
 }
 
 #[test]
@@ -3050,6 +3104,17 @@ exit 1
     assert!(project_toml.contains("flow = \"quick_dev\""));
     assert!(!project_toml.contains("plan_version = "));
     assert!(!project_toml.contains("plan_hash = "));
+
+    let prompt = fs::read_to_string(
+        project_root(temp_dir.path(), "renamed-live-bead-default-flow").join("prompt.md"),
+    )
+    .expect("read prompt");
+    assert!(prompt.contains(
+        "ms-alpha.bead-3 (Document task bootstrap follow-up) - adjacent same-workstream bead in Task Substrate; status: unknown"
+    ));
+    assert!(prompt.contains(
+        "Summary:\n    Capture the operator-facing workflow once project creation is stable."
+    ));
 }
 
 #[test]

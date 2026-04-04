@@ -945,15 +945,6 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
                     .map(|goal| render_bullet_item("  - ", goal)),
             );
         }
-        if !context.milestone_constraints.is_empty() {
-            lines.push("- Constraints:".to_owned());
-            lines.extend(
-                context
-                    .milestone_constraints
-                    .iter()
-                    .map(|constraint| render_bullet_item("  - ", constraint)),
-            );
-        }
         lines.join("\n")
     };
 

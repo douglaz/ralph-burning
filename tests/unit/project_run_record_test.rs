@@ -793,6 +793,12 @@ fn render_bead_task_prompt_includes_milestone_scope_and_agents_guidance() {
         "ms-alpha.bead-4 (Review downstream task creation follow-up) - downstream dependent"
     ));
     assert!(prompt.contains("### Milestone Plan Constraints"));
+    assert_eq!(
+        prompt
+            .matches("Reuse the current project substrate")
+            .count(),
+        1
+    );
     assert!(prompt.contains("Follow AGENTS.md and keep changes inspectable."));
 }
 

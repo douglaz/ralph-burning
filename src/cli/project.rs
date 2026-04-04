@@ -293,7 +293,9 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
     let milestone_snapshot = snapshot_store.read_snapshot(&current_dir, &milestone_id)?;
     let milestone_bundle = load_milestone_bundle(&plan_store, &current_dir, &milestone_id)?;
     let bead = load_bead_detail(&current_dir, &args.bead_id).await?;
-    let bead_summaries = load_bead_summaries(&current_dir).await.unwrap_or_default();
+    let bead_summaries = load_bead_summaries(&current_dir)
+        .await
+        .unwrap_or_else(|_| BTreeMap::new());
     let flow_override = parse_flow_override(args.flow.as_deref())?;
     ensure_bead_belongs_to_milestone(&milestone_id, &bead)?;
     ensure_bead_creation_targets_are_actionable(&milestone_id, milestone_snapshot.status, &bead)?;
@@ -980,6 +982,18 @@ fn bead_status_outcome(status: &BeadStatus) -> &'static str {
     }
 }
 
+fn prompt_bead_status(summary: Option<&BeadSummary>) -> String {
+    summary
+        .map(|entry| bead_status_label(&entry.status).to_owned())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn prompt_bead_outcome(summary: Option<&BeadSummary>) -> String {
+    summary
+        .map(|entry| bead_status_outcome(&entry.status).to_owned())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
 fn relationship_label(kind: &DependencyKind, upstream: bool) -> &'static str {
     match (kind, upstream) {
         (DependencyKind::Blocks, true) => "blocking dependency",
@@ -1003,8 +1017,8 @@ fn build_dependency_prompt_context(
                     .map(|entry| entry.title.clone())
                     .or_else(|| relation.title.clone()),
                 relationship: relationship_label(&relation.kind, true).to_owned(),
-                status: summary.map(|entry| bead_status_label(&entry.status).to_owned()),
-                outcome: summary.map(|entry| bead_status_outcome(&entry.status).to_owned()),
+                status: Some(prompt_bead_status(summary)),
+                outcome: Some(prompt_bead_outcome(summary)),
             }
         })
         .collect()
@@ -1024,11 +1038,29 @@ fn build_dependent_prompt_context(
                     .map(|entry| entry.title.clone())
                     .or_else(|| relation.title.clone()),
                 relationship: relationship_label(&relation.kind, false).to_owned(),
-                status: summary.map(|entry| bead_status_label(&entry.status).to_owned()),
-                outcome: summary.map(|entry| bead_status_outcome(&entry.status).to_owned()),
+                status: Some(prompt_bead_status(summary)),
+                outcome: Some(prompt_bead_outcome(summary)),
             }
         })
         .collect()
+}
+
+fn infer_implicit_slot_hint(
+    bundle: &MilestoneBundle,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> Option<(usize, usize)> {
+    let mut next_implicit_bead = 1usize;
+    for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
+        for (bead_index, _) in workstream.beads.iter().enumerate() {
+            let implicit_bead_id = format!("{}.bead-{}", milestone_id.as_str(), next_implicit_bead);
+            next_implicit_bead += 1;
+            if bead_matches_implicit_slot(bead_id, milestone_id.as_str(), &implicit_bead_id) {
+                return Some((workstream_index, bead_index));
+            }
+        }
+    }
+    None
 }
 
 fn build_planned_elsewhere_context(
@@ -1081,15 +1113,16 @@ fn build_planned_elsewhere_context(
                 .or_else(|| dependent.title.clone())
                 .unwrap_or_else(|| dependent.id.clone()),
             relationship: relationship_label(&dependent.kind, false).to_owned(),
-            status: summary.map(|entry| bead_status_label(&entry.status).to_owned()),
+            status: Some(prompt_bead_status(summary)),
             summary: plan_summary,
         });
     }
 
-    let (Some(workstream_index), Some(current_bead_index)) = (
-        bead_plan.matched_workstream_index,
-        bead_plan.matched_bead_index,
-    ) else {
+    let location_hint = bead_plan
+        .matched_workstream_index
+        .zip(bead_plan.matched_bead_index)
+        .or_else(|| infer_implicit_slot_hint(bundle, milestone_id, &bead.id));
+    let Some((workstream_index, current_bead_index)) = location_hint else {
         return items;
     };
 
@@ -1126,7 +1159,7 @@ fn build_planned_elsewhere_context(
                     .map(|entry| entry.title.clone())
                     .unwrap_or_else(|| proposal.title.clone()),
                 relationship: format!("{relation} in {}", workstream.name),
-                status: summary.map(|entry| bead_status_label(&entry.status).to_owned()),
+                status: Some(prompt_bead_status(summary)),
                 summary: compact_planned_elsewhere_summary(proposal.description.as_deref()),
             });
         }
@@ -1691,10 +1724,12 @@ fn truncate_utf8(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        backfill_legacy_explicit_bead_flags, ensure_bead_belongs_to_milestone,
-        ensure_bead_creation_targets_are_actionable, infer_parent_epic_id, load_milestone_bundle,
-        resolve_bead_plan, validate_milestone_plan_snapshot,
+        backfill_legacy_explicit_bead_flags, build_planned_elsewhere_context,
+        ensure_bead_belongs_to_milestone, ensure_bead_creation_targets_are_actionable,
+        infer_parent_epic_id, load_milestone_bundle, resolve_bead_plan,
+        validate_milestone_plan_snapshot,
     };
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     use crate::adapters::br_models::{
@@ -1954,6 +1989,38 @@ mod tests {
             .expect_err("cross-milestone bead should fail");
 
         assert!(matches!(error, AppError::InvalidConfigValue { .. }));
+    }
+
+    #[test]
+    fn build_planned_elsewhere_context_uses_implicit_slot_hint_when_live_title_drifted() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.workstreams[0].beads[0].description =
+            Some("Define metadata before project creation.".to_owned());
+        let mut bead = sample_bead();
+        bead.title = "Renamed live bead".to_owned();
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        let planned_elsewhere = build_planned_elsewhere_context(
+            &bundle,
+            &milestone_id,
+            &bead,
+            &resolved,
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(planned_elsewhere.len(), 1);
+        assert_eq!(planned_elsewhere[0].id, "ms-alpha.bead-1");
+        assert_eq!(planned_elsewhere[0].title, "Define task-source metadata");
+        assert_eq!(
+            planned_elsewhere[0].relationship,
+            "adjacent same-workstream bead in Creation"
+        );
+        assert_eq!(planned_elsewhere[0].status.as_deref(), Some("unknown"));
+        assert_eq!(
+            planned_elsewhere[0].summary.as_deref(),
+            Some("Define metadata before project creation.")
+        );
     }
 
     #[test]
