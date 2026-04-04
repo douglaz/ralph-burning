@@ -642,7 +642,7 @@ fn build_stage_prompt_with_workspace_template_override() {
     fs::create_dir_all(&ws_templates).expect("create templates dir");
     fs::write(
         ws_templates.join("planning.md"),
-        "CUSTOM PLANNING\n\nRole: {{role_instruction}}\nPrompt: {{project_prompt}}\nSchema: {{json_schema}}",
+        "CUSTOM PLANNING\n\nRole: {{role_instruction}}\nContract: {{task_prompt_contract}}\nPrompt: {{project_prompt}}\nSchema: {{json_schema}}",
     )
     .expect("write override");
 

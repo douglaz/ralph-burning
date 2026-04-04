@@ -1418,6 +1418,34 @@ fn create_project_from_bead_context_rejects_invalid_canonical_prompt_override() 
 }
 
 #[test]
+fn create_project_from_bead_context_allows_generic_override_that_quotes_marker() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let quoted_marker =
+        ralph_burning::contexts::project_run_record::task_prompt_contract::contract_marker();
+
+    let record = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: Some(ProjectId::new("quoted-marker").unwrap()),
+            prompt_override: Some(format!(
+                "# Generic Prompt\n\n## AGENTS / Repo Guidance\n\n```md\n{}\n```",
+                quoted_marker
+            )),
+            created_at: test_timestamp(),
+            context: sample_bead_context(),
+        },
+    )
+    .expect("quoted marker in fenced generic prompt should not trigger canonical validation");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "quoted-marker");
+    assert!(captured.prompt_contents.contains("# Generic Prompt"));
+}
+
+#[test]
 fn list_projects_returns_entries_with_active_flag() {
     let store = FakeProjectStore::with_existing(&["alpha", "beta"]);
     let active_store = FakeActiveProjectStore::with_active("alpha");

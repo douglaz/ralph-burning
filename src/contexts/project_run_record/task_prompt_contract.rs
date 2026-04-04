@@ -82,9 +82,51 @@ fn consumer_guidance_body() -> String {
     out
 }
 
+fn top_level_lines<'a>(prompt: &'a str) -> impl Iterator<Item = &'a str> {
+    let mut active_fence = None;
+    prompt.lines().filter(move |line| {
+        if let Some(opening) = active_fence {
+            if closes_fence(line, opening) {
+                active_fence = None;
+            }
+            return false;
+        }
+
+        if let Some(opening) = opening_fence_delimiter(line) {
+            active_fence = Some(opening);
+            return false;
+        }
+
+        true
+    })
+}
+
+fn has_top_level_contract_marker(prompt: &str) -> bool {
+    let marker = contract_marker();
+    top_level_lines(prompt).any(|line| line.trim_start() == line && line.trim_end() == marker)
+}
+
 /// Return whether the prompt declares the canonical bead task prompt contract.
 pub fn prompt_uses_contract(prompt: &str) -> bool {
-    prompt.lines().any(|line| line.trim() == contract_marker())
+    let marker = contract_marker();
+    let mut saw_marker = false;
+
+    for line in top_level_lines(prompt) {
+        if line.trim_start() == line && line.trim_end() == marker {
+            saw_marker = true;
+            continue;
+        }
+
+        let Some(section_index) = canonical_section_heading_index(line) else {
+            continue;
+        };
+
+        if saw_marker && section_index <= 1 {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Guidance injected into workflow stage prompts when the project prompt uses
@@ -130,7 +172,7 @@ pub fn prompt_review_consumer_guidance_for_prompt(prompt: &str) -> String {
 /// Validate that a prompt preserves the canonical marker and section order.
 pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
-    if !prompt_uses_contract(prompt) {
+    if !has_top_level_contract_marker(prompt) {
         errors.push(format!(
             "missing exact contract marker `{}`",
             contract_marker()
@@ -224,9 +266,33 @@ mod tests {
     #[test]
     fn prompt_detection_requires_exact_marker() {
         assert!(prompt_uses_contract(
-            "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt"
+            "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA"
         ));
         assert!(!prompt_uses_contract("# Ralph Task Prompt\nNo marker"));
+    }
+
+    #[test]
+    fn prompt_detection_allows_title_and_metadata_before_first_canonical_section() {
+        let prompt = format!(
+            "# Ralph Task Prompt\n\n{}\n\n- Contract: `bead_execution_prompt`\n\n## Milestone Summary\n\nA",
+            contract_marker()
+        );
+        assert!(prompt_uses_contract(&prompt));
+    }
+
+    #[test]
+    fn prompt_detection_ignores_marker_inside_fenced_block() {
+        let prompt = format!("# Generic Prompt\n\n```md\n{}\n```", contract_marker());
+        assert!(!prompt_uses_contract(&prompt));
+    }
+
+    #[test]
+    fn prompt_detection_ignores_marker_after_nonblank_preamble() {
+        let prompt = format!(
+            "# Generic Prompt\n\n## AGENTS / Repo Guidance\n\n{}",
+            contract_marker()
+        );
+        assert!(!prompt_uses_contract(&prompt));
     }
 
     #[test]

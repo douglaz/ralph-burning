@@ -403,8 +403,13 @@ Gap Analysis:
 // ── Manifest registry ───────────────────────────────────────────────────────
 
 /// Stage template placeholders (shared by all stage IDs).
-const STAGE_REQUIRED: &[&str] = &["role_instruction", "project_prompt", "json_schema"];
-const STAGE_OPTIONAL: &[&str] = &["task_prompt_contract", "prior_outputs", "remediation"];
+const STAGE_REQUIRED: &[&str] = &[
+    "role_instruction",
+    "task_prompt_contract",
+    "project_prompt",
+    "json_schema",
+];
+const STAGE_OPTIONAL: &[&str] = &["prior_outputs", "remediation"];
 
 /// Return the manifest for a known template ID, or `None` if unrecognized.
 pub fn manifest_for(template_id: &str) -> Option<TemplateManifest> {
@@ -422,26 +427,36 @@ pub fn manifest_for(template_id: &str) -> Option<TemplateManifest> {
     let panel_result = match template_id {
         "prompt_review_refiner" => Some(TemplateManifest {
             template_id: "prompt_review_refiner",
-            required_placeholders: &["role_label", "prompt_text", "json_schema"],
-            optional_placeholders: &["task_prompt_contract", "prior_concerns"],
+            required_placeholders: &[
+                "role_label",
+                "prompt_text",
+                "task_prompt_contract",
+                "json_schema",
+            ],
+            optional_placeholders: &["prior_concerns"],
             built_in_default: PROMPT_REVIEW_REFINER_DEFAULT,
         }),
         "prompt_review_validator" => Some(TemplateManifest {
             template_id: "prompt_review_validator",
-            required_placeholders: &["role_label", "prompt_text", "json_schema"],
-            optional_placeholders: &["task_prompt_contract"],
+            required_placeholders: &[
+                "role_label",
+                "prompt_text",
+                "task_prompt_contract",
+                "json_schema",
+            ],
+            optional_placeholders: &[],
             built_in_default: PROMPT_REVIEW_VALIDATOR_DEFAULT,
         }),
         "completion_panel_completer" => Some(TemplateManifest {
             template_id: "completion_panel_completer",
-            required_placeholders: &["prompt_text", "json_schema"],
-            optional_placeholders: &["task_prompt_contract"],
+            required_placeholders: &["prompt_text", "task_prompt_contract", "json_schema"],
+            optional_placeholders: &[],
             built_in_default: COMPLETION_PANEL_COMPLETER_DEFAULT,
         }),
         "final_review_reviewer" => Some(TemplateManifest {
             template_id: "final_review_reviewer",
-            required_placeholders: &["project_prompt", "json_schema"],
-            optional_placeholders: &["task_prompt_contract"],
+            required_placeholders: &["project_prompt", "task_prompt_contract", "json_schema"],
+            optional_placeholders: &[],
             built_in_default: FINAL_REVIEW_REVIEWER_DEFAULT,
         }),
         "final_review_voter" => Some(TemplateManifest {
@@ -954,6 +969,7 @@ mod tests {
         let m = manifest_for("planning").expect("planning manifest");
         assert_eq!(m.template_id, "planning");
         assert!(m.required_placeholders.contains(&"role_instruction"));
+        assert!(m.required_placeholders.contains(&"task_prompt_contract"));
         assert!(m.required_placeholders.contains(&"json_schema"));
     }
 
@@ -961,8 +977,8 @@ mod tests {
     fn manifest_for_known_panel() {
         let m = manifest_for("completion_panel_completer").expect("completer manifest");
         assert!(m.required_placeholders.contains(&"prompt_text"));
+        assert!(m.required_placeholders.contains(&"task_prompt_contract"));
         assert!(m.required_placeholders.contains(&"json_schema"));
-        assert!(m.optional_placeholders.contains(&"task_prompt_contract"));
     }
 
     #[test]
