@@ -129,6 +129,40 @@ pub trait MilestoneJournalPort {
         }
         Ok(applied)
     }
+
+    /// Atomically persist a snapshot update plus the associated journal ops.
+    ///
+    /// The default implementation preserves the previous write-then-rollback
+    /// behavior. Concrete stores should override this when they can provide a
+    /// crash-safe multi-file commit.
+    fn commit_snapshot_and_journal_ops<S: MilestoneSnapshotPort>(
+        &self,
+        snapshot_store: &S,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        previous_snapshot: &MilestoneSnapshot,
+        next_snapshot: &MilestoneSnapshot,
+        ops: &[JournalWriteOp],
+        error_context: &str,
+    ) -> AppResult<usize> {
+        snapshot_store.write_snapshot(base_dir, milestone_id, next_snapshot)?;
+        match self.commit_journal_ops(base_dir, milestone_id, ops) {
+            Ok(applied) => Ok(applied),
+            Err(append_error) => {
+                if let Err(restore_error) =
+                    snapshot_store.write_snapshot(base_dir, milestone_id, previous_snapshot)
+                {
+                    return Err(AppError::CorruptRecord {
+                        file: format!("milestones/{}/status.json", milestone_id),
+                        details: format!(
+                            "{error_context}: {append_error}; failed to restore the previous snapshot: {restore_error}"
+                        ),
+                    });
+                }
+                Err(append_error)
+            }
+        }
+    }
 }
 
 /// Port for reading and writing task-run lineage.
@@ -424,6 +458,30 @@ fn invalid_transition_error(
     }
 }
 
+fn has_finalized_plan(snapshot: &MilestoneSnapshot) -> bool {
+    snapshot.plan_version > 0 && snapshot.plan_hash.is_some()
+}
+
+fn validate_transition_prerequisites(
+    snapshot: &MilestoneSnapshot,
+    milestone_id: &MilestoneId,
+    to_status: MilestoneStatus,
+) -> AppResult<()> {
+    if matches!(to_status, MilestoneStatus::Ready | MilestoneStatus::Running)
+        && !has_finalized_plan(snapshot)
+    {
+        return Err(AppError::InvalidConfigValue {
+            key: "milestone_transition".to_owned(),
+            value: format!("{} -> {}", snapshot.status, to_status),
+            reason: format!(
+                "milestone '{milestone_id}' cannot move to '{to_status}' before a plan is finalized and exported"
+            ),
+        });
+    }
+
+    Ok(())
+}
+
 fn insert_metadata_u32(metadata: &mut JsonMap<String, JsonValue>, key: &str, value: u32) {
     metadata.insert(key.to_owned(), JsonValue::from(u64::from(value)));
 }
@@ -533,6 +591,7 @@ fn build_lifecycle_transition(
             to_status,
         ));
     }
+    validate_transition_prerequisites(snapshot, milestone_id, to_status)?;
 
     let mut next_snapshot = snapshot.clone();
     next_snapshot.status = to_status;
@@ -632,43 +691,16 @@ fn write_snapshot_with_atomic_transition(
     previous_snapshot: &MilestoneSnapshot,
     transition: LifecycleTransitionCommit,
 ) -> AppResult<()> {
-    snapshot_store.write_snapshot(base_dir, milestone_id, &transition.snapshot)?;
-    match journal_store.commit_journal_ops(
+    journal_store.commit_snapshot_and_journal_ops(
+        snapshot_store,
         base_dir,
         milestone_id,
+        previous_snapshot,
+        &transition.snapshot,
         &[JournalWriteOp::append_if_missing(transition.event)],
-    ) {
-        Ok(_) => Ok(()),
-        Err(append_error) => restore_snapshot_after_journal_failure(
-            snapshot_store,
-            base_dir,
-            milestone_id,
-            previous_snapshot,
-            append_error,
-            "lifecycle journal append failed after snapshot write",
-        ),
-    }
-}
-
-fn restore_snapshot_after_journal_failure(
-    snapshot_store: &impl MilestoneSnapshotPort,
-    base_dir: &Path,
-    milestone_id: &MilestoneId,
-    previous_snapshot: &MilestoneSnapshot,
-    append_error: AppError,
-    context: &str,
-) -> AppResult<()> {
-    if let Err(restore_error) =
-        snapshot_store.write_snapshot(base_dir, milestone_id, previous_snapshot)
-    {
-        return Err(AppError::CorruptRecord {
-            file: format!("milestones/{}/status.json", milestone_id),
-            details: format!(
-                "{context}: {append_error}; failed to restore the previous snapshot: {restore_error}"
-            ),
-        });
-    }
-    Err(append_error)
+        "lifecycle journal append failed after snapshot write",
+    )?;
+    Ok(())
 }
 
 fn commit_snapshot_and_journal_ops(
@@ -681,18 +713,16 @@ fn commit_snapshot_and_journal_ops(
     journal_ops: &[JournalWriteOp],
     error_context: &str,
 ) -> AppResult<()> {
-    snapshot_store.write_snapshot(base_dir, milestone_id, next_snapshot)?;
-    match journal_store.commit_journal_ops(base_dir, milestone_id, journal_ops) {
-        Ok(_) => Ok(()),
-        Err(append_error) => restore_snapshot_after_journal_failure(
-            snapshot_store,
-            base_dir,
-            milestone_id,
-            previous_snapshot,
-            append_error,
-            error_context,
-        ),
-    }
+    journal_store.commit_snapshot_and_journal_ops(
+        snapshot_store,
+        base_dir,
+        milestone_id,
+        previous_snapshot,
+        next_snapshot,
+        journal_ops,
+        error_context,
+    )?;
+    Ok(())
 }
 
 fn reconcile_snapshot_from_lineage(
@@ -1283,6 +1313,10 @@ pub fn record_bead_start(
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
         clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, &mut snapshot)?;
+        // Capture the on-disk snapshot before lineage reconciliation so rollback
+        // restores the exact durable state. Any transient reconcile-only
+        // correction (for example running -> paused with no active bead) is not
+        // itself journaled unless the start mutation commits successfully.
         let previous_snapshot = snapshot.clone();
         let previous_status = previous_snapshot.status;
         reconcile_snapshot_from_lineage(
@@ -1298,6 +1332,7 @@ pub fn record_bead_start(
                 ),
             });
         }
+        validate_transition_prerequisites(&snapshot, milestone_id, MilestoneStatus::Running)?;
         let existing_journal = journal_store.read_journal(base_dir, milestone_id)?;
 
         let started_entry = lineage_store.record_task_run_start(
@@ -1927,6 +1962,54 @@ mod tests {
         }
     }
 
+    fn create_milestone_with_plan(
+        store: &FsMilestoneStore,
+        snapshot_store: &FsMilestoneSnapshotStore,
+        journal_store: &FsMilestoneJournalStore,
+        plan_store: &FsMilestonePlanStore,
+        base: &Path,
+        id: &str,
+        name: &str,
+        now: DateTime<Utc>,
+    ) -> Result<MilestoneRecord, Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let record = create_milestone(
+            store,
+            base,
+            CreateMilestoneInput {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                description: format!("testing {id}"),
+            },
+            now,
+        )?;
+        let mut bundle = sample_bundle(id, name);
+        bundle.acceptance_map[0].covered_by.push("bead-2".to_owned());
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Follow-up feature".to_owned(),
+            description: None,
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec![],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+        persist_plan(
+            snapshot_store,
+            journal_store,
+            plan_store,
+            base,
+            &record.id,
+            &bundle,
+            now + chrono::Duration::milliseconds(1),
+        )?;
+        Ok(record)
+    }
+
     fn setup_pending_lineage_reset_state(
         test_id: &str,
         test_name: &str,
@@ -2118,16 +2201,17 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "status-test".to_owned(),
-                name: "Status Test".to_owned(),
-                description: "testing status".to_owned(),
-            },
+            "status-test",
+            "Status Test",
             now,
         )?;
 
@@ -2155,16 +2239,17 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "invalid-status-transition".to_owned(),
-                name: "Invalid Status Transition".to_owned(),
-                description: "reject direct planning rewinds".to_owned(),
-            },
+            "invalid-status-transition",
+            "Invalid Status Transition",
             now,
         )?;
 
@@ -2188,6 +2273,43 @@ mod tests {
         .expect_err("ready -> planning must be rejected");
         assert!(error.to_string().contains("ready -> planning"));
         assert!(error.to_string().contains("only to: running"));
+        Ok(())
+    }
+
+    #[test]
+    fn update_status_requires_finalized_plan_before_ready() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "ready-without-plan".to_owned(),
+                name: "Ready Without Plan".to_owned(),
+                description: "reject ready transition without plan export".to_owned(),
+            },
+            now,
+        )?;
+
+        let error = update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Ready,
+            now + chrono::Duration::seconds(1),
+        )
+        .expect_err("ready transition without a plan must fail");
+        assert!(error
+            .to_string()
+            .contains("before a plan is finalized and exported"));
         Ok(())
     }
 
@@ -4123,17 +4245,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "bead-track".to_owned(),
-                name: "Bead Tracking".to_owned(),
-                description: "testing bead tracking".to_owned(),
-            },
+            "bead-track",
+            "Bead Tracking",
             now,
         )?;
 
@@ -4206,17 +4329,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "paused-completion-test".to_owned(),
-                name: "Paused Completion Test".to_owned(),
-                description: "preserve paused milestone state during completion repair".to_owned(),
-            },
+            "paused-completion-test",
+            "Paused Completion Test",
             now,
         )?;
 
@@ -4277,17 +4401,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "terminal-start-test".to_owned(),
-                name: "Terminal Start Test".to_owned(),
-                description: "reject starts on terminal milestones".to_owned(),
-            },
+            "terminal-start-test",
+            "Terminal Start Test",
             now,
         )?;
 
@@ -4342,6 +4467,48 @@ mod tests {
         assert!(journal
             .iter()
             .all(|event| event.event_type != MilestoneEventType::BeadStarted));
+        Ok(())
+    }
+
+    #[test]
+    fn bead_start_requires_finalized_plan() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "start-without-plan".to_owned(),
+                name: "Start Without Plan".to_owned(),
+                description: "reject bead starts before plan export".to_owned(),
+            },
+            now,
+        )?;
+
+        let error = record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )
+        .expect_err("bead start without a finalized plan must fail");
+        assert!(error
+            .to_string()
+            .contains("before a plan is finalized and exported"));
+        assert!(read_task_runs(&lineage_store, base, &record.id)?.is_empty());
         Ok(())
     }
 
@@ -4551,17 +4718,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "find-bead-test".to_owned(),
-                name: "Find Bead Test".to_owned(),
-                description: "testing find_runs_for_bead".to_owned(),
-            },
+            "find-bead-test",
+            "Find Bead Test",
             now,
         )?;
 
@@ -4941,17 +5109,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "update-run-test".to_owned(),
-                name: "Update Run Test".to_owned(),
-                description: "testing update_task_run".to_owned(),
-            },
+            "update-run-test",
+            "Update Run Test",
             now,
         )?;
 
@@ -5067,17 +5236,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "completion-plan-conflict-test".to_owned(),
-                name: "Completion Plan Conflict Test".to_owned(),
-                description: "reject conflicting plan hashes during completion".to_owned(),
-            },
+            "completion-plan-conflict-test",
+            "Completion Plan Conflict Test",
             now,
         )?;
 
@@ -5151,17 +5321,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "retry-test".to_owned(),
-                name: "Retry Test".to_owned(),
-                description: "testing multiple retries".to_owned(),
-            },
+            "retry-test",
+            "Retry Test",
             now,
         )?;
 
@@ -5252,18 +5423,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "same-timestamp-retry-state-test".to_owned(),
-                name: "Same Timestamp Retry State Test".to_owned(),
-                description: "same-timestamp retries should keep the newest active attempt visible"
-                    .to_owned(),
-            },
+            "same-timestamp-retry-state-test",
+            "Same Timestamp Retry State Test",
             now,
         )?;
 
@@ -5409,17 +5580,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "skip-test".to_owned(),
-                name: "Skip Test".to_owned(),
-                description: "testing skipped task runs".to_owned(),
-            },
+            "skip-test",
+            "Skip Test",
             now,
         )?;
 
@@ -5480,17 +5652,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "duplicate-finalize-test".to_owned(),
-                name: "Duplicate Finalize Test".to_owned(),
-                description: "testing duplicate completion protection".to_owned(),
-            },
+            "duplicate-finalize-test",
+            "Duplicate Finalize Test",
             now,
         )?;
 
@@ -5555,17 +5728,18 @@ mod tests {
             append_calls: Cell::new(0),
         };
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "completion-retry-test".to_owned(),
-                name: "Completion Retry Test".to_owned(),
-                description: "testing completion repair after journal failure".to_owned(),
-            },
+            "completion-retry-test",
+            "Completion Retry Test",
             now,
         )?;
 
@@ -5684,17 +5858,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "completion-backfill-test".to_owned(),
-                name: "Completion Backfill Test".to_owned(),
-                description: "repair completion journal details on terminal replay".to_owned(),
-            },
+            "completion-backfill-test",
+            "Completion Backfill Test",
             now,
         )?;
 
@@ -5855,17 +6030,18 @@ mod tests {
             append_calls: Cell::new(0),
         };
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "start-retry-test".to_owned(),
-                name: "Start Retry Test".to_owned(),
-                description: "testing idempotent bead starts".to_owned(),
-            },
+            "start-retry-test",
+            "Start Retry Test",
             now,
         )?;
 
@@ -5959,17 +6135,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "start-plan-conflict-test".to_owned(),
-                name: "Start Plan Conflict Test".to_owned(),
-                description: "reject conflicting plan hashes on idempotent start".to_owned(),
-            },
+            "start-plan-conflict-test",
+            "Start Plan Conflict Test",
             now,
         )?;
 
@@ -6024,17 +6201,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "start-reopen-failed-run".to_owned(),
-                name: "Start Reopen Failed Run".to_owned(),
-                description: "reopen a failed attempt when the same run resumes".to_owned(),
-            },
+            "start-reopen-failed-run",
+            "Start Reopen Failed Run",
             now,
         )?;
 
@@ -6102,19 +6280,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "same-bead-cross-project-retry-test".to_owned(),
-                name: "Same Bead Cross Project Retry Test".to_owned(),
-                description:
-                    "starting a retry on the same bead supersedes the older running attempt"
-                        .to_owned(),
-            },
+            "same-bead-cross-project-retry-test",
+            "Same Bead Cross Project Retry Test",
             now,
         )?;
 
@@ -6204,19 +6381,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "same-started-at-named-retry-test".to_owned(),
-                name: "Same Started At Named Retry Test".to_owned(),
-                description:
-                    "distinct named runs should not be blocked by a finalized attempt that shares a timestamp"
-                        .to_owned(),
-            },
+            "same-started-at-named-retry-test",
+            "Same Started At Named Retry Test",
             now,
         )?;
 
@@ -6278,19 +6454,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "same-started-at-start-journal-test".to_owned(),
-                name: "Same Started At Start Journal Test".to_owned(),
-                description:
-                    "distinct named starts at the same timestamp must keep separate journal rows"
-                        .to_owned(),
-            },
+            "same-started-at-start-journal-test",
+            "Same Started At Start Journal Test",
             now,
         )?;
 
@@ -6379,17 +6554,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "concurrent-start-test".to_owned(),
-                name: "Concurrent Start Test".to_owned(),
-                description: "testing concurrent idempotent bead starts".to_owned(),
-            },
+            "concurrent-start-test",
+            "Concurrent Start Test",
             now,
         )?;
 
@@ -6460,17 +6636,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "serialized-mutation-test".to_owned(),
-                name: "Serialized Mutation Test".to_owned(),
-                description: "serialize completion and new start snapshot writes".to_owned(),
-            },
+            "serialized-mutation-test",
+            "Serialized Mutation Test",
             now,
         )?;
 

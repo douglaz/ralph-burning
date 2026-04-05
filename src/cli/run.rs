@@ -724,12 +724,16 @@ mod tests {
     use chrono::Utc;
 
     use crate::adapters::fs::{
-        FsMilestoneJournalStore, FsMilestoneSnapshotStore, FsMilestoneStore, FsTaskRunLineageStore,
+        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
+        FsMilestoneStore, FsTaskRunLineageStore,
+    };
+    use crate::contexts::milestone_record::bundle::{
+        AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
     };
     use crate::contexts::milestone_record::model::TaskRunOutcome;
     use crate::contexts::milestone_record::service::{
-        create_milestone, load_snapshot, read_journal, read_task_runs, record_bead_completion,
-        record_bead_start, CreateMilestoneInput,
+        create_milestone, load_snapshot, persist_plan, read_journal, read_task_runs,
+        record_bead_completion, record_bead_start, CreateMilestoneInput,
     };
     use crate::contexts::project_run_record::model::{
         ActiveRun, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin,
@@ -737,6 +741,85 @@ mod tests {
     };
     use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
     use crate::shared::error::AppError;
+
+    fn sample_bundle(id: &str, name: &str) -> MilestoneBundle {
+        MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: id.to_owned(),
+                name: name.to_owned(),
+            },
+            executive_summary: "CLI sync test plan.".to_owned(),
+            goals: vec!["Keep milestone sync fixtures planned.".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Bead is executable".to_owned(),
+                covered_by: vec!["ms-alpha.bead-2".to_owned(), "ms-alpha.bead-3".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Core".to_owned(),
+                description: None,
+                beads: vec![
+                    BeadProposal {
+                        bead_id: Some("ms-alpha.bead-2".to_owned()),
+                        explicit_id: Some(true),
+                        title: "Primary bead".to_owned(),
+                        description: None,
+                        bead_type: Some("task".to_owned()),
+                        priority: Some(1),
+                        labels: vec![],
+                        depends_on: vec![],
+                        acceptance_criteria: vec!["AC-1".to_owned()],
+                        flow_override: None,
+                    },
+                    BeadProposal {
+                        bead_id: Some("ms-alpha.bead-3".to_owned()),
+                        explicit_id: Some(true),
+                        title: "Follow-up bead".to_owned(),
+                        description: None,
+                        bead_type: Some("task".to_owned()),
+                        priority: Some(1),
+                        labels: vec![],
+                        depends_on: vec![],
+                        acceptance_criteria: vec!["AC-1".to_owned()],
+                        flow_override: None,
+                    },
+                ],
+            }],
+            default_flow: FlowPreset::DocsChange,
+            agents_guidance: None,
+        }
+    }
+
+    fn create_milestone_with_plan(
+        base_dir: &std::path::Path,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::contexts::milestone_record::model::MilestoneRecord {
+        let milestone = create_milestone(
+            &FsMilestoneStore,
+            base_dir,
+            CreateMilestoneInput {
+                id: "ms-alpha".to_owned(),
+                name: "Alpha".to_owned(),
+                description: "Test milestone".to_owned(),
+            },
+            now,
+        )
+        .expect("create milestone");
+        persist_plan(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base_dir,
+            &milestone.id,
+            &sample_bundle("ms-alpha", "Alpha"),
+            now,
+        )
+        .expect("persist milestone plan");
+        milestone
+    }
 
     #[test]
     fn sync_terminal_milestone_task_marks_failed_runs_terminal() {
@@ -754,17 +837,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            now,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, now);
         record_bead_start(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
@@ -842,17 +915,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            now,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, now);
         record_bead_start(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
@@ -932,17 +995,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            now,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, now);
         record_bead_start(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
@@ -1008,17 +1061,7 @@ mod tests {
         let base_dir = temp_dir.path();
         let now = Utc::now();
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            now,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, now);
 
         let project_id = ProjectId::new("bead-run").expect("project id");
         let project_record = ProjectRecord {
@@ -1109,17 +1152,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            now,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, now);
         record_bead_start(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
@@ -1197,17 +1230,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            now,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, now);
 
         let project_id = ProjectId::new("bead-run").expect("project id");
         let project_record = ProjectRecord {
@@ -1274,17 +1297,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            original_started_at,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, original_started_at);
         record_bead_start(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
@@ -1366,17 +1379,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            first_started_at,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, first_started_at);
         std::fs::write(
             base_dir.join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson"),
             format!(
@@ -1467,17 +1470,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            original_started_at,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, original_started_at);
         record_bead_start(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
@@ -1568,17 +1561,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            started_at,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, started_at);
         record_bead_start(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
@@ -1689,17 +1672,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            started_at,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, started_at);
         record_bead_start(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
@@ -1794,17 +1767,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            started_at,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, started_at);
         record_bead_start(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
@@ -1924,17 +1887,7 @@ mod tests {
         )
         .expect("write journal");
 
-        let milestone = create_milestone(
-            &FsMilestoneStore,
-            base_dir,
-            CreateMilestoneInput {
-                id: "ms-alpha".to_owned(),
-                name: "Alpha".to_owned(),
-                description: "Test milestone".to_owned(),
-            },
-            started_at,
-        )
-        .expect("create milestone");
+        let milestone = create_milestone_with_plan(base_dir, started_at);
         record_bead_start(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use nix::fcntl::{Flock, FlockArg};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::contexts::agent_execution::model::RawOutputReference;
@@ -2395,6 +2396,7 @@ const MILESTONE_PLAN_JSON_FILE: &str = "plan.json";
 const MILESTONE_PLAN_MD_FILE: &str = "plan.md";
 const MILESTONE_PLAN_SHAPE_FILE: &str = "plan.shape.json";
 const MILESTONE_TASK_RUNS_FILE: &str = "task-runs.ndjson";
+const MILESTONE_STATE_COMMIT_FILE: &str = ".state-commit.json";
 const MILESTONE_MUTATION_LOCK_FILE: &str = "mutation.lock";
 const MILESTONE_LOCKS_DIR: &str = ".locks";
 
@@ -2437,6 +2439,12 @@ impl AdvisoryFileLock {
             .map_err(|(_, errno)| errno_to_io_error(errno))?;
         Ok(Self { _file: lock })
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingMilestoneStateCommit {
+    snapshot: MilestoneSnapshot,
+    journal: Vec<MilestoneJournalEvent>,
 }
 
 fn errno_to_io_error(errno: nix::errno::Errno) -> AppError {
@@ -2555,6 +2563,50 @@ impl FsMilestoneSnapshotStore {
     fn mutation_lock_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
         FileSystem::milestone_lock_root(base_dir, milestone_id).join(MILESTONE_MUTATION_LOCK_FILE)
     }
+
+    fn pending_state_commit_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_STATE_COMMIT_FILE)
+    }
+
+    fn read_pending_state_commit(
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<Option<PendingMilestoneStateCommit>> {
+        let path = Self::pending_state_commit_path(base_dir, milestone_id);
+        let raw = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let pending = serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+            file: format!("milestones/{}/{}", milestone_id, MILESTONE_STATE_COMMIT_FILE),
+            details: error.to_string(),
+        })?;
+        Ok(Some(pending))
+    }
+
+    fn apply_pending_state_commit(
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        pending: &PendingMilestoneStateCommit,
+    ) -> AppResult<()> {
+        let status_path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_STATUS_FILE);
+        let status_json = serde_json::to_string_pretty(&pending.snapshot)?;
+        FileSystem::write_atomic(&status_path, &status_json)?;
+        FsMilestoneJournalStore::write_journal(
+            &FsMilestoneJournalStore::journal_path(base_dir, milestone_id),
+            &pending.journal,
+        )?;
+        let _ = fs::remove_file(Self::pending_state_commit_path(base_dir, milestone_id));
+        Ok(())
+    }
+
+    fn recover_pending_state_commit(base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<()> {
+        if let Some(pending) = Self::read_pending_state_commit(base_dir, milestone_id)? {
+            Self::apply_pending_state_commit(base_dir, milestone_id, &pending)?;
+        }
+        Ok(())
+    }
 }
 
 impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
@@ -2563,6 +2615,9 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
         base_dir: &Path,
         milestone_id: &MilestoneId,
     ) -> AppResult<MilestoneSnapshot> {
+        if let Some(pending) = Self::read_pending_state_commit(base_dir, milestone_id)? {
+            return Ok(pending.snapshot);
+        }
         let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_STATUS_FILE);
         let raw = fs::read_to_string(&path)?;
         serde_json::from_str(&raw).map_err(|e| AppError::CorruptRecord {
@@ -2592,6 +2647,7 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
         F: FnOnce() -> AppResult<T>,
     {
         let _lock = AdvisoryFileLock::acquire(&Self::mutation_lock_path(base_dir, milestone_id))?;
+        Self::recover_pending_state_commit(base_dir, milestone_id)?;
         operation()
     }
 }
@@ -2932,6 +2988,11 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         base_dir: &Path,
         milestone_id: &MilestoneId,
     ) -> AppResult<Vec<MilestoneJournalEvent>> {
+        if let Some(pending) =
+            FsMilestoneSnapshotStore::read_pending_state_commit(base_dir, milestone_id)?
+        {
+            return Ok(pending.journal);
+        }
         Self::read_journal_from_path(&Self::journal_path(base_dir, milestone_id), milestone_id)
     }
 
@@ -3004,6 +3065,46 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         }
 
         Self::write_journal(&path, &journal)?;
+        Ok(applied)
+    }
+
+    fn commit_snapshot_and_journal_ops<S: MilestoneSnapshotPort>(
+        &self,
+        snapshot_store: &S,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        _previous_snapshot: &MilestoneSnapshot,
+        next_snapshot: &MilestoneSnapshot,
+        ops: &[JournalWriteOp],
+        _error_context: &str,
+    ) -> AppResult<usize> {
+        let path = Self::journal_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&Self::journal_lock_path(base_dir, milestone_id))?;
+        let mut journal = Self::read_journal_from_path(&path, milestone_id)?;
+        let mut applied = 0;
+
+        for op in ops {
+            if Self::apply_journal_write_op(&mut journal, op) {
+                applied += 1;
+            }
+        }
+
+        let pending = PendingMilestoneStateCommit {
+            snapshot: next_snapshot.clone(),
+            journal,
+        };
+        let pending_path =
+            FsMilestoneSnapshotStore::pending_state_commit_path(base_dir, milestone_id);
+        let pending_json = serde_json::to_string_pretty(&pending)?;
+        FileSystem::write_atomic(&pending_path, &pending_json)?;
+        if let Err(error) = snapshot_store.write_snapshot(base_dir, milestone_id, next_snapshot) {
+            let _ = fs::remove_file(&pending_path);
+            return Err(error);
+        }
+        if let Err(error) = Self::write_journal(&path, &pending.journal) {
+            return Err(error);
+        }
+        let _ = fs::remove_file(&pending_path);
         Ok(applied)
     }
 }
@@ -4573,6 +4674,141 @@ mod tests {
         assert_eq!(repaired[0].event_type, exact_event.event_type);
         assert_eq!(repaired[0].bead_id, exact_event.bead_id);
         assert_eq!(repaired[0].details, exact_event.details);
+    }
+
+    #[test]
+    fn milestone_pending_state_commit_overlays_snapshot_and_journal_reads() {
+        use crate::contexts::milestone_record::model::{MilestoneId, MilestoneSnapshot, MilestoneStatus};
+        use chrono::{Duration, TimeZone, Utc};
+
+        let temp = tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("pending-read-test").expect("milestone id");
+        let milestone_root = FileSystem::milestone_root(temp.path(), &milestone_id);
+        std::fs::create_dir_all(&milestone_root).expect("create milestone root");
+
+        let current_snapshot = MilestoneSnapshot::initial(
+            Utc.with_ymd_and_hms(2026, 4, 5, 0, 0, 0).unwrap(),
+        );
+        let current_snapshot_json =
+            serde_json::to_string_pretty(&current_snapshot).expect("serialize current snapshot");
+        std::fs::write(milestone_root.join(MILESTONE_STATUS_FILE), current_snapshot_json)
+            .expect("write current snapshot");
+
+        let current_event = MilestoneJournalEvent::new(
+            MilestoneEventType::PlanDrafted,
+            Utc.with_ymd_and_hms(2026, 4, 5, 0, 0, 0).unwrap(),
+        );
+        FsMilestoneJournalStore::write_journal(
+            &milestone_root.join(MILESTONE_JOURNAL_FILE),
+            &[current_event],
+        )
+        .expect("write current journal");
+
+        let mut next_snapshot = current_snapshot.clone();
+        next_snapshot.status = MilestoneStatus::Ready;
+        next_snapshot.plan_hash = Some("plan-v1".to_owned());
+        next_snapshot.plan_version = 1;
+        next_snapshot.updated_at += Duration::seconds(5);
+        let next_event = MilestoneJournalEvent::lifecycle_transition(
+            next_snapshot.updated_at,
+            MilestoneStatus::Planning,
+            MilestoneStatus::Ready,
+            "system",
+            "plan finalized and beads exported",
+            serde_json::Map::new(),
+        );
+        let pending = PendingMilestoneStateCommit {
+            snapshot: next_snapshot.clone(),
+            journal: vec![next_event.clone()],
+        };
+        let pending_json =
+            serde_json::to_string_pretty(&pending).expect("serialize pending milestone state");
+        std::fs::write(
+            milestone_root.join(MILESTONE_STATE_COMMIT_FILE),
+            pending_json,
+        )
+        .expect("write pending state commit");
+
+        let snapshot = FsMilestoneSnapshotStore
+            .read_snapshot(temp.path(), &milestone_id)
+            .expect("read pending snapshot");
+        assert_eq!(snapshot, next_snapshot);
+
+        let journal = FsMilestoneJournalStore
+            .read_journal(temp.path(), &milestone_id)
+            .expect("read pending journal");
+        assert_eq!(journal, vec![next_event]);
+    }
+
+    #[test]
+    fn milestone_write_lock_recovers_pending_state_commit() {
+        use crate::contexts::milestone_record::model::{MilestoneId, MilestoneSnapshot, MilestoneStatus};
+        use chrono::{Duration, TimeZone, Utc};
+
+        let temp = tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("pending-recover-test").expect("milestone id");
+        let milestone_root = FileSystem::milestone_root(temp.path(), &milestone_id);
+        std::fs::create_dir_all(&milestone_root).expect("create milestone root");
+
+        let current_snapshot = MilestoneSnapshot::initial(
+            Utc.with_ymd_and_hms(2026, 4, 5, 1, 0, 0).unwrap(),
+        );
+        std::fs::write(
+            milestone_root.join(MILESTONE_STATUS_FILE),
+            serde_json::to_string_pretty(&current_snapshot).expect("serialize current snapshot"),
+        )
+        .expect("write current snapshot");
+        FsMilestoneJournalStore::write_journal(
+            &milestone_root.join(MILESTONE_JOURNAL_FILE),
+            &[MilestoneJournalEvent::new(
+                MilestoneEventType::PlanDrafted,
+                current_snapshot.updated_at,
+            )],
+        )
+        .expect("write current journal");
+
+        let mut recovered_snapshot = current_snapshot.clone();
+        recovered_snapshot.status = MilestoneStatus::Running;
+        recovered_snapshot.plan_hash = Some("plan-v2".to_owned());
+        recovered_snapshot.plan_version = 2;
+        recovered_snapshot.active_bead = Some("bead-1".to_owned());
+        recovered_snapshot.updated_at += Duration::seconds(5);
+        let recovered_event = MilestoneJournalEvent::lifecycle_transition(
+            recovered_snapshot.updated_at,
+            MilestoneStatus::Paused,
+            MilestoneStatus::Running,
+            "controller",
+            "execution resumed",
+            serde_json::Map::new(),
+        );
+        let pending = PendingMilestoneStateCommit {
+            snapshot: recovered_snapshot.clone(),
+            journal: vec![recovered_event.clone()],
+        };
+        std::fs::write(
+            milestone_root.join(MILESTONE_STATE_COMMIT_FILE),
+            serde_json::to_string_pretty(&pending).expect("serialize pending state"),
+        )
+        .expect("write pending state");
+
+        FsMilestoneSnapshotStore
+            .with_milestone_write_lock(temp.path(), &milestone_id, || Ok(()))
+            .expect("recover pending state under lock");
+
+        assert!(
+            !milestone_root.join(MILESTONE_STATE_COMMIT_FILE).exists(),
+            "recovery should clear the pending state sidecar"
+        );
+
+        let snapshot = FsMilestoneSnapshotStore
+            .read_snapshot(temp.path(), &milestone_id)
+            .expect("read recovered snapshot");
+        assert_eq!(snapshot, recovered_snapshot);
+
+        let journal = FsMilestoneJournalStore
+            .read_journal(temp.path(), &milestone_id)
+            .expect("read recovered journal");
+        assert_eq!(journal, vec![recovered_event]);
     }
 
     #[test]

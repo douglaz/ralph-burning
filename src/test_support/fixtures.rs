@@ -676,7 +676,7 @@ impl MilestoneFixtureBuilder {
         }
 
         snapshot = load_snapshot(&snapshot_store, base_dir, &milestone_id)?;
-        if snapshot.status != self.status {
+        if snapshot.status != self.status && snapshot.status.allows_transition_to(self.status) {
             snapshot = update_status(
                 &snapshot_store,
                 &journal_store,
