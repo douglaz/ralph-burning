@@ -101,6 +101,34 @@ pub trait MilestoneJournalPort {
     ) -> AppResult<bool> {
         self.append_event_if_missing(base_dir, milestone_id, event)
     }
+
+    /// Atomically apply a sequence of journal mutations for a single milestone.
+    ///
+    /// The default implementation preserves legacy behavior for non-filesystem
+    /// fakes, but concrete stores should override this when they can provide a
+    /// single durable commit for the whole mutation set.
+    fn commit_journal_ops(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        ops: &[JournalWriteOp],
+    ) -> AppResult<usize> {
+        let mut applied = 0;
+        for op in ops {
+            let changed = match op.kind {
+                JournalWriteOpKind::AppendIfMissing => {
+                    self.append_event_if_missing(base_dir, milestone_id, &op.event)?
+                }
+                JournalWriteOpKind::RepairCompletion => {
+                    self.repair_completion_event(base_dir, milestone_id, &op.event)?
+                }
+            };
+            if changed {
+                applied += 1;
+            }
+        }
+        Ok(applied)
+    }
 }
 
 /// Port for reading and writing task-run lineage.
@@ -340,6 +368,34 @@ struct LifecycleTransitionCommit {
     event: MilestoneJournalEvent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JournalWriteOpKind {
+    AppendIfMissing,
+    RepairCompletion,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JournalWriteOp {
+    pub event: MilestoneJournalEvent,
+    pub kind: JournalWriteOpKind,
+}
+
+impl JournalWriteOp {
+    fn append_if_missing(event: MilestoneJournalEvent) -> Self {
+        Self {
+            event,
+            kind: JournalWriteOpKind::AppendIfMissing,
+        }
+    }
+
+    fn repair_completion(event: MilestoneJournalEvent) -> Self {
+        Self {
+            event,
+            kind: JournalWriteOpKind::RepairCompletion,
+        }
+    }
+}
+
 fn format_allowed_transition_targets(status: MilestoneStatus) -> String {
     let targets = status
         .allowed_transition_targets()
@@ -551,9 +607,6 @@ fn build_reconciled_transition_events(
             ),
         ]);
     }
-    if previous_status == MilestoneStatus::Running && snapshot.status == MilestoneStatus::Ready {
-        return Ok(Vec::new());
-    }
     if !previous_status.allows_transition_to(snapshot.status) {
         return Err(invalid_transition_error(
             milestone_id,
@@ -580,7 +633,11 @@ fn write_snapshot_with_atomic_transition(
     transition: LifecycleTransitionCommit,
 ) -> AppResult<()> {
     snapshot_store.write_snapshot(base_dir, milestone_id, &transition.snapshot)?;
-    match journal_store.append_event_if_missing(base_dir, milestone_id, &transition.event) {
+    match journal_store.commit_journal_ops(
+        base_dir,
+        milestone_id,
+        &[JournalWriteOp::append_if_missing(transition.event)],
+    ) {
         Ok(_) => Ok(()),
         Err(append_error) => restore_snapshot_after_journal_failure(
             snapshot_store,
@@ -612,6 +669,30 @@ fn restore_snapshot_after_journal_failure(
         });
     }
     Err(append_error)
+}
+
+fn commit_snapshot_and_journal_ops(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    previous_snapshot: &MilestoneSnapshot,
+    next_snapshot: &MilestoneSnapshot,
+    journal_ops: &[JournalWriteOp],
+    error_context: &str,
+) -> AppResult<()> {
+    snapshot_store.write_snapshot(base_dir, milestone_id, next_snapshot)?;
+    match journal_store.commit_journal_ops(base_dir, milestone_id, journal_ops) {
+        Ok(_) => Ok(()),
+        Err(append_error) => restore_snapshot_after_journal_failure(
+            snapshot_store,
+            base_dir,
+            milestone_id,
+            previous_snapshot,
+            append_error,
+            error_context,
+        ),
+    }
 }
 
 fn reconcile_snapshot_from_lineage(
@@ -676,6 +757,9 @@ fn reconcile_snapshot_from_lineage(
         && snapshot.progress.failed_beads == 0
     {
         snapshot.status = MilestoneStatus::Completed;
+        snapshot.active_bead = None;
+    } else if has_any_task_runs && snapshot.status == MilestoneStatus::Running {
+        snapshot.status = MilestoneStatus::Paused;
         snapshot.active_bead = None;
     } else if has_any_task_runs && !snapshot.status.is_terminal() {
         snapshot.status = MilestoneStatus::Ready;
@@ -789,10 +873,7 @@ pub fn materialize_bundle(
 
     snapshot_store.with_milestone_write_lock(base_dir, &milestone_id, || {
         let mut snapshot = snapshot_store.read_snapshot(base_dir, &milestone_id)?;
-        if matches!(
-            snapshot.status,
-            MilestoneStatus::Running | MilestoneStatus::Paused
-        ) {
+        if snapshot.status == MilestoneStatus::Running {
             return Err(AppError::InvalidConfigValue {
                 key: "milestone_status".to_owned(),
                 value: snapshot.status.to_string(),
@@ -835,7 +916,7 @@ pub fn materialize_bundle(
             &bundle.executive_summary,
         )?;
 
-        if snapshot.status != MilestoneStatus::Ready {
+        if snapshot.status == MilestoneStatus::Planning {
             update_status_locked(
                 snapshot_store,
                 journal_store,
@@ -1202,6 +1283,8 @@ pub fn record_bead_start(
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
         clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, &mut snapshot)?;
+        let previous_snapshot = snapshot.clone();
+        let previous_status = previous_snapshot.status;
         reconcile_snapshot_from_lineage(
             &mut snapshot,
             milestone_id,
@@ -1215,8 +1298,6 @@ pub fn record_bead_start(
                 ),
             });
         }
-        let previous_snapshot = snapshot.clone();
-        let previous_status = snapshot.status;
         let existing_journal = journal_store.read_journal(base_dir, milestone_id)?;
 
         let started_entry = lineage_store.record_task_run_start(
@@ -1236,26 +1317,11 @@ pub fn record_bead_start(
         )?;
         snapshot.updated_at = snapshot.updated_at.max(now).max(started_entry.started_at);
         validate_snapshot(&snapshot, milestone_id)?;
-        snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
-
         let bead_event =
             MilestoneJournalEvent::new(MilestoneEventType::BeadStarted, started_entry.started_at)
                 .with_bead(bead_id)
                 .with_details(started_entry.start_journal_details());
-        if let Err(append_error) =
-            journal_store.append_event_if_missing(base_dir, milestone_id, &bead_event)
-        {
-            return restore_snapshot_after_journal_failure(
-                snapshot_store,
-                base_dir,
-                milestone_id,
-                &previous_snapshot,
-                append_error,
-                "bead start journal append failed after snapshot write",
-            );
-        }
-
-        for transition_event in build_reconciled_transition_events(
+        let mut journal_ops: Vec<_> = build_reconciled_transition_events(
             milestone_id,
             previous_status,
             &snapshot,
@@ -1267,20 +1333,22 @@ pub fn record_bead_start(
             } else {
                 "execution started"
             },
-        )? {
-            if let Err(append_error) =
-                journal_store.append_event_if_missing(base_dir, milestone_id, &transition_event)
-            {
-                return restore_snapshot_after_journal_failure(
-                    snapshot_store,
-                    base_dir,
-                    milestone_id,
-                    &previous_snapshot,
-                    append_error,
-                    "lifecycle journal append failed after bead start snapshot write",
-                );
-            }
-        }
+        )?
+        .into_iter()
+        .map(JournalWriteOp::append_if_missing)
+        .collect();
+        journal_ops.push(JournalWriteOp::append_if_missing(bead_event));
+
+        commit_snapshot_and_journal_ops(
+            snapshot_store,
+            journal_store,
+            base_dir,
+            milestone_id,
+            &previous_snapshot,
+            &snapshot,
+            &journal_ops,
+            "milestone journal commit failed after bead start snapshot write",
+        )?;
 
         Ok(())
     })
@@ -1408,28 +1476,13 @@ pub fn update_task_run(
         let event_timestamp = finalized_run.finished_at.unwrap_or(finished_at);
         snapshot.updated_at = snapshot.updated_at.max(finished_at).max(event_timestamp);
         validate_snapshot(&snapshot, milestone_id)?;
-        snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
-
         let bead_event = MilestoneJournalEvent::new(
             event_type_for_outcome(finalized_run.outcome),
             event_timestamp,
         )
         .with_bead(&finalized_run.bead_id)
         .with_details(finalized_run.completion_journal_details());
-        if let Err(append_error) =
-            journal_store.append_event_if_missing(base_dir, milestone_id, &bead_event)
-        {
-            return restore_snapshot_after_journal_failure(
-                snapshot_store,
-                base_dir,
-                milestone_id,
-                &previous_snapshot,
-                append_error,
-                "bead completion journal append failed after snapshot write",
-            );
-        }
-
-        for transition_event in build_reconciled_transition_events(
+        let mut journal_ops: Vec<_> = build_reconciled_transition_events(
             milestone_id,
             previous_status,
             &snapshot,
@@ -1441,23 +1494,25 @@ pub fn update_task_run(
                 MilestoneStatus::Paused => "execution paused",
                 MilestoneStatus::Failed => "unrecoverable error requires operator intervention",
                 MilestoneStatus::Running => "execution continued",
-                MilestoneStatus::Ready => "plan finalized and beads exported",
+                MilestoneStatus::Ready => "milestone ready for execution",
                 MilestoneStatus::Planning => "planning resumed",
             },
-        )? {
-            if let Err(append_error) =
-                journal_store.append_event_if_missing(base_dir, milestone_id, &transition_event)
-            {
-                return restore_snapshot_after_journal_failure(
-                    snapshot_store,
-                    base_dir,
-                    milestone_id,
-                    &previous_snapshot,
-                    append_error,
-                    "lifecycle journal append failed after bead completion snapshot write",
-                );
-            }
-        }
+        )?
+        .into_iter()
+        .map(JournalWriteOp::append_if_missing)
+        .collect();
+        journal_ops.push(JournalWriteOp::append_if_missing(bead_event));
+
+        commit_snapshot_and_journal_ops(
+            snapshot_store,
+            journal_store,
+            base_dir,
+            milestone_id,
+            &previous_snapshot,
+            &snapshot,
+            &journal_ops,
+            "milestone journal commit failed after bead completion snapshot write",
+        )?;
 
         Ok(())
     })
@@ -1520,28 +1575,13 @@ pub fn repair_task_run(
         let event_timestamp = repaired_run.finished_at.unwrap_or(finished_at);
         snapshot.updated_at = snapshot.updated_at.max(finished_at).max(event_timestamp);
         validate_snapshot(&snapshot, milestone_id)?;
-        snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
-
         let bead_event = MilestoneJournalEvent::new(
             event_type_for_outcome(repaired_run.outcome),
             event_timestamp,
         )
         .with_bead(&repaired_run.bead_id)
         .with_details(repaired_run.completion_journal_details());
-        if let Err(append_error) =
-            journal_store.repair_completion_event(base_dir, milestone_id, &bead_event)
-        {
-            return restore_snapshot_after_journal_failure(
-                snapshot_store,
-                base_dir,
-                milestone_id,
-                &previous_snapshot,
-                append_error,
-                "bead repair journal append failed after snapshot write",
-            );
-        }
-
-        for transition_event in build_reconciled_transition_events(
+        let mut journal_ops: Vec<_> = build_reconciled_transition_events(
             milestone_id,
             previous_status,
             &snapshot,
@@ -1553,23 +1593,25 @@ pub fn repair_task_run(
                 MilestoneStatus::Paused => "execution paused",
                 MilestoneStatus::Failed => "unrecoverable error requires operator intervention",
                 MilestoneStatus::Running => "execution continued",
-                MilestoneStatus::Ready => "plan finalized and beads exported",
+                MilestoneStatus::Ready => "milestone ready for execution",
                 MilestoneStatus::Planning => "planning resumed",
             },
-        )? {
-            if let Err(append_error) =
-                journal_store.append_event_if_missing(base_dir, milestone_id, &transition_event)
-            {
-                return restore_snapshot_after_journal_failure(
-                    snapshot_store,
-                    base_dir,
-                    milestone_id,
-                    &previous_snapshot,
-                    append_error,
-                    "lifecycle journal append failed after bead repair snapshot write",
-                );
-            }
-        }
+        )?
+        .into_iter()
+        .map(JournalWriteOp::append_if_missing)
+        .collect();
+        journal_ops.push(JournalWriteOp::repair_completion(bead_event));
+
+        commit_snapshot_and_journal_ops(
+            snapshot_store,
+            journal_store,
+            base_dir,
+            milestone_id,
+            &previous_snapshot,
+            &snapshot,
+            &journal_ops,
+            "milestone journal commit failed after bead repair snapshot write",
+        )?;
 
         Ok(())
     })
@@ -1773,7 +1815,7 @@ mod tests {
             milestone_id: &MilestoneId,
             snapshot: &MilestoneSnapshot,
         ) -> AppResult<()> {
-            if snapshot.status == MilestoneStatus::Ready && snapshot.active_bead.is_none() {
+            if snapshot.status != MilestoneStatus::Running && snapshot.active_bead.is_none() {
                 if let Some(entered_tx) = self.entered_tx.lock().expect("lock entered_tx").take() {
                     entered_tx.send(()).expect("signal blocked snapshot write");
                 }
@@ -2105,6 +2147,51 @@ mod tests {
     }
 
     #[test]
+    fn update_status_rejects_invalid_transition_with_allowed_targets(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "invalid-status-transition".to_owned(),
+                name: "Invalid Status Transition".to_owned(),
+                description: "reject direct planning rewinds".to_owned(),
+            },
+            now,
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Ready,
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        let error = update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Planning,
+            now + chrono::Duration::seconds(2),
+        )
+        .expect_err("ready -> planning must be rejected");
+        assert!(error.to_string().contains("ready -> planning"));
+        assert!(error.to_string().contains("only to: running"));
+        Ok(())
+    }
+
+    #[test]
     fn persist_plan_updates_snapshot() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -2215,15 +2302,6 @@ mod tests {
         )?;
         assert_eq!(initial.description, "Test plan.");
 
-        update_status(
-            &snapshot_store,
-            &journal_store,
-            base,
-            &initial.id,
-            MilestoneStatus::Planning,
-            now + chrono::Duration::seconds(1),
-        )?;
-
         let mut updated_bundle = bundle.clone();
         updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
         let refreshed = materialize_bundle(
@@ -2233,7 +2311,7 @@ mod tests {
             &plan_store,
             base,
             &updated_bundle,
-            now + chrono::Duration::seconds(2),
+            now + chrono::Duration::seconds(1),
         )?;
 
         assert_eq!(refreshed.description, "Updated milestone summary.");
@@ -2390,15 +2468,6 @@ mod tests {
         )?;
         assert_eq!(initial.description, "Test plan.");
 
-        update_status(
-            &snapshot_store,
-            &journal_store,
-            base,
-            &initial.id,
-            MilestoneStatus::Planning,
-            now + chrono::Duration::seconds(1),
-        )?;
-
         let mut updated_bundle = bundle.clone();
         updated_bundle.executive_summary = "Retried summary repair.".to_owned();
         let error = materialize_bundle(
@@ -2408,7 +2477,7 @@ mod tests {
             &plan_store,
             base,
             &updated_bundle,
-            now + chrono::Duration::seconds(2),
+            now + chrono::Duration::seconds(1),
         )
         .expect_err("first rematerialize should fail during milestone.toml rewrite");
         assert!(error
@@ -2692,7 +2761,7 @@ mod tests {
         )?;
 
         let snapshot_after = load_snapshot(&snapshot_store, base, &record.id)?;
-        assert_eq!(snapshot_after.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot_after.status, MilestoneStatus::Paused);
         assert_eq!(snapshot_after.progress.total_beads, 3);
         assert_eq!(snapshot_after.progress.completed_beads, 1);
         assert_eq!(snapshot_after.progress.failed_beads, 1);
@@ -3060,7 +3129,7 @@ mod tests {
         )?;
 
         let snapshot_after = load_snapshot(&snapshot_store, base, &record.id)?;
-        assert_eq!(snapshot_after.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot_after.status, MilestoneStatus::Paused);
         assert_eq!(snapshot_after.progress.total_beads, 1);
         assert_eq!(snapshot_after.progress.completed_beads, 0);
         assert_eq!(snapshot_after.progress.failed_beads, 0);
@@ -4106,7 +4175,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
@@ -4273,6 +4342,61 @@ mod tests {
         assert!(journal
             .iter()
             .all(|event| event.event_type != MilestoneEventType::BeadStarted));
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_preserves_terminal_status() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("terminal-materialize", "Terminal Materialize");
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(1),
+        )?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Completed,
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let refreshed = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Completed);
+        assert_eq!(refreshed.id, record.id);
         Ok(())
     }
 
@@ -4866,7 +4990,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
@@ -5112,7 +5236,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
         assert_eq!(snapshot.progress.failed_beads, 0);
@@ -5331,7 +5455,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.failed_beads, 0);
         assert_eq!(snapshot.progress.skipped_beads, 1);
@@ -5481,6 +5605,11 @@ mod tests {
         let runs_after_failure = read_task_runs(&lineage_store, base, &record.id)?;
         assert_eq!(runs_after_failure.len(), 1);
         assert_eq!(runs_after_failure[0].outcome, TaskRunOutcome::Succeeded);
+        let journal_after_failure = read_journal(&journal_store, base, &record.id)?;
+        assert!(journal_after_failure.iter().all(|event| {
+            event.event_type != MilestoneEventType::BeadCompleted
+                && event.to_state != Some(MilestoneStatus::Paused)
+        }));
 
         let snapshot_after_failure = load_snapshot(&snapshot_store, base, &record.id)?;
         snapshot_after_failure
@@ -5518,7 +5647,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
         assert_eq!(snapshot.updated_at, repaired_updated_at);
@@ -5760,6 +5889,10 @@ mod tests {
         let runs_after_failure = read_task_runs(&lineage_store, base, &record.id)?;
         assert_eq!(runs_after_failure.len(), 1);
         assert_eq!(runs_after_failure[0].outcome, TaskRunOutcome::Running);
+        let journal_after_failure = read_journal(&journal_store, base, &record.id)?;
+        assert!(journal_after_failure
+            .iter()
+            .all(|event| event.event_type != MilestoneEventType::BeadStarted));
 
         record_bead_start(
             &snapshot_store,
@@ -6054,7 +6187,7 @@ mod tests {
         final_snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(final_snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(final_snapshot.status, MilestoneStatus::Paused);
         assert_eq!(final_snapshot.active_bead, None);
         assert_eq!(final_snapshot.progress.in_progress_beads, 0);
         assert_eq!(final_snapshot.progress.completed_beads, 1);
@@ -6536,7 +6669,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);

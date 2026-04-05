@@ -85,24 +85,21 @@ impl MilestoneStatus {
         matches!(
             (self, next),
             (Self::Planning, Self::Ready)
-                | (Self::Ready, Self::Planning)
                 | (Self::Ready, Self::Running)
                 | (Self::Running, Self::Paused)
                 | (Self::Running, Self::Completed)
                 | (Self::Running, Self::Failed)
                 | (Self::Paused, Self::Running)
-                | (Self::Completed, Self::Ready)
-                | (Self::Failed, Self::Ready)
         )
     }
 
     pub fn allowed_transition_targets(self) -> &'static [Self] {
         match self {
             Self::Planning => &[Self::Ready],
-            Self::Ready => &[Self::Planning, Self::Running],
+            Self::Ready => &[Self::Running],
             Self::Running => &[Self::Paused, Self::Completed, Self::Failed],
             Self::Paused => &[Self::Running],
-            Self::Completed | Self::Failed => &[Self::Ready],
+            Self::Completed | Self::Failed => &[],
         }
     }
 }

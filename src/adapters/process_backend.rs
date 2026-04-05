@@ -1640,9 +1640,7 @@ pub(crate) fn processed_contract_schema_value(
 
 fn unwrap_claude_structured_output_payload(value: serde_json::Value) -> serde_json::Value {
     match value {
-        serde_json::Value::Object(mut map)
-            if map.len() == 1 && map.contains_key("data") =>
-        {
+        serde_json::Value::Object(mut map) if map.len() == 1 && map.contains_key("data") => {
             map.remove("data").unwrap_or(serde_json::Value::Object(map))
         }
         serde_json::Value::Object(mut map)

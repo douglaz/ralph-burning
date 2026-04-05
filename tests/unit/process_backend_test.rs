@@ -1770,9 +1770,9 @@ async fn stdin_payload_includes_contract_role_prompt_context_and_schema() {
     );
     let stdin_schema = parse_schema_from_stdin(&stdin_text);
     assert_eq!(
-        stdin_schema.pointer("/properties/__rb_wrapped/const"),
-        Some(&serde_json::json!(true)),
-        "Claude stdin schema should include the wrapper sentinel"
+        stdin_schema.pointer("/properties/__rb_wrapped"),
+        None,
+        "Claude stdin schema should not include the legacy wrapper sentinel"
     );
     assert!(
         stdin_schema.pointer("/properties/data").is_some(),

@@ -28,8 +28,8 @@ use crate::contexts::milestone_record::model::{
     StartJournalDetails, TaskRunEntry, TaskRunOutcome,
 };
 use crate::contexts::milestone_record::service::{
-    MilestoneJournalPort, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
-    TaskRunLineagePort,
+    JournalWriteOp, JournalWriteOpKind, MilestoneJournalPort, MilestonePlanPort,
+    MilestoneSnapshotPort, MilestoneStorePort, TaskRunLineagePort,
 };
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
@@ -2847,6 +2847,83 @@ impl FsMilestoneJournalStore {
         repaired.details = Some(merged_details.render());
         Some(repaired)
     }
+
+    fn apply_append_if_missing(
+        journal: &mut Vec<MilestoneJournalEvent>,
+        event: &MilestoneJournalEvent,
+    ) -> bool {
+        if journal
+            .iter()
+            .any(|existing| Self::matches_event(existing, event))
+        {
+            return false;
+        }
+
+        if let Some((existing_index, repaired_event)) =
+            journal.iter().enumerate().find_map(|(index, existing)| {
+                Self::repairable_start_event(existing, event)
+                    .or_else(|| Self::repairable_completion_event(existing, event))
+                    .map(|repaired| (index, repaired))
+            })
+        {
+            if journal[existing_index].details == repaired_event.details {
+                return false;
+            }
+
+            journal[existing_index] = repaired_event;
+            return true;
+        }
+
+        journal.push(event.clone());
+        true
+    }
+
+    fn apply_repair_completion(
+        journal: &mut Vec<MilestoneJournalEvent>,
+        event: &MilestoneJournalEvent,
+    ) -> bool {
+        let exact_match_index = journal
+            .iter()
+            .position(|existing| Self::matches_event(existing, event));
+
+        if let Some((existing_index, repaired_event)) =
+            journal.iter().enumerate().find_map(|(index, existing)| {
+                if Self::matches_event(existing, event) {
+                    return None;
+                }
+                Self::explicitly_repaired_completion_event(existing, event)
+                    .map(|repaired| (index, repaired))
+            })
+        {
+            if exact_match_index.is_some() {
+                journal.remove(existing_index);
+            } else {
+                journal[existing_index] = repaired_event;
+            }
+            return true;
+        }
+
+        if exact_match_index.is_some() {
+            return false;
+        }
+
+        journal.push(event.clone());
+        true
+    }
+
+    fn apply_journal_write_op(
+        journal: &mut Vec<MilestoneJournalEvent>,
+        op: &JournalWriteOp,
+    ) -> bool {
+        match op.kind {
+            JournalWriteOpKind::AppendIfMissing => {
+                Self::apply_append_if_missing(journal, &op.event)
+            }
+            JournalWriteOpKind::RepairCompletion => {
+                Self::apply_repair_completion(journal, &op.event)
+            }
+        }
+    }
 }
 
 impl MilestoneJournalPort for FsMilestoneJournalStore {
@@ -2878,31 +2955,10 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         let path = Self::journal_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::journal_lock_path(base_dir, milestone_id))?;
         let mut journal = Self::read_journal_from_path(&path, milestone_id)?;
-        if journal
-            .iter()
-            .any(|existing| Self::matches_event(existing, event))
-        {
+        if !Self::apply_append_if_missing(&mut journal, event) {
             return Ok(false);
         }
-
-        if let Some((existing_index, repaired_event)) =
-            journal.iter().enumerate().find_map(|(index, existing)| {
-                Self::repairable_start_event(existing, event)
-                    .or_else(|| Self::repairable_completion_event(existing, event))
-                    .map(|repaired| (index, repaired))
-            })
-        {
-            if journal[existing_index].details == repaired_event.details {
-                return Ok(false);
-            }
-
-            journal[existing_index] = repaired_event;
-            Self::write_journal(&path, &journal)?;
-            return Ok(true);
-        }
-
-        let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-        FileSystem::append_line(&path, &line)?;
+        Self::write_journal(&path, &journal)?;
         Ok(true)
     }
 
@@ -2915,35 +2971,40 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         let path = Self::journal_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::journal_lock_path(base_dir, milestone_id))?;
         let mut journal = Self::read_journal_from_path(&path, milestone_id)?;
-        let exact_match_index = journal
-            .iter()
-            .position(|existing| Self::matches_event(existing, event));
-
-        if let Some((existing_index, repaired_event)) =
-            journal.iter().enumerate().find_map(|(index, existing)| {
-                if Self::matches_event(existing, event) {
-                    return None;
-                }
-                Self::explicitly_repaired_completion_event(existing, event)
-                    .map(|repaired| (index, repaired))
-            })
-        {
-            if exact_match_index.is_some() {
-                journal.remove(existing_index);
-            } else {
-                journal[existing_index] = repaired_event;
-            }
-            Self::write_journal(&path, &journal)?;
-            return Ok(true);
-        }
-
-        if exact_match_index.is_some() {
+        if !Self::apply_repair_completion(&mut journal, event) {
             return Ok(false);
         }
-
-        let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-        FileSystem::append_line(&path, &line)?;
+        Self::write_journal(&path, &journal)?;
         Ok(true)
+    }
+
+    fn commit_journal_ops(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        ops: &[JournalWriteOp],
+    ) -> AppResult<usize> {
+        if ops.is_empty() {
+            return Ok(0);
+        }
+
+        let path = Self::journal_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&Self::journal_lock_path(base_dir, milestone_id))?;
+        let mut journal = Self::read_journal_from_path(&path, milestone_id)?;
+        let mut applied = 0;
+
+        for op in ops {
+            if Self::apply_journal_write_op(&mut journal, op) {
+                applied += 1;
+            }
+        }
+
+        if applied == 0 {
+            return Ok(0);
+        }
+
+        Self::write_journal(&path, &journal)?;
+        Ok(applied)
     }
 }
 
