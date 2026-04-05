@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260405042156-final_review-aggregate-c1-a1-cr13-artifact",
+  "payload_id": "run-20260405042156-final_review-aggregate-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T13:36:30.187937694Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 13/20\n\n## Accepted\n\n- `fr-13-40ea497d`\n\n## Rejected\n\n- `fr-13-2890d3b9`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-13-40ea497d`\n\nFix paused-terminal reconciliation so a milestone whose last in-flight bead finishes successfully can reach `completed` instead of remaining stuck in `paused`. In `src/contexts/milestone_record/service.rs:983-991`, the `snapshot.status == MilestoneStatus::Paused` branch short-circuits before the completed-state check, so `record_bead_completion` (`src/contexts/milestone_record/service.rs:2073-2123`) preserves `Paused` even when `completed_beads + skipped_beads >= total_beads` and no bead is active. The regression is locked in by `paused_milestone_stays_paused_when_completion_reconciles_lineage` at `src/contexts/milestone_record/service.rs:5326-5393`. A fully closed milestone should synthesize the allowed bridge and end in `completed`, otherwise the completion journal transition is never emitted.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 13
+}

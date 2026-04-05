@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-plan_and_implement-c1-a1-cr8-artifact",
+  "payload_id": "run-20260405042156-plan_and_implement-c1-a1-cr8",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-05T08:08:33.319494423Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the remaining `ralph-burning-9ni.2.5` lifecycle fixes in the milestone service and filesystem adapter. Terminal milestone rematerialization now reopens to execution only when a materially changed plan would invalidate the existing completed/failed progress snapshot, while metadata-only or shape-equivalent rematerializations preserve the terminal state. Reconciliation now treats planned milestones with historical task runs and no active bead as `paused`, and lifecycle repair can synthesize missing `ready -> running -> paused|completed|failed` bridges so a missed start commit no longer blocks later completion or drops required journal events. I also hardened the non-filesystem `MilestoneJournalPort` fallback so multi-op journal commits are built in memory and published through a required whole-journal replacement path, keeping snapshot rollback from leaking partial lifecycle rows.\n\n## Steps\n\n1. [Completed] Refactored milestone journal commit behavior so the shared `MilestoneJournalPort` fallback applies write ops against an in-memory journal image and publishes them through explicit whole-journal replacement, with the filesystem adapter and test doubles updated to implement that path.\n2. [Completed] Adjusted milestone reconciliation and lifecycle event repair so planned milestones with prior runs pause instead of silently reverting to ready, and missing `running` lifecycle commits are reconstructed as valid transition chains before later paused/completed/failed states are journaled.\n3. [Completed] Updated terminal rematerialization semantics to preserve completed/failed milestones for equivalent plan refreshes but reopen them to `ready` when a new plan invalidates terminal progress, and added regression coverage for terminal reopen plus missed-start completion recovery.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed.\n- `cargo test milestone_record::service --lib` passed (70 tests).\n- `cargo test fs:: --lib` passed (17 tests).\n- `cargo test milestone_record --lib` passed (159 tests).\n\n## Outstanding Risks\n\n- Any future non-filesystem `MilestoneJournalPort` implementation must make `replace_journal()` atomic; the default multi-op commit path now depends on that contract.\n- When a completed or failed milestone is reopened by rematerializing a materially changed plan, the journal still lacks a dedicated terminal-reopen lifecycle event because the current lifecycle contract does not define a `completed|failed -> ready` edge.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 8
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-reviewer-0-c1-a1-cr18-artifact",
+  "payload_id": "run-20260405042156-final_review-reviewer-0-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T15:39:23.952541838Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe changes fix a timestamp consistency bug in the resume path. Previously, `ResumeState` carried the original `run_started.timestamp`, which was used for both the `ActiveRun.started_at` and the milestone lineage `started_at`. This created a mismatch because `effective_attempt_started_at()` in the sync path derives the attempt timestamp from the last `run_resumed` journal event, not from `run_started`. By generating `resumed_at = Utc::now()` at resume time and using it consistently for the ActiveRun, journal event, and milestone lineage, the timestamps now align. The new test covers the failed-resume scenario end-to-end and all 16 run tests pass. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 18
+}

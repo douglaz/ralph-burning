@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-vote-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260405042156-final_review-vote-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T07:26:54.657845734Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments are valid improvements. The first eliminates a genuinely redundant disk read that is verifiable in the code: `journal` is read at line 3123, mutated in-place at lines 3126-3130, then the same file is re-read at line 3134 for `previous_journal` — all under an advisory lock with no intervening write. The second correctly identifies an undocumented recovery invariant where snapshot failure removes the pending file but journal failure does not, and a clarifying comment prevents future maintainers from 'fixing' the asymmetry into a bug.\n\n## Votes\n\n- `fr-6-75c721cb`: Accept\n  Verified in the code: line 3123 reads the journal into `journal`, lines 3126-3130 mutate it in memory, and line 3134 re-reads the identical file from disk for `previous_journal`. Under the advisory lock acquired at line 3122 and with no intervening write to disk, the on-disk state is guaranteed identical to the pre-mutation `journal` value. Cloning `journal` before the mutation loop eliminates a redundant disk read and its associated I/O error surface, while making the old-vs-new relationship between `previous_journal` and `next_journal` structurally explicit in the code.\n- `fr-6-e9b41334`: Accept\n  The asymmetry is real and verified: lines 3142-3144 remove the pending file on snapshot write failure, while lines 3146-3148 intentionally leave it on journal write failure. The reasoning is sound — `write_atomic` guarantees all-or-nothing so a failed snapshot write means old state is intact and the pending file is stale; but after a successful snapshot write, a failed journal write leaves a state mismatch that the pending file is needed to resolve during recovery. This is a subtle invariant that a future maintainer could easily 'fix' by adding a `remove_file` to the journal failure path, breaking crash recovery. A comment documenting the intent is low-cost and high-value.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 6
+}

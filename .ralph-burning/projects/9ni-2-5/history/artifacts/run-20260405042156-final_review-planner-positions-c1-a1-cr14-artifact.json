@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr14-artifact",
+  "payload_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T13:51:32.240365958Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nBoth amendments identify concrete correctness defects in recovery/repair paths. The first is a durability bug that can leave terminal milestone state permanently hidden behind the pending sidecar. The second is a timestamp provenance bug that reconstructs resumed lineage with the wrong start time and therefore distorts resumed transition timing and derived duration metadata.\n\n## Votes\n\n- `fr-14-aecbd6e5`: Accept\n  `FsMilestoneSnapshotStore::read_snapshot` and `FsMilestoneJournalStore::read_journal` intentionally mask torn visibility by returning the previous state when only one half of the commit is visible, but `recover_pending_state_commit` is only invoked from `with_milestone_write_lock`. That means a pending `.state-commit.json` is not self-healing on read. If the interrupted transition was terminal, or otherwise no later writer arrives, readers can remain stuck on `previous_snapshot`/`previous_journal` indefinitely even though the sidecar already contains the fully computed `next_*` state. That is a real recovery hole, not just a transient inconsistency, so fixing it improves correctness and durability.\n- `fr-14-87a24bda`: Accept\n  The resume path records a distinct durable `run_resumed` event and calls `sync_milestone_bead_start(..., milestone_resume_time)`, so the resumed running interval is modeled as beginning at resume time. In contrast, `src/cli/run.rs` repairs missing lineage by finding `run_started` and passing `run_started.timestamp` into `record_bead_start`, even for resumed runs using the same `run_id`. That backdates the synthetic paused->running bridge and any duration derived from milestone lifecycle events to the original run start instead of the actual resume instant. Using the durable resume timestamp is therefore the technically correct behavior for repair.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 14
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-plan_and_implement-c1-a1-cr14-artifact",
+  "payload_id": "run-20260405042156-plan_and_implement-c1-a1-cr14",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-05T13:39:16.021142417Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the remaining paused-terminal reconciliation bug for `ralph-burning-9ni.2.5`. In `src/contexts/milestone_record/service.rs`, lineage reconciliation now evaluates the fully-closed milestone condition before the paused-state short-circuit, so a paused milestone whose last in-flight bead finishes successfully can advance to `completed` and emit the required bridged `paused -> running -> completed` lifecycle journal events. I also replaced the stale regression with a one-bead planned milestone case that asserts both the completed snapshot and the synthesized journal transitions.\n\n## Steps\n\n1. [Completed] Inspected `reconcile_snapshot_from_lineage` and the existing paused-completion regression to confirm the paused branch was preventing fully closed milestones from reaching `completed`.\n2. [Completed] Patched reconciliation ordering so closed milestones transition to `completed` before paused-state preservation, keeping the allowed lifecycle bridge available for journal repair.\n3. [Completed] Updated the regression test to use a single-bead planned milestone and assert the reconciled `paused -> running -> completed` journal events alongside the completed snapshot.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed.\n- `cargo test paused_milestone_completion_reconciles_to_completed_with_bridge_events --lib` passed.\n- `cargo test milestone_record::service --lib` passed (78 tests).\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 14
+}

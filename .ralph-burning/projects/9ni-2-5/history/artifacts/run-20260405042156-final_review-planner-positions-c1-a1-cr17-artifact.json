@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr17-artifact",
+  "payload_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T15:23:41.462235261Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nBoth amendments address real timestamp-consistency defects in resume and milestone reconciliation paths. Each fix improves correctness without changing intended control flow, and both reduce the chance of stale or incorrect lifecycle state derived from internally inconsistent event times.\n\n## Votes\n\n- `fr-17-4fa1d7d0`: Accept\n  The cited code paths are using resume-related timestamps as exact identity keys, not just advisory metadata. `resume_run` currently emits `run_resumed` with one `Utc::now()` and records milestone start lineage with a second one, while `sync_terminal_milestone_task_with_options` and `resume_attempt_has_exact_lineage` rely on exact `started_at` equality via `lineage_entry_matches_attempt`. That makes resumed attempts vulnerable to false 'missing lineage' results even when the start sync already succeeded, which can suppress failed-resume repair and leave milestone state stale. Capturing a single resumed-at value and reusing it across the durable journal event, lineage start sync, and exact-lineage matching is the correct and maintainable fix.\n- `fr-17-43f9612e`: Accept\n  This is also a correctness bug. `build_reconciled_transition_events` receives `running_started_at`, and the repair/finalization callers already pass the known canonical resumed/start time, but the paused->running synthetic bridge currently discards that information and stamps the intermediate running event with `now`. Because duration accumulation is derived from lifecycle event timestamps, that shifts the resumed segment start to completion/repair time and undercounts the actual running interval. Using `running_started_at` when present for the paused->running synthetic event preserves event chronology and produces accurate duration metadata while still allowing `now` as a fallback when no better timestamp exists.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 17
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-vote-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260405042156-final_review-vote-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T09:23:13.261932546Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nfr-10-1e1f4d3a identifies a real lifecycle gap: the normal sync/completion path cannot currently produce a milestone-level failed state, because failed project runs are reduced to bead failures and reconciliation pushes the milestone back to Paused. fr-10-7f55af74 points at a plausible repair weakness, but the amendment’s stated failure mode is not accurate and the proposed bridge-only fix would be incomplete because paused snapshots are preserved earlier during reconciliation.\n\n## Votes\n\n- `fr-10-1e1f4d3a`: Accept\n  `sync_terminal_milestone_task_with_options` maps `RunStatus::Failed` to `TaskRunOutcome::Failed` and routes it through `record_bead_completion`, but `reconcile_snapshot_from_lineage` never sets `MilestoneStatus::Failed`; when a previously running milestone has no active bead, it is reconciled to `Paused`. That means the ordinary failed-run sync path cannot emit a `running -> failed` lifecycle event or leave the milestone in the terminal failed state, even though that lifecycle state exists for unrecoverable operator-intervention cases. Adding an explicit distinction between ordinary bead failure and milestone-fatal failure, and committing the failed transition in the same snapshot/journal transaction, is technically correct and improves state consistency.\n- `fr-10-7f55af74`: Reject\n  The desired end state is reasonable, but the amendment diagnoses the wrong blocker. In the current repair flow, once the snapshot starts as `Paused`, `reconcile_snapshot_from_lineage` hits the `snapshot.status == Paused` branch before the completed-state branch and preserves `Paused` instead of recomputing `Completed`. As a result, `build_reconciled_transition_events` usually sees `Paused -> Paused` and returns no lifecycle events; it does not first fail on a `Paused -> Completed` invalid transition in the scenario described. A correct fix would need snapshot-reconciliation changes before, and possibly in addition to, any bridge synthesis, so this amendment is too incomplete as written.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-arbiter-c1-a1-cr17-artifact",
+  "payload_id": "run-20260405042156-final_review-arbiter-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T15:33:11.768757907Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe disputed amendment identifies a genuine timestamp bug in resumed-at reconciliation, but the proposed unconditional helper change would regress other paused-to-terminal repair flows. The deciding evidence is the repository’s own tests: one proves the resumed-at path needs the canonical resume timestamp, while another proves generic paused-failure repair must not reuse the original attempt start for the synthetic resume bridge.\n\n## Rulings\n\n- `fr-17-43f9612e`: Reject\n  The underlying resumed-at bug is real, but this amendment is too broad as written. Source inspection confirms `build_reconciled_transition_events` currently forces synthetic `Paused -> Running` bridges to `now` (`src/contexts/milestone_record/service.rs:821-830`), and the resumed-at reconciliation path does pass the canonical resumed start (`service.rs:2111-2118`, `service.rs:2239-2246`). That is why the CLI regression test `sync_terminal_milestone_task_repairs_resumed_attempt_from_run_resumed_timestamp` expects the bridge at `resumed_at` and a 900-second duration (`src/cli/run.rs:1419-1549`). But the same helper is also used for non-resume paused-to-terminal repairs, and `repairing_failed_completion_can_promote_paused_snapshot_to_failed` shows that path passes the original attempt `started_at`, not a post-pause resume time, and correctly expects the synthetic bridge at repair time with total duration still 5 seconds (`src/contexts/milestone_record/service.rs:5563-5664`). Replacing `now` with `running_started_at` whenever it is present would move that bridge before the recorded pause and distort duration accounting. The fix should be narrower: only use the supplied timestamp when it is known to represent a true resumed segment, or distinguish the resume-repair call sites from generic paused-to-terminal repair.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

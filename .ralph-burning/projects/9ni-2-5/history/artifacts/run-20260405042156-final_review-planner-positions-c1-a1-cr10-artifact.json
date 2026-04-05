@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr10-artifact",
+  "payload_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T09:17:03.698889866Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nfr-10-1e1f4d3a identifies a real lifecycle bug: unrecoverable project-run failures are currently recorded as bead failures and reconciled back to `Paused`, leaving milestone-level `Failed` effectively unreachable on the normal sync path. fr-10-7f55af74 points at a real area of fragility around repairing stale terminal rows, but its stated failure mechanism is not correct as written: the current blocker is earlier snapshot reconciliation logic preserving `Paused`, so adding only a `Paused -> Completed` bridge in transition synthesis would not reliably fix the repair path.\n\n## Votes\n\n- `fr-10-1e1f4d3a`: Accept\n  `sync_terminal_milestone_task_with_options` maps `RunStatus::Failed` to `TaskRunOutcome::Failed` and always routes it through `record_bead_completion`, while `reconcile_snapshot_from_lineage` converts a running milestone with no active bead into `Paused` and never assigns `MilestoneStatus::Failed`. The result is that an unrecoverable run failure cannot produce the promised milestone-level `running -> failed` transition or terminal failed snapshot, even though `MilestoneStatus::Failed` exists specifically for operator-intervention failures. Adding an explicit way to distinguish milestone-fatal failures from ordinary bead failures, and committing that lifecycle transition together with the journal update, is technically correct and improves consistency and recoverability.\n- `fr-10-7f55af74`: Reject\n  The repair gap is plausible, but the amendment’s diagnosis is not accurate enough to endorse as written. In the current code, `repair_task_run` first calls `reconcile_snapshot_from_lineage`, and that function short-circuits when `snapshot.status == Paused`, preserving `Paused` instead of recomputing `Completed` even when progress is fully complete. That means the repair path usually never reaches a real `Paused -> Completed` transition for `build_reconciled_transition_events` to reject; the stale paused state is retained earlier. A fix limited to synthesizing a `Paused -> Completed` bridge would therefore be incomplete. The repair flow likely needs snapshot-reconciliation changes before or alongside any transition-bridge changes.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 10
+}

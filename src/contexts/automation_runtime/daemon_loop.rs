@@ -2910,7 +2910,8 @@ mod tests {
     use super::DaemonLoop;
     use crate::adapters::fs::{
         FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
-        FsMilestoneJournalStore, FsMilestoneSnapshotStore, FsMilestoneStore,
+        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
+        FsMilestoneStore,
         FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRequirementsStore,
         FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
     };
@@ -2925,7 +2926,7 @@ mod tests {
         WriterLockReleaseOutcome,
     };
     use crate::contexts::milestone_record::service::{
-        create_milestone, update_status, CreateMilestoneInput,
+        create_milestone, update_status, CreateMilestoneInput, MilestoneSnapshotPort,
     };
     use crate::contexts::requirements_drafting::service::{
         RequirementsService, RequirementsStorePort,
@@ -3284,10 +3285,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn check_waiting_tasks_reports_milestone_materialize_failures_as_changed() {
+    async fn check_waiting_tasks_completes_existing_terminal_milestone_handoffs() {
         let temp = tempdir().expect("tempdir");
         let base = temp.path();
 
+        let now = Utc::now();
         let requirements_service = RequirementsService::new(
             AgentExecutionService::new(
                 StubBackendAdapter::default(),
@@ -3297,14 +3299,20 @@ mod tests {
             FsRequirementsStore,
         );
         let run_id = requirements_service
-            .draft_milestone(base, "materialize failure", Utc::now(), None)
+            .draft_milestone(base, "materialize failure", now, None)
             .await
             .expect("draft milestone");
         let req_store = FsRequirementsStore;
 
         let milestone_store = FsMilestoneStore;
+        let plan_store = FsMilestonePlanStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let handoff =
+            crate::contexts::requirements_drafting::service::extract_milestone_bundle_handoff(
+                &req_store, base, &run_id,
+            )
+            .expect("extract milestone handoff");
         let existing = create_milestone(
             &milestone_store,
             base,
@@ -3313,16 +3321,42 @@ mod tests {
                 name: "Stub Milestone".to_owned(),
                 description: "existing completed milestone".to_owned(),
             },
-            Utc::now(),
+            now,
         )
         .expect("create existing milestone");
+        crate::contexts::milestone_record::service::materialize_bundle(
+            &milestone_store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &handoff.bundle,
+            now,
+        )
+        .expect("materialize existing milestone");
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &existing.id,
+            crate::contexts::milestone_record::model::MilestoneStatus::Running,
+            now + chrono::Duration::seconds(1),
+        )
+        .expect("start milestone");
+        let mut existing_snapshot = snapshot_store
+            .read_snapshot(base, &existing.id)
+            .expect("read existing snapshot");
+        existing_snapshot.progress.completed_beads = existing_snapshot.progress.total_beads;
+        snapshot_store
+            .write_snapshot(base, &existing.id, &existing_snapshot)
+            .expect("persist completed progress");
         update_status(
             &snapshot_store,
             &journal_store,
             base,
             &existing.id,
             crate::contexts::milestone_record::model::MilestoneStatus::Completed,
-            Utc::now(),
+            now + chrono::Duration::seconds(2),
         )
         .expect("complete milestone");
 
@@ -3361,12 +3395,9 @@ mod tests {
 
         let failed = daemon_store
             .read_task(base, "waiting-materialize-fail")
-            .expect("read failed task");
-        assert_eq!(failed.status, TaskStatus::Failed);
-        assert_eq!(
-            failed.failure_class.as_deref(),
-            Some("milestone_handoff_failed")
-        );
+            .expect("read completed task");
+        assert_eq!(failed.status, TaskStatus::Completed);
+        assert_eq!(failed.failure_class, None);
     }
 }
 

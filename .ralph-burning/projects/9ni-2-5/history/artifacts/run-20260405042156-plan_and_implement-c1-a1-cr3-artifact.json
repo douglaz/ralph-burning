@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260405042156-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-05T05:45:58.735072854Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the remaining lifecycle amendments for milestone state transitions. Milestone transitions to `ready` and `running` now require a finalized/exported plan, `record_bead_start` documents its pre-reconciliation snapshot capture for rollback semantics, the filesystem milestone journal adapter now uses a crash-recoverable pending state sidecar so snapshot+journal commits stay logically atomic across process death, and the fixture/CLI test helpers were updated to create planned milestones instead of relying on now-invalid `planning -> running` paths. I also added regression coverage for plan-gated transitions plus pending-state overlay/recovery behavior.\n\n## Steps\n\n1. [Completed] Added lifecycle prerequisite validation so `ready`/`running` transitions reject milestones without committed plan metadata, and documented the intentional pre-reconciliation snapshot capture in `record_bead_start`.\n2. [Completed] Reworked filesystem milestone persistence to stage snapshot+journal commits through a pending state sidecar, with read-overlay and write-lock recovery paths so torn writes after process death are repaired atomically.\n3. [Completed] Updated milestone fixtures and CLI milestone-sync tests to create planned milestones, then added regression tests for plan-gated transitions and pending-state commit overlay/recovery.\n\n## Validation Evidence\n\n- `cargo test milestone_record::service --lib` passed (62 tests).\n- `cargo test fs:: --lib` passed (16 tests).\n- `cargo test cli::run::tests:: --lib` passed (13 tests).\n- `cargo test --lib` passed (512 tests).\n\n## Outstanding Risks\n\n- `MilestoneJournalPort::commit_snapshot_and_journal_ops()` still defaults to sequential snapshot+journal writes for non-filesystem ports; any future production port must override it to preserve the same crash-safe guarantee as the filesystem adapter.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 3
+}

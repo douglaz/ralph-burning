@@ -1,15 +1,9 @@
-use std::collections::BTreeMap;
 use std::fs;
-use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
 use tempfile::tempdir;
-use tracing::field::{Field, Visit};
-use tracing::{Event, Subscriber};
-use tracing_subscriber::layer::{Context, Layer};
-use tracing_subscriber::prelude::*;
 
 use ralph_burning::adapters::fs::{FsRawOutputStore, FsSessionStore};
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
@@ -27,6 +21,7 @@ use ralph_burning::shared::domain::{
     StageId,
 };
 use ralph_burning::shared::error::{AppError, AppResult};
+use ralph_burning::test_support::logging::log_capture;
 
 fn project_root_fixture(root: &std::path::Path) -> std::path::PathBuf {
     let project_root = root.join("project-alpha");
@@ -555,98 +550,9 @@ async fn service_does_not_reuse_sessions_for_roles_that_disallow_it() {
     assert_eq!(persisted.sessions[0].invocation_count, 1);
 }
 
-// ── Tracing tests ───────────────────────────────────────────────────────
-
-#[derive(Clone, Debug, Default)]
-struct TraceCapture(Arc<Mutex<Vec<CapturedEvent>>>);
-
-impl TraceCapture {
-    fn clear(&self) {
-        self.0.lock().expect("trace capture lock poisoned").clear();
-    }
-
-    fn snapshot(&self) -> Vec<CapturedEvent> {
-        self.0.lock().expect("trace capture lock poisoned").clone()
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct CapturedEvent {
-    fields: BTreeMap<String, String>,
-}
-
-struct CaptureVisitor<'a> {
-    fields: &'a mut BTreeMap<String, String>,
-}
-
-impl Visit for CaptureVisitor<'_> {
-    fn record_i64(&mut self, field: &Field, value: i64) {
-        self.fields
-            .insert(field.name().to_owned(), value.to_string());
-    }
-
-    fn record_u64(&mut self, field: &Field, value: u64) {
-        self.fields
-            .insert(field.name().to_owned(), value.to_string());
-    }
-
-    fn record_bool(&mut self, field: &Field, value: bool) {
-        self.fields
-            .insert(field.name().to_owned(), value.to_string());
-    }
-
-    fn record_str(&mut self, field: &Field, value: &str) {
-        self.fields
-            .insert(field.name().to_owned(), value.to_owned());
-    }
-
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        self.fields
-            .insert(field.name().to_owned(), format!("{value:?}"));
-    }
-}
-
-#[derive(Clone, Debug)]
-struct CaptureLayer {
-    sink: TraceCapture,
-}
-
-impl<S> Layer<S> for CaptureLayer
-where
-    S: Subscriber,
-{
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let mut captured = CapturedEvent::default();
-        event.record(&mut CaptureVisitor {
-            fields: &mut captured.fields,
-        });
-        self.sink
-            .0
-            .lock()
-            .expect("trace capture lock poisoned")
-            .push(captured);
-    }
-}
-
-fn trace_capture() -> TraceCapture {
-    static TRACE_CAPTURE: OnceLock<TraceCapture> = OnceLock::new();
-
-    TRACE_CAPTURE
-        .get_or_init(|| {
-            let sink = TraceCapture::default();
-            let subscriber =
-                tracing_subscriber::registry().with(CaptureLayer { sink: sink.clone() });
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("initialize global test trace capture");
-            sink
-        })
-        .clone()
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn service_emits_invocation_completed_trace_with_token_fields() {
-    let capture = trace_capture();
-    capture.clear();
+    let capture = log_capture();
 
     let temp_dir = tempdir().expect("create temp dir");
     let project_root = project_root_fixture(temp_dir.path());
@@ -663,20 +569,16 @@ async fn service_emits_invocation_completed_trace_with_token_fields() {
         CancellationToken::new(),
     );
 
-    let _envelope = service.invoke(request).await.expect("invoke succeeds");
-
-    let captured = capture.snapshot();
-    let event = captured
-        .iter()
-        .find(|event| {
-            event.fields.get("invocation_id").map(String::as_str) == Some("trace-invoke-1")
+    capture
+        .in_scope_async(async {
+            let _envelope = service.invoke(request).await.expect("invoke succeeds");
         })
-        .expect("expected captured event for invocation_id=trace-invoke-1");
+        .await;
 
-    assert_eq!(
-        event.fields.get("message").map(String::as_str),
-        Some("invocation completed")
-    );
+    let event = capture.assert_event_has_fields(&[
+        ("invocation_id", "trace-invoke-1"),
+        ("message", "invocation completed"),
+    ]);
 
     for field in [
         "invocation_id=",
@@ -694,17 +596,17 @@ async fn service_emits_invocation_completed_trace_with_token_fields() {
     ] {
         let key = field.trim_end_matches('=');
         assert!(
-            event.fields.contains_key(key),
+            event.field(key).is_some(),
             "missing field '{key}' in trace event: {event:?}"
         );
     }
 
     assert!(
-        event.fields.get("tokens_reported").map(String::as_str) == Some("true"),
+        event.field("tokens_reported") == Some("true"),
         "expected tokens_reported=true in trace event: {event:?}"
     );
     assert!(
-        event.fields.get("cache_reported").map(String::as_str) == Some("false"),
+        event.field("cache_reported") == Some("false"),
         "expected cache_reported=false in trace event: {event:?}"
     );
 }

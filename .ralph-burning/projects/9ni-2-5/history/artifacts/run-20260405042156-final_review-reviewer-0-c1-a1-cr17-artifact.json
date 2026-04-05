@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-reviewer-0-c1-a1-cr17-artifact",
+  "payload_id": "run-20260405042156-final_review-reviewer-0-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T15:11:35.536210249Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all three change areas across this diff (2 commits, 3 files, +183 lines). (1) fs.rs noop early-return: The added guard `applied == 0 && previous_snapshot == next_snapshot` correctly skips the pending-state-commit sidecar when nothing changes, preventing unnecessary disk writes and recovery artifacts. The condition is sound — it only short-circuits when both the journal ops were no-ops AND the snapshot is unchanged. (2) process_backend.rs unwrap refactor: The split of `unwrap_claude_structured_output_payload` into a transport-layer variant (`unwrap_claude_structured_output_transport_payload`) and a sentinel-only variant is correct. The transport variant handles the Claude structured_output field where a bare `{\"data\": ...}` wrapper is expected; the sentinel variant now only unwraps when `__rb_wrapped: true` is present, preventing accidental unwrapping of legitimate contract payloads that happen to have a `data` key. The fallback chain (transport → sentinel → passthrough) is coherent and the call sites correctly use the transport variant for structured_output and the sentinel variant for parsed-from-text payloads. (3) service.rs resume reason: The Paused→Running transition now correctly emits \"execution resumed\" instead of \"execution started\", with the test exercising the full lifecycle path. All five new/modified tests pass. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 17
+}

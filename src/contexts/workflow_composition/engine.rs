@@ -807,7 +807,6 @@ enum RunOutcome {
 #[derive(Debug)]
 struct ResumeState {
     run_id: RunId,
-    started_at: DateTime<Utc>,
     stage_index: usize,
     cursor: StageCursor,
 }
@@ -1590,11 +1589,12 @@ where
     let (qa_iterations_current_cycle, review_iterations_current_cycle) =
         resume_iteration_counters(&snapshot, &resume_state.cursor)?;
     let final_review_restart_count = resume_final_review_restart_count(&snapshot, &visible_events)?;
+    let resumed_at = Utc::now();
     snapshot.status = RunStatus::Running;
     snapshot.active_run = Some(build_active_run(
         &resume_state.run_id,
         resume_state.cursor.clone(),
-        resume_state.started_at,
+        resumed_at,
         prompt_hash_at_cycle_start,
         current_prompt_hash.clone(),
         qa_iterations_current_cycle,
@@ -1618,7 +1618,7 @@ where
     seq += 1;
     let run_resumed = journal::run_resumed_event(
         seq,
-        Utc::now(),
+        resumed_at,
         &resume_state.run_id,
         resume_state.cursor.stage,
         resume_state.cursor.cycle,
@@ -1650,7 +1650,7 @@ where
         base_dir,
         project_id,
         &resume_state.run_id,
-        resume_state.started_at,
+        resumed_at,
     ) {
         return fail_run(
             &AppError::ResumeFailed {
@@ -6172,7 +6172,6 @@ fn derive_resume_state(
             reason: "run journal does not contain a run_started event".to_owned(),
         })?;
     let run_id = RunId::new(detail_string(run_started, "run_id")?.to_owned())?;
-    let started_at = run_started.timestamp;
     let execution_stage_index = stage_index_for(stage_plan, semantics.execution_stage)?;
     let planning_stage_index = stage_index_for(stage_plan, semantics.planning_stage)?;
     let mut current_cycle = snapshot
@@ -6296,7 +6295,6 @@ fn derive_resume_state(
 
     Ok(ResumeState {
         run_id,
-        started_at,
         stage_index: next_stage_index,
         cursor,
     })

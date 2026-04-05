@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::shared::error::{AppError, AppResult};
 
@@ -53,13 +54,15 @@ pub enum MilestoneStatus {
     /// Plan is finalized; bead execution has not started.
     Ready,
     /// At least one bead task is running.
-    Active,
+    #[serde(alias = "active")]
+    Running,
     /// Execution paused (e.g., waiting for external input).
     Paused,
     /// All acceptance criteria met.
     Completed,
-    /// Milestone abandoned.
-    Abandoned,
+    /// Milestone requires operator intervention after an unrecoverable error.
+    #[serde(alias = "abandoned")]
+    Failed,
 }
 
 impl MilestoneStatus {
@@ -67,15 +70,37 @@ impl MilestoneStatus {
         match self {
             Self::Planning => "planning",
             Self::Ready => "ready",
-            Self::Active => "active",
+            Self::Running => "running",
             Self::Paused => "paused",
             Self::Completed => "completed",
-            Self::Abandoned => "abandoned",
+            Self::Failed => "failed",
         }
     }
 
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Abandoned)
+        matches!(self, Self::Completed | Self::Failed)
+    }
+
+    pub fn allows_transition_to(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::Planning, Self::Ready)
+                | (Self::Ready, Self::Running)
+                | (Self::Running, Self::Paused)
+                | (Self::Running, Self::Completed)
+                | (Self::Running, Self::Failed)
+                | (Self::Paused, Self::Running)
+        )
+    }
+
+    pub fn allowed_transition_targets(self) -> &'static [Self] {
+        match self {
+            Self::Planning => &[Self::Ready],
+            Self::Ready => &[Self::Running],
+            Self::Running => &[Self::Paused, Self::Completed, Self::Failed],
+            Self::Paused => &[Self::Running],
+            Self::Completed | Self::Failed => &[],
+        }
     }
 }
 
@@ -92,14 +117,14 @@ impl FromStr for MilestoneStatus {
         match value {
             "planning" => Ok(Self::Planning),
             "ready" => Ok(Self::Ready),
-            "active" => Ok(Self::Active),
+            "running" | "active" => Ok(Self::Running),
             "paused" => Ok(Self::Paused),
             "completed" => Ok(Self::Completed),
-            "abandoned" => Ok(Self::Abandoned),
+            "failed" | "abandoned" => Ok(Self::Failed),
             _ => Err(AppError::InvalidConfigValue {
                 key: "milestone_status".to_owned(),
                 value: value.to_owned(),
-                reason: "expected one of planning, ready, active, paused, completed, abandoned"
+                reason: "expected one of planning, ready, running, paused, completed, failed"
                     .to_owned(),
             }),
         }
@@ -177,10 +202,15 @@ impl MilestoneSnapshot {
     }
 
     pub fn validate_semantics(&self) -> Result<(), String> {
-        if self.status == MilestoneStatus::Active && self.active_bead.is_none() {
-            return Err(
-                "status is 'active' but active_bead is null — inconsistent state".to_owned(),
-            );
+        if matches!(
+            self.status,
+            MilestoneStatus::Planning | MilestoneStatus::Ready | MilestoneStatus::Paused
+        ) && self.active_bead.is_some()
+        {
+            return Err(format!(
+                "status is '{}' but active_bead is set — inconsistent state",
+                self.status
+            ));
         }
         if self.status.is_terminal() && self.active_bead.is_some() {
             return Err(format!(
@@ -231,10 +261,20 @@ impl MilestoneProgress {
 // ── Journal Events ────────────────────────────────────────────────────
 
 /// Events recorded to `journal.ndjson` for milestone activity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MilestoneJournalEvent {
     pub timestamp: DateTime<Utc>,
     pub event_type: MilestoneEventType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_state: Option<MilestoneStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_state: Option<MilestoneStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<JsonMap<String, JsonValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bead_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -260,6 +300,33 @@ impl MilestoneJournalEvent {
         Self {
             timestamp: now,
             event_type,
+            from_state: None,
+            to_state: None,
+            actor: None,
+            reason: None,
+            metadata: None,
+            bead_id: None,
+            details: None,
+        }
+    }
+
+    pub fn lifecycle_transition(
+        now: DateTime<Utc>,
+        from_state: MilestoneStatus,
+        to_state: MilestoneStatus,
+        actor: impl Into<String>,
+        reason: impl Into<String>,
+        metadata: JsonMap<String, JsonValue>,
+    ) -> Self {
+        let metadata = (!metadata.is_empty()).then_some(metadata);
+        Self {
+            timestamp: now,
+            event_type: MilestoneEventType::StatusChanged,
+            from_state: Some(from_state),
+            to_state: Some(to_state),
+            actor: Some(actor.into()),
+            reason: Some(reason.into()),
+            metadata,
             bead_id: None,
             details: None,
         }
@@ -668,10 +735,10 @@ mod tests {
         for status in [
             MilestoneStatus::Planning,
             MilestoneStatus::Ready,
-            MilestoneStatus::Active,
+            MilestoneStatus::Running,
             MilestoneStatus::Paused,
             MilestoneStatus::Completed,
-            MilestoneStatus::Abandoned,
+            MilestoneStatus::Failed,
         ] {
             let parsed: MilestoneStatus = status.as_str().parse()?;
             assert_eq!(parsed, status);
@@ -687,10 +754,11 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_active_without_bead_is_invalid() -> Result<(), Box<dyn std::error::Error>> {
+    fn snapshot_ready_with_bead_is_invalid() -> Result<(), Box<dyn std::error::Error>> {
         let now = Utc::now();
         let mut snapshot = MilestoneSnapshot::initial(now);
-        snapshot.status = MilestoneStatus::Active;
+        snapshot.status = MilestoneStatus::Ready;
+        snapshot.active_bead = Some("bead-1".to_owned());
         assert!(snapshot.validate_semantics().is_err());
         Ok(())
     }
@@ -700,6 +768,16 @@ mod tests {
         let now = Utc::now();
         let mut snapshot = MilestoneSnapshot::initial(now);
         snapshot.status = MilestoneStatus::Completed;
+        snapshot.active_bead = Some("bead-1".to_owned());
+        assert!(snapshot.validate_semantics().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_paused_with_bead_is_invalid() -> Result<(), Box<dyn std::error::Error>> {
+        let now = Utc::now();
+        let mut snapshot = MilestoneSnapshot::initial(now);
+        snapshot.status = MilestoneStatus::Paused;
         snapshot.active_bead = Some("bead-1".to_owned());
         assert!(snapshot.validate_semantics().is_err());
         Ok(())
@@ -761,6 +839,50 @@ mod tests {
         let parsed: MilestoneJournalEvent = serde_json::from_str(&line)?;
         assert_eq!(parsed.event_type, MilestoneEventType::Created);
         assert!(parsed.details.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn milestone_status_accepts_legacy_aliases() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            "active".parse::<MilestoneStatus>()?,
+            MilestoneStatus::Running
+        );
+        assert_eq!(
+            "abandoned".parse::<MilestoneStatus>()?,
+            MilestoneStatus::Failed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn lifecycle_transition_event_serializes_required_fields(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = Utc::now();
+        let mut metadata = JsonMap::new();
+        metadata.insert("total_beads".to_owned(), JsonValue::from(3));
+        let event = MilestoneJournalEvent::lifecycle_transition(
+            now,
+            MilestoneStatus::Running,
+            MilestoneStatus::Completed,
+            "controller",
+            "all beads closed",
+            metadata,
+        );
+
+        let line = event.to_ndjson_line()?;
+        let parsed: MilestoneJournalEvent = serde_json::from_str(&line)?;
+        assert_eq!(parsed.from_state, Some(MilestoneStatus::Running));
+        assert_eq!(parsed.to_state, Some(MilestoneStatus::Completed));
+        assert_eq!(parsed.actor.as_deref(), Some("controller"));
+        assert_eq!(parsed.reason.as_deref(), Some("all beads closed"));
+        assert_eq!(
+            parsed
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("total_beads")),
+            Some(&JsonValue::from(3))
+        );
         Ok(())
     }
 

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260405042156-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-05T06:20:38.026139738Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the remaining milestone lifecycle defects in the milestone domain/service layer. Direct transitions to `paused` now build the post-transition snapshot first, clear `active_bead`, and emit pause metadata from that corrected snapshot; paused snapshots are also semantically rejected if they still carry an active bead. Terminal lifecycle metadata now accumulates total running time across prior `running -> paused -> running` segments instead of only reporting the most recent running window.\n\n## Steps\n\n1. [Completed] Tightened milestone snapshot semantics so `paused` cannot coexist with `active_bead`, and added model-level regression coverage for that invariant.\n2. [Completed] Refactored direct lifecycle transition handling to derive the next snapshot before journaling, which clears `active_bead` for paused transitions and uses corrected pause metadata.\n3. [Completed] Replaced single-segment terminal duration calculation with accumulated runtime accounting across resume cycles and added service regressions for pause metadata and completed-event duration.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed.\n- `cargo test snapshot_paused_with_bead_is_invalid --lib` passed.\n- `cargo test pausing_clears_active_bead_and_pause_event_metadata --lib` passed.\n- `cargo test completed_transition_accumulates_runtime_across_resume --lib` passed.\n- `cargo test milestone_record --lib` passed (153 tests).\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-vote-1-c1-a1-cr19-artifact",
+  "payload_id": "run-20260405042156-final_review-vote-1-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T16:25:32.870797908Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real correctness defects in the stale-terminal repair flow. One loses resumed runtime when rebuilding paused->running->terminal lifecycle history, and the other rewrites the repaired attempt to a new start time without emitting the corresponding bead-start journal record.\n\n## Votes\n\n- `fr-19-cf44da58`: Accept\n  `repair_task_run_with_disposition` passes the repaired attempt's `started_at`, but `build_reconciled_transition_events` currently timestamps a synthetic `Paused -> Running` bridge at `now` for paused repairs. In the resumed-attempt case, the final `Running -> Completed|Failed` metadata derives `duration_seconds` from lifecycle history, so using the terminal timestamp for the bridge drops the resumed interval entirely. That is a concrete journal-metadata correctness bug.\n- `fr-19-a3f13968`: Accept\n  In the `same_named_terminal_attempt_exists` branch, `record_bead_start` is skipped, and the fallback repair path only updates lifecycle transitions plus the completion event. When the repair changes the canonical attempt `started_at` to the resumed time, the milestone journal ends up with a completion for the resumed attempt but no matching `bead_started` event at that timestamp, often leaving only the stale pre-failure start. That is an integrity bug in the journal and is inconsistent with normal failed-retry behavior, which records a new start for the reopened attempt.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 19
+}

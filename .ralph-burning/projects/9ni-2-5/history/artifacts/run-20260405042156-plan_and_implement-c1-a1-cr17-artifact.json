@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-plan_and_implement-c1-a1-cr17-artifact",
+  "payload_id": "run-20260405042156-plan_and_implement-c1-a1-cr17",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-05T15:09:42.239544413Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nPatched the remaining `ralph-burning-9ni.2.5` amendments across the Claude process backend, milestone lifecycle service, and filesystem journal adapter. Claude decoding now unwraps plain `{\"data\": ...}` only for actual `structured_output` transport payloads while preserving legitimate contract payloads shaped like `{ \"data\": ... }` in result-text fallback paths; legacy `__rb_wrapped` payloads remain accepted. Direct `paused -> running` milestone transitions now emit `execution resumed` instead of `execution started`, and the filesystem milestone commit path now skips creating a pending sidecar when both the journal ops are a no-op and the snapshot is unchanged.\n\n## Steps\n\n1. [Completed] Refactored Claude structured-output decoding to distinguish transport-wrapper unwrapping from generic payload parsing, and added regressions for legitimate top-level `data` payloads plus legacy sentinel compatibility.\n2. [Completed] Updated direct milestone status transitions so `paused -> running` records the correct resume reason in lifecycle journal events, with focused service coverage for the emitted audit row.\n3. [Completed] Short-circuited filesystem snapshot+journal commits when nothing changes and added regression coverage, then reran the affected process backend, milestone service, and filesystem test slices.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed.\n- `cargo test adapters::process_backend::tests:: --lib` passed (58 tests).\n- `cargo test milestone_record::service --lib` passed (79 tests).\n- `cargo test fs:: --lib` passed (20 tests).\n- `cargo test finish_claude_result_raw_json_preserves_legitimate_data_payload_shape --lib` passed.\n- `cargo test update_status_paused_to_running_uses_resume_reason --lib` passed.\n- `cargo test milestone_commit_snapshot_and_journal_ops_skips_noop_sidecar_when_nothing_changes --lib` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 17
+}

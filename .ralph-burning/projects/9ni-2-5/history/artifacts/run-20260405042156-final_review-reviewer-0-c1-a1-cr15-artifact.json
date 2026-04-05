@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-reviewer-0-c1-a1-cr15-artifact",
+  "payload_id": "run-20260405042156-final_review-reviewer-0-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T14:08:48.030509223Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the two changed files (src/adapters/fs.rs, src/cli/run.rs) and their surrounding context. The changes implement two distinct improvements: (1) plain reads now proactively recover interrupted writes via `recover_pending_state_commit_for_plain_read` instead of silently returning stale data, using a thread-local re-entrancy guard to prevent deadlock when reads occur within write locks; (2) `effective_attempt_started_at` correctly uses the last `RunResumed` journal event timestamp for lineage repair, ensuring resumed runs track the correct attempt start time. All 753 tests pass. The thread-local `swap_remove` ordering is correct because `rposition` always matches the innermost guard. The duration_seconds assertion (900) in the new test is verified correct (300s first run + 600s second run). The transition validation, journal event emission, and atomic commit mechanics in the service layer are sound. One minor maintainability concern: the post-recovery XOR fallback code in read_snapshot/read_journal is now only reachable under concurrent access races and could be mistakenly removed as dead code.\n\n## Amendments\n\n1. In `recover_pending_state_commit_for_plain_read` (fs.rs:2664-2681), the `pending_path.is_file()` early-return optimization creates a TOCTOU gap: if a pending file is created *after* the check returns false but *before* the read completes, the reader won't attempt recovery. This is safe today because the post-recovery XOR hiding logic (`snapshot_visible ^ journal_visible` at lines 2701-2705 and 3093-3097) still guards against partially-visible writes. However, the safety relies on the XOR fallback code surviving future refactors. Add a brief inline comment at the `is_file()` check (fs.rs:2669) documenting that the early return is an optimization and that correctness under concurrent writes is upheld by the XOR fallback in read_snapshot/read_journal. This prevents a future maintainer from removing the 'dead' XOR code thinking recovery made it unnecessary.\n   Rationale: The XOR hiding code in read_snapshot (lines 2693-2707) and read_journal (lines 3083-3097) is now very difficult to reach — only during concurrent write races after recovery. Without a comment explaining why it must stay, a future contributor could reasonably remove it as dead code, breaking crash safety under concurrency.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 15
+}

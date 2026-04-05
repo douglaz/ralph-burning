@@ -3,6 +3,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
 use crate::adapters::fs::FileSystem;
@@ -13,9 +14,10 @@ use super::bundle::{
     render_plan_json, render_plan_md_checked, MilestoneBundle,
 };
 use super::model::{
-    collapse_task_run_attempts, latest_task_runs_per_bead, MilestoneEventType, MilestoneId,
-    MilestoneJournalEvent, MilestoneProgress, MilestoneRecord, MilestoneSnapshot, MilestoneStatus,
-    PendingLineageReset, TaskRunEntry, TaskRunOutcome,
+    collapse_task_run_attempts, latest_task_runs_per_bead, CompletionJournalDetails,
+    MilestoneEventType, MilestoneId, MilestoneJournalEvent, MilestoneProgress, MilestoneRecord,
+    MilestoneSnapshot, MilestoneStatus, PendingLineageReset, StartJournalDetails, TaskRunEntry,
+    TaskRunOutcome,
 };
 
 // ── Ports ───────────────────────────────────────────────────────────────────
@@ -81,6 +83,13 @@ pub trait MilestoneJournalPort {
         milestone_id: &MilestoneId,
         line: &str,
     ) -> AppResult<()>;
+    /// Atomically replace the milestone journal with an exact event set.
+    fn replace_journal(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        events: &[MilestoneJournalEvent],
+    ) -> AppResult<()>;
     /// Atomically append an event only when an identical entry is not present.
     fn append_event_if_missing(
         &self,
@@ -99,6 +108,65 @@ pub trait MilestoneJournalPort {
         event: &MilestoneJournalEvent,
     ) -> AppResult<bool> {
         self.append_event_if_missing(base_dir, milestone_id, event)
+    }
+
+    /// Atomically apply a sequence of journal mutations for a single milestone.
+    ///
+    /// The default implementation preserves legacy behavior for non-filesystem
+    /// fakes, but concrete stores should override this when they can provide a
+    /// single durable commit for the whole mutation set.
+    fn commit_journal_ops(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        ops: &[JournalWriteOp],
+    ) -> AppResult<usize> {
+        if ops.is_empty() {
+            return Ok(0);
+        }
+
+        let mut journal = self.read_journal(base_dir, milestone_id)?;
+        let applied = apply_journal_write_ops(&mut journal, ops);
+        if applied == 0 {
+            return Ok(0);
+        }
+
+        self.replace_journal(base_dir, milestone_id, &journal)?;
+        Ok(applied)
+    }
+
+    /// Atomically persist a snapshot update plus the associated journal ops.
+    ///
+    /// The default implementation preserves the previous write-then-rollback
+    /// behavior. Concrete stores should override this when they can provide a
+    /// crash-safe multi-file commit.
+    fn commit_snapshot_and_journal_ops<S: MilestoneSnapshotPort>(
+        &self,
+        snapshot_store: &S,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        previous_snapshot: &MilestoneSnapshot,
+        next_snapshot: &MilestoneSnapshot,
+        ops: &[JournalWriteOp],
+        error_context: &str,
+    ) -> AppResult<usize> {
+        snapshot_store.write_snapshot(base_dir, milestone_id, next_snapshot)?;
+        match self.commit_journal_ops(base_dir, milestone_id, ops) {
+            Ok(applied) => Ok(applied),
+            Err(append_error) => {
+                if let Err(restore_error) =
+                    snapshot_store.write_snapshot(base_dir, milestone_id, previous_snapshot)
+                {
+                    return Err(AppError::CorruptRecord {
+                        file: format!("milestones/{}/status.json", milestone_id),
+                        details: format!(
+                            "{error_context}: {append_error}; failed to restore the previous snapshot: {restore_error}"
+                        ),
+                    });
+                }
+                Err(append_error)
+            }
+        }
     }
 }
 
@@ -334,6 +402,532 @@ fn validate_snapshot(snapshot: &MilestoneSnapshot, milestone_id: &MilestoneId) -
         .map_err(|details| snapshot_corrupt_record(milestone_id, details))
 }
 
+struct LifecycleTransitionCommit {
+    snapshot: MilestoneSnapshot,
+    event: MilestoneJournalEvent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionMilestoneDisposition {
+    ReconcileFromLineage,
+    MarkMilestoneFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JournalWriteOpKind {
+    AppendIfMissing,
+    RepairCompletion,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JournalWriteOp {
+    pub event: MilestoneJournalEvent,
+    pub kind: JournalWriteOpKind,
+}
+
+impl JournalWriteOp {
+    fn append_if_missing(event: MilestoneJournalEvent) -> Self {
+        Self {
+            event,
+            kind: JournalWriteOpKind::AppendIfMissing,
+        }
+    }
+
+    fn repair_completion(event: MilestoneJournalEvent) -> Self {
+        Self {
+            event,
+            kind: JournalWriteOpKind::RepairCompletion,
+        }
+    }
+}
+
+fn format_allowed_transition_targets(status: MilestoneStatus) -> String {
+    let targets = status
+        .allowed_transition_targets()
+        .iter()
+        .map(|status| status.as_str())
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        "none".to_owned()
+    } else {
+        targets.join(", ")
+    }
+}
+
+fn invalid_transition_error(
+    milestone_id: &MilestoneId,
+    from_status: MilestoneStatus,
+    to_status: MilestoneStatus,
+) -> AppError {
+    AppError::InvalidConfigValue {
+        key: "milestone_transition".to_owned(),
+        value: format!("{from_status} -> {to_status}"),
+        reason: format!(
+            "milestone '{milestone_id}' allows transitions from '{from_status}' only to: {}",
+            format_allowed_transition_targets(from_status)
+        ),
+    }
+}
+
+fn has_finalized_plan(snapshot: &MilestoneSnapshot) -> bool {
+    snapshot.plan_version > 0 && snapshot.plan_hash.is_some()
+}
+
+fn validate_transition_prerequisites(
+    snapshot: &MilestoneSnapshot,
+    milestone_id: &MilestoneId,
+    to_status: MilestoneStatus,
+) -> AppResult<()> {
+    if matches!(
+        to_status,
+        MilestoneStatus::Ready | MilestoneStatus::Running | MilestoneStatus::Completed
+    ) && !has_finalized_plan(snapshot)
+    {
+        return Err(AppError::InvalidConfigValue {
+            key: "milestone_transition".to_owned(),
+            value: format!("{} -> {}", snapshot.status, to_status),
+            reason: format!(
+                "milestone '{milestone_id}' cannot move to '{to_status}' before a plan is finalized and exported"
+            ),
+        });
+    }
+
+    if to_status == MilestoneStatus::Completed {
+        let closed_beads = snapshot
+            .progress
+            .completed_beads
+            .saturating_add(snapshot.progress.skipped_beads);
+        let all_beads_closed =
+            snapshot.progress.total_beads == 0 || closed_beads >= snapshot.progress.total_beads;
+        if snapshot.progress.in_progress_beads > 0
+            || snapshot.progress.failed_beads > 0
+            || !all_beads_closed
+        {
+            let failed_beads_hint = if snapshot.progress.failed_beads > 0 {
+                "; re-run or skip failed beads to unblock completion"
+            } else {
+                ""
+            };
+            return Err(AppError::InvalidConfigValue {
+                key: "milestone_transition".to_owned(),
+                value: format!("{} -> {}", snapshot.status, to_status),
+                reason: format!(
+                    "milestone '{milestone_id}' cannot move to '{to_status}' until all beads are closed (total={}, completed={}, skipped={}, in_progress={}, failed={}){failed_beads_hint}",
+                    snapshot.progress.total_beads,
+                    snapshot.progress.completed_beads,
+                    snapshot.progress.skipped_beads,
+                    snapshot.progress.in_progress_beads,
+                    snapshot.progress.failed_beads,
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn insert_metadata_u32(metadata: &mut JsonMap<String, JsonValue>, key: &str, value: u32) {
+    metadata.insert(key.to_owned(), JsonValue::from(u64::from(value)));
+}
+
+fn insert_metadata_string(
+    metadata: &mut JsonMap<String, JsonValue>,
+    key: &str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value {
+        metadata.insert(key.to_owned(), JsonValue::from(value));
+    }
+}
+
+fn event_plan_version(event: &MilestoneJournalEvent) -> Option<u32> {
+    event
+        .metadata
+        .as_ref()?
+        .get("plan_version")?
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn event_matches_plan_version(event: &MilestoneJournalEvent, plan_version: u32) -> bool {
+    match event_plan_version(event) {
+        Some(event_plan_version) => event_plan_version == plan_version,
+        None => plan_version <= 1,
+    }
+}
+
+fn accumulated_running_duration_seconds(
+    journal: &[MilestoneJournalEvent],
+    from_status: MilestoneStatus,
+    plan_version: u32,
+    running_started_fallback: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> i64 {
+    let mut total_seconds = 0_i64;
+    let mut running_started_at = None;
+    let mut lifecycle_events: Vec<_> = journal
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| {
+            event.event_type == MilestoneEventType::StatusChanged
+                && event_matches_plan_version(event, plan_version)
+        })
+        .collect();
+    lifecycle_events.sort_by_key(|(index, event)| (event.timestamp, *index));
+
+    for (_, event) in lifecycle_events {
+        match (event.from_state, event.to_state) {
+            (_, Some(MilestoneStatus::Running)) => {
+                running_started_at.get_or_insert(event.timestamp);
+            }
+            (
+                Some(MilestoneStatus::Running),
+                Some(
+                    MilestoneStatus::Paused | MilestoneStatus::Completed | MilestoneStatus::Failed,
+                ),
+            ) => {
+                if let Some(started_at) = running_started_at.take() {
+                    total_seconds += (event.timestamp - started_at).num_seconds().max(0);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if from_status == MilestoneStatus::Running {
+        let started_at = running_started_at.unwrap_or(running_started_fallback);
+        total_seconds += (now - started_at).num_seconds().max(0);
+    }
+
+    total_seconds
+}
+
+fn build_transition_snapshot(
+    snapshot: &MilestoneSnapshot,
+    milestone_id: &MilestoneId,
+    to_status: MilestoneStatus,
+    now: DateTime<Utc>,
+) -> AppResult<MilestoneSnapshot> {
+    let from_status = snapshot.status;
+    if !from_status.allows_transition_to(to_status) {
+        return Err(invalid_transition_error(
+            milestone_id,
+            from_status,
+            to_status,
+        ));
+    }
+    validate_transition_prerequisites(snapshot, milestone_id, to_status)?;
+
+    let mut next_snapshot = snapshot.clone();
+    next_snapshot.status = to_status;
+    if matches!(
+        to_status,
+        MilestoneStatus::Planning
+            | MilestoneStatus::Ready
+            | MilestoneStatus::Paused
+            | MilestoneStatus::Completed
+            | MilestoneStatus::Failed
+    ) {
+        next_snapshot.active_bead = None;
+    }
+    next_snapshot.updated_at = now;
+    validate_snapshot(&next_snapshot, milestone_id)?;
+    Ok(next_snapshot)
+}
+
+fn lifecycle_transition_metadata(
+    snapshot: &MilestoneSnapshot,
+    from_status: MilestoneStatus,
+    to_status: MilestoneStatus,
+    journal: &[MilestoneJournalEvent],
+    running_started_fallback: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> JsonMap<String, JsonValue> {
+    let mut metadata = JsonMap::new();
+    insert_metadata_u32(&mut metadata, "plan_version", snapshot.plan_version);
+    insert_metadata_u32(&mut metadata, "total_beads", snapshot.progress.total_beads);
+    insert_metadata_u32(
+        &mut metadata,
+        "completed_beads",
+        snapshot.progress.completed_beads,
+    );
+    insert_metadata_u32(
+        &mut metadata,
+        "failed_beads",
+        snapshot.progress.failed_beads,
+    );
+    insert_metadata_u32(
+        &mut metadata,
+        "skipped_beads",
+        snapshot.progress.skipped_beads,
+    );
+    insert_metadata_u32(
+        &mut metadata,
+        "in_progress_beads",
+        snapshot.progress.in_progress_beads,
+    );
+    insert_metadata_string(&mut metadata, "plan_hash", snapshot.plan_hash.as_deref());
+    insert_metadata_string(
+        &mut metadata,
+        "active_bead",
+        snapshot.active_bead.as_deref(),
+    );
+
+    if matches!(
+        to_status,
+        MilestoneStatus::Completed | MilestoneStatus::Failed
+    ) {
+        let duration_seconds = accumulated_running_duration_seconds(
+            journal,
+            from_status,
+            snapshot.plan_version,
+            running_started_fallback,
+            now,
+        );
+        metadata.insert(
+            "duration_seconds".to_owned(),
+            JsonValue::from(duration_seconds),
+        );
+        if to_status == MilestoneStatus::Completed {
+            metadata.insert(
+                "bead_count".to_owned(),
+                JsonValue::from(u64::from(snapshot.progress.total_beads)),
+            );
+        }
+    }
+
+    if from_status == MilestoneStatus::Paused && to_status == MilestoneStatus::Running {
+        metadata.insert("resumed".to_owned(), JsonValue::from(true));
+    }
+
+    metadata
+}
+
+fn completion_status_reason(status: MilestoneStatus) -> &'static str {
+    match status {
+        MilestoneStatus::Ready => "milestone ready for execution",
+        MilestoneStatus::Running => "execution continued",
+        MilestoneStatus::Paused => "execution paused",
+        MilestoneStatus::Completed => "all beads closed",
+        MilestoneStatus::Failed => "unrecoverable error requires operator intervention",
+        MilestoneStatus::Planning => "planning resumed",
+    }
+}
+
+fn apply_completion_milestone_disposition(
+    snapshot: &mut MilestoneSnapshot,
+    disposition: CompletionMilestoneDisposition,
+) {
+    if disposition == CompletionMilestoneDisposition::MarkMilestoneFailed
+        && snapshot.progress.failed_beads > 0
+    {
+        snapshot.status = MilestoneStatus::Failed;
+        snapshot.active_bead = None;
+        snapshot.progress.in_progress_beads = 0;
+    }
+}
+
+fn build_synthetic_transition_snapshot(
+    current_snapshot: &MilestoneSnapshot,
+    final_snapshot: &MilestoneSnapshot,
+    to_status: MilestoneStatus,
+    event_timestamp: DateTime<Utc>,
+) -> MilestoneSnapshot {
+    let mut synthetic_snapshot = current_snapshot.clone();
+    synthetic_snapshot.status = to_status;
+    synthetic_snapshot.plan_hash = final_snapshot.plan_hash.clone();
+    synthetic_snapshot.plan_version = final_snapshot.plan_version;
+    synthetic_snapshot.progress.total_beads = final_snapshot.progress.total_beads;
+    synthetic_snapshot.updated_at = event_timestamp;
+
+    match to_status {
+        MilestoneStatus::Ready => {
+            synthetic_snapshot.active_bead = None;
+            synthetic_snapshot.progress.in_progress_beads = 0;
+        }
+        MilestoneStatus::Running => {
+            synthetic_snapshot.active_bead = synthetic_snapshot
+                .active_bead
+                .clone()
+                .or_else(|| final_snapshot.active_bead.clone());
+            if synthetic_snapshot.progress.in_progress_beads == 0 {
+                synthetic_snapshot.progress.in_progress_beads = 1;
+            }
+        }
+        MilestoneStatus::Planning
+        | MilestoneStatus::Paused
+        | MilestoneStatus::Completed
+        | MilestoneStatus::Failed => {
+            synthetic_snapshot.active_bead = None;
+            synthetic_snapshot.progress.in_progress_beads = 0;
+        }
+    }
+
+    synthetic_snapshot
+}
+
+fn build_reconciled_transition_events(
+    milestone_id: &MilestoneId,
+    previous_snapshot: &MilestoneSnapshot,
+    snapshot: &MilestoneSnapshot,
+    journal: &[MilestoneJournalEvent],
+    now: DateTime<Utc>,
+    running_started_at: Option<DateTime<Utc>>,
+    actor: &str,
+    reason: &str,
+) -> AppResult<Vec<MilestoneJournalEvent>> {
+    let previous_status = previous_snapshot.status;
+    if previous_status == snapshot.status {
+        return Ok(Vec::new());
+    }
+    let transition_path: Vec<_> = if previous_status.allows_transition_to(snapshot.status) {
+        vec![snapshot.status]
+    } else {
+        match (previous_status, snapshot.status) {
+            (MilestoneStatus::Planning, MilestoneStatus::Running) => {
+                vec![MilestoneStatus::Ready, MilestoneStatus::Running]
+            }
+            (
+                MilestoneStatus::Planning,
+                MilestoneStatus::Paused | MilestoneStatus::Completed | MilestoneStatus::Failed,
+            ) => vec![
+                MilestoneStatus::Ready,
+                MilestoneStatus::Running,
+                snapshot.status,
+            ],
+            (
+                MilestoneStatus::Ready,
+                MilestoneStatus::Paused | MilestoneStatus::Completed | MilestoneStatus::Failed,
+            ) => vec![MilestoneStatus::Running, snapshot.status],
+            (MilestoneStatus::Paused, MilestoneStatus::Completed | MilestoneStatus::Failed) => {
+                vec![MilestoneStatus::Running, snapshot.status]
+            }
+            _ => {
+                return Err(invalid_transition_error(
+                    milestone_id,
+                    previous_status,
+                    snapshot.status,
+                ))
+            }
+        }
+    };
+
+    let mut events = Vec::with_capacity(transition_path.len());
+    let mut from_status = previous_status;
+    let mut current_snapshot = previous_snapshot.clone();
+    let mut event_journal = journal.to_vec();
+    for (index, to_status) in transition_path.iter().copied().enumerate() {
+        let is_final = index + 1 == transition_path.len();
+        let event_timestamp = if is_final {
+            now
+        } else if to_status == MilestoneStatus::Ready {
+            running_started_at.unwrap_or(now)
+        } else if to_status == MilestoneStatus::Running {
+            if from_status == MilestoneStatus::Paused {
+                running_started_at
+                    .filter(|started_at| *started_at >= previous_snapshot.updated_at)
+                    .unwrap_or(now)
+            } else {
+                running_started_at.unwrap_or(now)
+            }
+        } else {
+            now
+        };
+        let event_snapshot = if is_final {
+            snapshot.clone()
+        } else {
+            build_synthetic_transition_snapshot(
+                &current_snapshot,
+                snapshot,
+                to_status,
+                event_timestamp,
+            )
+        };
+        let event_reason = if is_final {
+            reason
+        } else {
+            match to_status {
+                MilestoneStatus::Ready => "plan finalized and beads exported",
+                MilestoneStatus::Running => {
+                    if from_status == MilestoneStatus::Paused {
+                        "execution resumed"
+                    } else {
+                        "execution started"
+                    }
+                }
+                MilestoneStatus::Paused => "execution paused",
+                MilestoneStatus::Completed => "all beads closed",
+                MilestoneStatus::Failed => "unrecoverable error requires operator intervention",
+                MilestoneStatus::Planning => "planning resumed",
+            }
+        };
+        events.push(MilestoneJournalEvent::lifecycle_transition(
+            event_timestamp,
+            from_status,
+            to_status,
+            actor,
+            event_reason,
+            lifecycle_transition_metadata(
+                &event_snapshot,
+                from_status,
+                to_status,
+                &event_journal,
+                running_started_at.unwrap_or(previous_snapshot.updated_at),
+                event_timestamp,
+            ),
+        ));
+        if let Some(event) = events.last() {
+            event_journal.push(event.clone());
+        }
+        current_snapshot = event_snapshot;
+        from_status = to_status;
+    }
+
+    Ok(events)
+}
+
+fn write_snapshot_with_atomic_transition(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    previous_snapshot: &MilestoneSnapshot,
+    transition: LifecycleTransitionCommit,
+) -> AppResult<()> {
+    journal_store.commit_snapshot_and_journal_ops(
+        snapshot_store,
+        base_dir,
+        milestone_id,
+        previous_snapshot,
+        &transition.snapshot,
+        &[JournalWriteOp::append_if_missing(transition.event)],
+        "lifecycle journal append failed after snapshot write",
+    )?;
+    Ok(())
+}
+
+fn commit_snapshot_and_journal_ops(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    previous_snapshot: &MilestoneSnapshot,
+    next_snapshot: &MilestoneSnapshot,
+    journal_ops: &[JournalWriteOp],
+    error_context: &str,
+) -> AppResult<()> {
+    journal_store.commit_snapshot_and_journal_ops(
+        snapshot_store,
+        base_dir,
+        milestone_id,
+        previous_snapshot,
+        next_snapshot,
+        journal_ops,
+        error_context,
+    )?;
+    Ok(())
+}
+
 fn reconcile_snapshot_from_lineage(
     snapshot: &mut MilestoneSnapshot,
     milestone_id: &MilestoneId,
@@ -387,13 +981,26 @@ fn reconcile_snapshot_from_lineage(
                 ),
             ));
         }
-        snapshot.status = MilestoneStatus::Active;
-    } else if snapshot.status == MilestoneStatus::Active
-        || (!snapshot.status.is_terminal()
-            && snapshot.status != MilestoneStatus::Paused
-            && has_any_task_runs)
+        snapshot.status = MilestoneStatus::Running;
+    } else if snapshot.progress.total_beads > 0
+        && snapshot.progress.completed_beads + snapshot.progress.skipped_beads
+            >= snapshot.progress.total_beads
+        && snapshot.progress.failed_beads == 0
     {
-        snapshot.status = MilestoneStatus::Ready;
+        snapshot.status = MilestoneStatus::Completed;
+        snapshot.active_bead = None;
+    } else if snapshot.status == MilestoneStatus::Paused {
+        snapshot.active_bead = None;
+    } else if has_any_task_runs && snapshot.status == MilestoneStatus::Running {
+        snapshot.status = MilestoneStatus::Paused;
+        snapshot.active_bead = None;
+    } else if has_any_task_runs && !snapshot.status.is_terminal() {
+        snapshot.status = if snapshot.progress.total_beads > 0 {
+            MilestoneStatus::Paused
+        } else {
+            MilestoneStatus::Ready
+        };
+        snapshot.active_bead = None;
     }
 
     Ok(())
@@ -410,17 +1017,258 @@ fn event_type_for_outcome(outcome: TaskRunOutcome) -> MilestoneEventType {
     }
 }
 
-#[cfg(test)]
-fn journal_contains_event(
-    journal: &[MilestoneJournalEvent],
-    candidate: &MilestoneJournalEvent,
+fn option_conflicts(existing: Option<&str>, requested: Option<&str>) -> bool {
+    matches!((existing, requested), (Some(existing), Some(requested)) if existing != requested)
+}
+
+fn merge_start_journal_details(
+    existing: &StartJournalDetails,
+    requested: &StartJournalDetails,
+) -> Option<StartJournalDetails> {
+    if existing.project_id != requested.project_id
+        || option_conflicts(existing.run_id.as_deref(), requested.run_id.as_deref())
+        || option_conflicts(
+            existing.plan_hash.as_deref(),
+            requested.plan_hash.as_deref(),
+        )
+    {
+        return None;
+    }
+
+    let mut merged = existing.clone();
+    if merged.run_id.is_none() {
+        merged.run_id = requested.run_id.clone();
+    }
+    if merged.plan_hash.is_none() {
+        merged.plan_hash = requested.plan_hash.clone();
+    }
+    Some(merged)
+}
+
+fn merge_completion_journal_details(
+    existing: &CompletionJournalDetails,
+    requested: &CompletionJournalDetails,
+) -> Option<CompletionJournalDetails> {
+    if existing.project_id != requested.project_id
+        || existing.started_at != requested.started_at
+        || existing.outcome != requested.outcome
+        || option_conflicts(existing.run_id.as_deref(), requested.run_id.as_deref())
+        || option_conflicts(
+            existing.plan_hash.as_deref(),
+            requested.plan_hash.as_deref(),
+        )
+        || option_conflicts(
+            existing.outcome_detail.as_deref(),
+            requested.outcome_detail.as_deref(),
+        )
+    {
+        return None;
+    }
+
+    let mut merged = existing.clone();
+    if merged.run_id.is_none() {
+        merged.run_id = requested.run_id.clone();
+    }
+    if merged.plan_hash.is_none() {
+        merged.plan_hash = requested.plan_hash.clone();
+    }
+    if merged.outcome_detail.is_none() {
+        merged.outcome_detail = requested.outcome_detail.clone();
+    }
+    Some(merged)
+}
+
+fn render_journal_details<T: Serialize>(details: &T) -> Option<String> {
+    serde_json::to_string(details).ok()
+}
+
+fn is_completion_event(event: &MilestoneJournalEvent) -> bool {
+    matches!(
+        event.event_type,
+        MilestoneEventType::BeadCompleted
+            | MilestoneEventType::BeadFailed
+            | MilestoneEventType::BeadSkipped
+    )
+}
+
+fn repairable_start_event(
+    existing: &MilestoneJournalEvent,
+    requested: &MilestoneJournalEvent,
+) -> Option<MilestoneJournalEvent> {
+    if existing.event_type != MilestoneEventType::BeadStarted
+        || requested.event_type != MilestoneEventType::BeadStarted
+        || existing.timestamp != requested.timestamp
+        || existing.bead_id != requested.bead_id
+    {
+        return None;
+    }
+
+    let existing_details: StartJournalDetails =
+        serde_json::from_str(existing.details.as_deref()?).ok()?;
+    let requested_details: StartJournalDetails =
+        serde_json::from_str(requested.details.as_deref()?).ok()?;
+    let merged_details = merge_start_journal_details(&existing_details, &requested_details)?;
+
+    let mut repaired = existing.clone();
+    repaired.details = render_journal_details(&merged_details);
+    Some(repaired)
+}
+
+fn repairable_completion_event(
+    existing: &MilestoneJournalEvent,
+    requested: &MilestoneJournalEvent,
+) -> Option<MilestoneJournalEvent> {
+    if !is_completion_event(existing)
+        || !is_completion_event(requested)
+        || existing.event_type != requested.event_type
+        || existing.bead_id != requested.bead_id
+    {
+        return None;
+    }
+
+    let existing_details: CompletionJournalDetails =
+        serde_json::from_str(existing.details.as_deref()?).ok()?;
+    let requested_details: CompletionJournalDetails =
+        serde_json::from_str(requested.details.as_deref()?).ok()?;
+    if existing_details.project_id != requested_details.project_id
+        || existing_details.started_at != requested_details.started_at
+        || option_conflicts(
+            existing_details.run_id.as_deref(),
+            requested_details.run_id.as_deref(),
+        )
+        || option_conflicts(
+            existing_details.plan_hash.as_deref(),
+            requested_details.plan_hash.as_deref(),
+        )
+    {
+        return None;
+    }
+
+    let merged_details = merge_completion_journal_details(&existing_details, &requested_details)?;
+    let mut repaired = existing.clone();
+    repaired.details = render_journal_details(&merged_details);
+    Some(repaired)
+}
+
+fn explicitly_repaired_completion_event(
+    existing: &MilestoneJournalEvent,
+    requested: &MilestoneJournalEvent,
+) -> Option<MilestoneJournalEvent> {
+    if !is_completion_event(existing)
+        || !is_completion_event(requested)
+        || existing.bead_id != requested.bead_id
+    {
+        return None;
+    }
+
+    let existing_details: CompletionJournalDetails =
+        serde_json::from_str(existing.details.as_deref()?).ok()?;
+    let requested_details: CompletionJournalDetails =
+        serde_json::from_str(requested.details.as_deref()?).ok()?;
+    if existing_details.project_id != requested_details.project_id
+        || existing_details.started_at != requested_details.started_at
+        || option_conflicts(
+            existing_details.run_id.as_deref(),
+            requested_details.run_id.as_deref(),
+        )
+        || option_conflicts(
+            existing_details.plan_hash.as_deref(),
+            requested_details.plan_hash.as_deref(),
+        )
+    {
+        return None;
+    }
+
+    let mut repaired_details = requested_details.clone();
+    if repaired_details.run_id.is_none() {
+        repaired_details.run_id = existing_details.run_id.clone();
+    }
+    if repaired_details.plan_hash.is_none() {
+        repaired_details.plan_hash = existing_details.plan_hash.clone();
+    }
+    if repaired_details.outcome == existing_details.outcome
+        && repaired_details.outcome_detail.is_none()
+    {
+        repaired_details.outcome_detail = existing_details.outcome_detail.clone();
+    }
+
+    let mut repaired = requested.clone();
+    repaired.details = render_journal_details(&repaired_details);
+    Some(repaired)
+}
+
+fn apply_append_if_missing(
+    journal: &mut Vec<MilestoneJournalEvent>,
+    event: &MilestoneJournalEvent,
 ) -> bool {
-    journal.iter().any(|existing| {
-        existing.timestamp == candidate.timestamp
-            && existing.event_type == candidate.event_type
-            && existing.bead_id == candidate.bead_id
-            && existing.details == candidate.details
-    })
+    if journal.iter().any(|existing| existing == event) {
+        return false;
+    }
+
+    if let Some((existing_index, repaired_event)) =
+        journal.iter().enumerate().find_map(|(index, existing)| {
+            repairable_start_event(existing, event)
+                .or_else(|| repairable_completion_event(existing, event))
+                .map(|repaired| (index, repaired))
+        })
+    {
+        if journal[existing_index].details == repaired_event.details {
+            return false;
+        }
+
+        journal[existing_index] = repaired_event;
+        return true;
+    }
+
+    journal.push(event.clone());
+    true
+}
+
+fn apply_repair_completion(
+    journal: &mut Vec<MilestoneJournalEvent>,
+    event: &MilestoneJournalEvent,
+) -> bool {
+    let exact_match_index = journal.iter().position(|existing| existing == event);
+
+    if let Some((existing_index, repaired_event)) =
+        journal.iter().enumerate().find_map(|(index, existing)| {
+            if existing == event {
+                return None;
+            }
+            explicitly_repaired_completion_event(existing, event).map(|repaired| (index, repaired))
+        })
+    {
+        if exact_match_index.is_some() {
+            journal.remove(existing_index);
+        } else {
+            journal[existing_index] = repaired_event;
+        }
+        return true;
+    }
+
+    if exact_match_index.is_some() {
+        return false;
+    }
+
+    journal.push(event.clone());
+    true
+}
+
+fn apply_journal_write_ops(
+    journal: &mut Vec<MilestoneJournalEvent>,
+    ops: &[JournalWriteOp],
+) -> usize {
+    let mut applied = 0;
+    for op in ops {
+        let changed = match op.kind {
+            JournalWriteOpKind::AppendIfMissing => apply_append_if_missing(journal, &op.event),
+            JournalWriteOpKind::RepairCompletion => apply_repair_completion(journal, &op.event),
+        };
+        if changed {
+            applied += 1;
+        }
+    }
+    applied
 }
 
 // ── Service use cases ───────────────────────────────────────────────────────
@@ -508,13 +1356,7 @@ pub fn materialize_bundle(
 
     snapshot_store.with_milestone_write_lock(base_dir, &milestone_id, || {
         let mut snapshot = snapshot_store.read_snapshot(base_dir, &milestone_id)?;
-        if matches!(
-            snapshot.status,
-            MilestoneStatus::Active
-                | MilestoneStatus::Paused
-                | MilestoneStatus::Completed
-                | MilestoneStatus::Abandoned
-        ) {
+        if snapshot.status == MilestoneStatus::Running {
             return Err(AppError::InvalidConfigValue {
                 key: "milestone_status".to_owned(),
                 value: snapshot.status.to_string(),
@@ -557,7 +1399,7 @@ pub fn materialize_bundle(
             &bundle.executive_summary,
         )?;
 
-        if snapshot.status != MilestoneStatus::Ready {
+        if snapshot.status == MilestoneStatus::Planning {
             update_status_locked(
                 snapshot_store,
                 journal_store,
@@ -676,22 +1518,51 @@ fn update_status_locked(
     new_status: MilestoneStatus,
     now: DateTime<Utc>,
 ) -> AppResult<()> {
-    let old_status = snapshot.status;
-    snapshot.status = new_status;
-
-    if new_status.is_terminal() {
-        snapshot.active_bead = None;
-    }
-
-    snapshot.updated_at = now;
-
-    validate_snapshot(snapshot, milestone_id)?;
-    snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
-
-    let event = MilestoneJournalEvent::new(MilestoneEventType::StatusChanged, now)
-        .with_details(format!("{old_status} -> {new_status}"));
-    let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-    journal_store.append_event(base_dir, milestone_id, &line)?;
+    let previous_snapshot = snapshot.clone();
+    let existing_journal = journal_store.read_journal(base_dir, milestone_id)?;
+    let next_snapshot = build_transition_snapshot(snapshot, milestone_id, new_status, now)?;
+    let metadata = lifecycle_transition_metadata(
+        &next_snapshot,
+        snapshot.status,
+        new_status,
+        &existing_journal,
+        previous_snapshot.updated_at,
+        now,
+    );
+    let reason = match new_status {
+        MilestoneStatus::Ready => "plan finalized and beads exported",
+        MilestoneStatus::Running => {
+            if previous_snapshot.status == MilestoneStatus::Paused {
+                "execution resumed"
+            } else {
+                "execution started"
+            }
+        }
+        MilestoneStatus::Paused => "execution paused",
+        MilestoneStatus::Completed => "all beads closed",
+        MilestoneStatus::Failed => "unrecoverable error requires operator intervention",
+        MilestoneStatus::Planning => "planning resumed",
+    };
+    let transition = LifecycleTransitionCommit {
+        snapshot: next_snapshot,
+        event: MilestoneJournalEvent::lifecycle_transition(
+            now,
+            previous_snapshot.status,
+            new_status,
+            "system",
+            reason,
+            metadata,
+        ),
+    };
+    write_snapshot_with_atomic_transition(
+        snapshot_store,
+        journal_store,
+        base_dir,
+        milestone_id,
+        &previous_snapshot,
+        transition,
+    )?;
+    *snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
     Ok(())
 }
 
@@ -742,11 +1613,23 @@ fn persist_plan_locked(
 
     let mut progress = reconcile_progress_for_new_plan(shape_matches, bundle, snapshot);
     progress.total_beads = bundle.bead_count() as u32;
+    let reopen_terminal_status = match snapshot.status {
+        MilestoneStatus::Completed => {
+            (plan_hash_changed || lineage_reset_required)
+                && (progress.completed_beads + progress.skipped_beads < progress.total_beads
+                    || progress.failed_beads > 0)
+        }
+        MilestoneStatus::Failed => {
+            (plan_hash_changed || lineage_reset_required) && progress.failed_beads == 0
+        }
+        _ => false,
+    };
 
     plan_store.write_plan_json(base_dir, milestone_id, &plan_json)?;
     plan_store.write_plan_md(base_dir, milestone_id, &plan_md)?;
     plan_store.write_plan_shape(base_dir, milestone_id, &plan_shape)?;
 
+    let previous_snapshot = snapshot.clone();
     let pending_lineage_reset_before = pending_lineage_reset_for_snapshot(snapshot);
 
     if plan_hash_changed {
@@ -756,6 +1639,41 @@ fn persist_plan_locked(
         snapshot.updated_at = now;
     }
     snapshot.pending_lineage_reset = pending_lineage_reset.clone();
+    if reopen_terminal_status {
+        snapshot.status = MilestoneStatus::Planning;
+        snapshot.active_bead = None;
+    }
+
+    let needs_ready_transition = snapshot.status == MilestoneStatus::Planning;
+    let mut existing_journal = if reopen_terminal_status || needs_ready_transition {
+        Some(journal_store.read_journal(base_dir, milestone_id)?)
+    } else {
+        None
+    };
+    let mut journal_ops = Vec::new();
+    if reopen_terminal_status {
+        let reopen_event = MilestoneJournalEvent::lifecycle_transition(
+            now,
+            previous_snapshot.status,
+            MilestoneStatus::Planning,
+            "system",
+            "plan changed, milestone reopened",
+            lifecycle_transition_metadata(
+                snapshot,
+                previous_snapshot.status,
+                MilestoneStatus::Planning,
+                existing_journal
+                    .as_deref()
+                    .expect("lifecycle journal should be loaded for reopen events"),
+                previous_snapshot.updated_at,
+                now,
+            ),
+        );
+        journal_ops.push(JournalWriteOp::append_if_missing(reopen_event.clone()));
+        if let Some(journal) = existing_journal.as_mut() {
+            journal.push(reopen_event);
+        }
+    }
 
     if plan_hash_changed {
         let event_type = if snapshot.plan_version == 1 {
@@ -763,20 +1681,75 @@ fn persist_plan_locked(
         } else {
             MilestoneEventType::PlanUpdated
         };
-
-        validate_snapshot(snapshot, milestone_id)?;
-        snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
-
-        let event = MilestoneJournalEvent::new(event_type, now).with_details(format!(
-            "Plan v{} with {} beads",
-            snapshot.plan_version,
-            bundle.bead_count()
+        journal_ops.push(JournalWriteOp::append_if_missing(
+            MilestoneJournalEvent::new(event_type, now).with_details(format!(
+                "Plan v{} with {} beads",
+                snapshot.plan_version,
+                bundle.bead_count()
+            )),
         ));
-        let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-        journal_store.append_event(base_dir, milestone_id, &line)?;
-    } else if pending_lineage_reset_before != pending_lineage_reset {
+    }
+
+    if needs_ready_transition {
+        let planning_snapshot = snapshot.clone();
+        let ready_snapshot = build_transition_snapshot(
+            &planning_snapshot,
+            milestone_id,
+            MilestoneStatus::Ready,
+            now,
+        )?;
+        let ready_event = MilestoneJournalEvent::lifecycle_transition(
+            now,
+            MilestoneStatus::Planning,
+            MilestoneStatus::Ready,
+            "system",
+            "plan finalized and beads exported",
+            lifecycle_transition_metadata(
+                &ready_snapshot,
+                MilestoneStatus::Planning,
+                MilestoneStatus::Ready,
+                existing_journal
+                    .as_deref()
+                    .expect("lifecycle journal should be loaded for ready transitions"),
+                planning_snapshot.updated_at,
+                now,
+            ),
+        );
+        journal_ops.push(JournalWriteOp::append_if_missing(ready_event.clone()));
+        if let Some(journal) = existing_journal.as_mut() {
+            journal.push(ready_event);
+        }
+        *snapshot = ready_snapshot;
+    }
+
+    if plan_hash_changed {
         validate_snapshot(snapshot, milestone_id)?;
-        snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
+        commit_snapshot_and_journal_ops(
+            snapshot_store,
+            journal_store,
+            base_dir,
+            milestone_id,
+            &previous_snapshot,
+            snapshot,
+            &journal_ops,
+            "milestone journal commit failed after plan update snapshot write",
+        )?;
+    } else if pending_lineage_reset_before != pending_lineage_reset || !journal_ops.is_empty() {
+        validate_snapshot(snapshot, milestone_id)?;
+        if journal_ops.is_empty() {
+            snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
+        } else {
+            commit_snapshot_and_journal_ops(
+                snapshot_store,
+                journal_store,
+                base_dir,
+                milestone_id,
+                &previous_snapshot,
+                snapshot,
+                &journal_ops,
+                "milestone journal commit failed after milestone reopen snapshot write",
+            )?;
+        }
     }
 
     if lineage_reset_required {
@@ -905,6 +1878,12 @@ pub fn record_bead_start(
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
         clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, &mut snapshot)?;
+        // Capture the on-disk snapshot before lineage reconciliation so rollback
+        // restores the exact durable state. Any transient reconcile-only
+        // correction (for example running -> paused with no active bead) is not
+        // itself journaled unless the start mutation commits successfully.
+        let previous_snapshot = snapshot.clone();
+        let previous_status = previous_snapshot.status;
         reconcile_snapshot_from_lineage(
             &mut snapshot,
             milestone_id,
@@ -918,6 +1897,8 @@ pub fn record_bead_start(
                 ),
             });
         }
+        validate_transition_prerequisites(&snapshot, milestone_id, MilestoneStatus::Running)?;
+        let existing_journal = journal_store.read_journal(base_dir, milestone_id)?;
 
         let started_entry = lineage_store.record_task_run_start(
             base_dir,
@@ -936,13 +1917,39 @@ pub fn record_bead_start(
         )?;
         snapshot.updated_at = snapshot.updated_at.max(now).max(started_entry.started_at);
         validate_snapshot(&snapshot, milestone_id)?;
-        snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
-
-        let event =
+        let bead_event =
             MilestoneJournalEvent::new(MilestoneEventType::BeadStarted, started_entry.started_at)
                 .with_bead(bead_id)
                 .with_details(started_entry.start_journal_details());
-        let _ = journal_store.append_event_if_missing(base_dir, milestone_id, &event)?;
+        let mut journal_ops: Vec<_> = build_reconciled_transition_events(
+            milestone_id,
+            &previous_snapshot,
+            &snapshot,
+            &existing_journal,
+            now,
+            Some(started_entry.started_at),
+            "controller",
+            if previous_status == MilestoneStatus::Paused {
+                "execution resumed"
+            } else {
+                "execution started"
+            },
+        )?
+        .into_iter()
+        .map(JournalWriteOp::append_if_missing)
+        .collect();
+        journal_ops.push(JournalWriteOp::append_if_missing(bead_event));
+
+        commit_snapshot_and_journal_ops(
+            snapshot_store,
+            journal_store,
+            base_dir,
+            milestone_id,
+            &previous_snapshot,
+            &snapshot,
+            &journal_ops,
+            "milestone journal commit failed after bead start snapshot write",
+        )?;
 
         Ok(())
     })
@@ -968,7 +1975,42 @@ pub fn record_bead_completion(
     started_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> AppResult<()> {
-    update_task_run(
+    record_bead_completion_with_disposition(
+        snapshot_store,
+        journal_store,
+        lineage_store,
+        base_dir,
+        milestone_id,
+        bead_id,
+        project_id,
+        run_id,
+        plan_hash,
+        outcome,
+        outcome_detail,
+        started_at,
+        now,
+        CompletionMilestoneDisposition::ReconcileFromLineage,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_bead_completion_with_disposition(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    lineage_store: &impl TaskRunLineagePort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    project_id: &str,
+    run_id: &str,
+    plan_hash: Option<&str>,
+    outcome: TaskRunOutcome,
+    outcome_detail: Option<&str>,
+    started_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+    disposition: CompletionMilestoneDisposition,
+) -> AppResult<()> {
+    update_task_run_with_disposition(
         snapshot_store,
         journal_store,
         lineage_store,
@@ -982,6 +2024,7 @@ pub fn record_bead_completion(
         outcome,
         outcome_detail.map(str::to_owned),
         now,
+        disposition,
     )
 }
 
@@ -1035,6 +2078,41 @@ pub fn update_task_run(
     outcome_detail: Option<String>,
     finished_at: DateTime<Utc>,
 ) -> AppResult<()> {
+    update_task_run_with_disposition(
+        snapshot_store,
+        journal_store,
+        lineage_store,
+        base_dir,
+        milestone_id,
+        bead_id,
+        project_id,
+        run_id,
+        plan_hash,
+        started_at,
+        outcome,
+        outcome_detail,
+        finished_at,
+        CompletionMilestoneDisposition::ReconcileFromLineage,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_task_run_with_disposition(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    lineage_store: &impl TaskRunLineagePort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    project_id: &str,
+    run_id: &str,
+    plan_hash: Option<&str>,
+    started_at: DateTime<Utc>,
+    outcome: TaskRunOutcome,
+    outcome_detail: Option<String>,
+    finished_at: DateTime<Utc>,
+    disposition: CompletionMilestoneDisposition,
+) -> AppResult<()> {
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, move || {
         if !outcome.is_terminal() {
             return Err(AppError::RunStartFailed {
@@ -1046,6 +2124,8 @@ pub fn update_task_run(
 
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
         clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, &mut snapshot)?;
+        let previous_snapshot = snapshot.clone();
+        let existing_journal = journal_store.read_journal(base_dir, milestone_id)?;
         let finalized_run = lineage_store.update_task_run(
             base_dir,
             milestone_id,
@@ -1064,18 +2144,41 @@ pub fn update_task_run(
             milestone_id,
             lineage_store.read_task_runs(base_dir, milestone_id)?,
         )?;
+        apply_completion_milestone_disposition(&mut snapshot, disposition);
         let event_timestamp = finalized_run.finished_at.unwrap_or(finished_at);
         snapshot.updated_at = snapshot.updated_at.max(finished_at).max(event_timestamp);
         validate_snapshot(&snapshot, milestone_id)?;
-        snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
-
-        let event = MilestoneJournalEvent::new(
+        let bead_event = MilestoneJournalEvent::new(
             event_type_for_outcome(finalized_run.outcome),
             event_timestamp,
         )
         .with_bead(&finalized_run.bead_id)
         .with_details(finalized_run.completion_journal_details());
-        let _ = journal_store.append_event_if_missing(base_dir, milestone_id, &event)?;
+        let mut journal_ops: Vec<_> = build_reconciled_transition_events(
+            milestone_id,
+            &previous_snapshot,
+            &snapshot,
+            &existing_journal,
+            event_timestamp,
+            Some(finalized_run.started_at),
+            "controller",
+            completion_status_reason(snapshot.status),
+        )?
+        .into_iter()
+        .map(JournalWriteOp::append_if_missing)
+        .collect();
+        journal_ops.push(JournalWriteOp::append_if_missing(bead_event));
+
+        commit_snapshot_and_journal_ops(
+            snapshot_store,
+            journal_store,
+            base_dir,
+            milestone_id,
+            &previous_snapshot,
+            &snapshot,
+            &journal_ops,
+            "milestone journal commit failed after bead completion snapshot write",
+        )?;
 
         Ok(())
     })
@@ -1103,6 +2206,41 @@ pub fn repair_task_run(
     outcome_detail: Option<String>,
     finished_at: DateTime<Utc>,
 ) -> AppResult<()> {
+    repair_task_run_with_disposition(
+        snapshot_store,
+        journal_store,
+        lineage_store,
+        base_dir,
+        milestone_id,
+        bead_id,
+        project_id,
+        run_id,
+        plan_hash,
+        started_at,
+        outcome,
+        outcome_detail,
+        finished_at,
+        CompletionMilestoneDisposition::ReconcileFromLineage,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn repair_task_run_with_disposition(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    lineage_store: &impl TaskRunLineagePort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    project_id: &str,
+    run_id: &str,
+    plan_hash: Option<&str>,
+    started_at: DateTime<Utc>,
+    outcome: TaskRunOutcome,
+    outcome_detail: Option<String>,
+    finished_at: DateTime<Utc>,
+    disposition: CompletionMilestoneDisposition,
+) -> AppResult<()> {
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, move || {
         if !outcome.is_terminal() {
             return Err(AppError::RunStartFailed {
@@ -1114,6 +2252,8 @@ pub fn repair_task_run(
 
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
         clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, &mut snapshot)?;
+        let previous_snapshot = snapshot.clone();
+        let existing_journal = journal_store.read_journal(base_dir, milestone_id)?;
         let repaired_run = lineage_store.repair_task_run_terminal(
             base_dir,
             milestone_id,
@@ -1132,18 +2272,47 @@ pub fn repair_task_run(
             milestone_id,
             lineage_store.read_task_runs(base_dir, milestone_id)?,
         )?;
+        apply_completion_milestone_disposition(&mut snapshot, disposition);
         let event_timestamp = repaired_run.finished_at.unwrap_or(finished_at);
         snapshot.updated_at = snapshot.updated_at.max(finished_at).max(event_timestamp);
         validate_snapshot(&snapshot, milestone_id)?;
-        snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
-
-        let event = MilestoneJournalEvent::new(
+        let bead_start_event =
+            MilestoneJournalEvent::new(MilestoneEventType::BeadStarted, repaired_run.started_at)
+                .with_bead(&repaired_run.bead_id)
+                .with_details(repaired_run.start_journal_details());
+        let bead_event = MilestoneJournalEvent::new(
             event_type_for_outcome(repaired_run.outcome),
             event_timestamp,
         )
         .with_bead(&repaired_run.bead_id)
         .with_details(repaired_run.completion_journal_details());
-        let _ = journal_store.repair_completion_event(base_dir, milestone_id, &event)?;
+        let mut journal_ops = vec![JournalWriteOp::append_if_missing(bead_start_event)];
+        journal_ops.extend(
+            build_reconciled_transition_events(
+                milestone_id,
+                &previous_snapshot,
+                &snapshot,
+                &existing_journal,
+                event_timestamp,
+                Some(repaired_run.started_at),
+                "controller",
+                completion_status_reason(snapshot.status),
+            )?
+            .into_iter()
+            .map(JournalWriteOp::append_if_missing),
+        );
+        journal_ops.push(JournalWriteOp::repair_completion(bead_event));
+
+        commit_snapshot_and_journal_ops(
+            snapshot_store,
+            journal_store,
+            base_dir,
+            milestone_id,
+            &previous_snapshot,
+            &snapshot,
+            &journal_ops,
+            "milestone journal commit failed after bead repair snapshot write",
+        )?;
 
         Ok(())
     })
@@ -1161,6 +2330,7 @@ mod tests {
         FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
         FsTaskRunLineageStore,
     };
+    use crate::contexts::milestone_record::model::render_completion_journal_details;
 
     struct FailSecondJournalAppend {
         append_calls: Cell<u32>,
@@ -1181,13 +2351,22 @@ mod tests {
             milestone_id: &MilestoneId,
             line: &str,
         ) -> AppResult<()> {
+            FsMilestoneJournalStore.append_event(base_dir, milestone_id, line)
+        }
+
+        fn replace_journal(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            events: &[MilestoneJournalEvent],
+        ) -> AppResult<()> {
             let next_call = self.append_calls.get() + 1;
             self.append_calls.set(next_call);
             if next_call == 2 {
                 return Err(std::io::Error::other("simulated completion journal failure").into());
             }
 
-            FsMilestoneJournalStore.append_event(base_dir, milestone_id, line)
+            FsMilestoneJournalStore.replace_journal(base_dir, milestone_id, events)
         }
 
         fn append_event_if_missing(
@@ -1196,14 +2375,7 @@ mod tests {
             milestone_id: &MilestoneId,
             event: &MilestoneJournalEvent,
         ) -> AppResult<bool> {
-            let journal = self.read_journal(base_dir, milestone_id)?;
-            if journal_contains_event(&journal, event) {
-                return Ok(false);
-            }
-
-            let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-            self.append_event(base_dir, milestone_id, &line)?;
-            Ok(true)
+            FsMilestoneJournalStore.append_event_if_missing(base_dir, milestone_id, event)
         }
     }
 
@@ -1226,13 +2398,22 @@ mod tests {
             milestone_id: &MilestoneId,
             line: &str,
         ) -> AppResult<()> {
+            FsMilestoneJournalStore.append_event(base_dir, milestone_id, line)
+        }
+
+        fn replace_journal(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            events: &[MilestoneJournalEvent],
+        ) -> AppResult<()> {
             let next_call = self.append_calls.get() + 1;
             self.append_calls.set(next_call);
             if next_call == 1 {
                 return Err(std::io::Error::other("simulated start journal failure").into());
             }
 
-            FsMilestoneJournalStore.append_event(base_dir, milestone_id, line)
+            FsMilestoneJournalStore.replace_journal(base_dir, milestone_id, events)
         }
 
         fn append_event_if_missing(
@@ -1241,14 +2422,7 @@ mod tests {
             milestone_id: &MilestoneId,
             event: &MilestoneJournalEvent,
         ) -> AppResult<bool> {
-            let journal = self.read_journal(base_dir, milestone_id)?;
-            if journal_contains_event(&journal, event) {
-                return Ok(false);
-            }
-
-            let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-            self.append_event(base_dir, milestone_id, &line)?;
-            Ok(true)
+            FsMilestoneJournalStore.append_event_if_missing(base_dir, milestone_id, event)
         }
     }
 
@@ -1347,7 +2521,7 @@ mod tests {
             milestone_id: &MilestoneId,
             snapshot: &MilestoneSnapshot,
         ) -> AppResult<()> {
-            if snapshot.status == MilestoneStatus::Ready && snapshot.active_bead.is_none() {
+            if snapshot.status != MilestoneStatus::Running && snapshot.active_bead.is_none() {
                 if let Some(entered_tx) = self.entered_tx.lock().expect("lock entered_tx").take() {
                     entered_tx.send(()).expect("signal blocked snapshot write");
                 }
@@ -1411,6 +2585,50 @@ mod tests {
         }
     }
 
+    struct CountingSnapshotStore {
+        write_calls: Cell<u32>,
+    }
+
+    impl CountingSnapshotStore {
+        fn new() -> Self {
+            Self {
+                write_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl MilestoneSnapshotPort for CountingSnapshotStore {
+        fn read_snapshot(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+        ) -> AppResult<MilestoneSnapshot> {
+            FsMilestoneSnapshotStore.read_snapshot(base_dir, milestone_id)
+        }
+
+        fn write_snapshot(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            snapshot: &MilestoneSnapshot,
+        ) -> AppResult<()> {
+            self.write_calls.set(self.write_calls.get() + 1);
+            FsMilestoneSnapshotStore.write_snapshot(base_dir, milestone_id, snapshot)
+        }
+
+        fn with_milestone_write_lock<T, F>(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            operation: F,
+        ) -> AppResult<T>
+        where
+            F: FnOnce() -> AppResult<T>,
+        {
+            FsMilestoneSnapshotStore.with_milestone_write_lock(base_dir, milestone_id, operation)
+        }
+    }
+
     fn setup_workspace(dir: &Path) {
         std::fs::create_dir_all(dir.join(".ralph-burning/milestones")).unwrap();
     }
@@ -1457,6 +2675,56 @@ mod tests {
             default_flow: crate::shared::domain::FlowPreset::QuickDev,
             agents_guidance: None,
         }
+    }
+
+    fn create_milestone_with_plan(
+        store: &FsMilestoneStore,
+        snapshot_store: &FsMilestoneSnapshotStore,
+        journal_store: &FsMilestoneJournalStore,
+        plan_store: &FsMilestonePlanStore,
+        base: &Path,
+        id: &str,
+        name: &str,
+        now: DateTime<Utc>,
+    ) -> Result<MilestoneRecord, Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let record = create_milestone(
+            store,
+            base,
+            CreateMilestoneInput {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                description: format!("testing {id}"),
+            },
+            now,
+        )?;
+        let mut bundle = sample_bundle(id, name);
+        bundle.acceptance_map[0]
+            .covered_by
+            .push("bead-2".to_owned());
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Follow-up feature".to_owned(),
+            description: None,
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec![],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+        persist_plan(
+            snapshot_store,
+            journal_store,
+            plan_store,
+            base,
+            &record.id,
+            &bundle,
+            now + chrono::Duration::milliseconds(1),
+        )?;
+        Ok(record)
     }
 
     fn setup_pending_lineage_reset_state(
@@ -1650,16 +2918,17 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "status-test".to_owned(),
-                name: "Status Test".to_owned(),
-                description: "testing status".to_owned(),
-            },
+            "status-test",
+            "Status Test",
             now,
         )?;
 
@@ -1668,13 +2937,415 @@ mod tests {
             &journal_store,
             base,
             &record.id,
-            MilestoneStatus::Ready,
+            MilestoneStatus::Running,
             now,
         )?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
 
         let journal = read_journal(&journal_store, base, &record.id)?;
         assert!(journal.len() >= 2);
+        Ok(())
+    }
+
+    #[test]
+    fn update_status_rejects_invalid_transition_with_allowed_targets(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "invalid-status-transition",
+            "Invalid Status Transition",
+            now,
+        )?;
+
+        let error = update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Planning,
+            now + chrono::Duration::seconds(1),
+        )
+        .expect_err("ready -> planning must be rejected");
+        assert!(error.to_string().contains("ready -> planning"));
+        assert!(error.to_string().contains("only to: running"));
+        Ok(())
+    }
+
+    #[test]
+    fn pausing_clears_active_bead_and_pause_event_metadata(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "pause-metadata-test",
+            "Pause Metadata Test",
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let snapshot = update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Paused,
+            now + chrono::Duration::seconds(3),
+        )?;
+        snapshot
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
+        assert_eq!(snapshot.active_bead, None);
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let paused_event = journal
+            .iter()
+            .rev()
+            .find(|event| event.to_state == Some(MilestoneStatus::Paused))
+            .expect("paused lifecycle event should be recorded");
+        let metadata = paused_event
+            .metadata
+            .as_ref()
+            .expect("paused lifecycle event should include metadata");
+        assert!(!metadata.contains_key("active_bead"));
+        assert_eq!(
+            metadata.get("in_progress_beads"),
+            Some(&serde_json::json!(1))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completed_transition_accumulates_runtime_across_resume(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "runtime-accumulation-test",
+            "Runtime Accumulation Test",
+            now,
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(2),
+        )?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Paused,
+            now + chrono::Duration::seconds(12),
+        )?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(20),
+        )?;
+        let mut snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot.progress.completed_beads = snapshot.progress.total_beads;
+        snapshot_store.write_snapshot(base, &record.id, &snapshot)?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Completed,
+            now + chrono::Duration::seconds(25),
+        )?;
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let completed_event = journal
+            .iter()
+            .rev()
+            .find(|event| event.to_state == Some(MilestoneStatus::Completed))
+            .expect("completed lifecycle event should be recorded");
+        let metadata = completed_event
+            .metadata
+            .as_ref()
+            .expect("completed lifecycle event should include metadata");
+        assert_eq!(
+            metadata.get("duration_seconds"),
+            Some(&serde_json::json!(15))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn update_status_paused_to_running_uses_resume_reason() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "resume-reason-test",
+            "Resume Reason Test",
+            now,
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(2),
+        )?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Paused,
+            now + chrono::Duration::seconds(3),
+        )?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(4),
+        )?;
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let resumed_event = journal
+            .iter()
+            .rev()
+            .find(|event| {
+                event.from_state == Some(MilestoneStatus::Paused)
+                    && event.to_state == Some(MilestoneStatus::Running)
+            })
+            .expect("paused -> running event should be recorded");
+        assert_eq!(resumed_event.reason.as_deref(), Some("execution resumed"));
+        Ok(())
+    }
+
+    #[test]
+    fn completed_transition_requires_all_beads_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "completed-prereq-test",
+            "Completed Prereq Test",
+            now,
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let error = update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Completed,
+            now + chrono::Duration::seconds(3),
+        )
+        .expect_err("completed transition must fail while beads remain open");
+        assert!(error.to_string().contains("until all beads are closed"));
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
+        Ok(())
+    }
+
+    #[test]
+    fn completed_transition_error_mentions_failed_bead_recovery_hint() {
+        let now = Utc::now();
+        let mut snapshot = MilestoneSnapshot::initial(now);
+        snapshot.status = MilestoneStatus::Running;
+        snapshot.plan_hash = Some("plan-v1".to_owned());
+        snapshot.plan_version = 1;
+        snapshot.progress.total_beads = 2;
+        snapshot.progress.completed_beads = 1;
+        snapshot.progress.failed_beads = 1;
+
+        let milestone_id = MilestoneId::new("completed-hint-test").expect("milestone id");
+        let error =
+            validate_transition_prerequisites(&snapshot, &milestone_id, MilestoneStatus::Completed)
+                .expect_err("failed beads should block completion");
+        let message = error.to_string();
+        assert!(message.contains("until all beads are closed"));
+        assert!(message.contains("re-run or skip failed beads to unblock completion"));
+    }
+
+    #[test]
+    fn update_status_requires_finalized_plan_before_ready() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "ready-without-plan".to_owned(),
+                name: "Ready Without Plan".to_owned(),
+                description: "reject ready transition without plan export".to_owned(),
+            },
+            now,
+        )?;
+
+        let error = update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Ready,
+            now + chrono::Duration::seconds(1),
+        )
+        .expect_err("ready transition without a plan must fail");
+        assert!(error
+            .to_string()
+            .contains("before a plan is finalized and exported"));
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_transition_duration_uses_pre_transition_timestamp_when_running_entry_is_missing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "legacy-running-duration-test",
+            "Legacy Running Duration Test",
+            now,
+        )?;
+
+        let mut running_snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        running_snapshot.status = MilestoneStatus::Running;
+        running_snapshot.progress.completed_beads = running_snapshot.progress.total_beads;
+        running_snapshot.updated_at = now + chrono::Duration::seconds(7);
+        snapshot_store.write_snapshot(base, &record.id, &running_snapshot)?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Completed,
+            now + chrono::Duration::seconds(13),
+        )?;
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let completed_event = journal
+            .iter()
+            .rev()
+            .find(|event| event.to_state == Some(MilestoneStatus::Completed))
+            .expect("completed lifecycle event should be recorded");
+        let metadata = completed_event
+            .metadata
+            .as_ref()
+            .expect("completed lifecycle event should include metadata");
+        assert_eq!(
+            metadata.get("duration_seconds"),
+            Some(&serde_json::json!(6))
+        );
         Ok(())
     }
 
@@ -1714,6 +3385,7 @@ mod tests {
 
         assert_eq!(snapshot.plan_version, 1);
         assert!(snapshot.plan_hash.is_some());
+        assert_eq!(snapshot.status, MilestoneStatus::Ready);
         assert_eq!(snapshot.progress.total_beads, 1);
 
         let plan_json = plan_store.read_plan_json(base, &record.id)?;
@@ -1721,6 +3393,57 @@ mod tests {
 
         let plan_md = plan_store.read_plan_md(base, &record.id)?;
         assert!(plan_md.contains("# Plan Test"));
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        assert!(journal.iter().any(|event| {
+            event.event_type == MilestoneEventType::StatusChanged
+                && event.from_state == Some(MilestoneStatus::Planning)
+                && event.to_state == Some(MilestoneStatus::Ready)
+                && event.reason.as_deref() == Some("plan finalized and beads exported")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn persist_plan_rolls_back_snapshot_when_journal_commit_fails(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = CountingSnapshotStore::new();
+        let journal_store = FailFirstJournalAppend {
+            append_calls: Cell::new(0),
+        };
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "single-plan-write".to_owned(),
+                name: "Single Plan Write".to_owned(),
+                description: "ensure plan commits write the snapshot once".to_owned(),
+            },
+            now,
+        )?;
+
+        let error = persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &sample_bundle("single-plan-write", "Single Plan Write"),
+            now + chrono::Duration::seconds(1),
+        )
+        .expect_err("journal commit failure should roll back the snapshot");
+
+        assert!(error
+            .to_string()
+            .contains("simulated start journal failure"));
+        assert_eq!(snapshot_store.write_calls.get(), 2);
         Ok(())
     }
 
@@ -1789,15 +3512,6 @@ mod tests {
         )?;
         assert_eq!(initial.description, "Test plan.");
 
-        update_status(
-            &snapshot_store,
-            &journal_store,
-            base,
-            &initial.id,
-            MilestoneStatus::Planning,
-            now + chrono::Duration::seconds(1),
-        )?;
-
         let mut updated_bundle = bundle.clone();
         updated_bundle.executive_summary = "Updated milestone summary.".to_owned();
         let refreshed = materialize_bundle(
@@ -1807,7 +3521,7 @@ mod tests {
             &plan_store,
             base,
             &updated_bundle,
-            now + chrono::Duration::seconds(2),
+            now + chrono::Duration::seconds(1),
         )?;
 
         assert_eq!(refreshed.description, "Updated milestone summary.");
@@ -1964,15 +3678,6 @@ mod tests {
         )?;
         assert_eq!(initial.description, "Test plan.");
 
-        update_status(
-            &snapshot_store,
-            &journal_store,
-            base,
-            &initial.id,
-            MilestoneStatus::Planning,
-            now + chrono::Duration::seconds(1),
-        )?;
-
         let mut updated_bundle = bundle.clone();
         updated_bundle.executive_summary = "Retried summary repair.".to_owned();
         let error = materialize_bundle(
@@ -1982,7 +3687,7 @@ mod tests {
             &plan_store,
             base,
             &updated_bundle,
-            now + chrono::Duration::seconds(2),
+            now + chrono::Duration::seconds(1),
         )
         .expect_err("first rematerialize should fail during milestone.toml rewrite");
         assert!(error
@@ -2266,7 +3971,7 @@ mod tests {
         )?;
 
         let snapshot_after = load_snapshot(&snapshot_store, base, &record.id)?;
-        assert_eq!(snapshot_after.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot_after.status, MilestoneStatus::Paused);
         assert_eq!(snapshot_after.progress.total_beads, 3);
         assert_eq!(snapshot_after.progress.completed_beads, 1);
         assert_eq!(snapshot_after.progress.failed_beads, 1);
@@ -2634,7 +4339,7 @@ mod tests {
         )?;
 
         let snapshot_after = load_snapshot(&snapshot_store, base, &record.id)?;
-        assert_eq!(snapshot_after.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot_after.status, MilestoneStatus::Paused);
         assert_eq!(snapshot_after.progress.total_beads, 1);
         assert_eq!(snapshot_after.progress.completed_beads, 0);
         assert_eq!(snapshot_after.progress.failed_beads, 0);
@@ -3628,17 +5333,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "bead-track".to_owned(),
-                name: "Bead Tracking".to_owned(),
-                description: "testing bead tracking".to_owned(),
-            },
+            "bead-track",
+            "Bead Tracking",
             now,
         )?;
 
@@ -3656,7 +5362,7 @@ mod tests {
         )?;
 
         let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Active);
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
         assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
         assert_eq!(snapshot.progress.in_progress_beads, 1);
 
@@ -3680,7 +5386,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
@@ -3703,7 +5409,7 @@ mod tests {
     }
 
     #[test]
-    fn paused_milestone_stays_paused_when_completion_reconciles_lineage(
+    fn paused_milestone_completion_reconciles_to_completed_with_bridge_events(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -3711,17 +5417,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
+        let bundle = sample_bundle("paused-completion-test", "Paused Completion Test");
 
-        let record = create_milestone(
+        let record = materialize_bundle(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "paused-completion-test".to_owned(),
-                name: "Paused Completion Test".to_owned(),
-                description: "preserve paused milestone state during completion repair".to_owned(),
-            },
+            &bundle,
             now,
         )?;
 
@@ -3766,10 +5473,208 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Paused);
+        assert_eq!(snapshot.status, MilestoneStatus::Completed);
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
+
+        let transitions: Vec<_> = read_journal(&journal_store, base, &record.id)?
+            .into_iter()
+            .filter(|event| event.event_type == MilestoneEventType::StatusChanged)
+            .collect();
+        assert!(transitions.iter().any(|event| {
+            event.from_state == Some(MilestoneStatus::Paused)
+                && event.to_state == Some(MilestoneStatus::Running)
+                && event.timestamp == now + chrono::Duration::seconds(2)
+        }));
+        assert!(transitions.iter().any(|event| {
+            event.from_state == Some(MilestoneStatus::Running)
+                && event.to_state == Some(MilestoneStatus::Completed)
+                && event.timestamp == now + chrono::Duration::seconds(2)
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn unrecoverable_completion_marks_milestone_failed_and_emits_failed_transition(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let started_at = Utc::now();
+        let failed_at = started_at + chrono::Duration::seconds(5);
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "unrecoverable-completion-test",
+            "Unrecoverable Completion Test",
+            started_at,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )?;
+        record_bead_completion_with_disposition(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Failed,
+            Some("fatal controller failure"),
+            started_at,
+            failed_at,
+            CompletionMilestoneDisposition::MarkMilestoneFailed,
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Failed);
+        assert_eq!(snapshot.active_bead, None);
+        assert_eq!(snapshot.progress.failed_beads, 1);
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        assert!(journal.iter().any(|event| {
+            event.event_type == MilestoneEventType::StatusChanged
+                && event.from_state == Some(MilestoneStatus::Running)
+                && event.to_state == Some(MilestoneStatus::Failed)
+                && event.timestamp == failed_at
+        }));
+        assert!(journal.iter().any(|event| {
+            event.event_type == MilestoneEventType::BeadFailed && event.timestamp == failed_at
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn repairing_failed_completion_can_promote_paused_snapshot_to_failed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let started_at = Utc::now();
+        let failed_at = started_at + chrono::Duration::seconds(5);
+        let repaired_at = failed_at + chrono::Duration::seconds(2);
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "failed-repair-promotion-test",
+            "Failed Repair Promotion Test",
+            started_at,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Failed,
+            Some("retryable failure"),
+            started_at,
+            failed_at,
+        )?;
+
+        let paused_snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(paused_snapshot.status, MilestoneStatus::Paused);
+
+        repair_task_run_with_disposition(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            started_at,
+            TaskRunOutcome::Failed,
+            Some("fatal controller failure".to_owned()),
+            repaired_at,
+            CompletionMilestoneDisposition::MarkMilestoneFailed,
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Failed);
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let resumed_event = journal
+            .iter()
+            .find(|event| {
+                event.event_type == MilestoneEventType::StatusChanged
+                    && event.from_state == Some(MilestoneStatus::Paused)
+                    && event.to_state == Some(MilestoneStatus::Running)
+            })
+            .expect("repair should synthesize a paused -> running bridge");
+        assert_eq!(resumed_event.timestamp, repaired_at);
+
+        let failed_event = journal
+            .iter()
+            .find(|event| {
+                event.event_type == MilestoneEventType::StatusChanged
+                    && event.from_state == Some(MilestoneStatus::Running)
+                    && event.to_state == Some(MilestoneStatus::Failed)
+                    && event.timestamp == repaired_at
+            })
+            .expect("repair should record the terminal failed transition");
+        let metadata = failed_event
+            .metadata
+            .as_ref()
+            .expect("failed transition should carry metadata");
+        assert_eq!(
+            metadata.get("duration_seconds"),
+            Some(&serde_json::json!(5))
+        );
         Ok(())
     }
 
@@ -3782,17 +5687,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "terminal-start-test".to_owned(),
-                name: "Terminal Start Test".to_owned(),
-                description: "reject starts on terminal milestones".to_owned(),
-            },
+            "terminal-start-test",
+            "Terminal Start Test",
             now,
         )?;
 
@@ -3801,8 +5707,19 @@ mod tests {
             &journal_store,
             base,
             &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(2),
+        )?;
+        let mut snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot.progress.completed_beads = snapshot.progress.total_beads;
+        snapshot_store.write_snapshot(base, &record.id, &snapshot)?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
             MilestoneStatus::Completed,
-            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(3),
         )?;
 
         let error = record_bead_start(
@@ -3815,7 +5732,7 @@ mod tests {
             "project-1",
             "run-1",
             "plan-v1",
-            now + chrono::Duration::seconds(2),
+            now + chrono::Duration::seconds(4),
         )
         .expect_err("terminal milestones must reject new bead starts");
         assert!(error.to_string().contains("already completed"));
@@ -3831,6 +5748,304 @@ mod tests {
         assert!(journal
             .iter()
             .all(|event| event.event_type != MilestoneEventType::BeadStarted));
+        Ok(())
+    }
+
+    #[test]
+    fn bead_start_requires_finalized_plan() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "start-without-plan".to_owned(),
+                name: "Start Without Plan".to_owned(),
+                description: "reject bead starts before plan export".to_owned(),
+            },
+            now,
+        )?;
+
+        let error = record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )
+        .expect_err("bead start without a finalized plan must fail");
+        assert!(error
+            .to_string()
+            .contains("before a plan is finalized and exported"));
+        assert!(read_task_runs(&lineage_store, base, &record.id)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_preserves_terminal_status() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("terminal-materialize", "Terminal Materialize");
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(1),
+        )?;
+        let mut snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot.progress.completed_beads = snapshot.progress.total_beads;
+        snapshot_store.write_snapshot(base, &record.id, &snapshot)?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Completed,
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let refreshed = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Completed);
+        assert_eq!(refreshed.id, record.id);
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_reopens_terminal_milestone_when_plan_changes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("terminal-plan-change", "Terminal Plan Change");
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(1),
+        )?;
+        let mut snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot.progress.completed_beads = snapshot.progress.total_beads;
+        snapshot_store.write_snapshot(base, &record.id, &snapshot)?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Completed,
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut changed_bundle = bundle.clone();
+        changed_bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Second bead after rematerialize".to_owned(),
+            description: Some("Reopens the terminal milestone.".to_owned()),
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec!["bead-1".to_owned()],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+        changed_bundle.acceptance_map[0].covered_by =
+            vec!["bead-1".to_owned(), "bead-2".to_owned()];
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &changed_bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.plan_version, 2);
+        assert_eq!(snapshot.progress.total_beads, 2);
+        assert_eq!(snapshot.progress.completed_beads, 0);
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let reopen_event = journal
+            .iter()
+            .find(|event| {
+                event.from_state == Some(MilestoneStatus::Completed)
+                    && event.to_state == Some(MilestoneStatus::Planning)
+            })
+            .expect("terminal rematerialization should emit a reopen transition");
+        assert_eq!(
+            reopen_event.reason.as_deref(),
+            Some("plan changed, milestone reopened")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completed_transition_after_reopen_ignores_prior_plan_runtime(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("reopen-runtime-reset", "Reopen Runtime Reset");
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(1),
+        )?;
+        let mut snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot.progress.completed_beads = snapshot.progress.total_beads;
+        snapshot_store.write_snapshot(base, &record.id, &snapshot)?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Completed,
+            now + chrono::Duration::seconds(11),
+        )?;
+
+        let mut changed_bundle = bundle.clone();
+        changed_bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Second bead after reopen".to_owned(),
+            description: Some("Forces a new execution plan.".to_owned()),
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec!["bead-1".to_owned()],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+        changed_bundle.acceptance_map[0].covered_by =
+            vec!["bead-1".to_owned(), "bead-2".to_owned()];
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &changed_bundle,
+            now + chrono::Duration::seconds(20),
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(25),
+        )?;
+        let mut reopened_snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        reopened_snapshot.progress.completed_beads = reopened_snapshot.progress.total_beads;
+        snapshot_store.write_snapshot(base, &record.id, &reopened_snapshot)?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Completed,
+            now + chrono::Duration::seconds(31),
+        )?;
+
+        let completed_event = read_journal(&journal_store, base, &record.id)?
+            .into_iter()
+            .rev()
+            .find(|event| event.to_state == Some(MilestoneStatus::Completed))
+            .expect("reopened milestone should emit a completed transition");
+        let metadata = completed_event
+            .metadata
+            .as_ref()
+            .expect("completed transition should carry metadata");
+        assert_eq!(metadata.get("plan_version"), Some(&serde_json::json!(2)));
+        assert_eq!(
+            metadata.get("duration_seconds"),
+            Some(&serde_json::json!(6))
+        );
         Ok(())
     }
 
@@ -3985,17 +6200,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "find-bead-test".to_owned(),
-                name: "Find Bead Test".to_owned(),
-                description: "testing find_runs_for_bead".to_owned(),
-            },
+            "find-bead-test",
+            "Find Bead Test",
             now,
         )?;
 
@@ -4375,17 +6591,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "update-run-test".to_owned(),
-                name: "Update Run Test".to_owned(),
-                description: "testing update_task_run".to_owned(),
-            },
+            "update-run-test",
+            "Update Run Test",
             now,
         )?;
 
@@ -4424,7 +6641,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
@@ -4501,17 +6718,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "completion-plan-conflict-test".to_owned(),
-                name: "Completion Plan Conflict Test".to_owned(),
-                description: "reject conflicting plan hashes during completion".to_owned(),
-            },
+            "completion-plan-conflict-test",
+            "Completion Plan Conflict Test",
             now,
         )?;
 
@@ -4550,7 +6768,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Active);
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
         assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
         assert_eq!(snapshot.progress.in_progress_beads, 1);
         assert_eq!(snapshot.progress.completed_beads, 0);
@@ -4585,17 +6803,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "retry-test".to_owned(),
-                name: "Retry Test".to_owned(),
-                description: "testing multiple retries".to_owned(),
-            },
+            "retry-test",
+            "Retry Test",
             now,
         )?;
 
@@ -4670,7 +6889,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
         assert_eq!(snapshot.progress.failed_beads, 0);
@@ -4686,18 +6905,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "same-timestamp-retry-state-test".to_owned(),
-                name: "Same Timestamp Retry State Test".to_owned(),
-                description: "same-timestamp retries should keep the newest active attempt visible"
-                    .to_owned(),
-            },
+            "same-timestamp-retry-state-test",
+            "Same Timestamp Retry State Test",
             now,
         )?;
 
@@ -4746,7 +6965,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Active);
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
         assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
         assert_eq!(snapshot.progress.in_progress_beads, 1);
         assert_eq!(snapshot.progress.failed_beads, 0);
@@ -4843,17 +7062,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "skip-test".to_owned(),
-                name: "Skip Test".to_owned(),
-                description: "testing skipped task runs".to_owned(),
-            },
+            "skip-test",
+            "Skip Test",
             now,
         )?;
 
@@ -4889,7 +7109,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.failed_beads, 0);
         assert_eq!(snapshot.progress.skipped_beads, 1);
@@ -4914,17 +7134,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "duplicate-finalize-test".to_owned(),
-                name: "Duplicate Finalize Test".to_owned(),
-                description: "testing duplicate completion protection".to_owned(),
-            },
+            "duplicate-finalize-test",
+            "Duplicate Finalize Test",
             now,
         )?;
 
@@ -4989,17 +7210,18 @@ mod tests {
             append_calls: Cell::new(0),
         };
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "completion-retry-test".to_owned(),
-                name: "Completion Retry Test".to_owned(),
-                description: "testing completion repair after journal failure".to_owned(),
-            },
+            "completion-retry-test",
+            "Completion Retry Test",
             now,
         )?;
 
@@ -5039,14 +7261,23 @@ mod tests {
         let runs_after_failure = read_task_runs(&lineage_store, base, &record.id)?;
         assert_eq!(runs_after_failure.len(), 1);
         assert_eq!(runs_after_failure[0].outcome, TaskRunOutcome::Succeeded);
+        let journal_after_failure = read_journal(&journal_store, base, &record.id)?;
+        assert!(journal_after_failure.iter().all(|event| {
+            event.event_type != MilestoneEventType::BeadCompleted
+                && event.to_state != Some(MilestoneStatus::Paused)
+        }));
 
         let snapshot_after_failure = load_snapshot(&snapshot_store, base, &record.id)?;
         snapshot_after_failure
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot_after_failure.status, MilestoneStatus::Ready);
-        assert_eq!(snapshot_after_failure.progress.in_progress_beads, 0);
-        assert_eq!(snapshot_after_failure.progress.completed_beads, 1);
+        assert_eq!(snapshot_after_failure.status, MilestoneStatus::Running);
+        assert_eq!(
+            snapshot_after_failure.active_bead.as_deref(),
+            Some("bead-1")
+        );
+        assert_eq!(snapshot_after_failure.progress.in_progress_beads, 1);
+        assert_eq!(snapshot_after_failure.progress.completed_beads, 0);
         let repaired_updated_at = now + chrono::Duration::seconds(10);
         let mut drifted_snapshot = snapshot_after_failure.clone();
         drifted_snapshot.updated_at = repaired_updated_at;
@@ -5072,7 +7303,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
         assert_eq!(snapshot.updated_at, repaired_updated_at);
@@ -5109,17 +7340,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "completion-backfill-test".to_owned(),
-                name: "Completion Backfill Test".to_owned(),
-                description: "repair completion journal details on terminal replay".to_owned(),
-            },
+            "completion-backfill-test",
+            "Completion Backfill Test",
             now,
         )?;
 
@@ -5280,17 +7512,18 @@ mod tests {
             append_calls: Cell::new(0),
         };
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "start-retry-test".to_owned(),
-                name: "Start Retry Test".to_owned(),
-                description: "testing idempotent bead starts".to_owned(),
-            },
+            "start-retry-test",
+            "Start Retry Test",
             now,
         )?;
 
@@ -5314,6 +7547,10 @@ mod tests {
         let runs_after_failure = read_task_runs(&lineage_store, base, &record.id)?;
         assert_eq!(runs_after_failure.len(), 1);
         assert_eq!(runs_after_failure[0].outcome, TaskRunOutcome::Running);
+        let journal_after_failure = read_journal(&journal_store, base, &record.id)?;
+        assert!(journal_after_failure
+            .iter()
+            .all(|event| event.event_type != MilestoneEventType::BeadStarted));
 
         record_bead_start(
             &snapshot_store,
@@ -5337,7 +7574,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Active);
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
         assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
         assert_eq!(snapshot.progress.in_progress_beads, 1);
         assert_eq!(snapshot.updated_at, now + chrono::Duration::seconds(5));
@@ -5380,17 +7617,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "start-plan-conflict-test".to_owned(),
-                name: "Start Plan Conflict Test".to_owned(),
-                description: "reject conflicting plan hashes on idempotent start".to_owned(),
-            },
+            "start-plan-conflict-test",
+            "Start Plan Conflict Test",
             now,
         )?;
 
@@ -5445,17 +7683,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "start-reopen-failed-run".to_owned(),
-                name: "Start Reopen Failed Run".to_owned(),
-                description: "reopen a failed attempt when the same run resumes".to_owned(),
-            },
+            "start-reopen-failed-run",
+            "Start Reopen Failed Run",
             now,
         )?;
 
@@ -5509,8 +7748,88 @@ mod tests {
         assert!(runs[0].outcome_detail.is_none());
 
         let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Active);
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
         assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
+        Ok(())
+    }
+
+    #[test]
+    fn resume_transition_uses_resume_time_instead_of_original_start_time(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let started_at = Utc::now();
+        let paused_at = started_at + chrono::Duration::seconds(5);
+        let resumed_at = started_at + chrono::Duration::seconds(15);
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "resume-transition-timestamp",
+            "Resume Transition Timestamp",
+            started_at,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Paused,
+            paused_at,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            resumed_at,
+        )?;
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let resume_event = journal
+            .iter()
+            .find(|event| {
+                event.event_type == MilestoneEventType::StatusChanged
+                    && event.from_state == Some(MilestoneStatus::Paused)
+                    && event.to_state == Some(MilestoneStatus::Running)
+            })
+            .expect("paused milestone should record a resumed running transition");
+        assert_eq!(resume_event.timestamp, resumed_at);
+
+        let bead_start_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadStarted)
+            .collect();
+        assert_eq!(bead_start_events.len(), 1);
+        assert_eq!(bead_start_events[0].timestamp, started_at);
         Ok(())
     }
 
@@ -5523,19 +7842,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "same-bead-cross-project-retry-test".to_owned(),
-                name: "Same Bead Cross Project Retry Test".to_owned(),
-                description:
-                    "starting a retry on the same bead supersedes the older running attempt"
-                        .to_owned(),
-            },
+            "same-bead-cross-project-retry-test",
+            "Same Bead Cross Project Retry Test",
             now,
         )?;
 
@@ -5583,7 +7901,7 @@ mod tests {
         active_snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(active_snapshot.status, MilestoneStatus::Active);
+        assert_eq!(active_snapshot.status, MilestoneStatus::Running);
         assert_eq!(active_snapshot.active_bead.as_deref(), Some("bead-1"));
         assert_eq!(active_snapshot.progress.in_progress_beads, 1);
         assert_eq!(active_snapshot.progress.failed_beads, 0);
@@ -5608,7 +7926,7 @@ mod tests {
         final_snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(final_snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(final_snapshot.status, MilestoneStatus::Paused);
         assert_eq!(final_snapshot.active_bead, None);
         assert_eq!(final_snapshot.progress.in_progress_beads, 0);
         assert_eq!(final_snapshot.progress.completed_beads, 1);
@@ -5625,19 +7943,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "same-started-at-named-retry-test".to_owned(),
-                name: "Same Started At Named Retry Test".to_owned(),
-                description:
-                    "distinct named runs should not be blocked by a finalized attempt that shares a timestamp"
-                        .to_owned(),
-            },
+            "same-started-at-named-retry-test",
+            "Same Started At Named Retry Test",
             now,
         )?;
 
@@ -5685,7 +8002,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Active);
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
         assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
         Ok(())
     }
@@ -5699,19 +8016,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "same-started-at-start-journal-test".to_owned(),
-                name: "Same Started At Start Journal Test".to_owned(),
-                description:
-                    "distinct named starts at the same timestamp must keep separate journal rows"
-                        .to_owned(),
-            },
+            "same-started-at-start-journal-test",
+            "Same Started At Start Journal Test",
             now,
         )?;
 
@@ -5792,6 +8108,301 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_ready_event_uses_ready_shaped_metadata() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let now = Utc::now();
+        let milestone_id = MilestoneId::new("synthetic-ready-test")?;
+        let mut running_snapshot = MilestoneSnapshot::initial(now);
+        running_snapshot.status = MilestoneStatus::Running;
+        running_snapshot.plan_hash = Some("plan-v1".to_owned());
+        running_snapshot.plan_version = 1;
+        running_snapshot.active_bead = Some("bead-1".to_owned());
+        running_snapshot.progress.total_beads = 2;
+        running_snapshot.progress.in_progress_beads = 1;
+
+        let events = build_reconciled_transition_events(
+            &milestone_id,
+            &MilestoneSnapshot::initial(now),
+            &running_snapshot,
+            &[],
+            now + chrono::Duration::seconds(5),
+            Some(now + chrono::Duration::seconds(5)),
+            "controller",
+            "execution started",
+        )?;
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].from_state, Some(MilestoneStatus::Planning));
+        assert_eq!(events[0].to_state, Some(MilestoneStatus::Ready));
+        assert_eq!(events[1].from_state, Some(MilestoneStatus::Ready));
+        assert_eq!(events[1].to_state, Some(MilestoneStatus::Running));
+
+        let ready_metadata = events[0]
+            .metadata
+            .as_ref()
+            .expect("synthetic ready event should carry metadata");
+        assert!(!ready_metadata.contains_key("active_bead"));
+        assert_eq!(
+            ready_metadata.get("in_progress_beads"),
+            Some(&serde_json::json!(0))
+        );
+
+        let running_metadata = events[1]
+            .metadata
+            .as_ref()
+            .expect("synthetic running event should carry metadata");
+        assert_eq!(
+            running_metadata.get("active_bead"),
+            Some(&serde_json::json!("bead-1"))
+        );
+        assert_eq!(
+            running_metadata.get("in_progress_beads"),
+            Some(&serde_json::json!(1))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_bridge_events_preserve_pre_transition_progress_metadata(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = Utc::now();
+        let milestone_id = MilestoneId::new("synthetic-bridge-progress-test")?;
+        let previous_snapshot = MilestoneSnapshot::initial(now);
+        let mut completed_snapshot = previous_snapshot.clone();
+        completed_snapshot.status = MilestoneStatus::Completed;
+        completed_snapshot.plan_hash = Some("plan-v1".to_owned());
+        completed_snapshot.plan_version = 1;
+        completed_snapshot.progress.total_beads = 2;
+        completed_snapshot.progress.completed_beads = 2;
+
+        let events = build_reconciled_transition_events(
+            &milestone_id,
+            &previous_snapshot,
+            &completed_snapshot,
+            &[],
+            now + chrono::Duration::seconds(10),
+            Some(now + chrono::Duration::seconds(1)),
+            "controller",
+            "all beads closed",
+        )?;
+
+        assert_eq!(events.len(), 3);
+        for event in events.iter().take(2) {
+            let metadata = event
+                .metadata
+                .as_ref()
+                .expect("synthetic bridge events should carry metadata");
+            assert_eq!(metadata.get("completed_beads"), Some(&serde_json::json!(0)));
+            assert_eq!(metadata.get("failed_beads"), Some(&serde_json::json!(0)));
+            assert_eq!(metadata.get("skipped_beads"), Some(&serde_json::json!(0)));
+        }
+        assert_eq!(
+            events[0]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("total_beads")),
+            Some(&serde_json::json!(2))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_paused_resume_bridge_uses_resumed_start_when_it_postdates_pause(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let paused_at = Utc::now();
+        let resumed_at = paused_at + chrono::Duration::minutes(10);
+        let completed_at = resumed_at + chrono::Duration::minutes(10);
+        let milestone_id = MilestoneId::new("synthetic-paused-resume-bridge-test")?;
+        let mut previous_snapshot = MilestoneSnapshot::initial(paused_at);
+        previous_snapshot.status = MilestoneStatus::Paused;
+        previous_snapshot.updated_at = paused_at;
+        previous_snapshot.plan_hash = Some("plan-v1".to_owned());
+        previous_snapshot.plan_version = 1;
+        previous_snapshot.progress.total_beads = 1;
+
+        let mut completed_snapshot = previous_snapshot.clone();
+        completed_snapshot.status = MilestoneStatus::Completed;
+        completed_snapshot.updated_at = completed_at;
+        completed_snapshot.progress.completed_beads = 1;
+
+        let events = build_reconciled_transition_events(
+            &milestone_id,
+            &previous_snapshot,
+            &completed_snapshot,
+            &[],
+            completed_at,
+            Some(resumed_at),
+            "controller",
+            "all beads closed",
+        )?;
+
+        assert_eq!(events.len(), 2);
+        let resumed_event = &events[0];
+        assert_eq!(resumed_event.from_state, Some(MilestoneStatus::Paused));
+        assert_eq!(resumed_event.to_state, Some(MilestoneStatus::Running));
+        assert_eq!(resumed_event.timestamp, resumed_at);
+
+        let completed_event = &events[1];
+        assert_eq!(completed_event.from_state, Some(MilestoneStatus::Running));
+        assert_eq!(completed_event.to_state, Some(MilestoneStatus::Completed));
+        let metadata = completed_event
+            .metadata
+            .as_ref()
+            .expect("completed bridge should carry metadata");
+        assert_eq!(
+            metadata.get("duration_seconds"),
+            Some(&serde_json::json!(600))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_after_missed_start_reconstructs_running_bridge(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let flaky_journal_store = FailFirstJournalAppend {
+            append_calls: Cell::new(0),
+        };
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("missed-running-bridge", "Missed Running Bridge");
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &flaky_journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )
+        .expect_err("start journal failure should leave lineage ahead of the snapshot");
+
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("bridged completion"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(10),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Completed);
+
+        let transitions: Vec<_> = read_journal(&journal_store, base, &record.id)?
+            .into_iter()
+            .filter(|event| event.event_type == MilestoneEventType::StatusChanged)
+            .collect();
+        let running_event = transitions
+            .iter()
+            .find(|event| {
+                event.from_state == Some(MilestoneStatus::Ready)
+                    && event.to_state == Some(MilestoneStatus::Running)
+            })
+            .expect("missed start should synthesize a running bridge");
+        assert_eq!(running_event.timestamp, now + chrono::Duration::seconds(1));
+
+        let completed_event = transitions
+            .iter()
+            .find(|event| {
+                event.from_state == Some(MilestoneStatus::Running)
+                    && event.to_state == Some(MilestoneStatus::Completed)
+            })
+            .expect("completion transition should be recorded");
+        let metadata = completed_event
+            .metadata
+            .as_ref()
+            .expect("completed transition should carry metadata");
+        assert_eq!(
+            metadata.get("duration_seconds"),
+            Some(&serde_json::json!(9))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mark_failed_disposition_preserves_completed_snapshots_without_failed_beads(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = Utc::now();
+        let mut snapshot = MilestoneSnapshot::initial(now);
+        snapshot.status = MilestoneStatus::Completed;
+        snapshot.progress.total_beads = 1;
+        snapshot.progress.completed_beads = 1;
+
+        apply_completion_milestone_disposition(
+            &mut snapshot,
+            CompletionMilestoneDisposition::MarkMilestoneFailed,
+        );
+
+        assert_eq!(snapshot.status, MilestoneStatus::Completed);
+        assert_eq!(snapshot.progress.failed_beads, 0);
+        snapshot
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        Ok(())
+    }
+
+    #[test]
+    fn repairable_completion_event_rejects_mismatched_event_types() {
+        let started_at = Utc::now();
+        let existing = MilestoneJournalEvent::new(
+            MilestoneEventType::BeadCompleted,
+            started_at + chrono::Duration::seconds(10),
+        )
+        .with_bead("bead-1")
+        .with_details(render_completion_journal_details(
+            "proj-1",
+            Some("run-1"),
+            Some("plan-v1"),
+            started_at,
+            "succeeded",
+            None,
+        ));
+        let requested = MilestoneJournalEvent::new(
+            MilestoneEventType::BeadFailed,
+            started_at + chrono::Duration::seconds(12),
+        )
+        .with_bead("bead-1")
+        .with_details(render_completion_journal_details(
+            "proj-1",
+            Some("run-1"),
+            Some("plan-v1"),
+            started_at,
+            "failed",
+            Some("different outcome"),
+        ));
+
+        assert!(repairable_completion_event(&existing, &requested).is_none());
+    }
+
+    #[test]
     fn concurrent_start_retries_share_one_lineage_row_and_start_event(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
@@ -5800,17 +8411,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "concurrent-start-test".to_owned(),
-                name: "Concurrent Start Test".to_owned(),
-                description: "testing concurrent idempotent bead starts".to_owned(),
-            },
+            "concurrent-start-test",
+            "Concurrent Start Test",
             now,
         )?;
 
@@ -5858,7 +8470,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Active);
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
         assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
         assert_eq!(snapshot.progress.in_progress_beads, 1);
 
@@ -5881,17 +8493,18 @@ mod tests {
         let store = FsMilestoneStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
 
-        let record = create_milestone(
+        let record = create_milestone_with_plan(
             &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
             base,
-            CreateMilestoneInput {
-                id: "serialized-mutation-test".to_owned(),
-                name: "Serialized Mutation Test".to_owned(),
-                description: "serialize completion and new start snapshot writes".to_owned(),
-            },
+            "serialized-mutation-test",
+            "Serialized Mutation Test",
             now,
         )?;
 
@@ -6000,7 +8613,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Active);
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
         assert_eq!(snapshot.active_bead.as_deref(), Some("bead-2"));
         assert_eq!(snapshot.progress.completed_beads, 1);
         assert_eq!(snapshot.progress.in_progress_beads, 1);
@@ -6058,7 +8671,7 @@ mod tests {
         }
 
         let mut stale_snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
-        stale_snapshot.status = MilestoneStatus::Active;
+        stale_snapshot.status = MilestoneStatus::Running;
         stale_snapshot.active_bead = Some("bead-1".to_owned());
         stale_snapshot.progress.in_progress_beads = 2;
         stale_snapshot.updated_at = now + chrono::Duration::seconds(1);
@@ -6090,7 +8703,7 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);

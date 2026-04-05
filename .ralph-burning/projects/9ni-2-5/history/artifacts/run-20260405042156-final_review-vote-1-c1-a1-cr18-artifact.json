@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-vote-1-c1-a1-cr18-artifact",
+  "payload_id": "run-20260405042156-final_review-vote-1-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T15:57:01.670779856Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments surface real consistency problems. The first is a concrete lineage-identity bug in same-run resumes that can suppress terminal milestone sync after a second failure. The second is a public API/lifecycle mismatch: persisted plan artifacts can be left in `planning` with no corresponding `planning -> ready` journal event unless the caller knows to add a separate transition.\n\n## Votes\n\n- `fr-18-726f81f8`: Accept\n  `FsTaskRunLineageStore::reopen_failed_exact_attempt` reuses the failed row but only clears terminal fields and backfills metadata; it does not retarget `started_at` to the new resume time. The resume path elsewhere treats `(project_id, run_id, started_at)` as the exact attempt identity via `lineage_entry_matches_attempt` and `resume_attempt_has_exact_lineage`, so a failed -> resume with the same `run_id` keeps a stale identity. If that resumed run fails again, `handle_resume` can conclude there is no exact durable lineage for the resumed attempt, and `sync_terminal_milestone_task_with_options` returns without syncing terminal milestone state. Updating the reopened row to the new `started_at` is the correct fix, and a regression test should cover fail -> resume same `run_id` -> fail again.\n- `fr-18-239431c7`: Accept\n  `persist_plan`/`persist_plan_locked` writes the plan artifacts and updates `plan_hash`/`plan_version`, but for a `planning` snapshot it does not also perform the `Planning -> Ready` transition or emit the matching `StatusChanged` event. `materialize_bundle` immediately compensates for that with `update_status_locked(..., Ready, ...)`, which shows callers currently need hidden extra knowledge to keep milestone state and journal history coherent. As long as `persist_plan` remains a public entry point with this behavior, it is easy to create milestones whose artifacts and snapshot say the plan is finalized while lifecycle state still says `planning`. Folding the ready transition into finalization, or otherwise narrowing/renaming the API so direct misuse is impossible, is warranted; direct-entry coverage should lock that invariant down.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 18
+}

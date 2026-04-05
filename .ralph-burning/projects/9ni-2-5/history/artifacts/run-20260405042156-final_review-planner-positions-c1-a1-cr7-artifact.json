@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr7-artifact",
+  "payload_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T07:50:23.777449761Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAccepted the three amendments that identify real correctness or atomicity defects in milestone lifecycle persistence, and rejected the one that is primarily a documentation/cleanup note rather than a substantive bug.\n\n## Votes\n\n- `fr-7-5ecd5768`: Reject\n  The filesystem override's unused `_error_context` is not a correctness, safety, or robustness defect by itself. The underscore makes the intentional ignore explicit, and this override uses its own pending-sidecar recovery path instead of the default rollback path that formats a `CorruptRecord` with that context. A clarifying comment could be nice, but the amendment does not identify a concrete behavioral bug.\n- `fr-7-89ded87f`: Accept\n  `materialize_bundle` now permits rematerialization for any non-`running` milestone, while `persist_plan_locked` mutates `plan_hash`, `plan_version`, and progress without reopening terminal lifecycle state. For a `completed` or `failed` milestone with a changed bundle, that can leave the snapshot terminal while referring to a new unfinished plan. `record_bead_start` then rejects the milestone because terminal snapshots cannot start execution, so the milestone becomes semantically inconsistent and practically stuck.\n- `fr-7-8d13f7cc`: Accept\n  `record_bead_start` durably writes task-run lineage before the milestone snapshot+journal commit. If the filesystem snapshot write then fails, the adapter deletes the pending sidecar and leaves the old snapshot/journal in place while the running lineage row remains. A later completion reconciles from that stale pre-start status, but `build_reconciled_transition_events` only synthesizes the missing bridge for `planning -> running`; it cannot bridge a missing `ready -> running` before `ready -> completed` or `ready -> paused`. That can produce invalid transition errors or silently omit required lifecycle history.\n- `fr-7-11d88bf9`: Accept\n  The default `MilestoneJournalPort` fallback is not atomic. `commit_journal_ops` applies operations one at a time, and `commit_snapshot_and_journal_ops` only restores the snapshot on failure. If an implementation inherits these defaults and a later journal op fails, earlier journal rows remain written even though the snapshot is rolled back. That leaks partially applied lifecycle history and violates the atomic-commit contract for non-filesystem stores and test doubles.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 7
+}

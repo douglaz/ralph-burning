@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-reviewer-0-c1-a1-cr9-artifact",
+  "payload_id": "run-20260405042156-final_review-reviewer-0-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T08:36:52.550448789Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe changes implement plan-version-aware duration tracking, bridge event timestamps using actual start times, incremental event journal accumulation for multi-step transitions, reopen lifecycle events on plan rematerialization, and a fix preventing mismatched completion event types from being merged. All 525 tests pass. One real bug found: a redundant pre-atomic snapshot write that violates the stated atomicity constraint.\n\n## Amendments\n\n1. In `persist_plan_locked` (service.rs:1593), remove the standalone `snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;` call. It is vestigial from the pre-atomic-commit code and causes a double write: the snapshot is written once at line 1593, then written again inside `commit_snapshot_and_journal_ops` at line 1601 (which internally calls `write_snapshot` at line 153). This violates the atomicity requirement ('transitions must be atomic: state file and journal event written together') because if the process crashes between the standalone write (1593) and the atomic commit (1601), the snapshot would reflect the new state but the journal would have no corresponding reopen or plan event. The `validate_snapshot` call at line 1592 should be kept; only the `write_snapshot` at 1593 should be removed since `commit_snapshot_and_journal_ops` handles both the write and rollback-on-failure.\n   Rationale: The acceptance criteria explicitly require that 'transitions must be atomic: state file and journal event written together.' The standalone snapshot write at line 1593 breaks this guarantee by persisting the snapshot before the journal ops are committed. While the window is small (between two filesystem writes), a crash in that window would leave the snapshot and journal inconsistent with no automated recovery path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 9
+}

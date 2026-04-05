@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-reviewer-1-c1-a1-cr19-artifact",
+  "payload_id": "run-20260405042156-final_review-reviewer-1-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T16:17:14.675036218Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the milestone lifecycle/task-run changes and the latest 9ni-2-5 delta, read the milestone service/fs/CLI paths, and ran `cargo test milestone_record::service --lib` plus `cargo test cli::run --lib`. I found two correctness gaps in the resume-repair flow: repaired terminal transitions can under-report resumed runtime, and the stale-terminal recovery path still leaves the milestone journal without a matching resumed `bead_started` record.\n\n## Amendments\n\n1. Fix the paused-resume repair path in `src/contexts/milestone_record/service.rs:821-875` and `src/contexts/milestone_record/service.rs:2283-2290`. When a terminal sync repairs a resumed attempt whose start was never durably synced, `repair_task_run_with_disposition` passes the resumed `started_at`, but `build_reconciled_transition_events` stamps the synthetic `paused -> running` bridge with `now` whenever `from_status == Paused` (`src/contexts/milestone_record/service.rs:825-830`). That makes the subsequent `running -> completed|failed` metadata compute `duration_seconds` from the terminal timestamp instead of the actual resumed start, so resumed runtime is dropped from the journal. In the `run_resumed at 10:20` / terminal event at `10:30` case, the completed/failed lifecycle event under-reports runtime by 10 minutes.\n   Rationale: This breaks the completed/failed journal metadata contract on one of the new recovery paths and makes runtime accounting incorrect after resume repair.\n2. Repair the missing resumed-start journal event in the stale-terminal flow. In `src/cli/run.rs:236-245`, `same_named_terminal_attempt_exists` suppresses the `record_bead_start` repair, and the fallback repair path only rewrites lifecycle/completion records (`src/contexts/milestone_record/service.rs:2255-2296`). The result is a journal where the repaired completion now embeds the resumed `started_at`, but there is no matching `bead_started` event for that resumed attempt (often only the old pre-failure start remains). That leaves the milestone NDJSON journal internally inconsistent and unable to reconstruct the actual attempt timeline for the very case this patch is trying to recover.\n   Rationale: The lineage file is corrected, but the milestone journal still loses the resumed attempt's start edge, which weakens auditability and can mislead any consumer pairing start/completion records.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 19
+}

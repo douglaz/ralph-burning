@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-plan_and_implement-c1-a1-cr20-artifact",
+  "payload_id": "run-20260405042156-plan_and_implement-c1-a1-cr20",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-05T16:30:37.413404349Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the remaining `ralph-burning-9ni.2.5` repair gaps in milestone lifecycle reconciliation and terminal sync. Reconciled `paused -> running` bridge events now reuse the durable resumed `started_at` when the repaired attempt began after the paused snapshot, so terminal lifecycle metadata keeps resumed runtime instead of collapsing it to zero. I also updated terminal repair commits to append the repaired `bead_started` journal row before lifecycle/completion repair work, which restores an internally consistent milestone NDJSON timeline when stale terminal lineage suppresses the normal start-sync path, and added focused regressions for both behaviors.\n\n## Steps\n\n1. [Completed] Adjusted reconciled lifecycle bridge timestamping in `src/contexts/milestone_record/service.rs` so paused-resume repair uses the repaired attempt start time when it postdates the paused snapshot, preserving resumed runtime in terminal metadata.\n2. [Completed] Updated `repair_task_run_with_disposition` to append the repaired `bead_started` event alongside lifecycle/completion repair mutations, restoring missing resumed-start journal rows in stale-terminal sync flows.\n3. [Completed] Expanded milestone service and CLI sync regressions to assert the resumed bridge timestamp, repaired start-event presence, and terminal `duration_seconds` behavior for resumed stale-terminal repairs.\n\n## Validation Evidence\n\n- `cargo test synthetic_paused_resume_bridge_uses_resumed_start_when_it_postdates_pause --lib` passed.\n- `cargo test sync_terminal_milestone_task_repairs_missing_resumed_start_when_stale_failed_lineage_exists --lib` passed.\n- `cargo test milestone_record::service --lib` passed (80 tests).\n- `cargo test cli::run::tests:: --lib` passed (17 tests).\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 20
+}

@@ -331,7 +331,7 @@ fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_ame
     assert!(prompt.contains("### Pending Amendments"));
     assert!(prompt.contains("Tighten the validation copy"));
     assert!(prompt.contains("## Authoritative JSON Schema"));
-    assert!(prompt.contains("\"__rb_wrapped\""));
+    assert!(prompt.contains("\"data\""));
     assert!(prompt.contains("\"additionalProperties\": false"));
 
     let first_index = prompt.find("first-output").expect("first prior output");
