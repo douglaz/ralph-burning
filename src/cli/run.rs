@@ -724,8 +724,8 @@ mod tests {
     use chrono::Utc;
 
     use crate::adapters::fs::{
-        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
-        FsMilestoneStore, FsTaskRunLineageStore,
+        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
+        FsTaskRunLineageStore,
     };
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,

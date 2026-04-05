@@ -2579,7 +2579,10 @@ impl FsMilestoneSnapshotStore {
             Err(error) => return Err(error.into()),
         };
         let pending = serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
-            file: format!("milestones/{}/{}", milestone_id, MILESTONE_STATE_COMMIT_FILE),
+            file: format!(
+                "milestones/{}/{}",
+                milestone_id, MILESTONE_STATE_COMMIT_FILE
+            ),
             details: error.to_string(),
         })?;
         Ok(Some(pending))
@@ -2590,7 +2593,8 @@ impl FsMilestoneSnapshotStore {
         milestone_id: &MilestoneId,
         pending: &PendingMilestoneStateCommit,
     ) -> AppResult<()> {
-        let status_path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_STATUS_FILE);
+        let status_path =
+            FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_STATUS_FILE);
         let status_json = serde_json::to_string_pretty(&pending.snapshot)?;
         FileSystem::write_atomic(&status_path, &status_json)?;
         FsMilestoneJournalStore::write_journal(
@@ -4678,7 +4682,9 @@ mod tests {
 
     #[test]
     fn milestone_pending_state_commit_overlays_snapshot_and_journal_reads() {
-        use crate::contexts::milestone_record::model::{MilestoneId, MilestoneSnapshot, MilestoneStatus};
+        use crate::contexts::milestone_record::model::{
+            MilestoneId, MilestoneSnapshot, MilestoneStatus,
+        };
         use chrono::{Duration, TimeZone, Utc};
 
         let temp = tempdir().expect("tempdir");
@@ -4686,13 +4692,15 @@ mod tests {
         let milestone_root = FileSystem::milestone_root(temp.path(), &milestone_id);
         std::fs::create_dir_all(&milestone_root).expect("create milestone root");
 
-        let current_snapshot = MilestoneSnapshot::initial(
-            Utc.with_ymd_and_hms(2026, 4, 5, 0, 0, 0).unwrap(),
-        );
+        let current_snapshot =
+            MilestoneSnapshot::initial(Utc.with_ymd_and_hms(2026, 4, 5, 0, 0, 0).unwrap());
         let current_snapshot_json =
             serde_json::to_string_pretty(&current_snapshot).expect("serialize current snapshot");
-        std::fs::write(milestone_root.join(MILESTONE_STATUS_FILE), current_snapshot_json)
-            .expect("write current snapshot");
+        std::fs::write(
+            milestone_root.join(MILESTONE_STATUS_FILE),
+            current_snapshot_json,
+        )
+        .expect("write current snapshot");
 
         let current_event = MilestoneJournalEvent::new(
             MilestoneEventType::PlanDrafted,
@@ -4742,7 +4750,9 @@ mod tests {
 
     #[test]
     fn milestone_write_lock_recovers_pending_state_commit() {
-        use crate::contexts::milestone_record::model::{MilestoneId, MilestoneSnapshot, MilestoneStatus};
+        use crate::contexts::milestone_record::model::{
+            MilestoneId, MilestoneSnapshot, MilestoneStatus,
+        };
         use chrono::{Duration, TimeZone, Utc};
 
         let temp = tempdir().expect("tempdir");
@@ -4750,9 +4760,8 @@ mod tests {
         let milestone_root = FileSystem::milestone_root(temp.path(), &milestone_id);
         std::fs::create_dir_all(&milestone_root).expect("create milestone root");
 
-        let current_snapshot = MilestoneSnapshot::initial(
-            Utc.with_ymd_and_hms(2026, 4, 5, 1, 0, 0).unwrap(),
-        );
+        let current_snapshot =
+            MilestoneSnapshot::initial(Utc.with_ymd_and_hms(2026, 4, 5, 1, 0, 0).unwrap());
         std::fs::write(
             milestone_root.join(MILESTONE_STATUS_FILE),
             serde_json::to_string_pretty(&current_snapshot).expect("serialize current snapshot"),

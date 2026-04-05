@@ -204,7 +204,7 @@ impl MilestoneSnapshot {
     pub fn validate_semantics(&self) -> Result<(), String> {
         if matches!(
             self.status,
-            MilestoneStatus::Planning | MilestoneStatus::Ready
+            MilestoneStatus::Planning | MilestoneStatus::Ready | MilestoneStatus::Paused
         ) && self.active_bead.is_some()
         {
             return Err(format!(
@@ -768,6 +768,16 @@ mod tests {
         let now = Utc::now();
         let mut snapshot = MilestoneSnapshot::initial(now);
         snapshot.status = MilestoneStatus::Completed;
+        snapshot.active_bead = Some("bead-1".to_owned());
+        assert!(snapshot.validate_semantics().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_paused_with_bead_is_invalid() -> Result<(), Box<dyn std::error::Error>> {
+        let now = Utc::now();
+        let mut snapshot = MilestoneSnapshot::initial(now);
+        snapshot.status = MilestoneStatus::Paused;
         snapshot.active_bead = Some("bead-1".to_owned());
         assert!(snapshot.validate_semantics().is_err());
         Ok(())
