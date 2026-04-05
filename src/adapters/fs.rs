@@ -3233,6 +3233,10 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
             }
         }
 
+        if applied == 0 && previous_snapshot == next_snapshot {
+            return Ok(0);
+        }
+
         let pending = PendingMilestoneStateCommit {
             recovery_action: PendingMilestoneStateCommitRecoveryAction::Publish,
             previous_snapshot: previous_snapshot.clone(),
@@ -4981,6 +4985,55 @@ mod tests {
         assert!(
             !milestone_root.join(MILESTONE_STATE_COMMIT_FILE).exists(),
             "plain reads should finalize the pending state commit"
+        );
+    }
+
+    #[test]
+    fn milestone_commit_snapshot_and_journal_ops_skips_noop_sidecar_when_nothing_changes() {
+        use crate::contexts::milestone_record::model::{MilestoneId, MilestoneSnapshot};
+        use chrono::{TimeZone, Utc};
+
+        let temp = tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("pending-noop-test").expect("milestone id");
+        let milestone_root = FileSystem::milestone_root(temp.path(), &milestone_id);
+        std::fs::create_dir_all(&milestone_root).expect("create milestone root");
+
+        let snapshot =
+            MilestoneSnapshot::initial(Utc.with_ymd_and_hms(2026, 4, 5, 0, 30, 0).unwrap());
+        std::fs::write(
+            milestone_root.join(MILESTONE_STATUS_FILE),
+            serde_json::to_string_pretty(&snapshot).expect("serialize snapshot"),
+        )
+        .expect("write snapshot");
+
+        let existing_event =
+            MilestoneJournalEvent::new(MilestoneEventType::PlanDrafted, snapshot.updated_at);
+        let journal_path = milestone_root.join(MILESTONE_JOURNAL_FILE);
+        FsMilestoneJournalStore::write_journal(
+            &journal_path,
+            std::slice::from_ref(&existing_event),
+        )
+        .expect("write journal");
+
+        let applied = FsMilestoneJournalStore
+            .commit_snapshot_and_journal_ops(
+                &FsMilestoneSnapshotStore,
+                temp.path(),
+                &milestone_id,
+                &snapshot,
+                &snapshot,
+                &[JournalWriteOp {
+                    event: existing_event,
+                    kind: JournalWriteOpKind::AppendIfMissing,
+                }],
+                "noop lifecycle commit",
+            )
+            .expect("commit noop snapshot/journal update");
+
+        assert_eq!(applied, 0);
+        assert!(
+            !milestone_root.join(MILESTONE_STATE_COMMIT_FILE).exists(),
+            "noop commits should not create a pending state sidecar"
         );
     }
 

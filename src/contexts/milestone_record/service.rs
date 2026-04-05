@@ -1529,7 +1529,13 @@ fn update_status_locked(
     );
     let reason = match new_status {
         MilestoneStatus::Ready => "plan finalized and beads exported",
-        MilestoneStatus::Running => "execution started",
+        MilestoneStatus::Running => {
+            if previous_snapshot.status == MilestoneStatus::Paused {
+                "execution resumed"
+            } else {
+                "execution started"
+            }
+        }
         MilestoneStatus::Paused => "execution paused",
         MilestoneStatus::Completed => "all beads closed",
         MilestoneStatus::Failed => "unrecoverable error requires operator intervention",
@@ -3093,6 +3099,75 @@ mod tests {
             metadata.get("duration_seconds"),
             Some(&serde_json::json!(15))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn update_status_paused_to_running_uses_resume_reason() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "resume-reason-test",
+            "Resume Reason Test",
+            now,
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Ready,
+            now + chrono::Duration::seconds(1),
+        )?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(2),
+        )?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Paused,
+            now + chrono::Duration::seconds(3),
+        )?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(4),
+        )?;
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let resumed_event = journal
+            .iter()
+            .rev()
+            .find(|event| {
+                event.from_state == Some(MilestoneStatus::Paused)
+                    && event.to_state == Some(MilestoneStatus::Running)
+            })
+            .expect("paused -> running event should be recorded");
+        assert_eq!(resumed_event.reason.as_deref(), Some("execution resumed"));
         Ok(())
     }
 

@@ -155,7 +155,7 @@ impl PreparedCommand {
                 };
 
                 let parsed_payload = if let Some(structured) = envelope.structured_output {
-                    unwrap_claude_structured_output_payload(structured)
+                    unwrap_claude_structured_output_transport_payload(structured)
                 } else if !envelope.result.trim().is_empty() {
                     // result is non-empty: try direct parse, then extract embedded JSON
                     match serde_json::from_str(&envelope.result)
@@ -1640,9 +1640,6 @@ pub(crate) fn processed_contract_schema_value(
 
 fn unwrap_claude_structured_output_payload(value: serde_json::Value) -> serde_json::Value {
     match value {
-        serde_json::Value::Object(mut map) if map.len() == 1 && map.contains_key("data") => {
-            map.remove("data").unwrap_or(serde_json::Value::Object(map))
-        }
         serde_json::Value::Object(mut map)
             if map.len() == 2
                 && map.contains_key("data")
@@ -1654,6 +1651,17 @@ fn unwrap_claude_structured_output_payload(value: serde_json::Value) -> serde_js
             map.remove("data").unwrap_or(serde_json::Value::Object(map))
         }
         other => other,
+    }
+}
+
+fn unwrap_claude_structured_output_transport_payload(
+    value: serde_json::Value,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(mut map) if map.len() == 1 && map.contains_key("data") => {
+            map.remove("data").unwrap_or(serde_json::Value::Object(map))
+        }
+        other => unwrap_claude_structured_output_payload(other),
     }
 }
 
@@ -2641,7 +2649,7 @@ mod tests {
     }
 
     #[test]
-    fn unwrap_claude_structured_output_payload_accepts_plain_data_wrapper() {
+    fn unwrap_claude_structured_output_payload_only_accepts_legacy_sentinel_wrapper() {
         let raw_payload = serde_json::json!({
             "data": {
                 "status": "legitimate-contract-payload"
@@ -2649,9 +2657,7 @@ mod tests {
         });
         assert_eq!(
             unwrap_claude_structured_output_payload(raw_payload.clone()),
-            serde_json::json!({
-                "status": "legitimate-contract-payload"
-            })
+            raw_payload
         );
 
         let wrapped_payload = serde_json::json!({
@@ -2664,6 +2670,21 @@ mod tests {
             unwrap_claude_structured_output_payload(wrapped_payload),
             serde_json::json!({
                 "status": "wrapped-contract-payload"
+            })
+        );
+    }
+
+    #[test]
+    fn unwrap_claude_structured_output_transport_payload_accepts_plain_data_wrapper() {
+        let raw_payload = serde_json::json!({
+            "data": {
+                "status": "transport-wrapped-payload"
+            }
+        });
+        assert_eq!(
+            unwrap_claude_structured_output_transport_payload(raw_payload),
+            serde_json::json!({
+                "status": "transport-wrapped-payload"
             })
         );
     }
@@ -2803,6 +2824,31 @@ mod tests {
         let request = make_test_request();
         let result = prepared.finish(&request, output).await.unwrap();
         assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
+
+    #[tokio::test]
+    async fn finish_claude_result_raw_json_preserves_legitimate_data_payload_shape() {
+        let envelope = json!({
+            "result": "{\"data\": {\"outcome\": \"approved\", \"evidence\": [\"test passed\"]}}",
+            "session_id": "sess-test-001b",
+            "structured_output": null
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let prepared = PreparedCommand {
+            binary: "claude".into(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+            env_overrides: Vec::new(),
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await.unwrap();
+        assert_eq!(result.parsed_payload["data"]["outcome"], "approved");
     }
 
     #[tokio::test]
