@@ -980,14 +980,14 @@ fn reconcile_snapshot_from_lineage(
             ));
         }
         snapshot.status = MilestoneStatus::Running;
-    } else if snapshot.status == MilestoneStatus::Paused {
-        snapshot.active_bead = None;
     } else if snapshot.progress.total_beads > 0
         && snapshot.progress.completed_beads + snapshot.progress.skipped_beads
             >= snapshot.progress.total_beads
         && snapshot.progress.failed_beads == 0
     {
         snapshot.status = MilestoneStatus::Completed;
+        snapshot.active_bead = None;
+    } else if snapshot.status == MilestoneStatus::Paused {
         snapshot.active_bead = None;
     } else if has_any_task_runs && snapshot.status == MilestoneStatus::Running {
         snapshot.status = MilestoneStatus::Paused;
@@ -5323,7 +5323,7 @@ mod tests {
     }
 
     #[test]
-    fn paused_milestone_stays_paused_when_completion_reconciles_lineage(
+    fn paused_milestone_completion_reconciles_to_completed_with_bridge_events(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -5334,15 +5334,15 @@ mod tests {
         let plan_store = FsMilestonePlanStore;
         let lineage_store = FsTaskRunLineageStore;
         let now = Utc::now();
+        let bundle = sample_bundle("paused-completion-test", "Paused Completion Test");
 
-        let record = create_milestone_with_plan(
+        let record = materialize_bundle(
             &store,
             &snapshot_store,
             &journal_store,
             &plan_store,
             base,
-            "paused-completion-test",
-            "Paused Completion Test",
+            &bundle,
             now,
         )?;
 
@@ -5387,10 +5387,25 @@ mod tests {
         snapshot
             .validate_semantics()
             .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Paused);
+        assert_eq!(snapshot.status, MilestoneStatus::Completed);
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
+
+        let transitions: Vec<_> = read_journal(&journal_store, base, &record.id)?
+            .into_iter()
+            .filter(|event| event.event_type == MilestoneEventType::StatusChanged)
+            .collect();
+        assert!(transitions.iter().any(|event| {
+            event.from_state == Some(MilestoneStatus::Paused)
+                && event.to_state == Some(MilestoneStatus::Running)
+                && event.timestamp == now + chrono::Duration::seconds(2)
+        }));
+        assert!(transitions.iter().any(|event| {
+            event.from_state == Some(MilestoneStatus::Running)
+                && event.to_state == Some(MilestoneStatus::Completed)
+                && event.timestamp == now + chrono::Duration::seconds(2)
+        }));
         Ok(())
     }
 
