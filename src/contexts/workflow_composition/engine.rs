@@ -1645,12 +1645,13 @@ where
         .await;
     }
 
+    let milestone_resume_time = Utc::now();
     if let Err(error) = sync_milestone_bead_start(
         &project_record,
         base_dir,
         project_id,
         &resume_state.run_id,
-        resume_state.started_at,
+        milestone_resume_time,
     ) {
         return fail_run(
             &AppError::ResumeFailed {

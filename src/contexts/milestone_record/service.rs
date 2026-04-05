@@ -1590,8 +1590,6 @@ fn persist_plan_locked(
         };
 
         validate_snapshot(snapshot, milestone_id)?;
-        snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
-
         let event = MilestoneJournalEvent::new(event_type, now).with_details(format!(
             "Plan v{} with {} beads",
             snapshot.plan_version,
@@ -1801,7 +1799,7 @@ pub fn record_bead_start(
             previous_snapshot.updated_at,
             &snapshot,
             &existing_journal,
-            started_entry.started_at,
+            now,
             Some(started_entry.started_at),
             "controller",
             if previous_status == MilestoneStatus::Paused {
@@ -2348,6 +2346,50 @@ mod tests {
                 return Err(std::io::Error::other("simulated snapshot write failure").into());
             }
 
+            FsMilestoneSnapshotStore.write_snapshot(base_dir, milestone_id, snapshot)
+        }
+
+        fn with_milestone_write_lock<T, F>(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            operation: F,
+        ) -> AppResult<T>
+        where
+            F: FnOnce() -> AppResult<T>,
+        {
+            FsMilestoneSnapshotStore.with_milestone_write_lock(base_dir, milestone_id, operation)
+        }
+    }
+
+    struct CountingSnapshotStore {
+        write_calls: Cell<u32>,
+    }
+
+    impl CountingSnapshotStore {
+        fn new() -> Self {
+            Self {
+                write_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl MilestoneSnapshotPort for CountingSnapshotStore {
+        fn read_snapshot(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+        ) -> AppResult<MilestoneSnapshot> {
+            FsMilestoneSnapshotStore.read_snapshot(base_dir, milestone_id)
+        }
+
+        fn write_snapshot(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            snapshot: &MilestoneSnapshot,
+        ) -> AppResult<()> {
+            self.write_calls.set(self.write_calls.get() + 1);
             FsMilestoneSnapshotStore.write_snapshot(base_dir, milestone_id, snapshot)
         }
 
@@ -3108,6 +3150,49 @@ mod tests {
 
         let plan_md = plan_store.read_plan_md(base, &record.id)?;
         assert!(plan_md.contains("# Plan Test"));
+        Ok(())
+    }
+
+    #[test]
+    fn persist_plan_does_not_prewrite_snapshot_before_atomic_commit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = CountingSnapshotStore::new();
+        let journal_store = FailFirstJournalAppend {
+            append_calls: Cell::new(0),
+        };
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "single-plan-write".to_owned(),
+                name: "Single Plan Write".to_owned(),
+                description: "ensure plan commits write the snapshot once".to_owned(),
+            },
+            now,
+        )?;
+
+        let error = persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &sample_bundle("single-plan-write", "Single Plan Write"),
+            now + chrono::Duration::seconds(1),
+        )
+        .expect_err("journal commit failure should roll back the snapshot");
+
+        assert!(error
+            .to_string()
+            .contains("simulated start journal failure"));
+        assert_eq!(snapshot_store.write_calls.get(), 2);
         Ok(())
     }
 
@@ -7224,6 +7309,86 @@ mod tests {
         let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
         assert_eq!(snapshot.status, MilestoneStatus::Running);
         assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
+        Ok(())
+    }
+
+    #[test]
+    fn resume_transition_uses_resume_time_instead_of_original_start_time(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let started_at = Utc::now();
+        let paused_at = started_at + chrono::Duration::seconds(5);
+        let resumed_at = started_at + chrono::Duration::seconds(15);
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "resume-transition-timestamp",
+            "Resume Transition Timestamp",
+            started_at,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Paused,
+            paused_at,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            resumed_at,
+        )?;
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let resume_event = journal
+            .iter()
+            .find(|event| {
+                event.event_type == MilestoneEventType::StatusChanged
+                    && event.from_state == Some(MilestoneStatus::Paused)
+                    && event.to_state == Some(MilestoneStatus::Running)
+            })
+            .expect("paused milestone should record a resumed running transition");
+        assert_eq!(resume_event.timestamp, resumed_at);
+
+        let bead_start_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadStarted)
+            .collect();
+        assert_eq!(bead_start_events.len(), 1);
+        assert_eq!(bead_start_events[0].timestamp, started_at);
         Ok(())
     }
 
