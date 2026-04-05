@@ -20,6 +20,7 @@ use crate::contexts::automation_runtime::cli_writer_lease::{
 };
 use crate::contexts::milestone_record::model::{MilestoneId, TaskRunOutcome};
 use crate::contexts::milestone_record::service as milestone_service;
+use crate::contexts::milestone_record::service::CompletionMilestoneDisposition;
 use crate::contexts::project_run_record::model::{
     JournalEvent, JournalEventType, ProjectRecord, RunSnapshot, RunStatus,
 };
@@ -177,12 +178,20 @@ fn sync_terminal_milestone_task_with_options(
     final_snapshot: &RunSnapshot,
     allow_missing_lineage_repair: bool,
 ) -> AppResult<bool> {
-    let (outcome, outcome_detail) = match final_snapshot.status {
-        RunStatus::Completed => (TaskRunOutcome::Succeeded, None),
+    let (outcome, outcome_detail, disposition) = match final_snapshot.status {
+        RunStatus::Completed => (
+            TaskRunOutcome::Succeeded,
+            None,
+            CompletionMilestoneDisposition::ReconcileFromLineage,
+        ),
         RunStatus::Failed => {
             let detail = final_snapshot.status_summary.trim();
             let detail = (!detail.is_empty()).then(|| detail.to_owned());
-            (TaskRunOutcome::Failed, detail)
+            (
+                TaskRunOutcome::Failed,
+                detail,
+                CompletionMilestoneDisposition::MarkMilestoneFailed,
+            )
         }
         RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => return Ok(false),
     };
@@ -327,7 +336,7 @@ fn sync_terminal_milestone_task_with_options(
     });
 
     if exact_attempt_already_terminal {
-        milestone_service::repair_task_run(
+        milestone_service::repair_task_run_with_disposition(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
             &FsTaskRunLineageStore,
@@ -341,9 +350,10 @@ fn sync_terminal_milestone_task_with_options(
             outcome,
             outcome_detail,
             finished_at,
+            disposition,
         )?;
     } else {
-        milestone_service::record_bead_completion(
+        milestone_service::record_bead_completion_with_disposition(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
             &FsTaskRunLineageStore,
@@ -357,6 +367,7 @@ fn sync_terminal_milestone_task_with_options(
             outcome_detail.as_deref(),
             started_at,
             finished_at,
+            disposition,
         )?;
     }
 
@@ -730,7 +741,9 @@ mod tests {
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
     };
-    use crate::contexts::milestone_record::model::TaskRunOutcome;
+    use crate::contexts::milestone_record::model::{
+        MilestoneEventType, MilestoneStatus, TaskRunOutcome,
+    };
     use crate::contexts::milestone_record::service::{
         create_milestone, load_snapshot, persist_plan, read_journal, read_task_runs,
         record_bead_completion, record_bead_start, CreateMilestoneInput,
@@ -898,6 +911,19 @@ mod tests {
             task_runs[0].outcome_detail.as_deref(),
             Some("failed after review")
         );
+
+        let snapshot = load_snapshot(&FsMilestoneSnapshotStore, base_dir, &milestone.id)
+            .expect("load milestone snapshot");
+        assert_eq!(snapshot.status, MilestoneStatus::Failed);
+        assert_eq!(snapshot.active_bead, None);
+
+        let journal =
+            read_journal(&FsMilestoneJournalStore, base_dir, &milestone.id).expect("journal");
+        assert!(journal.iter().any(|event| {
+            event.event_type == MilestoneEventType::StatusChanged
+                && event.from_state == Some(MilestoneStatus::Running)
+                && event.to_state == Some(MilestoneStatus::Failed)
+        }));
     }
 
     #[test]

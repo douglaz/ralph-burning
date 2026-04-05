@@ -408,6 +408,12 @@ struct LifecycleTransitionCommit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionMilestoneDisposition {
+    ReconcileFromLineage,
+    MarkMilestoneFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JournalWriteOpKind {
     AppendIfMissing,
     RepairCompletion,
@@ -691,6 +697,27 @@ fn lifecycle_transition_metadata(
     metadata
 }
 
+fn completion_status_reason(status: MilestoneStatus) -> &'static str {
+    match status {
+        MilestoneStatus::Ready => "milestone ready for execution",
+        MilestoneStatus::Running => "execution continued",
+        MilestoneStatus::Paused => "execution paused",
+        MilestoneStatus::Completed => "all beads closed",
+        MilestoneStatus::Failed => "unrecoverable error requires operator intervention",
+        MilestoneStatus::Planning => "planning resumed",
+    }
+}
+
+fn apply_completion_milestone_disposition(
+    snapshot: &mut MilestoneSnapshot,
+    disposition: CompletionMilestoneDisposition,
+) {
+    if disposition == CompletionMilestoneDisposition::MarkMilestoneFailed {
+        snapshot.status = MilestoneStatus::Failed;
+        snapshot.active_bead = None;
+    }
+}
+
 fn build_reconciled_transition_events(
     milestone_id: &MilestoneId,
     previous_status: MilestoneStatus,
@@ -724,6 +751,9 @@ fn build_reconciled_transition_events(
                 MilestoneStatus::Ready,
                 MilestoneStatus::Paused | MilestoneStatus::Completed | MilestoneStatus::Failed,
             ) => vec![MilestoneStatus::Running, snapshot.status],
+            (MilestoneStatus::Paused, MilestoneStatus::Completed | MilestoneStatus::Failed) => {
+                vec![MilestoneStatus::Running, snapshot.status]
+            }
             _ => {
                 return Err(invalid_transition_error(
                     milestone_id,
@@ -777,7 +807,13 @@ fn build_reconciled_transition_events(
         } else {
             match to_status {
                 MilestoneStatus::Ready => "plan finalized and beads exported",
-                MilestoneStatus::Running => "execution started",
+                MilestoneStatus::Running => {
+                    if from_status == MilestoneStatus::Paused {
+                        "execution resumed"
+                    } else {
+                        "execution started"
+                    }
+                }
                 MilestoneStatus::Paused => "execution paused",
                 MilestoneStatus::Completed => "all beads closed",
                 MilestoneStatus::Failed => "unrecoverable error requires operator intervention",
@@ -1848,7 +1884,42 @@ pub fn record_bead_completion(
     started_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> AppResult<()> {
-    update_task_run(
+    record_bead_completion_with_disposition(
+        snapshot_store,
+        journal_store,
+        lineage_store,
+        base_dir,
+        milestone_id,
+        bead_id,
+        project_id,
+        run_id,
+        plan_hash,
+        outcome,
+        outcome_detail,
+        started_at,
+        now,
+        CompletionMilestoneDisposition::ReconcileFromLineage,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_bead_completion_with_disposition(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    lineage_store: &impl TaskRunLineagePort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    project_id: &str,
+    run_id: &str,
+    plan_hash: Option<&str>,
+    outcome: TaskRunOutcome,
+    outcome_detail: Option<&str>,
+    started_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+    disposition: CompletionMilestoneDisposition,
+) -> AppResult<()> {
+    update_task_run_with_disposition(
         snapshot_store,
         journal_store,
         lineage_store,
@@ -1862,6 +1933,7 @@ pub fn record_bead_completion(
         outcome,
         outcome_detail.map(str::to_owned),
         now,
+        disposition,
     )
 }
 
@@ -1915,6 +1987,41 @@ pub fn update_task_run(
     outcome_detail: Option<String>,
     finished_at: DateTime<Utc>,
 ) -> AppResult<()> {
+    update_task_run_with_disposition(
+        snapshot_store,
+        journal_store,
+        lineage_store,
+        base_dir,
+        milestone_id,
+        bead_id,
+        project_id,
+        run_id,
+        plan_hash,
+        started_at,
+        outcome,
+        outcome_detail,
+        finished_at,
+        CompletionMilestoneDisposition::ReconcileFromLineage,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_task_run_with_disposition(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    lineage_store: &impl TaskRunLineagePort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    project_id: &str,
+    run_id: &str,
+    plan_hash: Option<&str>,
+    started_at: DateTime<Utc>,
+    outcome: TaskRunOutcome,
+    outcome_detail: Option<String>,
+    finished_at: DateTime<Utc>,
+    disposition: CompletionMilestoneDisposition,
+) -> AppResult<()> {
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, move || {
         if !outcome.is_terminal() {
             return Err(AppError::RunStartFailed {
@@ -1947,6 +2054,7 @@ pub fn update_task_run(
             milestone_id,
             lineage_store.read_task_runs(base_dir, milestone_id)?,
         )?;
+        apply_completion_milestone_disposition(&mut snapshot, disposition);
         let event_timestamp = finalized_run.finished_at.unwrap_or(finished_at);
         snapshot.updated_at = snapshot.updated_at.max(finished_at).max(event_timestamp);
         validate_snapshot(&snapshot, milestone_id)?;
@@ -1965,14 +2073,7 @@ pub fn update_task_run(
             event_timestamp,
             Some(finalized_run.started_at),
             "controller",
-            match snapshot.status {
-                MilestoneStatus::Completed => "all beads closed",
-                MilestoneStatus::Paused => "execution paused",
-                MilestoneStatus::Failed => "unrecoverable error requires operator intervention",
-                MilestoneStatus::Running => "execution continued",
-                MilestoneStatus::Ready => "milestone ready for execution",
-                MilestoneStatus::Planning => "planning resumed",
-            },
+            completion_status_reason(snapshot.status),
         )?
         .into_iter()
         .map(JournalWriteOp::append_if_missing)
@@ -2016,6 +2117,41 @@ pub fn repair_task_run(
     outcome_detail: Option<String>,
     finished_at: DateTime<Utc>,
 ) -> AppResult<()> {
+    repair_task_run_with_disposition(
+        snapshot_store,
+        journal_store,
+        lineage_store,
+        base_dir,
+        milestone_id,
+        bead_id,
+        project_id,
+        run_id,
+        plan_hash,
+        started_at,
+        outcome,
+        outcome_detail,
+        finished_at,
+        CompletionMilestoneDisposition::ReconcileFromLineage,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn repair_task_run_with_disposition(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    lineage_store: &impl TaskRunLineagePort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    project_id: &str,
+    run_id: &str,
+    plan_hash: Option<&str>,
+    started_at: DateTime<Utc>,
+    outcome: TaskRunOutcome,
+    outcome_detail: Option<String>,
+    finished_at: DateTime<Utc>,
+    disposition: CompletionMilestoneDisposition,
+) -> AppResult<()> {
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, move || {
         if !outcome.is_terminal() {
             return Err(AppError::RunStartFailed {
@@ -2048,6 +2184,7 @@ pub fn repair_task_run(
             milestone_id,
             lineage_store.read_task_runs(base_dir, milestone_id)?,
         )?;
+        apply_completion_milestone_disposition(&mut snapshot, disposition);
         let event_timestamp = repaired_run.finished_at.unwrap_or(finished_at);
         snapshot.updated_at = snapshot.updated_at.max(finished_at).max(event_timestamp);
         validate_snapshot(&snapshot, milestone_id)?;
@@ -2066,14 +2203,7 @@ pub fn repair_task_run(
             event_timestamp,
             Some(repaired_run.started_at),
             "controller",
-            match snapshot.status {
-                MilestoneStatus::Completed => "all beads closed",
-                MilestoneStatus::Paused => "execution paused",
-                MilestoneStatus::Failed => "unrecoverable error requires operator intervention",
-                MilestoneStatus::Running => "execution continued",
-                MilestoneStatus::Ready => "milestone ready for execution",
-                MilestoneStatus::Planning => "planning resumed",
-            },
+            completion_status_reason(snapshot.status),
         )?
         .into_iter()
         .map(JournalWriteOp::append_if_missing)
@@ -5226,6 +5356,173 @@ mod tests {
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn unrecoverable_completion_marks_milestone_failed_and_emits_failed_transition(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let started_at = Utc::now();
+        let failed_at = started_at + chrono::Duration::seconds(5);
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "unrecoverable-completion-test",
+            "Unrecoverable Completion Test",
+            started_at,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )?;
+        record_bead_completion_with_disposition(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Failed,
+            Some("fatal controller failure"),
+            started_at,
+            failed_at,
+            CompletionMilestoneDisposition::MarkMilestoneFailed,
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Failed);
+        assert_eq!(snapshot.active_bead, None);
+        assert_eq!(snapshot.progress.failed_beads, 1);
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        assert!(journal.iter().any(|event| {
+            event.event_type == MilestoneEventType::StatusChanged
+                && event.from_state == Some(MilestoneStatus::Running)
+                && event.to_state == Some(MilestoneStatus::Failed)
+                && event.timestamp == failed_at
+        }));
+        assert!(journal.iter().any(|event| {
+            event.event_type == MilestoneEventType::BeadFailed && event.timestamp == failed_at
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn repairing_failed_completion_can_promote_paused_snapshot_to_failed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let started_at = Utc::now();
+        let failed_at = started_at + chrono::Duration::seconds(5);
+        let repaired_at = failed_at + chrono::Duration::seconds(2);
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "failed-repair-promotion-test",
+            "Failed Repair Promotion Test",
+            started_at,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Failed,
+            Some("retryable failure"),
+            started_at,
+            failed_at,
+        )?;
+
+        let paused_snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(paused_snapshot.status, MilestoneStatus::Paused);
+
+        repair_task_run_with_disposition(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            started_at,
+            TaskRunOutcome::Failed,
+            Some("fatal controller failure".to_owned()),
+            repaired_at,
+            CompletionMilestoneDisposition::MarkMilestoneFailed,
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Failed);
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        assert!(journal.iter().any(|event| {
+            event.event_type == MilestoneEventType::StatusChanged
+                && event.from_state == Some(MilestoneStatus::Paused)
+                && event.to_state == Some(MilestoneStatus::Running)
+        }));
+        assert!(journal.iter().any(|event| {
+            event.event_type == MilestoneEventType::StatusChanged
+                && event.from_state == Some(MilestoneStatus::Running)
+                && event.to_state == Some(MilestoneStatus::Failed)
+                && event.timestamp == repaired_at
+        }));
         Ok(())
     }
 
