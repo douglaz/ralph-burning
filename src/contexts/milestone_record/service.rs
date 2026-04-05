@@ -14,9 +14,10 @@ use super::bundle::{
     render_plan_json, render_plan_md_checked, MilestoneBundle,
 };
 use super::model::{
-    collapse_task_run_attempts, latest_task_runs_per_bead, MilestoneEventType, MilestoneId,
-    MilestoneJournalEvent, MilestoneProgress, MilestoneRecord, MilestoneSnapshot, MilestoneStatus,
-    PendingLineageReset, TaskRunEntry, TaskRunOutcome,
+    collapse_task_run_attempts, latest_task_runs_per_bead, CompletionJournalDetails,
+    MilestoneEventType, MilestoneId, MilestoneJournalEvent, MilestoneProgress, MilestoneRecord,
+    MilestoneSnapshot, MilestoneStatus, PendingLineageReset, StartJournalDetails, TaskRunEntry,
+    TaskRunOutcome,
 };
 
 // ── Ports ───────────────────────────────────────────────────────────────────
@@ -82,6 +83,13 @@ pub trait MilestoneJournalPort {
         milestone_id: &MilestoneId,
         line: &str,
     ) -> AppResult<()>;
+    /// Atomically replace the milestone journal with an exact event set.
+    fn replace_journal(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        events: &[MilestoneJournalEvent],
+    ) -> AppResult<()>;
     /// Atomically append an event only when an identical entry is not present.
     fn append_event_if_missing(
         &self,
@@ -113,20 +121,17 @@ pub trait MilestoneJournalPort {
         milestone_id: &MilestoneId,
         ops: &[JournalWriteOp],
     ) -> AppResult<usize> {
-        let mut applied = 0;
-        for op in ops {
-            let changed = match op.kind {
-                JournalWriteOpKind::AppendIfMissing => {
-                    self.append_event_if_missing(base_dir, milestone_id, &op.event)?
-                }
-                JournalWriteOpKind::RepairCompletion => {
-                    self.repair_completion_event(base_dir, milestone_id, &op.event)?
-                }
-            };
-            if changed {
-                applied += 1;
-            }
+        if ops.is_empty() {
+            return Ok(0);
         }
+
+        let mut journal = self.read_journal(base_dir, milestone_id)?;
+        let applied = apply_journal_write_ops(&mut journal, ops);
+        if applied == 0 {
+            return Ok(0);
+        }
+
+        self.replace_journal(base_dir, milestone_id, &journal)?;
         Ok(applied)
     }
 
@@ -681,68 +686,95 @@ fn build_reconciled_transition_events(
     if previous_status == snapshot.status {
         return Ok(Vec::new());
     }
-    if previous_status == MilestoneStatus::Planning && snapshot.status == MilestoneStatus::Running {
-        let mut ready_snapshot = snapshot.clone();
-        ready_snapshot.status = MilestoneStatus::Ready;
-        ready_snapshot.active_bead = None;
-        ready_snapshot.progress.in_progress_beads = 0;
-        let ready_metadata = lifecycle_transition_metadata(
-            &ready_snapshot,
-            previous_status,
-            MilestoneStatus::Ready,
-            journal,
-            previous_updated_at,
-            now,
-        );
-        let running_metadata = lifecycle_transition_metadata(
-            snapshot,
-            MilestoneStatus::Ready,
-            snapshot.status,
-            journal,
-            previous_updated_at,
-            now,
-        );
-        return Ok(vec![
-            MilestoneJournalEvent::lifecycle_transition(
-                now,
-                previous_status,
+    let transition_path: Vec<_> = if previous_status.allows_transition_to(snapshot.status) {
+        vec![snapshot.status]
+    } else {
+        match (previous_status, snapshot.status) {
+            (MilestoneStatus::Planning, MilestoneStatus::Running) => {
+                vec![MilestoneStatus::Ready, MilestoneStatus::Running]
+            }
+            (
+                MilestoneStatus::Planning,
+                MilestoneStatus::Paused | MilestoneStatus::Completed | MilestoneStatus::Failed,
+            ) => vec![
                 MilestoneStatus::Ready,
-                actor,
-                "plan finalized and beads exported",
-                ready_metadata,
-            ),
-            MilestoneJournalEvent::lifecycle_transition(
-                now,
-                MilestoneStatus::Ready,
+                MilestoneStatus::Running,
                 snapshot.status,
-                actor,
-                reason,
-                running_metadata,
-            ),
-        ]);
-    }
-    if !previous_status.allows_transition_to(snapshot.status) {
-        return Err(invalid_transition_error(
-            milestone_id,
-            previous_status,
-            snapshot.status,
-        ));
-    }
-    Ok(vec![MilestoneJournalEvent::lifecycle_transition(
-        now,
-        previous_status,
-        snapshot.status,
-        actor,
-        reason,
-        lifecycle_transition_metadata(
-            snapshot,
-            previous_status,
-            snapshot.status,
-            journal,
-            previous_updated_at,
+            ],
+            (
+                MilestoneStatus::Ready,
+                MilestoneStatus::Paused | MilestoneStatus::Completed | MilestoneStatus::Failed,
+            ) => vec![MilestoneStatus::Running, snapshot.status],
+            _ => {
+                return Err(invalid_transition_error(
+                    milestone_id,
+                    previous_status,
+                    snapshot.status,
+                ))
+            }
+        }
+    };
+
+    let mut events = Vec::with_capacity(transition_path.len());
+    let mut from_status = previous_status;
+    for (index, to_status) in transition_path.iter().copied().enumerate() {
+        let is_final = index + 1 == transition_path.len();
+        let event_snapshot = if is_final {
+            snapshot.clone()
+        } else {
+            let mut synthetic_snapshot = snapshot.clone();
+            synthetic_snapshot.status = to_status;
+            match to_status {
+                MilestoneStatus::Ready => {
+                    synthetic_snapshot.active_bead = None;
+                    synthetic_snapshot.progress.in_progress_beads = 0;
+                }
+                MilestoneStatus::Running => {
+                    if synthetic_snapshot.progress.in_progress_beads == 0 {
+                        synthetic_snapshot.progress.in_progress_beads = 1;
+                    }
+                }
+                MilestoneStatus::Planning
+                | MilestoneStatus::Paused
+                | MilestoneStatus::Completed
+                | MilestoneStatus::Failed => {
+                    synthetic_snapshot.active_bead = None;
+                    synthetic_snapshot.progress.in_progress_beads = 0;
+                }
+            }
+            synthetic_snapshot
+        };
+        let event_reason = if is_final {
+            reason
+        } else {
+            match to_status {
+                MilestoneStatus::Ready => "plan finalized and beads exported",
+                MilestoneStatus::Running => "execution started",
+                MilestoneStatus::Paused => "execution paused",
+                MilestoneStatus::Completed => "all beads closed",
+                MilestoneStatus::Failed => "unrecoverable error requires operator intervention",
+                MilestoneStatus::Planning => "planning resumed",
+            }
+        };
+        events.push(MilestoneJournalEvent::lifecycle_transition(
             now,
-        ),
-    )])
+            from_status,
+            to_status,
+            actor,
+            event_reason,
+            lifecycle_transition_metadata(
+                &event_snapshot,
+                from_status,
+                to_status,
+                journal,
+                previous_updated_at,
+                now,
+            ),
+        ));
+        from_status = to_status;
+    }
+
+    Ok(events)
 }
 
 fn write_snapshot_with_atomic_transition(
@@ -854,7 +886,11 @@ fn reconcile_snapshot_from_lineage(
         snapshot.status = MilestoneStatus::Paused;
         snapshot.active_bead = None;
     } else if has_any_task_runs && !snapshot.status.is_terminal() {
-        snapshot.status = MilestoneStatus::Ready;
+        snapshot.status = if snapshot.progress.total_beads > 0 {
+            MilestoneStatus::Paused
+        } else {
+            MilestoneStatus::Ready
+        };
         snapshot.active_bead = None;
     }
 
@@ -872,12 +908,257 @@ fn event_type_for_outcome(outcome: TaskRunOutcome) -> MilestoneEventType {
     }
 }
 
-#[cfg(test)]
-fn journal_contains_event(
-    journal: &[MilestoneJournalEvent],
-    candidate: &MilestoneJournalEvent,
+fn option_conflicts(existing: Option<&str>, requested: Option<&str>) -> bool {
+    matches!((existing, requested), (Some(existing), Some(requested)) if existing != requested)
+}
+
+fn merge_start_journal_details(
+    existing: &StartJournalDetails,
+    requested: &StartJournalDetails,
+) -> Option<StartJournalDetails> {
+    if existing.project_id != requested.project_id
+        || option_conflicts(existing.run_id.as_deref(), requested.run_id.as_deref())
+        || option_conflicts(
+            existing.plan_hash.as_deref(),
+            requested.plan_hash.as_deref(),
+        )
+    {
+        return None;
+    }
+
+    let mut merged = existing.clone();
+    if merged.run_id.is_none() {
+        merged.run_id = requested.run_id.clone();
+    }
+    if merged.plan_hash.is_none() {
+        merged.plan_hash = requested.plan_hash.clone();
+    }
+    Some(merged)
+}
+
+fn merge_completion_journal_details(
+    existing: &CompletionJournalDetails,
+    requested: &CompletionJournalDetails,
+) -> Option<CompletionJournalDetails> {
+    if existing.project_id != requested.project_id
+        || existing.started_at != requested.started_at
+        || existing.outcome != requested.outcome
+        || option_conflicts(existing.run_id.as_deref(), requested.run_id.as_deref())
+        || option_conflicts(
+            existing.plan_hash.as_deref(),
+            requested.plan_hash.as_deref(),
+        )
+        || option_conflicts(
+            existing.outcome_detail.as_deref(),
+            requested.outcome_detail.as_deref(),
+        )
+    {
+        return None;
+    }
+
+    let mut merged = existing.clone();
+    if merged.run_id.is_none() {
+        merged.run_id = requested.run_id.clone();
+    }
+    if merged.plan_hash.is_none() {
+        merged.plan_hash = requested.plan_hash.clone();
+    }
+    if merged.outcome_detail.is_none() {
+        merged.outcome_detail = requested.outcome_detail.clone();
+    }
+    Some(merged)
+}
+
+fn render_journal_details<T: Serialize>(details: &T) -> Option<String> {
+    serde_json::to_string(details).ok()
+}
+
+fn is_completion_event(event: &MilestoneJournalEvent) -> bool {
+    matches!(
+        event.event_type,
+        MilestoneEventType::BeadCompleted
+            | MilestoneEventType::BeadFailed
+            | MilestoneEventType::BeadSkipped
+    )
+}
+
+fn repairable_start_event(
+    existing: &MilestoneJournalEvent,
+    requested: &MilestoneJournalEvent,
+) -> Option<MilestoneJournalEvent> {
+    if existing.event_type != MilestoneEventType::BeadStarted
+        || requested.event_type != MilestoneEventType::BeadStarted
+        || existing.timestamp != requested.timestamp
+        || existing.bead_id != requested.bead_id
+    {
+        return None;
+    }
+
+    let existing_details: StartJournalDetails =
+        serde_json::from_str(existing.details.as_deref()?).ok()?;
+    let requested_details: StartJournalDetails =
+        serde_json::from_str(requested.details.as_deref()?).ok()?;
+    let merged_details = merge_start_journal_details(&existing_details, &requested_details)?;
+
+    let mut repaired = existing.clone();
+    repaired.details = render_journal_details(&merged_details);
+    Some(repaired)
+}
+
+fn repairable_completion_event(
+    existing: &MilestoneJournalEvent,
+    requested: &MilestoneJournalEvent,
+) -> Option<MilestoneJournalEvent> {
+    if !is_completion_event(existing)
+        || !is_completion_event(requested)
+        || existing.bead_id != requested.bead_id
+    {
+        return None;
+    }
+
+    let existing_details: CompletionJournalDetails =
+        serde_json::from_str(existing.details.as_deref()?).ok()?;
+    let requested_details: CompletionJournalDetails =
+        serde_json::from_str(requested.details.as_deref()?).ok()?;
+    if existing_details.project_id != requested_details.project_id
+        || existing_details.started_at != requested_details.started_at
+        || option_conflicts(
+            existing_details.run_id.as_deref(),
+            requested_details.run_id.as_deref(),
+        )
+        || option_conflicts(
+            existing_details.plan_hash.as_deref(),
+            requested_details.plan_hash.as_deref(),
+        )
+    {
+        return None;
+    }
+
+    let merged_details = merge_completion_journal_details(&existing_details, &requested_details)?;
+    let mut repaired = existing.clone();
+    repaired.details = render_journal_details(&merged_details);
+    Some(repaired)
+}
+
+fn explicitly_repaired_completion_event(
+    existing: &MilestoneJournalEvent,
+    requested: &MilestoneJournalEvent,
+) -> Option<MilestoneJournalEvent> {
+    if !is_completion_event(existing)
+        || !is_completion_event(requested)
+        || existing.bead_id != requested.bead_id
+    {
+        return None;
+    }
+
+    let existing_details: CompletionJournalDetails =
+        serde_json::from_str(existing.details.as_deref()?).ok()?;
+    let requested_details: CompletionJournalDetails =
+        serde_json::from_str(requested.details.as_deref()?).ok()?;
+    if existing_details.project_id != requested_details.project_id
+        || existing_details.started_at != requested_details.started_at
+        || option_conflicts(
+            existing_details.run_id.as_deref(),
+            requested_details.run_id.as_deref(),
+        )
+        || option_conflicts(
+            existing_details.plan_hash.as_deref(),
+            requested_details.plan_hash.as_deref(),
+        )
+    {
+        return None;
+    }
+
+    let mut repaired_details = requested_details.clone();
+    if repaired_details.run_id.is_none() {
+        repaired_details.run_id = existing_details.run_id.clone();
+    }
+    if repaired_details.plan_hash.is_none() {
+        repaired_details.plan_hash = existing_details.plan_hash.clone();
+    }
+    if repaired_details.outcome == existing_details.outcome
+        && repaired_details.outcome_detail.is_none()
+    {
+        repaired_details.outcome_detail = existing_details.outcome_detail.clone();
+    }
+
+    let mut repaired = requested.clone();
+    repaired.details = render_journal_details(&repaired_details);
+    Some(repaired)
+}
+
+fn apply_append_if_missing(
+    journal: &mut Vec<MilestoneJournalEvent>,
+    event: &MilestoneJournalEvent,
 ) -> bool {
-    journal.iter().any(|existing| existing == candidate)
+    if journal.iter().any(|existing| existing == event) {
+        return false;
+    }
+
+    if let Some((existing_index, repaired_event)) =
+        journal.iter().enumerate().find_map(|(index, existing)| {
+            repairable_start_event(existing, event)
+                .or_else(|| repairable_completion_event(existing, event))
+                .map(|repaired| (index, repaired))
+        })
+    {
+        if journal[existing_index].details == repaired_event.details {
+            return false;
+        }
+
+        journal[existing_index] = repaired_event;
+        return true;
+    }
+
+    journal.push(event.clone());
+    true
+}
+
+fn apply_repair_completion(
+    journal: &mut Vec<MilestoneJournalEvent>,
+    event: &MilestoneJournalEvent,
+) -> bool {
+    let exact_match_index = journal.iter().position(|existing| existing == event);
+
+    if let Some((existing_index, repaired_event)) =
+        journal.iter().enumerate().find_map(|(index, existing)| {
+            if existing == event {
+                return None;
+            }
+            explicitly_repaired_completion_event(existing, event).map(|repaired| (index, repaired))
+        })
+    {
+        if exact_match_index.is_some() {
+            journal.remove(existing_index);
+        } else {
+            journal[existing_index] = repaired_event;
+        }
+        return true;
+    }
+
+    if exact_match_index.is_some() {
+        return false;
+    }
+
+    journal.push(event.clone());
+    true
+}
+
+fn apply_journal_write_ops(
+    journal: &mut Vec<MilestoneJournalEvent>,
+    ops: &[JournalWriteOp],
+) -> usize {
+    let mut applied = 0;
+    for op in ops {
+        let changed = match op.kind {
+            JournalWriteOpKind::AppendIfMissing => apply_append_if_missing(journal, &op.event),
+            JournalWriteOpKind::RepairCompletion => apply_repair_completion(journal, &op.event),
+        };
+        if changed {
+            applied += 1;
+        }
+    }
+    applied
 }
 
 // ── Service use cases ───────────────────────────────────────────────────────
@@ -1216,6 +1497,17 @@ fn persist_plan_locked(
 
     let mut progress = reconcile_progress_for_new_plan(shape_matches, bundle, snapshot);
     progress.total_beads = bundle.bead_count() as u32;
+    let reopen_terminal_status = match snapshot.status {
+        MilestoneStatus::Completed => {
+            (plan_hash_changed || lineage_reset_required)
+                && (progress.completed_beads + progress.skipped_beads < progress.total_beads
+                    || progress.failed_beads > 0)
+        }
+        MilestoneStatus::Failed => {
+            (plan_hash_changed || lineage_reset_required) && progress.failed_beads == 0
+        }
+        _ => false,
+    };
 
     plan_store.write_plan_json(base_dir, milestone_id, &plan_json)?;
     plan_store.write_plan_md(base_dir, milestone_id, &plan_md)?;
@@ -1230,6 +1522,10 @@ fn persist_plan_locked(
         snapshot.updated_at = now;
     }
     snapshot.pending_lineage_reset = pending_lineage_reset.clone();
+    if reopen_terminal_status {
+        snapshot.status = MilestoneStatus::Planning;
+        snapshot.active_bead = None;
+    }
 
     if plan_hash_changed {
         let event_type = if snapshot.plan_version == 1 {
@@ -1753,13 +2049,22 @@ mod tests {
             milestone_id: &MilestoneId,
             line: &str,
         ) -> AppResult<()> {
+            FsMilestoneJournalStore.append_event(base_dir, milestone_id, line)
+        }
+
+        fn replace_journal(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            events: &[MilestoneJournalEvent],
+        ) -> AppResult<()> {
             let next_call = self.append_calls.get() + 1;
             self.append_calls.set(next_call);
-            if next_call == 4 {
+            if next_call == 2 {
                 return Err(std::io::Error::other("simulated completion journal failure").into());
             }
 
-            FsMilestoneJournalStore.append_event(base_dir, milestone_id, line)
+            FsMilestoneJournalStore.replace_journal(base_dir, milestone_id, events)
         }
 
         fn append_event_if_missing(
@@ -1768,14 +2073,7 @@ mod tests {
             milestone_id: &MilestoneId,
             event: &MilestoneJournalEvent,
         ) -> AppResult<bool> {
-            let journal = self.read_journal(base_dir, milestone_id)?;
-            if journal_contains_event(&journal, event) {
-                return Ok(false);
-            }
-
-            let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-            self.append_event(base_dir, milestone_id, &line)?;
-            Ok(true)
+            FsMilestoneJournalStore.append_event_if_missing(base_dir, milestone_id, event)
         }
     }
 
@@ -1798,13 +2096,22 @@ mod tests {
             milestone_id: &MilestoneId,
             line: &str,
         ) -> AppResult<()> {
+            FsMilestoneJournalStore.append_event(base_dir, milestone_id, line)
+        }
+
+        fn replace_journal(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            events: &[MilestoneJournalEvent],
+        ) -> AppResult<()> {
             let next_call = self.append_calls.get() + 1;
             self.append_calls.set(next_call);
             if next_call == 1 {
                 return Err(std::io::Error::other("simulated start journal failure").into());
             }
 
-            FsMilestoneJournalStore.append_event(base_dir, milestone_id, line)
+            FsMilestoneJournalStore.replace_journal(base_dir, milestone_id, events)
         }
 
         fn append_event_if_missing(
@@ -1813,14 +2120,7 @@ mod tests {
             milestone_id: &MilestoneId,
             event: &MilestoneJournalEvent,
         ) -> AppResult<bool> {
-            let journal = self.read_journal(base_dir, milestone_id)?;
-            if journal_contains_event(&journal, event) {
-                return Ok(false);
-            }
-
-            let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-            self.append_event(base_dir, milestone_id, &line)?;
-            Ok(true)
+            FsMilestoneJournalStore.append_event_if_missing(base_dir, milestone_id, event)
         }
     }
 
@@ -4945,6 +5245,84 @@ mod tests {
     }
 
     #[test]
+    fn materialize_bundle_reopens_terminal_milestone_when_plan_changes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("terminal-plan-change", "Terminal Plan Change");
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(1),
+        )?;
+        let mut snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot.progress.completed_beads = snapshot.progress.total_beads;
+        snapshot_store.write_snapshot(base, &record.id, &snapshot)?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Completed,
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut changed_bundle = bundle.clone();
+        changed_bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Second bead after rematerialize".to_owned(),
+            description: Some("Reopens the terminal milestone.".to_owned()),
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec!["bead-1".to_owned()],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+        changed_bundle.acceptance_map[0].covered_by =
+            vec!["bead-1".to_owned(), "bead-2".to_owned()];
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &changed_bundle,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.plan_version, 2);
+        assert_eq!(snapshot.progress.total_beads, 2);
+        assert_eq!(snapshot.progress.completed_beads, 0);
+        Ok(())
+    }
+
+    #[test]
     fn task_run_entry_serialization_with_new_fields() -> Result<(), Box<dyn std::error::Error>> {
         let now = Utc::now();
         let entry = TaskRunEntry {
@@ -6974,6 +7352,81 @@ mod tests {
             running_metadata.get("in_progress_beads"),
             Some(&serde_json::json!(1))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_after_missed_start_reconstructs_running_bridge(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let flaky_journal_store = FailFirstJournalAppend {
+            append_calls: Cell::new(0),
+        };
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("missed-running-bridge", "Missed Running Bridge");
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &flaky_journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(1),
+        )
+        .expect_err("start journal failure should leave lineage ahead of the snapshot");
+
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("bridged completion"),
+            now + chrono::Duration::seconds(1),
+            now + chrono::Duration::seconds(10),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Completed);
+
+        let transitions: Vec<_> = read_journal(&journal_store, base, &record.id)?
+            .into_iter()
+            .filter(|event| event.event_type == MilestoneEventType::StatusChanged)
+            .collect();
+        assert!(transitions.iter().any(|event| {
+            event.from_state == Some(MilestoneStatus::Ready)
+                && event.to_state == Some(MilestoneStatus::Running)
+        }));
+        assert!(transitions.iter().any(|event| {
+            event.from_state == Some(MilestoneStatus::Running)
+                && event.to_state == Some(MilestoneStatus::Completed)
+        }));
         Ok(())
     }
 

@@ -3047,6 +3047,17 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         FileSystem::append_line(&path, line)
     }
 
+    fn replace_journal(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        events: &[MilestoneJournalEvent],
+    ) -> AppResult<()> {
+        let path = Self::journal_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&Self::journal_lock_path(base_dir, milestone_id))?;
+        Self::write_journal(&path, events)
+    }
+
     fn append_event_if_missing(
         &self,
         base_dir: &Path,
