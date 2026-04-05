@@ -565,11 +565,17 @@ fn accumulated_running_duration_seconds(
 ) -> i64 {
     let mut total_seconds = 0_i64;
     let mut running_started_at = None;
+    let mut lifecycle_events: Vec<_> = journal
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| {
+            event.event_type == MilestoneEventType::StatusChanged
+                && event_matches_plan_version(event, plan_version)
+        })
+        .collect();
+    lifecycle_events.sort_by_key(|(index, event)| (event.timestamp, *index));
 
-    for event in journal.iter().filter(|event| {
-        event.event_type == MilestoneEventType::StatusChanged
-            && event_matches_plan_version(event, plan_version)
-    }) {
+    for (_, event) in lifecycle_events {
         match (event.from_state, event.to_state) {
             (_, Some(MilestoneStatus::Running)) => {
                 running_started_at.get_or_insert(event.timestamp);
@@ -766,14 +772,19 @@ fn build_reconciled_transition_events(
 
     let mut events = Vec::with_capacity(transition_path.len());
     let mut from_status = previous_status;
-    let bridge_timestamp = running_started_at.unwrap_or(now);
     let mut event_journal = journal.to_vec();
     for (index, to_status) in transition_path.iter().copied().enumerate() {
         let is_final = index + 1 == transition_path.len();
         let event_timestamp = if is_final {
             now
-        } else if matches!(to_status, MilestoneStatus::Ready | MilestoneStatus::Running) {
-            bridge_timestamp
+        } else if to_status == MilestoneStatus::Ready {
+            running_started_at.unwrap_or(now)
+        } else if to_status == MilestoneStatus::Running {
+            if from_status == MilestoneStatus::Paused {
+                now
+            } else {
+                running_started_at.unwrap_or(now)
+            }
         } else {
             now
         };
@@ -5512,17 +5523,33 @@ mod tests {
         assert_eq!(snapshot.status, MilestoneStatus::Failed);
 
         let journal = read_journal(&journal_store, base, &record.id)?;
-        assert!(journal.iter().any(|event| {
-            event.event_type == MilestoneEventType::StatusChanged
-                && event.from_state == Some(MilestoneStatus::Paused)
-                && event.to_state == Some(MilestoneStatus::Running)
-        }));
-        assert!(journal.iter().any(|event| {
-            event.event_type == MilestoneEventType::StatusChanged
-                && event.from_state == Some(MilestoneStatus::Running)
-                && event.to_state == Some(MilestoneStatus::Failed)
-                && event.timestamp == repaired_at
-        }));
+        let resumed_event = journal
+            .iter()
+            .find(|event| {
+                event.event_type == MilestoneEventType::StatusChanged
+                    && event.from_state == Some(MilestoneStatus::Paused)
+                    && event.to_state == Some(MilestoneStatus::Running)
+            })
+            .expect("repair should synthesize a paused -> running bridge");
+        assert_eq!(resumed_event.timestamp, repaired_at);
+
+        let failed_event = journal
+            .iter()
+            .find(|event| {
+                event.event_type == MilestoneEventType::StatusChanged
+                    && event.from_state == Some(MilestoneStatus::Running)
+                    && event.to_state == Some(MilestoneStatus::Failed)
+                    && event.timestamp == repaired_at
+            })
+            .expect("repair should record the terminal failed transition");
+        let metadata = failed_event
+            .metadata
+            .as_ref()
+            .expect("failed transition should carry metadata");
+        assert_eq!(
+            metadata.get("duration_seconds"),
+            Some(&serde_json::json!(5))
+        );
         Ok(())
     }
 

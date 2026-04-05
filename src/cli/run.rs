@@ -190,7 +190,7 @@ fn sync_terminal_milestone_task_with_options(
             (
                 TaskRunOutcome::Failed,
                 detail,
-                CompletionMilestoneDisposition::MarkMilestoneFailed,
+                CompletionMilestoneDisposition::ReconcileFromLineage,
             )
         }
         RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => return Ok(false),
@@ -835,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_terminal_milestone_task_marks_failed_runs_terminal() {
+    fn sync_terminal_milestone_task_leaves_failed_runs_paused_for_resume() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
         let now = Utc::now();
@@ -914,7 +914,7 @@ mod tests {
 
         let snapshot = load_snapshot(&FsMilestoneSnapshotStore, base_dir, &milestone.id)
             .expect("load milestone snapshot");
-        assert_eq!(snapshot.status, MilestoneStatus::Failed);
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
         assert_eq!(snapshot.active_bead, None);
 
         let journal =
@@ -922,7 +922,7 @@ mod tests {
         assert!(journal.iter().any(|event| {
             event.event_type == MilestoneEventType::StatusChanged
                 && event.from_state == Some(MilestoneStatus::Running)
-                && event.to_state == Some(MilestoneStatus::Failed)
+                && event.to_state == Some(MilestoneStatus::Paused)
         }));
     }
 
