@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -76,6 +77,10 @@ static AMENDMENT_WRITE_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
 static AMENDMENT_WRITE_FAIL_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static AMENDMENT_REMOVE_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
 static AMENDMENT_REMOVE_FAIL_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+thread_local! {
+    static HELD_MILESTONE_MUTATION_LOCKS: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
 
 fn maybe_inject_project_failpoint(
     env_var: &str,
@@ -2441,6 +2446,37 @@ impl AdvisoryFileLock {
     }
 }
 
+struct CurrentThreadMilestoneMutationLockGuard {
+    lock_path: PathBuf,
+}
+
+impl CurrentThreadMilestoneMutationLockGuard {
+    fn acquire(lock_path: &Path) -> Self {
+        HELD_MILESTONE_MUTATION_LOCKS.with(|locks| {
+            locks.borrow_mut().push(lock_path.to_path_buf());
+        });
+        Self {
+            lock_path: lock_path.to_path_buf(),
+        }
+    }
+
+    fn is_held(lock_path: &Path) -> bool {
+        HELD_MILESTONE_MUTATION_LOCKS
+            .with(|locks| locks.borrow().iter().any(|held| held == lock_path))
+    }
+}
+
+impl Drop for CurrentThreadMilestoneMutationLockGuard {
+    fn drop(&mut self) {
+        HELD_MILESTONE_MUTATION_LOCKS.with(|locks| {
+            let mut locks = locks.borrow_mut();
+            if let Some(index) = locks.iter().rposition(|held| held == &self.lock_path) {
+                locks.swap_remove(index);
+            }
+        });
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingMilestoneStateCommit {
     previous_snapshot: MilestoneSnapshot,
@@ -2624,6 +2660,25 @@ impl FsMilestoneSnapshotStore {
         }
         Ok(())
     }
+
+    fn recover_pending_state_commit_for_plain_read(
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<()> {
+        let pending_path = Self::pending_state_commit_path(base_dir, milestone_id);
+        if !pending_path.is_file() {
+            return Ok(());
+        }
+
+        let lock_path = Self::mutation_lock_path(base_dir, milestone_id);
+        if CurrentThreadMilestoneMutationLockGuard::is_held(&lock_path) {
+            return Ok(());
+        }
+
+        let _lock = AdvisoryFileLock::acquire(&lock_path)?;
+        let _marker = CurrentThreadMilestoneMutationLockGuard::acquire(&lock_path);
+        Self::recover_pending_state_commit(base_dir, milestone_id)
+    }
 }
 
 impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
@@ -2632,6 +2687,7 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
         base_dir: &Path,
         milestone_id: &MilestoneId,
     ) -> AppResult<MilestoneSnapshot> {
+        Self::recover_pending_state_commit_for_plain_read(base_dir, milestone_id)?;
         let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_STATUS_FILE);
         let snapshot = Self::read_snapshot_from_path(&path, milestone_id)?;
         let Some(pending) = Self::read_pending_state_commit(base_dir, milestone_id)? else {
@@ -2671,7 +2727,9 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
     where
         F: FnOnce() -> AppResult<T>,
     {
-        let _lock = AdvisoryFileLock::acquire(&Self::mutation_lock_path(base_dir, milestone_id))?;
+        let lock_path = Self::mutation_lock_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&lock_path)?;
+        let _marker = CurrentThreadMilestoneMutationLockGuard::acquire(&lock_path);
         Self::recover_pending_state_commit(base_dir, milestone_id)?;
         operation()
     }
@@ -3014,6 +3072,10 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         base_dir: &Path,
         milestone_id: &MilestoneId,
     ) -> AppResult<Vec<MilestoneJournalEvent>> {
+        FsMilestoneSnapshotStore::recover_pending_state_commit_for_plain_read(
+            base_dir,
+            milestone_id,
+        )?;
         let journal = Self::read_journal_from_path(
             &Self::journal_path(base_dir, milestone_id),
             milestone_id,
@@ -4792,7 +4854,7 @@ mod tests {
     }
 
     #[test]
-    fn milestone_pending_state_commit_stays_hidden_from_plain_snapshot_and_journal_reads() {
+    fn milestone_plain_reads_recover_pending_state_commit() {
         use crate::contexts::milestone_record::model::{
             MilestoneId, MilestoneSnapshot, MilestoneStatus,
         };
@@ -4852,13 +4914,17 @@ mod tests {
 
         let snapshot = FsMilestoneSnapshotStore
             .read_snapshot(temp.path(), &milestone_id)
-            .expect("read durable snapshot");
-        assert_eq!(snapshot, current_snapshot);
+            .expect("recover and read durable snapshot");
+        assert_eq!(snapshot, next_snapshot);
 
         let journal = FsMilestoneJournalStore
             .read_journal(temp.path(), &milestone_id)
-            .expect("read durable journal");
-        assert_eq!(journal, vec![current_event]);
+            .expect("recover and read durable journal");
+        assert_eq!(journal, vec![next_event]);
+        assert!(
+            !milestone_root.join(MILESTONE_STATE_COMMIT_FILE).exists(),
+            "plain reads should finalize the pending state commit"
+        );
     }
 
     #[test]
@@ -4940,7 +5006,7 @@ mod tests {
     }
 
     #[test]
-    fn milestone_pending_state_commit_hides_partially_visible_snapshot_write() {
+    fn milestone_plain_reads_recover_partially_visible_snapshot_write() {
         use crate::contexts::milestone_record::model::{
             MilestoneId, MilestoneSnapshot, MilestoneStatus,
         };
@@ -4994,6 +5060,8 @@ mod tests {
             next_snapshot,
             next_journal: vec![next_event],
         };
+        let expected_snapshot = pending.next_snapshot.clone();
+        let expected_journal = pending.next_journal.clone();
         std::fs::write(
             milestone_root.join(MILESTONE_STATE_COMMIT_FILE),
             serde_json::to_string_pretty(&pending).expect("serialize pending state"),
@@ -5002,13 +5070,17 @@ mod tests {
 
         let snapshot = FsMilestoneSnapshotStore
             .read_snapshot(temp.path(), &milestone_id)
-            .expect("read masked durable snapshot");
-        assert_eq!(snapshot, current_snapshot);
+            .expect("recover and read durable snapshot");
+        assert_eq!(snapshot, expected_snapshot);
 
         let journal = FsMilestoneJournalStore
             .read_journal(temp.path(), &milestone_id)
-            .expect("read masked durable journal");
-        assert_eq!(journal, vec![current_event]);
+            .expect("recover and read durable journal");
+        assert_eq!(journal, expected_journal);
+        assert!(
+            !milestone_root.join(MILESTONE_STATE_COMMIT_FILE).exists(),
+            "plain reads should clear the pending state sidecar after repair"
+        );
     }
 
     #[test]
