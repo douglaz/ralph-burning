@@ -3121,6 +3121,7 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         let path = Self::journal_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::journal_lock_path(base_dir, milestone_id))?;
         let mut journal = Self::read_journal_from_path(&path, milestone_id)?;
+        let previous_journal = journal.clone();
         let mut applied = 0;
 
         for op in ops {
@@ -3131,7 +3132,7 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
 
         let pending = PendingMilestoneStateCommit {
             previous_snapshot: previous_snapshot.clone(),
-            previous_journal: Self::read_journal_from_path(&path, milestone_id)?,
+            previous_journal,
             next_snapshot: next_snapshot.clone(),
             next_journal: journal,
         };
@@ -3140,10 +3141,15 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         let pending_json = serde_json::to_string_pretty(&pending)?;
         FileSystem::write_atomic(&pending_path, &pending_json)?;
         if let Err(error) = snapshot_store.write_snapshot(base_dir, milestone_id, next_snapshot) {
+            // Snapshot writes are all-or-nothing, so a failure leaves the old snapshot/journal
+            // pair intact and the pending sidecar must be discarded to avoid replaying a commit
+            // that never became partially visible.
             let _ = fs::remove_file(&pending_path);
             return Err(error);
         }
         if let Err(error) = Self::write_journal(&path, &pending.next_journal) {
+            // Journal failure happens after the new snapshot is durable, so keep the sidecar for
+            // the next locked recovery pass to finish publishing the matching journal state.
             return Err(error);
         }
         let _ = fs::remove_file(&pending_path);
