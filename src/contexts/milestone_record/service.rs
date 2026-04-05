@@ -718,16 +718,57 @@ fn apply_completion_milestone_disposition(
     snapshot: &mut MilestoneSnapshot,
     disposition: CompletionMilestoneDisposition,
 ) {
-    if disposition == CompletionMilestoneDisposition::MarkMilestoneFailed {
+    if disposition == CompletionMilestoneDisposition::MarkMilestoneFailed
+        && snapshot.progress.failed_beads > 0
+    {
         snapshot.status = MilestoneStatus::Failed;
         snapshot.active_bead = None;
+        snapshot.progress.in_progress_beads = 0;
     }
+}
+
+fn build_synthetic_transition_snapshot(
+    current_snapshot: &MilestoneSnapshot,
+    final_snapshot: &MilestoneSnapshot,
+    to_status: MilestoneStatus,
+    event_timestamp: DateTime<Utc>,
+) -> MilestoneSnapshot {
+    let mut synthetic_snapshot = current_snapshot.clone();
+    synthetic_snapshot.status = to_status;
+    synthetic_snapshot.plan_hash = final_snapshot.plan_hash.clone();
+    synthetic_snapshot.plan_version = final_snapshot.plan_version;
+    synthetic_snapshot.progress.total_beads = final_snapshot.progress.total_beads;
+    synthetic_snapshot.updated_at = event_timestamp;
+
+    match to_status {
+        MilestoneStatus::Ready => {
+            synthetic_snapshot.active_bead = None;
+            synthetic_snapshot.progress.in_progress_beads = 0;
+        }
+        MilestoneStatus::Running => {
+            synthetic_snapshot.active_bead = synthetic_snapshot
+                .active_bead
+                .clone()
+                .or_else(|| final_snapshot.active_bead.clone());
+            if synthetic_snapshot.progress.in_progress_beads == 0 {
+                synthetic_snapshot.progress.in_progress_beads = 1;
+            }
+        }
+        MilestoneStatus::Planning
+        | MilestoneStatus::Paused
+        | MilestoneStatus::Completed
+        | MilestoneStatus::Failed => {
+            synthetic_snapshot.active_bead = None;
+            synthetic_snapshot.progress.in_progress_beads = 0;
+        }
+    }
+
+    synthetic_snapshot
 }
 
 fn build_reconciled_transition_events(
     milestone_id: &MilestoneId,
-    previous_status: MilestoneStatus,
-    previous_updated_at: DateTime<Utc>,
+    previous_snapshot: &MilestoneSnapshot,
     snapshot: &MilestoneSnapshot,
     journal: &[MilestoneJournalEvent],
     now: DateTime<Utc>,
@@ -735,6 +776,7 @@ fn build_reconciled_transition_events(
     actor: &str,
     reason: &str,
 ) -> AppResult<Vec<MilestoneJournalEvent>> {
+    let previous_status = previous_snapshot.status;
     if previous_status == snapshot.status {
         return Ok(Vec::new());
     }
@@ -772,6 +814,7 @@ fn build_reconciled_transition_events(
 
     let mut events = Vec::with_capacity(transition_path.len());
     let mut from_status = previous_status;
+    let mut current_snapshot = previous_snapshot.clone();
     let mut event_journal = journal.to_vec();
     for (index, to_status) in transition_path.iter().copied().enumerate() {
         let is_final = index + 1 == transition_path.len();
@@ -791,27 +834,12 @@ fn build_reconciled_transition_events(
         let event_snapshot = if is_final {
             snapshot.clone()
         } else {
-            let mut synthetic_snapshot = snapshot.clone();
-            synthetic_snapshot.status = to_status;
-            match to_status {
-                MilestoneStatus::Ready => {
-                    synthetic_snapshot.active_bead = None;
-                    synthetic_snapshot.progress.in_progress_beads = 0;
-                }
-                MilestoneStatus::Running => {
-                    if synthetic_snapshot.progress.in_progress_beads == 0 {
-                        synthetic_snapshot.progress.in_progress_beads = 1;
-                    }
-                }
-                MilestoneStatus::Planning
-                | MilestoneStatus::Paused
-                | MilestoneStatus::Completed
-                | MilestoneStatus::Failed => {
-                    synthetic_snapshot.active_bead = None;
-                    synthetic_snapshot.progress.in_progress_beads = 0;
-                }
-            }
-            synthetic_snapshot
+            build_synthetic_transition_snapshot(
+                &current_snapshot,
+                snapshot,
+                to_status,
+                event_timestamp,
+            )
         };
         let event_reason = if is_final {
             reason
@@ -842,13 +870,14 @@ fn build_reconciled_transition_events(
                 from_status,
                 to_status,
                 &event_journal,
-                running_started_at.unwrap_or(previous_updated_at),
+                running_started_at.unwrap_or(previous_snapshot.updated_at),
                 event_timestamp,
             ),
         ));
         if let Some(event) = events.last() {
             event_journal.push(event.clone());
         }
+        current_snapshot = event_snapshot;
         from_status = to_status;
     }
 
@@ -1842,8 +1871,7 @@ pub fn record_bead_start(
                 .with_details(started_entry.start_journal_details());
         let mut journal_ops: Vec<_> = build_reconciled_transition_events(
             milestone_id,
-            previous_status,
-            previous_snapshot.updated_at,
+            &previous_snapshot,
             &snapshot,
             &existing_journal,
             now,
@@ -2045,7 +2073,6 @@ fn update_task_run_with_disposition(
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
         clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, &mut snapshot)?;
         let previous_snapshot = snapshot.clone();
-        let previous_status = snapshot.status;
         let existing_journal = journal_store.read_journal(base_dir, milestone_id)?;
         let finalized_run = lineage_store.update_task_run(
             base_dir,
@@ -2077,8 +2104,7 @@ fn update_task_run_with_disposition(
         .with_details(finalized_run.completion_journal_details());
         let mut journal_ops: Vec<_> = build_reconciled_transition_events(
             milestone_id,
-            previous_status,
-            previous_snapshot.updated_at,
+            &previous_snapshot,
             &snapshot,
             &existing_journal,
             event_timestamp,
@@ -2175,7 +2201,6 @@ pub fn repair_task_run_with_disposition(
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
         clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, &mut snapshot)?;
         let previous_snapshot = snapshot.clone();
-        let previous_status = snapshot.status;
         let existing_journal = journal_store.read_journal(base_dir, milestone_id)?;
         let repaired_run = lineage_store.repair_task_run_terminal(
             base_dir,
@@ -2207,8 +2232,7 @@ pub fn repair_task_run_with_disposition(
         .with_details(repaired_run.completion_journal_details());
         let mut journal_ops: Vec<_> = build_reconciled_transition_events(
             milestone_id,
-            previous_status,
-            previous_snapshot.updated_at,
+            &previous_snapshot,
             &snapshot,
             &existing_journal,
             event_timestamp,
@@ -3295,7 +3319,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_plan_does_not_prewrite_snapshot_before_atomic_commit(
+    fn persist_plan_rolls_back_snapshot_when_journal_commit_fails(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -8005,8 +8029,7 @@ mod tests {
 
         let events = build_reconciled_transition_events(
             &milestone_id,
-            MilestoneStatus::Planning,
-            now,
+            &MilestoneSnapshot::initial(now),
             &running_snapshot,
             &[],
             now + chrono::Duration::seconds(5),
@@ -8042,6 +8065,50 @@ mod tests {
         assert_eq!(
             running_metadata.get("in_progress_beads"),
             Some(&serde_json::json!(1))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_bridge_events_preserve_pre_transition_progress_metadata(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = Utc::now();
+        let milestone_id = MilestoneId::new("synthetic-bridge-progress-test")?;
+        let previous_snapshot = MilestoneSnapshot::initial(now);
+        let mut completed_snapshot = previous_snapshot.clone();
+        completed_snapshot.status = MilestoneStatus::Completed;
+        completed_snapshot.plan_hash = Some("plan-v1".to_owned());
+        completed_snapshot.plan_version = 1;
+        completed_snapshot.progress.total_beads = 2;
+        completed_snapshot.progress.completed_beads = 2;
+
+        let events = build_reconciled_transition_events(
+            &milestone_id,
+            &previous_snapshot,
+            &completed_snapshot,
+            &[],
+            now + chrono::Duration::seconds(10),
+            Some(now + chrono::Duration::seconds(1)),
+            "controller",
+            "all beads closed",
+        )?;
+
+        assert_eq!(events.len(), 3);
+        for event in events.iter().take(2) {
+            let metadata = event
+                .metadata
+                .as_ref()
+                .expect("synthetic bridge events should carry metadata");
+            assert_eq!(metadata.get("completed_beads"), Some(&serde_json::json!(0)));
+            assert_eq!(metadata.get("failed_beads"), Some(&serde_json::json!(0)));
+            assert_eq!(metadata.get("skipped_beads"), Some(&serde_json::json!(0)));
+        }
+        assert_eq!(
+            events[0]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("total_beads")),
+            Some(&serde_json::json!(2))
         );
         Ok(())
     }
@@ -8134,6 +8201,28 @@ mod tests {
             metadata.get("duration_seconds"),
             Some(&serde_json::json!(9))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn mark_failed_disposition_preserves_completed_snapshots_without_failed_beads(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = Utc::now();
+        let mut snapshot = MilestoneSnapshot::initial(now);
+        snapshot.status = MilestoneStatus::Completed;
+        snapshot.progress.total_beads = 1;
+        snapshot.progress.completed_beads = 1;
+
+        apply_completion_milestone_disposition(
+            &mut snapshot,
+            CompletionMilestoneDisposition::MarkMilestoneFailed,
+        );
+
+        assert_eq!(snapshot.status, MilestoneStatus::Completed);
+        assert_eq!(snapshot.progress.failed_beads, 0);
+        snapshot
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
         Ok(())
     }
 
