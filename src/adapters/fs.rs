@@ -2745,10 +2745,7 @@ impl FsMilestoneJournalStore {
     }
 
     fn matches_event(existing: &MilestoneJournalEvent, requested: &MilestoneJournalEvent) -> bool {
-        existing.timestamp == requested.timestamp
-            && existing.event_type == requested.event_type
-            && existing.bead_id == requested.bead_id
-            && existing.details == requested.details
+        existing == requested
     }
 
     fn repairable_completion_event(
@@ -2881,12 +2878,10 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         let path = Self::journal_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::journal_lock_path(base_dir, milestone_id))?;
         let mut journal = Self::read_journal_from_path(&path, milestone_id)?;
-        if journal.iter().any(|existing| {
-            existing.timestamp == event.timestamp
-                && existing.event_type == event.event_type
-                && existing.bead_id == event.bead_id
-                && existing.details == event.details
-        }) {
+        if journal
+            .iter()
+            .any(|existing| Self::matches_event(existing, event))
+        {
             return Ok(false);
         }
 
