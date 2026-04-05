@@ -381,9 +381,22 @@ impl ManagedChild {
             )
         })?;
 
-        match signal::kill(Pid::from_raw(pid), signal) {
+        // Kill the entire process group (negative PID) so that child
+        // processes spawned by the backend are also terminated.  The
+        // child is launched with `process_group(0)` which makes it the
+        // process group leader, so -pid targets the whole group.
+        // Fall back to direct PID kill if the group kill fails with ESRCH
+        // (race: group may have already exited but leader is still reapable).
+        match signal::kill(Pid::from_raw(-pid), signal) {
             Ok(()) => Ok(()),
-            Err(Errno::ESRCH) => Ok(()),
+            Err(Errno::ESRCH) => {
+                // Process group gone; try direct PID as last resort.
+                match signal::kill(Pid::from_raw(pid), signal) {
+                    Ok(()) => Ok(()),
+                    Err(Errno::ESRCH) => Ok(()),
+                    Err(errno) => Err(std::io::Error::from_raw_os_error(errno as i32)),
+                }
+            }
             Err(errno) => Err(std::io::Error::from_raw_os_error(errno as i32)),
         }
     }
@@ -1008,6 +1021,11 @@ impl ProcessBackendAdapter {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // Launch into a dedicated process group so timeout-triggered kills
+        // reach the entire tree (backend helpers, child interpreters, etc.)
+        // instead of only the direct child PID.
+        #[cfg(unix)]
+        command.process_group(0);
         for (key, value) in env_overrides {
             command.env(key, value);
         }

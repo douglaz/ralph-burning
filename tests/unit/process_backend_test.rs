@@ -2430,3 +2430,61 @@ async fn clean_timeout_teardown_yields_timeout_without_warning() {
         other => panic!("expected InvocationFailed, got: {other:?}"),
     }
 }
+
+/// Verify that timeout kills the entire process group, not just the direct
+/// child PID.  The stub script spawns a background child that writes a PID
+/// file, then sleeps.  After the adapter times out, we check that the
+/// background child is also dead.
+#[cfg(unix)]
+#[tokio::test]
+async fn timeout_kills_entire_process_group() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let pid_dir = tempdir().expect("create pid dir");
+    let child_pid_file = pid_dir.path().join("child.pid");
+    let child_pid_path = child_pid_file.display().to_string();
+
+    // Script: spawns a background child that writes its PID and sleeps,
+    // then the parent also sleeps.  Both should be killed by process group
+    // kill on timeout.
+    let script = format!(
+        r#"#!/bin/sh
+cat > /dev/null
+(echo $$ > "{child_pid_path}" && sleep 99999) &
+sleep 99999
+"#,
+    );
+
+    write_executable(&bin_dir.path().join("claude"), &script);
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, mut request) = request_fixture(BackendFamily::Claude);
+    request.timeout = Duration::from_secs(2);
+
+    let _error = adapter.invoke(request).await.expect_err("should timeout");
+
+    // Give OS a moment to reap the killed processes.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Read the background child's PID and verify it's no longer running.
+    let child_pid_str = std::fs::read_to_string(&child_pid_file)
+        .expect("child PID file should exist — background child was spawned");
+    let child_pid: i32 = child_pid_str
+        .trim()
+        .parse()
+        .expect("child PID file should contain an integer");
+
+    // signal 0 checks existence without actually signaling.
+    let child_alive = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(child_pid),
+        None, // signal 0
+    )
+    .is_ok();
+
+    assert!(
+        !child_alive,
+        "background child (pid {child_pid}) should have been killed by process group signal"
+    );
+}
