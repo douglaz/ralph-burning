@@ -2835,6 +2835,7 @@ impl FsMilestoneJournalStore {
     ) -> Option<MilestoneJournalEvent> {
         if !Self::is_completion_event(existing)
             || !Self::is_completion_event(requested)
+            || existing.event_type != requested.event_type
             || existing.bead_id != requested.bead_id
         {
             return None;
@@ -4733,6 +4734,61 @@ mod tests {
         assert_eq!(repaired[0].event_type, exact_event.event_type);
         assert_eq!(repaired[0].bead_id, exact_event.bead_id);
         assert_eq!(repaired[0].details, exact_event.details);
+    }
+
+    #[test]
+    fn append_event_if_missing_does_not_merge_mismatched_completion_event_types() {
+        use crate::contexts::milestone_record::model::{
+            render_completion_journal_details, MilestoneEventType, MilestoneId,
+            MilestoneJournalEvent,
+        };
+        use chrono::{TimeZone, Utc};
+
+        let store = FsMilestoneJournalStore;
+        let temp = tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("ms-mismatched-completion").expect("milestone id");
+        let milestone_root = FileSystem::milestone_root(temp.path(), &milestone_id);
+        std::fs::create_dir_all(&milestone_root).expect("create milestone root");
+
+        let started_at = Utc.with_ymd_and_hms(2026, 4, 1, 10, 11, 0).unwrap();
+        let existing = MilestoneJournalEvent::new(MilestoneEventType::BeadCompleted, started_at)
+            .with_bead("ms-alpha.bead-2")
+            .with_details(render_completion_journal_details(
+                "proj-1",
+                Some("run-1"),
+                Some("plan-1"),
+                started_at,
+                "succeeded",
+                None,
+            ));
+        let requested = MilestoneJournalEvent::new(
+            MilestoneEventType::BeadFailed,
+            started_at + chrono::Duration::seconds(5),
+        )
+        .with_bead("ms-alpha.bead-2")
+        .with_details(render_completion_journal_details(
+            "proj-1",
+            Some("run-1"),
+            Some("plan-1"),
+            started_at,
+            "failed",
+            Some("different outcome"),
+        ));
+        let journal_path = FsMilestoneJournalStore::journal_path(temp.path(), &milestone_id);
+        FsMilestoneJournalStore::write_journal(&journal_path, &[existing.clone()])
+            .expect("write journal");
+
+        let changed = store
+            .append_event_if_missing(temp.path(), &milestone_id, &requested)
+            .expect("append event");
+        assert!(
+            changed,
+            "mismatched completion types should append a new row"
+        );
+
+        let journal = FsMilestoneJournalStore::read_journal_from_path(&journal_path, &milestone_id)
+            .expect("read journal");
+        assert_eq!(journal, vec![existing, requested]);
     }
 
     #[test]

@@ -534,19 +534,36 @@ fn insert_metadata_string(
     }
 }
 
+fn event_plan_version(event: &MilestoneJournalEvent) -> Option<u32> {
+    event
+        .metadata
+        .as_ref()?
+        .get("plan_version")?
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn event_matches_plan_version(event: &MilestoneJournalEvent, plan_version: u32) -> bool {
+    match event_plan_version(event) {
+        Some(event_plan_version) => event_plan_version == plan_version,
+        None => plan_version <= 1,
+    }
+}
+
 fn accumulated_running_duration_seconds(
     journal: &[MilestoneJournalEvent],
     from_status: MilestoneStatus,
+    plan_version: u32,
     running_started_fallback: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> i64 {
     let mut total_seconds = 0_i64;
     let mut running_started_at = None;
 
-    for event in journal
-        .iter()
-        .filter(|event| event.event_type == MilestoneEventType::StatusChanged)
-    {
+    for event in journal.iter().filter(|event| {
+        event.event_type == MilestoneEventType::StatusChanged
+            && event_matches_plan_version(event, plan_version)
+    }) {
         match (event.from_state, event.to_state) {
             (_, Some(MilestoneStatus::Running)) => {
                 running_started_at.get_or_insert(event.timestamp);
@@ -651,6 +668,7 @@ fn lifecycle_transition_metadata(
         let duration_seconds = accumulated_running_duration_seconds(
             journal,
             from_status,
+            snapshot.plan_version,
             running_started_fallback,
             now,
         );
@@ -680,6 +698,7 @@ fn build_reconciled_transition_events(
     snapshot: &MilestoneSnapshot,
     journal: &[MilestoneJournalEvent],
     now: DateTime<Utc>,
+    running_started_at: Option<DateTime<Utc>>,
     actor: &str,
     reason: &str,
 ) -> AppResult<Vec<MilestoneJournalEvent>> {
@@ -717,8 +736,17 @@ fn build_reconciled_transition_events(
 
     let mut events = Vec::with_capacity(transition_path.len());
     let mut from_status = previous_status;
+    let bridge_timestamp = running_started_at.unwrap_or(now);
+    let mut event_journal = journal.to_vec();
     for (index, to_status) in transition_path.iter().copied().enumerate() {
         let is_final = index + 1 == transition_path.len();
+        let event_timestamp = if is_final {
+            now
+        } else if matches!(to_status, MilestoneStatus::Ready | MilestoneStatus::Running) {
+            bridge_timestamp
+        } else {
+            now
+        };
         let event_snapshot = if is_final {
             snapshot.clone()
         } else {
@@ -757,7 +785,7 @@ fn build_reconciled_transition_events(
             }
         };
         events.push(MilestoneJournalEvent::lifecycle_transition(
-            now,
+            event_timestamp,
             from_status,
             to_status,
             actor,
@@ -766,11 +794,14 @@ fn build_reconciled_transition_events(
                 &event_snapshot,
                 from_status,
                 to_status,
-                journal,
-                previous_updated_at,
-                now,
+                &event_journal,
+                running_started_at.unwrap_or(previous_updated_at),
+                event_timestamp,
             ),
         ));
+        if let Some(event) = events.last() {
+            event_journal.push(event.clone());
+        }
         from_status = to_status;
     }
 
@@ -1011,6 +1042,7 @@ fn repairable_completion_event(
 ) -> Option<MilestoneJournalEvent> {
     if !is_completion_event(existing)
         || !is_completion_event(requested)
+        || existing.event_type != requested.event_type
         || existing.bead_id != requested.bead_id
     {
         return None;
@@ -1513,6 +1545,7 @@ fn persist_plan_locked(
     plan_store.write_plan_md(base_dir, milestone_id, &plan_md)?;
     plan_store.write_plan_shape(base_dir, milestone_id, &plan_shape)?;
 
+    let previous_snapshot = snapshot.clone();
     let pending_lineage_reset_before = pending_lineage_reset_for_snapshot(snapshot);
 
     if plan_hash_changed {
@@ -1525,6 +1558,28 @@ fn persist_plan_locked(
     if reopen_terminal_status {
         snapshot.status = MilestoneStatus::Planning;
         snapshot.active_bead = None;
+    }
+
+    let mut journal_ops = Vec::new();
+    if reopen_terminal_status {
+        let existing_journal = journal_store.read_journal(base_dir, milestone_id)?;
+        journal_ops.push(JournalWriteOp::append_if_missing(
+            MilestoneJournalEvent::lifecycle_transition(
+                now,
+                previous_snapshot.status,
+                MilestoneStatus::Planning,
+                "system",
+                "plan changed, milestone reopened",
+                lifecycle_transition_metadata(
+                    snapshot,
+                    previous_snapshot.status,
+                    MilestoneStatus::Planning,
+                    &existing_journal,
+                    previous_snapshot.updated_at,
+                    now,
+                ),
+            ),
+        ));
     }
 
     if plan_hash_changed {
@@ -1542,11 +1597,33 @@ fn persist_plan_locked(
             snapshot.plan_version,
             bundle.bead_count()
         ));
-        let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-        journal_store.append_event(base_dir, milestone_id, &line)?;
-    } else if pending_lineage_reset_before != pending_lineage_reset {
+        journal_ops.push(JournalWriteOp::append_if_missing(event));
+        commit_snapshot_and_journal_ops(
+            snapshot_store,
+            journal_store,
+            base_dir,
+            milestone_id,
+            &previous_snapshot,
+            snapshot,
+            &journal_ops,
+            "milestone journal commit failed after plan update snapshot write",
+        )?;
+    } else if pending_lineage_reset_before != pending_lineage_reset || !journal_ops.is_empty() {
         validate_snapshot(snapshot, milestone_id)?;
-        snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
+        if journal_ops.is_empty() {
+            snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;
+        } else {
+            commit_snapshot_and_journal_ops(
+                snapshot_store,
+                journal_store,
+                base_dir,
+                milestone_id,
+                &previous_snapshot,
+                snapshot,
+                &journal_ops,
+                "milestone journal commit failed after milestone reopen snapshot write",
+            )?;
+        }
     }
 
     if lineage_reset_required {
@@ -1725,6 +1802,7 @@ pub fn record_bead_start(
             &snapshot,
             &existing_journal,
             started_entry.started_at,
+            Some(started_entry.started_at),
             "controller",
             if previous_status == MilestoneStatus::Paused {
                 "execution resumed"
@@ -1887,6 +1965,7 @@ pub fn update_task_run(
             &snapshot,
             &existing_journal,
             event_timestamp,
+            Some(finalized_run.started_at),
             "controller",
             match snapshot.status {
                 MilestoneStatus::Completed => "all beads closed",
@@ -1987,6 +2066,7 @@ pub fn repair_task_run(
             &snapshot,
             &existing_journal,
             event_timestamp,
+            Some(repaired_run.started_at),
             "controller",
             match snapshot.status {
                 MilestoneStatus::Completed => "all beads closed",
@@ -2029,6 +2109,7 @@ mod tests {
         FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
         FsTaskRunLineageStore,
     };
+    use crate::contexts::milestone_record::model::render_completion_journal_details;
 
     struct FailSecondJournalAppend {
         append_calls: Cell<u32>,
@@ -5319,6 +5400,126 @@ mod tests {
         assert_eq!(snapshot.plan_version, 2);
         assert_eq!(snapshot.progress.total_beads, 2);
         assert_eq!(snapshot.progress.completed_beads, 0);
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let reopen_event = journal
+            .iter()
+            .find(|event| {
+                event.from_state == Some(MilestoneStatus::Completed)
+                    && event.to_state == Some(MilestoneStatus::Planning)
+            })
+            .expect("terminal rematerialization should emit a reopen transition");
+        assert_eq!(
+            reopen_event.reason.as_deref(),
+            Some("plan changed, milestone reopened")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completed_transition_after_reopen_ignores_prior_plan_runtime(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::contexts::milestone_record::bundle::BeadProposal;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+
+        let bundle = sample_bundle("reopen-runtime-reset", "Reopen Runtime Reset");
+        let record = materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle,
+            now,
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(1),
+        )?;
+        let mut snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot.progress.completed_beads = snapshot.progress.total_beads;
+        snapshot_store.write_snapshot(base, &record.id, &snapshot)?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Completed,
+            now + chrono::Duration::seconds(11),
+        )?;
+
+        let mut changed_bundle = bundle.clone();
+        changed_bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: None,
+            explicit_id: None,
+            title: "Second bead after reopen".to_owned(),
+            description: Some("Forces a new execution plan.".to_owned()),
+            bead_type: Some("task".to_owned()),
+            priority: Some(1),
+            labels: vec![],
+            depends_on: vec!["bead-1".to_owned()],
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            flow_override: None,
+        });
+        changed_bundle.acceptance_map[0].covered_by =
+            vec!["bead-1".to_owned(), "bead-2".to_owned()];
+        materialize_bundle(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &changed_bundle,
+            now + chrono::Duration::seconds(20),
+        )?;
+
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Running,
+            now + chrono::Duration::seconds(25),
+        )?;
+        let mut reopened_snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        reopened_snapshot.progress.completed_beads = reopened_snapshot.progress.total_beads;
+        snapshot_store.write_snapshot(base, &record.id, &reopened_snapshot)?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Completed,
+            now + chrono::Duration::seconds(31),
+        )?;
+
+        let completed_event = read_journal(&journal_store, base, &record.id)?
+            .into_iter()
+            .rev()
+            .find(|event| event.to_state == Some(MilestoneStatus::Completed))
+            .expect("reopened milestone should emit a completed transition");
+        let metadata = completed_event
+            .metadata
+            .as_ref()
+            .expect("completed transition should carry metadata");
+        assert_eq!(metadata.get("plan_version"), Some(&serde_json::json!(2)));
+        assert_eq!(
+            metadata.get("duration_seconds"),
+            Some(&serde_json::json!(6))
+        );
         Ok(())
     }
 
@@ -7320,6 +7521,7 @@ mod tests {
             &running_snapshot,
             &[],
             now + chrono::Duration::seconds(5),
+            Some(now + chrono::Duration::seconds(5)),
             "controller",
             "execution started",
         )?;
@@ -7419,15 +7621,64 @@ mod tests {
             .into_iter()
             .filter(|event| event.event_type == MilestoneEventType::StatusChanged)
             .collect();
-        assert!(transitions.iter().any(|event| {
-            event.from_state == Some(MilestoneStatus::Ready)
-                && event.to_state == Some(MilestoneStatus::Running)
-        }));
-        assert!(transitions.iter().any(|event| {
-            event.from_state == Some(MilestoneStatus::Running)
-                && event.to_state == Some(MilestoneStatus::Completed)
-        }));
+        let running_event = transitions
+            .iter()
+            .find(|event| {
+                event.from_state == Some(MilestoneStatus::Ready)
+                    && event.to_state == Some(MilestoneStatus::Running)
+            })
+            .expect("missed start should synthesize a running bridge");
+        assert_eq!(running_event.timestamp, now + chrono::Duration::seconds(1));
+
+        let completed_event = transitions
+            .iter()
+            .find(|event| {
+                event.from_state == Some(MilestoneStatus::Running)
+                    && event.to_state == Some(MilestoneStatus::Completed)
+            })
+            .expect("completion transition should be recorded");
+        let metadata = completed_event
+            .metadata
+            .as_ref()
+            .expect("completed transition should carry metadata");
+        assert_eq!(
+            metadata.get("duration_seconds"),
+            Some(&serde_json::json!(9))
+        );
         Ok(())
+    }
+
+    #[test]
+    fn repairable_completion_event_rejects_mismatched_event_types() {
+        let started_at = Utc::now();
+        let existing = MilestoneJournalEvent::new(
+            MilestoneEventType::BeadCompleted,
+            started_at + chrono::Duration::seconds(10),
+        )
+        .with_bead("bead-1")
+        .with_details(render_completion_journal_details(
+            "proj-1",
+            Some("run-1"),
+            Some("plan-v1"),
+            started_at,
+            "succeeded",
+            None,
+        ));
+        let requested = MilestoneJournalEvent::new(
+            MilestoneEventType::BeadFailed,
+            started_at + chrono::Duration::seconds(12),
+        )
+        .with_bead("bead-1")
+        .with_details(render_completion_journal_details(
+            "proj-1",
+            Some("run-1"),
+            Some("plan-v1"),
+            started_at,
+            "failed",
+            Some("different outcome"),
+        ));
+
+        assert!(repairable_completion_event(&existing, &requested).is_none());
     }
 
     #[test]
