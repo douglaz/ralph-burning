@@ -492,11 +492,16 @@ fn validate_transition_prerequisites(
             || snapshot.progress.failed_beads > 0
             || !all_beads_closed
         {
+            let failed_beads_hint = if snapshot.progress.failed_beads > 0 {
+                "; re-run or skip failed beads to unblock completion"
+            } else {
+                ""
+            };
             return Err(AppError::InvalidConfigValue {
                 key: "milestone_transition".to_owned(),
                 value: format!("{} -> {}", snapshot.status, to_status),
                 reason: format!(
-                    "milestone '{milestone_id}' cannot move to '{to_status}' until all beads are closed (total={}, completed={}, skipped={}, in_progress={}, failed={})",
+                    "milestone '{milestone_id}' cannot move to '{to_status}' until all beads are closed (total={}, completed={}, skipped={}, in_progress={}, failed={}){failed_beads_hint}",
                     snapshot.progress.total_beads,
                     snapshot.progress.completed_beads,
                     snapshot.progress.skipped_beads,
@@ -677,8 +682,12 @@ fn build_reconciled_transition_events(
         return Ok(Vec::new());
     }
     if previous_status == MilestoneStatus::Planning && snapshot.status == MilestoneStatus::Running {
+        let mut ready_snapshot = snapshot.clone();
+        ready_snapshot.status = MilestoneStatus::Ready;
+        ready_snapshot.active_bead = None;
+        ready_snapshot.progress.in_progress_beads = 0;
         let ready_metadata = lifecycle_transition_metadata(
-            snapshot,
+            &ready_snapshot,
             previous_status,
             MilestoneStatus::Ready,
             journal,
@@ -2552,6 +2561,26 @@ mod tests {
         let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
         assert_eq!(snapshot.status, MilestoneStatus::Running);
         Ok(())
+    }
+
+    #[test]
+    fn completed_transition_error_mentions_failed_bead_recovery_hint() {
+        let now = Utc::now();
+        let mut snapshot = MilestoneSnapshot::initial(now);
+        snapshot.status = MilestoneStatus::Running;
+        snapshot.plan_hash = Some("plan-v1".to_owned());
+        snapshot.plan_version = 1;
+        snapshot.progress.total_beads = 2;
+        snapshot.progress.completed_beads = 1;
+        snapshot.progress.failed_beads = 1;
+
+        let milestone_id = MilestoneId::new("completed-hint-test").expect("milestone id");
+        let error =
+            validate_transition_prerequisites(&snapshot, &milestone_id, MilestoneStatus::Completed)
+                .expect_err("failed beads should block completion");
+        let message = error.to_string();
+        assert!(message.contains("until all beads are closed"));
+        assert!(message.contains("re-run or skip failed beads to unblock completion"));
     }
 
     #[test]
@@ -6890,6 +6919,61 @@ mod tests {
                     "plan_hash": "plan-v2",
                 })
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_ready_event_uses_ready_shaped_metadata() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let now = Utc::now();
+        let milestone_id = MilestoneId::new("synthetic-ready-test")?;
+        let mut running_snapshot = MilestoneSnapshot::initial(now);
+        running_snapshot.status = MilestoneStatus::Running;
+        running_snapshot.plan_hash = Some("plan-v1".to_owned());
+        running_snapshot.plan_version = 1;
+        running_snapshot.active_bead = Some("bead-1".to_owned());
+        running_snapshot.progress.total_beads = 2;
+        running_snapshot.progress.in_progress_beads = 1;
+
+        let events = build_reconciled_transition_events(
+            &milestone_id,
+            MilestoneStatus::Planning,
+            now,
+            &running_snapshot,
+            &[],
+            now + chrono::Duration::seconds(5),
+            "controller",
+            "execution started",
+        )?;
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].from_state, Some(MilestoneStatus::Planning));
+        assert_eq!(events[0].to_state, Some(MilestoneStatus::Ready));
+        assert_eq!(events[1].from_state, Some(MilestoneStatus::Ready));
+        assert_eq!(events[1].to_state, Some(MilestoneStatus::Running));
+
+        let ready_metadata = events[0]
+            .metadata
+            .as_ref()
+            .expect("synthetic ready event should carry metadata");
+        assert!(!ready_metadata.contains_key("active_bead"));
+        assert_eq!(
+            ready_metadata.get("in_progress_beads"),
+            Some(&serde_json::json!(0))
+        );
+
+        let running_metadata = events[1]
+            .metadata
+            .as_ref()
+            .expect("synthetic running event should carry metadata");
+        assert_eq!(
+            running_metadata.get("active_bead"),
+            Some(&serde_json::json!("bead-1"))
+        );
+        assert_eq!(
+            running_metadata.get("in_progress_beads"),
+            Some(&serde_json::json!(1))
+        );
         Ok(())
     }
 
