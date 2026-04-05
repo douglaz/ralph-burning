@@ -6647,3 +6647,424 @@ async fn pre_commit_failure_remediation_survives_resume() {
         "run should complete after successful resume"
     );
 }
+
+// ── Snapshot/journal reconciliation tests ──────────────────────────────────
+
+/// When `fail_run()` snapshot write fails but the journal has run_failed,
+/// `resume` should reconcile the stale Running snapshot to Failed and proceed.
+#[tokio::test]
+async fn resume_reconciles_stale_running_snapshot_with_journal_run_failed() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "stale-snap-resume");
+
+    let run_id = RunId::new("run-stale-snap").unwrap();
+    let now = Utc::now();
+
+    // Simulate: snapshot still says Running (as if fail_run snapshot write failed),
+    // but journal has run_started + stage_entered + run_failed.
+    let snapshot = RunSnapshot {
+        active_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                    StageId::Planning,
+                ),
+                started_at: now,
+                prompt_hash_at_cycle_start: FsProjectStore
+                    .read_project_record(base_dir, &pid)
+                    .unwrap()
+                    .prompt_hash
+                    .clone(),
+                prompt_hash_at_stage_start: FsProjectStore
+                    .read_project_record(base_dir, &pid)
+                    .unwrap()
+                    .prompt_hash,
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
+        interrupted_run: None,
+        status: RunStatus::Running,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        max_completion_rounds: Some(20),
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "running: planning".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+    FsRunSnapshotWriteStore
+        .write_run_snapshot(base_dir, &pid, &snapshot)
+        .unwrap();
+
+    // Append journal events: run_started, then run_failed (simulating the
+    // scenario where fail_run logged to journal but snapshot write failed).
+    for event in [
+        journal::run_started_event(2, now, &run_id, StageId::PromptReview, 20),
+        journal::run_failed_event(
+            3,
+            now,
+            &run_id,
+            StageId::Planning,
+            "unknown",
+            "simulated failure",
+            1,
+            20,
+            None,
+        ),
+    ] {
+        FsJournalStore
+            .append_event(base_dir, &pid, &journal::serialize_event(&event).unwrap())
+            .unwrap();
+    }
+
+    // Resume should detect the mismatch and reconcile.
+    // It will still fail during execution (stub backend), but the point is
+    // it should NOT reject with "already has a running run".
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::resume_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    // The resume attempt itself may fail (stub backend), but it should NOT
+    // fail with "already has a running run" — the reconciliation should have
+    // treated it as Failed and allowed the resume path to proceed.
+    if let Err(ref e) = result {
+        let msg = e.to_string();
+        assert!(
+            !msg.contains("already has a running run"),
+            "resume should reconcile stale Running snapshot via journal, got: {msg}"
+        );
+    }
+
+    // The snapshot should now reflect Failed (or later state), not Running.
+    let reconciled_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_ne!(
+        reconciled_snapshot.status,
+        RunStatus::Running,
+        "snapshot should no longer be Running after reconciliation"
+    );
+}
+
+/// Status reporting correctly shows Failed when snapshot is stale Running
+/// but journal has run_failed.
+#[test]
+fn status_reconciles_stale_running_snapshot_with_journal_run_failed() {
+    use ralph_burning::contexts::project_run_record::queries;
+
+    let run_id = RunId::new("run-status-reconcile").unwrap();
+    let now = Utc::now();
+
+    let mut snapshot = RunSnapshot {
+        active_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                    StageId::Planning,
+                ),
+                started_at: now,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
+        interrupted_run: None,
+        status: RunStatus::Running,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        max_completion_rounds: Some(20),
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "running: planning".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+
+    // Journal has project_created + run_started + run_failed.
+    let events = vec![
+        journal::run_started_event(1, now, &run_id, StageId::Planning, 20),
+        journal::run_failed_event(
+            2,
+            now,
+            &run_id,
+            StageId::Planning,
+            "unknown",
+            "simulated failure",
+            1,
+            20,
+            None,
+        ),
+    ];
+
+    // Before reconciliation: snapshot says Running.
+    assert_eq!(snapshot.status, RunStatus::Running);
+
+    // Reconcile.
+    let patched = queries::reconcile_snapshot_status(&mut snapshot, &events);
+    assert!(patched, "reconciliation should detect mismatch and patch");
+    assert_eq!(snapshot.status, RunStatus::Failed);
+    assert!(snapshot.active_run.is_none());
+}
+
+/// Status reconciliation is a no-op when snapshot and journal agree.
+#[test]
+fn status_reconciliation_is_noop_when_snapshot_already_failed() {
+    use ralph_burning::contexts::project_run_record::queries;
+
+    let run_id = RunId::new("run-noop-reconcile").unwrap();
+    let now = Utc::now();
+
+    let mut snapshot = RunSnapshot {
+        active_run: None,
+        interrupted_run: None,
+        status: RunStatus::Failed,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        max_completion_rounds: Some(20),
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "failed at planning".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+
+    let events = vec![
+        journal::run_started_event(1, now, &run_id, StageId::Planning, 20),
+        journal::run_failed_event(
+            2,
+            now,
+            &run_id,
+            StageId::Planning,
+            "unknown",
+            "failure",
+            1,
+            20,
+            None,
+        ),
+    ];
+
+    let patched = queries::reconcile_snapshot_status(&mut snapshot, &events);
+    assert!(
+        !patched,
+        "no reconciliation needed when snapshot is already Failed"
+    );
+    assert_eq!(snapshot.status, RunStatus::Failed);
+}
+
+/// Status reconciliation detects run_completed in journal when snapshot
+/// is stale Running.
+#[test]
+fn status_reconciles_stale_running_snapshot_with_journal_run_completed() {
+    use ralph_burning::contexts::project_run_record::queries;
+
+    let run_id = RunId::new("run-complete-reconcile").unwrap();
+    let now = Utc::now();
+
+    let mut snapshot = RunSnapshot {
+        active_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                    StageId::Planning,
+                ),
+                started_at: now,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
+        interrupted_run: None,
+        status: RunStatus::Running,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        max_completion_rounds: Some(20),
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "running: planning".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+
+    let events = vec![
+        journal::run_started_event(1, now, &run_id, StageId::Planning, 20),
+        journal::run_completed_event(2, now, &run_id, 1, 20),
+    ];
+
+    let patched = queries::reconcile_snapshot_status(&mut snapshot, &events);
+    assert!(patched, "reconciliation should detect mismatch and patch");
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert!(snapshot.active_run.is_none());
+}
+
+/// `last_terminal_event_type` returns the correct terminal event.
+#[test]
+fn last_terminal_event_type_returns_run_failed() {
+    let run_id = RunId::new("run-terminal").unwrap();
+    let now = Utc::now();
+
+    let events = vec![
+        journal::run_started_event(1, now, &run_id, StageId::Planning, 20),
+        journal::run_failed_event(
+            2,
+            now,
+            &run_id,
+            StageId::Planning,
+            "unknown",
+            "failure",
+            1,
+            20,
+            None,
+        ),
+    ];
+
+    assert_eq!(
+        journal::last_terminal_event_type(&events),
+        Some(JournalEventType::RunFailed)
+    );
+}
+
+/// `last_terminal_event_type` returns None when no terminal event exists.
+#[test]
+fn last_terminal_event_type_returns_none_without_terminal() {
+    let run_id = RunId::new("run-no-terminal").unwrap();
+    let now = Utc::now();
+
+    let events = vec![journal::run_started_event(
+        1,
+        now,
+        &run_id,
+        StageId::Planning,
+        20,
+    )];
+
+    assert_eq!(journal::last_terminal_event_type(&events), None);
+}
+
+/// When the fail_run snapshot write fails (simulated via FailingSnapshotWriteStore),
+/// the engine still records run_failed in the journal. The stale snapshot left on
+/// disk can then be recovered via journal-based reconciliation on resume.
+///
+/// This is the end-to-end test: start a run, let the backend fail at a stage,
+/// have the fail_run snapshot write also fail, then verify:
+/// 1. The journal has a run_failed event despite the snapshot write failure
+/// 2. The snapshot on disk is stale (still Running)
+/// 3. Resume reconciles and proceeds
+#[tokio::test]
+async fn fail_run_snapshot_failure_leaves_journal_recoverable_state() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "snap-fail-journal");
+
+    // The engine writes the snapshot multiple times:
+    //   1: initial Running snapshot
+    //   2: status_summary update for prompt_review stage
+    //   ... (more during stage execution)
+    // We want the fail_run write to fail. The fail_run writes happen after
+    // the stub backend's stage failure. Empirically, fail_on_call=3 targets
+    // the fail_run path (the exact count depends on the stage execution flow,
+    // but any failure after the initial writes will exercise the fallback).
+    //
+    // Instead of guessing the exact call count, we use a snapshot write store
+    // that fails specifically on Failed-status writes (like BackoffFailingSnapshotWriteStore).
+    struct FailRunSnapshotWriteStore;
+
+    impl RunSnapshotWritePort for FailRunSnapshotWriteStore {
+        fn write_run_snapshot(
+            &self,
+            base_dir: &Path,
+            project_id: &ralph_burning::shared::domain::ProjectId,
+            snapshot: &RunSnapshot,
+        ) -> AppResult<()> {
+            // Fail all writes where the status is Failed (i.e. fail_run writes).
+            if snapshot.status == RunStatus::Failed {
+                return Err(AppError::Io(std::io::Error::other(
+                    "simulated disk error during fail_run snapshot write",
+                )));
+            }
+            FsRunSnapshotWriteStore.write_run_snapshot(base_dir, project_id, snapshot)
+        }
+    }
+
+    // Make the stub backend fail permanently at prompt_review (first stage).
+    // transient_failure with count=100 ensures all retries are exhausted.
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_transient_failure(StageId::PromptReview, 100),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FailRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    // The run should fail (backend fails at prompt_review).
+    assert!(result.is_err(), "run should fail due to backend failure");
+
+    // The journal should have run_failed despite the snapshot write failure.
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let has_run_failed = events
+        .iter()
+        .any(|e| e.event_type == JournalEventType::RunFailed);
+    assert!(
+        has_run_failed,
+        "journal should have run_failed even when fail_run snapshot write fails"
+    );
+
+    // The snapshot on disk should still be Running (since fail_run write failed).
+    let disk_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(
+        disk_snapshot.status,
+        RunStatus::Running,
+        "snapshot should still be Running since fail_run write was blocked"
+    );
+
+    // Verify that status reconciliation fixes the stale snapshot.
+    use ralph_burning::contexts::project_run_record::queries;
+    let mut reconciled = disk_snapshot;
+    let patched = queries::reconcile_snapshot_status(&mut reconciled, &events);
+    assert!(
+        patched,
+        "reconciliation should detect and patch the mismatch"
+    );
+    assert_eq!(
+        reconciled.status,
+        RunStatus::Failed,
+        "reconciled status should be Failed per journal"
+    );
+}

@@ -2910,8 +2910,7 @@ mod tests {
     use super::DaemonLoop;
     use crate::adapters::fs::{
         FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
-        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
-        FsMilestoneStore,
+        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
         FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRequirementsStore,
         FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
     };

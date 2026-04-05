@@ -2694,12 +2694,22 @@ async fn handle_status(as_json: bool) -> AppResult<()> {
     let (current_dir, project_id) = load_active_project_context()?;
 
     if as_json {
-        let status = service::run_status_json(&FsRunSnapshotStore, &current_dir, &project_id)?;
+        let status = service::run_status_json_reconciled(
+            &FsRunSnapshotStore,
+            &FsJournalStore,
+            &current_dir,
+            &project_id,
+        )?;
         println!("{}", format_json_status(&status)?);
         return Ok(());
     }
 
-    let status = service::run_status(&FsRunSnapshotStore, &current_dir, &project_id)?;
+    let status = service::run_status_reconciled(
+        &FsRunSnapshotStore,
+        &FsJournalStore,
+        &current_dir,
+        &project_id,
+    )?;
     println!("Project: {}", status.project_id);
     println!("Status: {}", status.status);
     if let Some(ref stage) = status.stage {

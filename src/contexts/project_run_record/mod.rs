@@ -18,6 +18,6 @@ pub use service::{
 pub use service::{
     create_project, create_project_from_bead_context, delete_project, get_rollback_point_for_stage,
     list_projects, list_rollback_points, perform_rollback, render_bead_task_prompt, run_history,
-    run_status, run_tail, show_project, BeadProjectContext, CreateProjectFromBeadContextInput,
-    CreateProjectInput,
+    run_status, run_status_json_reconciled, run_status_reconciled, run_tail, show_project,
+    BeadProjectContext, CreateProjectFromBeadContextInput, CreateProjectInput,
 };
