@@ -1928,6 +1928,42 @@ mod tests {
         assert_eq!(task_runs[0].started_at, resumed_at);
         assert_eq!(task_runs[0].finished_at, Some(completed_at));
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Succeeded);
+
+        let journal =
+            read_journal(&FsMilestoneJournalStore, base_dir, &milestone.id).expect("journal");
+        assert!(journal.iter().any(|event| {
+            event.event_type == MilestoneEventType::BeadStarted
+                && event.bead_id.as_deref() == Some("ms-alpha.bead-2")
+                && event.timestamp == resumed_at
+        }));
+
+        let resumed_event = journal
+            .iter()
+            .find(|event| {
+                event.event_type == MilestoneEventType::StatusChanged
+                    && event.from_state == Some(MilestoneStatus::Paused)
+                    && event.to_state == Some(MilestoneStatus::Running)
+            })
+            .expect("repair should synthesize a paused -> running bridge");
+        assert_eq!(resumed_event.timestamp, resumed_at);
+
+        let completed_event = journal
+            .iter()
+            .find(|event| {
+                event.event_type == MilestoneEventType::StatusChanged
+                    && event.from_state == Some(MilestoneStatus::Running)
+                    && event.to_state == Some(MilestoneStatus::Completed)
+                    && event.timestamp == completed_at
+            })
+            .expect("repair should record the completed transition");
+        let metadata = completed_event
+            .metadata
+            .as_ref()
+            .expect("completed transition should include metadata");
+        assert_eq!(
+            metadata.get("duration_seconds"),
+            Some(&serde_json::json!(900))
+        );
     }
 
     #[test]

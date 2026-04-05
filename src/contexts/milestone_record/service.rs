@@ -824,7 +824,9 @@ fn build_reconciled_transition_events(
             running_started_at.unwrap_or(now)
         } else if to_status == MilestoneStatus::Running {
             if from_status == MilestoneStatus::Paused {
-                now
+                running_started_at
+                    .filter(|started_at| *started_at >= previous_snapshot.updated_at)
+                    .unwrap_or(now)
             } else {
                 running_started_at.unwrap_or(now)
             }
@@ -2274,25 +2276,31 @@ pub fn repair_task_run_with_disposition(
         let event_timestamp = repaired_run.finished_at.unwrap_or(finished_at);
         snapshot.updated_at = snapshot.updated_at.max(finished_at).max(event_timestamp);
         validate_snapshot(&snapshot, milestone_id)?;
+        let bead_start_event =
+            MilestoneJournalEvent::new(MilestoneEventType::BeadStarted, repaired_run.started_at)
+                .with_bead(&repaired_run.bead_id)
+                .with_details(repaired_run.start_journal_details());
         let bead_event = MilestoneJournalEvent::new(
             event_type_for_outcome(repaired_run.outcome),
             event_timestamp,
         )
         .with_bead(&repaired_run.bead_id)
         .with_details(repaired_run.completion_journal_details());
-        let mut journal_ops: Vec<_> = build_reconciled_transition_events(
-            milestone_id,
-            &previous_snapshot,
-            &snapshot,
-            &existing_journal,
-            event_timestamp,
-            Some(repaired_run.started_at),
-            "controller",
-            completion_status_reason(snapshot.status),
-        )?
-        .into_iter()
-        .map(JournalWriteOp::append_if_missing)
-        .collect();
+        let mut journal_ops = vec![JournalWriteOp::append_if_missing(bead_start_event)];
+        journal_ops.extend(
+            build_reconciled_transition_events(
+                milestone_id,
+                &previous_snapshot,
+                &snapshot,
+                &existing_journal,
+                event_timestamp,
+                Some(repaired_run.started_at),
+                "controller",
+                completion_status_reason(snapshot.status),
+            )?
+            .into_iter()
+            .map(JournalWriteOp::append_if_missing),
+        );
         journal_ops.push(JournalWriteOp::repair_completion(bead_event));
 
         commit_snapshot_and_journal_ops(
@@ -8194,6 +8202,56 @@ mod tests {
                 .as_ref()
                 .and_then(|metadata| metadata.get("total_beads")),
             Some(&serde_json::json!(2))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_paused_resume_bridge_uses_resumed_start_when_it_postdates_pause(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let paused_at = Utc::now();
+        let resumed_at = paused_at + chrono::Duration::minutes(10);
+        let completed_at = resumed_at + chrono::Duration::minutes(10);
+        let milestone_id = MilestoneId::new("synthetic-paused-resume-bridge-test")?;
+        let mut previous_snapshot = MilestoneSnapshot::initial(paused_at);
+        previous_snapshot.status = MilestoneStatus::Paused;
+        previous_snapshot.updated_at = paused_at;
+        previous_snapshot.plan_hash = Some("plan-v1".to_owned());
+        previous_snapshot.plan_version = 1;
+        previous_snapshot.progress.total_beads = 1;
+
+        let mut completed_snapshot = previous_snapshot.clone();
+        completed_snapshot.status = MilestoneStatus::Completed;
+        completed_snapshot.updated_at = completed_at;
+        completed_snapshot.progress.completed_beads = 1;
+
+        let events = build_reconciled_transition_events(
+            &milestone_id,
+            &previous_snapshot,
+            &completed_snapshot,
+            &[],
+            completed_at,
+            Some(resumed_at),
+            "controller",
+            "all beads closed",
+        )?;
+
+        assert_eq!(events.len(), 2);
+        let resumed_event = &events[0];
+        assert_eq!(resumed_event.from_state, Some(MilestoneStatus::Paused));
+        assert_eq!(resumed_event.to_state, Some(MilestoneStatus::Running));
+        assert_eq!(resumed_event.timestamp, resumed_at);
+
+        let completed_event = &events[1];
+        assert_eq!(completed_event.from_state, Some(MilestoneStatus::Running));
+        assert_eq!(completed_event.to_state, Some(MilestoneStatus::Completed));
+        let metadata = completed_event
+            .metadata
+            .as_ref()
+            .expect("completed bridge should carry metadata");
+        assert_eq!(
+            metadata.get("duration_seconds"),
+            Some(&serde_json::json!(600))
         );
         Ok(())
     }
