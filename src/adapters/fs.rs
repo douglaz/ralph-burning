@@ -2477,12 +2477,38 @@ impl Drop for CurrentThreadMilestoneMutationLockGuard {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum PendingMilestoneStateCommitRecoveryAction {
+    #[default]
+    Publish,
+    Rollback,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingMilestoneStateCommit {
+    #[serde(default)]
+    recovery_action: PendingMilestoneStateCommitRecoveryAction,
     previous_snapshot: MilestoneSnapshot,
     previous_journal: Vec<MilestoneJournalEvent>,
     next_snapshot: MilestoneSnapshot,
     next_journal: Vec<MilestoneJournalEvent>,
+}
+
+impl PendingMilestoneStateCommit {
+    fn target_snapshot(&self) -> &MilestoneSnapshot {
+        match self.recovery_action {
+            PendingMilestoneStateCommitRecoveryAction::Publish => &self.next_snapshot,
+            PendingMilestoneStateCommitRecoveryAction::Rollback => &self.previous_snapshot,
+        }
+    }
+
+    fn target_journal(&self) -> &[MilestoneJournalEvent] {
+        match self.recovery_action {
+            PendingMilestoneStateCommitRecoveryAction::Publish => &self.next_journal,
+            PendingMilestoneStateCommitRecoveryAction::Rollback => &self.previous_journal,
+        }
+    }
 }
 
 fn errno_to_io_error(errno: nix::errno::Errno) -> AppError {
@@ -2644,11 +2670,11 @@ impl FsMilestoneSnapshotStore {
     ) -> AppResult<()> {
         let status_path =
             FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_STATUS_FILE);
-        let status_json = serde_json::to_string_pretty(&pending.next_snapshot)?;
+        let status_json = serde_json::to_string_pretty(pending.target_snapshot())?;
         FileSystem::write_atomic(&status_path, &status_json)?;
         FsMilestoneJournalStore::write_journal(
             &FsMilestoneJournalStore::journal_path(base_dir, milestone_id),
-            &pending.next_journal,
+            pending.target_journal(),
         )?;
         let _ = fs::remove_file(Self::pending_state_commit_path(base_dir, milestone_id));
         Ok(())
@@ -2666,6 +2692,9 @@ impl FsMilestoneSnapshotStore {
         milestone_id: &MilestoneId,
     ) -> AppResult<()> {
         let pending_path = Self::pending_state_commit_path(base_dir, milestone_id);
+        // This early return is only an optimization. A concurrent writer can still create the
+        // sidecar after this check, and the XOR masking in `read_snapshot` / `read_journal`
+        // remains the correctness guard for partially visible cross-file commits.
         if !pending_path.is_file() {
             return Ok(());
         }
@@ -3205,6 +3234,7 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         }
 
         let pending = PendingMilestoneStateCommit {
+            recovery_action: PendingMilestoneStateCommitRecoveryAction::Publish,
             previous_snapshot: previous_snapshot.clone(),
             previous_journal,
             next_snapshot: next_snapshot.clone(),
@@ -3222,8 +3252,23 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
             return Err(error);
         }
         if let Err(error) = Self::write_journal(&path, &pending.next_journal) {
-            // Journal failure happens after the new snapshot is durable, so keep the sidecar for
-            // the next locked recovery pass to finish publishing the matching journal state.
+            if let Err(rollback_error) =
+                snapshot_store.write_snapshot(base_dir, milestone_id, previous_snapshot)
+            {
+                let rollback_pending = PendingMilestoneStateCommit {
+                    recovery_action: PendingMilestoneStateCommitRecoveryAction::Rollback,
+                    ..pending
+                };
+                let rollback_pending_json = serde_json::to_string_pretty(&rollback_pending)?;
+                FileSystem::write_atomic(&pending_path, &rollback_pending_json)?;
+                return Err(AppError::CorruptRecord {
+                    file: format!("milestones/{}/status.json", milestone_id),
+                    details: format!(
+                        "{_error_context}: {error}; failed to restore the previous snapshot: {rollback_error}; a rollback recovery sidecar was retained"
+                    ),
+                });
+            }
+            let _ = fs::remove_file(&pending_path);
             return Err(error);
         }
         let _ = fs::remove_file(&pending_path);
@@ -3384,17 +3429,6 @@ impl FsTaskRunLineageStore {
         outcome_detail: Option<String>,
         finished_at: DateTime<Utc>,
     ) -> AppResult<bool> {
-        if entry.started_at != started_at {
-            return Err(AppError::CorruptRecord {
-                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                details: format!(
-                    "task run for bead={bead_id} project={project_id} run={run_id} has mismatched started_at: existing={} requested={}",
-                    entry.started_at.to_rfc3339(),
-                    started_at.to_rfc3339()
-                ),
-            });
-        }
-
         if let Some(plan_hash) = plan_hash {
             match entry.plan_hash.as_deref() {
                 Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
@@ -3415,6 +3449,13 @@ impl FsTaskRunLineageStore {
         }
 
         let mut changed = false;
+        if entry.started_at != started_at {
+            // Repair paths may need to retarget a stale terminal row to the durable resumed
+            // attempt when the controller reused the same run_id but milestone start sync was
+            // missed before completion.
+            entry.started_at = started_at;
+            changed = true;
+        }
         if entry.outcome != outcome {
             entry.outcome = outcome;
             changed = true;
@@ -3757,51 +3798,66 @@ impl FsTaskRunLineageStore {
                         || Self::option_conflicts(entry.plan_hash.as_deref(), plan_hash)
                         || entry.started_at != started_at;
                 if incompatible_terminal_update {
-                    let existing_run_id = entry.run_id.as_deref().unwrap_or(run_id);
-                    return Err(Self::finalized_task_run_already_exists_error(
-                        milestone_id,
-                        bead_id,
-                        project_id,
-                        existing_run_id,
-                        entry.outcome,
-                    ));
-                }
-
-                let can_backfill_without_repair = entry.outcome == outcome
-                    && (outcome_detail.is_none()
-                        || entry.outcome_detail.is_none()
-                        || entry.outcome_detail == outcome_detail);
-
-                if can_backfill_without_repair {
-                    should_write |= Self::backfill_terminal_entry(
-                        entry,
-                        plan_hash,
-                        outcome_detail.as_deref(),
-                        finished_at,
-                        allow_terminal_repair,
-                    );
-                } else if allow_terminal_repair {
-                    should_write |= Self::replace_terminal_entry(
-                        entry,
-                        milestone_id,
-                        bead_id,
-                        project_id,
-                        run_id,
-                        plan_hash,
-                        started_at,
-                        outcome,
-                        outcome_detail,
-                        finished_at,
-                    )?;
+                    if allow_terminal_repair {
+                        should_write |= Self::replace_terminal_entry(
+                            entry,
+                            milestone_id,
+                            bead_id,
+                            project_id,
+                            run_id,
+                            plan_hash,
+                            started_at,
+                            outcome,
+                            outcome_detail,
+                            finished_at,
+                        )?;
+                    } else {
+                        let existing_run_id = entry.run_id.as_deref().unwrap_or(run_id);
+                        return Err(Self::finalized_task_run_already_exists_error(
+                            milestone_id,
+                            bead_id,
+                            project_id,
+                            existing_run_id,
+                            entry.outcome,
+                        ));
+                    }
                 } else {
-                    let existing_run_id = entry.run_id.as_deref().unwrap_or(run_id);
-                    return Err(Self::finalized_task_run_already_exists_error(
-                        milestone_id,
-                        bead_id,
-                        project_id,
-                        existing_run_id,
-                        entry.outcome,
-                    ));
+                    let can_backfill_without_repair = entry.outcome == outcome
+                        && (outcome_detail.is_none()
+                            || entry.outcome_detail.is_none()
+                            || entry.outcome_detail == outcome_detail);
+
+                    if can_backfill_without_repair {
+                        should_write |= Self::backfill_terminal_entry(
+                            entry,
+                            plan_hash,
+                            outcome_detail.as_deref(),
+                            finished_at,
+                            allow_terminal_repair,
+                        );
+                    } else if allow_terminal_repair {
+                        should_write |= Self::replace_terminal_entry(
+                            entry,
+                            milestone_id,
+                            bead_id,
+                            project_id,
+                            run_id,
+                            plan_hash,
+                            started_at,
+                            outcome,
+                            outcome_detail,
+                            finished_at,
+                        )?;
+                    } else {
+                        let existing_run_id = entry.run_id.as_deref().unwrap_or(run_id);
+                        return Err(Self::finalized_task_run_already_exists_error(
+                            milestone_id,
+                            bead_id,
+                            project_id,
+                            existing_run_id,
+                            entry.outcome,
+                        ));
+                    }
                 }
             } else {
                 if let Some(plan_hash) = plan_hash {
@@ -4899,6 +4955,7 @@ mod tests {
             serde_json::Map::new(),
         );
         let pending = PendingMilestoneStateCommit {
+            recovery_action: PendingMilestoneStateCommitRecoveryAction::Publish,
             previous_snapshot: current_snapshot.clone(),
             previous_journal: vec![current_event.clone()],
             next_snapshot: next_snapshot.clone(),
@@ -4974,6 +5031,7 @@ mod tests {
             serde_json::Map::new(),
         );
         let pending = PendingMilestoneStateCommit {
+            recovery_action: PendingMilestoneStateCommitRecoveryAction::Publish,
             previous_snapshot: current_snapshot.clone(),
             previous_journal: vec![current_event],
             next_snapshot: recovered_snapshot.clone(),
@@ -5055,6 +5113,7 @@ mod tests {
             serde_json::Map::new(),
         );
         let pending = PendingMilestoneStateCommit {
+            recovery_action: PendingMilestoneStateCommitRecoveryAction::Publish,
             previous_snapshot: current_snapshot.clone(),
             previous_journal: vec![current_event.clone()],
             next_snapshot,
@@ -5080,6 +5139,82 @@ mod tests {
         assert!(
             !milestone_root.join(MILESTONE_STATE_COMMIT_FILE).exists(),
             "plain reads should clear the pending state sidecar after repair"
+        );
+    }
+
+    #[test]
+    fn milestone_plain_reads_rollback_failed_pending_state_commit() {
+        use crate::contexts::milestone_record::model::{
+            MilestoneId, MilestoneSnapshot, MilestoneStatus,
+        };
+        use chrono::{Duration, TimeZone, Utc};
+
+        let temp = tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("pending-rollback-read-test").expect("milestone id");
+        let milestone_root = FileSystem::milestone_root(temp.path(), &milestone_id);
+        std::fs::create_dir_all(&milestone_root).expect("create milestone root");
+
+        let previous_snapshot =
+            MilestoneSnapshot::initial(Utc.with_ymd_and_hms(2026, 4, 5, 3, 0, 0).unwrap());
+        std::fs::write(
+            milestone_root.join(MILESTONE_STATUS_FILE),
+            serde_json::to_string_pretty(&previous_snapshot).expect("serialize snapshot"),
+        )
+        .expect("write previous snapshot");
+        let previous_event = MilestoneJournalEvent::new(
+            MilestoneEventType::PlanDrafted,
+            previous_snapshot.updated_at,
+        );
+        FsMilestoneJournalStore::write_journal(
+            &milestone_root.join(MILESTONE_JOURNAL_FILE),
+            &[previous_event.clone()],
+        )
+        .expect("write previous journal");
+
+        let mut next_snapshot = previous_snapshot.clone();
+        next_snapshot.status = MilestoneStatus::Ready;
+        next_snapshot.plan_hash = Some("plan-v4".to_owned());
+        next_snapshot.plan_version = 4;
+        next_snapshot.updated_at += Duration::seconds(5);
+        std::fs::write(
+            milestone_root.join(MILESTONE_STATUS_FILE),
+            serde_json::to_string_pretty(&next_snapshot).expect("serialize next snapshot"),
+        )
+        .expect("write partially visible snapshot");
+
+        let next_event = MilestoneJournalEvent::lifecycle_transition(
+            next_snapshot.updated_at,
+            MilestoneStatus::Planning,
+            MilestoneStatus::Ready,
+            "system",
+            "plan finalized and beads exported",
+            serde_json::Map::new(),
+        );
+        let pending = PendingMilestoneStateCommit {
+            recovery_action: PendingMilestoneStateCommitRecoveryAction::Rollback,
+            previous_snapshot: previous_snapshot.clone(),
+            previous_journal: vec![previous_event.clone()],
+            next_snapshot,
+            next_journal: vec![next_event],
+        };
+        std::fs::write(
+            milestone_root.join(MILESTONE_STATE_COMMIT_FILE),
+            serde_json::to_string_pretty(&pending).expect("serialize rollback pending state"),
+        )
+        .expect("write rollback pending state");
+
+        let snapshot = FsMilestoneSnapshotStore
+            .read_snapshot(temp.path(), &milestone_id)
+            .expect("rollback and read durable snapshot");
+        assert_eq!(snapshot, previous_snapshot);
+
+        let journal = FsMilestoneJournalStore
+            .read_journal(temp.path(), &milestone_id)
+            .expect("rollback and read durable journal");
+        assert_eq!(journal, vec![previous_event]);
+        assert!(
+            !milestone_root.join(MILESTONE_STATE_COMMIT_FILE).exists(),
+            "plain reads should clear rollback sidecars after restoring the previous state"
         );
     }
 
