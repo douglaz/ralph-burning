@@ -20,6 +20,7 @@ fn default_retry_policy_matches_specified_attempt_limits() {
     assert_eq!(policy.max_attempts(FailureClass::Cancellation), 1);
     assert_eq!(policy.max_attempts(FailureClass::QaReviewOutcomeFailure), 1);
     assert_eq!(policy.max_attempts(FailureClass::BinaryNotFound), 1);
+    assert_eq!(policy.max_attempts(FailureClass::BackendExhausted), 1);
     assert_eq!(policy.max_remediation_cycles(), 3);
 }
 
@@ -34,6 +35,7 @@ fn default_retry_policy_marks_retryable_and_terminal_classes() {
     assert!(!policy.is_retryable(FailureClass::Cancellation));
     assert!(!policy.is_retryable(FailureClass::QaReviewOutcomeFailure));
     assert!(!policy.is_retryable(FailureClass::BinaryNotFound));
+    assert!(!policy.is_retryable(FailureClass::BackendExhausted));
 }
 
 #[test]

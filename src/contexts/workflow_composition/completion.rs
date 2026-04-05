@@ -37,8 +37,8 @@ use crate::contexts::workflow_composition::panel_contracts::{
 use crate::contexts::workflow_composition::renderers;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
-    BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
-    StageCursor, StageId,
+    BackendFamily, BackendRole, FailureClass, ProjectId, ResolvedBackendTarget, RunId,
+    SessionPolicy, StageCursor, StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -131,7 +131,9 @@ where
     // ── Invoke completers and persist supporting records ──────────────────
     // Availability filtering is done by the engine before snapshot
     // persistence; all completers in the panel are available and expected
-    // to execute. Any invocation error is propagated directly.
+    // to execute. Non-exhausted invocation errors are propagated directly.
+    // BackendExhausted errors degrade gracefully: the completer is skipped
+    // and execution continues with remaining members.
     let mut complete_votes = 0usize;
     let mut continue_votes = 0usize;
     let mut executed_voters: Vec<String> = Vec::new();
@@ -139,7 +141,7 @@ where
     for (i, member) in completers.iter().enumerate() {
         let completer_target = &member.target;
         let completer_timeout = timeout_for_backend(completer_target.backend.family);
-        let (vote_payload, producer) = invoke_completer(
+        let invocation_result = invoke_completer(
             agent_service,
             base_dir,
             project_root,
@@ -154,7 +156,25 @@ where
             cancellation_token.clone(),
             Some(project_id),
         )
-        .await?;
+        .await;
+
+        let (vote_payload, producer) = match invocation_result {
+            Ok(result) => result,
+            Err(error) => {
+                let is_exhausted = error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted);
+                if is_exhausted {
+                    tracing::warn!(
+                        completer = i,
+                        backend = %completer_target.backend.family,
+                        "completer unavailable (backend exhausted), proceeding with remaining completers"
+                    );
+                    continue;
+                }
+                return Err(error);
+            }
+        };
 
         let vote: CompletionVotePayload =
             serde_json::from_value(vote_payload.clone()).map_err(|e| {

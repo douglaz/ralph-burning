@@ -44,7 +44,8 @@ use crate::contexts::workflow_composition::panel_contracts::{
 use crate::contexts::workflow_composition::renderers;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
-    BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor, StageId,
+    BackendRole, FailureClass, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor,
+    StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -320,6 +321,53 @@ where
                 continue;
             }
             Err(error) => {
+                // When a required reviewer fails with BackendExhausted
+                // (credits/quota exhausted), degrade gracefully: skip this
+                // reviewer and proceed with remaining members if minimum
+                // quorum is still achievable — rather than killing the run.
+                let is_exhausted = error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted);
+                if is_exhausted {
+                    tracing::warn!(
+                        reviewer = %reviewer_id,
+                        "reviewer unavailable (backend exhausted), proceeding with remaining reviewers"
+                    );
+                    append_panel_member_completed_event(
+                        journal_store,
+                        base_dir,
+                        project_id,
+                        seq,
+                        run_id,
+                        cursor,
+                        "proposal",
+                        &reviewer_id,
+                        "reviewer",
+                        &member.target,
+                        started_at.elapsed(),
+                        "failed_exhausted",
+                        0,
+                    )?;
+                    append_panel_member_runtime_log(
+                        log_write,
+                        base_dir,
+                        project_id,
+                        "completed",
+                        "proposal",
+                        &reviewer_id,
+                        "reviewer",
+                        &member.target,
+                        Some(started_at.elapsed()),
+                        Some("failed_exhausted"),
+                        Some(0),
+                    );
+                    if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
+                        < min_reviewers
+                    {
+                        return Err(error);
+                    }
+                    continue;
+                }
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,

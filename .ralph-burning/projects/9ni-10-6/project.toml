@@ -1,7 +1,0 @@
-id = "9ni-10-6"
-name = "Build shared test infrastructure: mock br/bv adapters, fixture builders, and log capture helpers"
-flow = "minimal"
-prompt_reference = "prompt.md"
-prompt_hash = "e0788727313069274623add41b4229d6ef2a42059961cded86f53b470aff9938"
-created_at = "2026-04-04T23:12:26.262624906Z"
-status_summary = "created"

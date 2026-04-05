@@ -161,7 +161,7 @@ impl PreparedCommand {
                     match serde_json::from_str(&envelope.result)
                         .or_else(|_| extract_json_from_text(&envelope.result))
                     {
-                        Ok(val) => unwrap_claude_structured_output_payload(val),
+                        Ok(val) => unwrap_claude_structured_output_transport_payload(val),
                         Err(error) => {
                             self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
@@ -1422,7 +1422,12 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             .status
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
-                        let failure_class = classify_exit_failure(fresh_output.status);
+                        let fresh_stdout_text = String::from_utf8_lossy(&fresh_output.stdout);
+                        let failure_class = classify_exit_failure_with_output(
+                            fresh_output.status,
+                            &fresh_stderr,
+                            &fresh_stdout_text,
+                        );
                         fresh_prepared
                             .cleanup_failed_invocation(&fresh_request, &fresh_output)
                             .await;
@@ -1445,8 +1450,10 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 }
 
                 let stdout_error = extract_stdout_error(&output.stdout);
+                let stdout_text = String::from_utf8_lossy(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
-                let failure_class = classify_exit_failure(status);
+                let failure_class =
+                    classify_exit_failure_with_output(status, &stderr, &stdout_text);
                 prepared.cleanup_failed_invocation(&request, &output).await;
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
@@ -1711,6 +1718,48 @@ pub(crate) fn classify_exit_failure(status: ExitStatus) -> FailureClass {
             FailureClass::TransportFailure
         }
     }
+}
+
+/// Patterns in stderr/stdout that indicate the backend has permanently
+/// exhausted its credits or hit a persistent usage limit that will not
+/// resolve between retry attempts.
+const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
+    "usage limit",
+    "hit your usage limit",
+    "quota exceeded",
+    "credits exhausted",
+    "billing",
+    "purchase more credits",
+    "insufficient_quota",
+    "rate limit exceeded",
+];
+
+/// Check whether process output text contains patterns indicating
+/// persistent backend unavailability (credits exhausted, usage limits).
+///
+/// Returns `true` when the combined stderr+stdout content matches any
+/// known exhaustion pattern.  Case-insensitive matching is used because
+/// error messages vary across backend providers.
+pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
+    let stderr_lower = stderr.to_lowercase();
+    let stdout_lower = stdout.to_lowercase();
+    BACKEND_EXHAUSTED_PATTERNS
+        .iter()
+        .any(|pattern| stderr_lower.contains(pattern) || stdout_lower.contains(pattern))
+}
+
+/// Classify a non-zero exit, upgrading to `BackendExhausted` when the
+/// process output indicates a persistent usage/billing limit.
+pub(crate) fn classify_exit_failure_with_output(
+    status: ExitStatus,
+    stderr: &str,
+    stdout: &str,
+) -> FailureClass {
+    if is_backend_exhausted(stderr, stdout) {
+        tracing::warn!("backend reported exhausted credits/usage limit — classifying as BackendExhausted (non-retryable)");
+        return FailureClass::BackendExhausted;
+    }
+    classify_exit_failure(status)
 }
 
 fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {
@@ -2845,7 +2894,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finish_claude_result_raw_json_preserves_legitimate_data_payload_shape() {
+    async fn finish_claude_result_raw_json_unwraps_transport_data_wrapper() {
         let envelope = json!({
             "result": "{\"data\": {\"outcome\": \"approved\", \"evidence\": [\"test passed\"]}}",
             "session_id": "sess-test-001b",
@@ -2866,7 +2915,10 @@ mod tests {
 
         let request = make_test_request();
         let result = prepared.finish(&request, output).await.unwrap();
-        assert_eq!(result.parsed_payload["data"]["outcome"], "approved");
+        // unwrap_claude_structured_output_transport_payload strips the
+        // single-key {"data": ...} wrapper, so the payload is the inner
+        // value directly.
+        assert_eq!(result.parsed_payload["outcome"], "approved");
     }
 
     #[tokio::test]
@@ -3403,6 +3455,117 @@ mod tests {
             assert_eq!(
                 classify_exit_failure(status),
                 FailureClass::TransportFailure
+            );
+        }
+    }
+
+    // ── is_backend_exhausted pattern detection tests ──────────────────
+
+    mod backend_exhausted_tests {
+        use super::super::{classify_exit_failure_with_output, is_backend_exhausted};
+        use crate::shared::domain::FailureClass;
+
+        #[test]
+        fn detects_usage_limit_in_stderr() {
+            assert!(is_backend_exhausted(
+                "ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits.",
+                "",
+            ));
+        }
+
+        #[test]
+        fn detects_quota_exceeded_in_stderr() {
+            assert!(is_backend_exhausted("Error: quota exceeded", ""));
+        }
+
+        #[test]
+        fn detects_billing_in_stderr() {
+            assert!(is_backend_exhausted(
+                "Request failed: billing account issue",
+                "",
+            ));
+        }
+
+        #[test]
+        fn detects_credits_exhausted_in_stdout() {
+            assert!(is_backend_exhausted(
+                "",
+                "credits exhausted for this period"
+            ));
+        }
+
+        #[test]
+        fn detects_insufficient_quota_in_stderr() {
+            assert!(is_backend_exhausted("Error code: insufficient_quota", "",));
+        }
+
+        #[test]
+        fn detects_rate_limit_exceeded_in_stderr() {
+            assert!(is_backend_exhausted("rate limit exceeded", ""));
+        }
+
+        #[test]
+        fn case_insensitive_matching() {
+            assert!(is_backend_exhausted("QUOTA EXCEEDED", ""));
+            assert!(is_backend_exhausted("Usage Limit reached", ""));
+        }
+
+        #[test]
+        fn no_false_positive_on_normal_errors() {
+            assert!(!is_backend_exhausted(
+                "connection refused",
+                "unexpected EOF",
+            ));
+        }
+
+        #[test]
+        fn no_false_positive_on_empty_output() {
+            assert!(!is_backend_exhausted("", ""));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn classify_with_output_upgrades_to_backend_exhausted() {
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::ExitStatus;
+
+            let status = ExitStatus::from_raw(1 << 8);
+            assert_eq!(
+                classify_exit_failure_with_output(
+                    status,
+                    "ERROR: You've hit your usage limit.",
+                    "",
+                ),
+                FailureClass::BackendExhausted
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn classify_with_output_preserves_transport_failure_for_normal_errors() {
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::ExitStatus;
+
+            let status = ExitStatus::from_raw(1 << 8);
+            assert_eq!(
+                classify_exit_failure_with_output(status, "connection timeout", ""),
+                FailureClass::TransportFailure
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn classify_with_output_preserves_binary_not_found_for_exit_127() {
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::ExitStatus;
+
+            // Exit 127 is BinaryNotFound even when exhaustion patterns
+            // are NOT present — and exhaustion check takes priority when
+            // patterns ARE present (unlikely for 127 but tests the logic).
+            let status = ExitStatus::from_raw(127 << 8);
+            assert_eq!(
+                classify_exit_failure_with_output(status, "command not found", ""),
+                FailureClass::BinaryNotFound
             );
         }
     }

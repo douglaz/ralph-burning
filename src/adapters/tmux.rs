@@ -17,7 +17,9 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::adapters::fs::FileSystem;
-use crate::adapters::process_backend::{classify_exit_failure, ChildOutput, ProcessBackendAdapter};
+use crate::adapters::process_backend::{
+    classify_exit_failure_with_output, ChildOutput, ProcessBackendAdapter,
+};
 use crate::contexts::agent_execution::model::{
     InvocationContract, InvocationEnvelope, InvocationRequest,
 };
@@ -626,7 +628,9 @@ impl AgentExecutionPort for TmuxAdapter {
             }
 
             prepared.cleanup().await;
-            let failure_class = classify_exit_failure(output.status);
+            let stdout_text = String::from_utf8_lossy(&output.stdout);
+            let failure_class =
+                classify_exit_failure_with_output(output.status, &stderr, &stdout_text);
             return Err(AppError::InvocationFailed {
                 backend: request.resolved_target.backend.family.to_string(),
                 contract_id: request.contract.label(),
