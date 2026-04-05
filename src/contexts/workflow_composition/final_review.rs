@@ -880,6 +880,53 @@ where
                 continue;
             }
             Err(error) => {
+                // When a required reviewer fails with BackendExhausted
+                // (credits/quota exhausted), degrade gracefully: skip this
+                // reviewer and proceed with remaining members if minimum
+                // quorum is still achievable.
+                let is_exhausted = error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted);
+                if is_exhausted {
+                    tracing::warn!(
+                        reviewer = %reviewer.reviewer_id,
+                        "reviewer unavailable during vote (backend exhausted), proceeding with remaining reviewers"
+                    );
+                    append_panel_member_completed_event(
+                        journal_store,
+                        base_dir,
+                        project_id,
+                        seq,
+                        run_id,
+                        cursor,
+                        "vote",
+                        &reviewer.reviewer_id,
+                        "reviewer",
+                        &reviewer.target,
+                        started_at.elapsed(),
+                        "failed_exhausted",
+                        0,
+                    )?;
+                    append_panel_member_runtime_log(
+                        log_write,
+                        base_dir,
+                        project_id,
+                        "completed",
+                        "vote",
+                        &reviewer.reviewer_id,
+                        "reviewer",
+                        &reviewer.target,
+                        Some(started_at.elapsed()),
+                        Some("failed_exhausted"),
+                        Some(0),
+                    );
+                    if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
+                        < min_reviewers
+                    {
+                        return Err(error);
+                    }
+                    continue;
+                }
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,

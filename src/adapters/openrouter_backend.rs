@@ -338,11 +338,23 @@ impl OpenRouterBackendAdapter {
                 details,
                 failure_class: None,
             },
-            429 => Self::invocation_failed(
-                request,
-                FailureClass::TransportFailure,
-                format!("OpenRouter rate limit: {details}"),
-            ),
+            429 => {
+                // Check whether the 429 body indicates persistent quota
+                // exhaustion rather than a transient rate limit.
+                if crate::adapters::process_backend::is_backend_exhausted(body, "") {
+                    Self::invocation_failed(
+                        request,
+                        FailureClass::BackendExhausted,
+                        format!("OpenRouter quota exhausted: {details}"),
+                    )
+                } else {
+                    Self::invocation_failed(
+                        request,
+                        FailureClass::TransportFailure,
+                        format!("OpenRouter rate limit: {details}"),
+                    )
+                }
+            }
             500..=599 => Self::invocation_failed(
                 request,
                 FailureClass::TransportFailure,
@@ -855,6 +867,29 @@ mod tests {
                 assert!(details.contains("rate limit"));
             }
             other => panic!("expected transport failure, got: {other:?}"),
+        }
+
+        // 429 with exhaustion pattern → BackendExhausted (not retryable)
+        let exhausted_server = MockHttpServer::start(vec![ResponsePlan::json(
+            429,
+            json!({"error": {"message": "quota exceeded for your organization"}}),
+        )]);
+        set_openrouter_env(&exhausted_server.base_url);
+        let adapter = OpenRouterBackendAdapter::with_base_url(exhausted_server.base_url.clone());
+        let exhausted = adapter
+            .invoke(request.clone())
+            .await
+            .expect_err("429 with exhaustion should fail");
+        match exhausted {
+            AppError::InvocationFailed {
+                failure_class,
+                details,
+                ..
+            } => {
+                assert_eq!(failure_class, FailureClass::BackendExhausted);
+                assert!(details.contains("quota exhausted"));
+            }
+            other => panic!("expected backend exhausted, got: {other:?}"),
         }
 
         let malformed_server =

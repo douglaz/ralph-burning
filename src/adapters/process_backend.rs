@@ -1728,10 +1728,8 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
     "hit your usage limit",
     "quota exceeded",
     "credits exhausted",
-    "billing",
     "purchase more credits",
     "insufficient_quota",
-    "rate limit exceeded",
 ];
 
 /// Check whether process output text contains patterns indicating
@@ -3479,14 +3477,6 @@ mod tests {
         }
 
         #[test]
-        fn detects_billing_in_stderr() {
-            assert!(is_backend_exhausted(
-                "Request failed: billing account issue",
-                "",
-            ));
-        }
-
-        #[test]
         fn detects_credits_exhausted_in_stdout() {
             assert!(is_backend_exhausted(
                 "",
@@ -3500,8 +3490,21 @@ mod tests {
         }
 
         #[test]
-        fn detects_rate_limit_exceeded_in_stderr() {
-            assert!(is_backend_exhausted("rate limit exceeded", ""));
+        fn no_false_positive_on_transient_rate_limit() {
+            // Transient rate limits should NOT be classified as exhausted —
+            // they are retryable via TransportFailure.
+            assert!(!is_backend_exhausted("rate limit exceeded", ""));
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. Please retry after 1s",
+                ""
+            ));
+        }
+
+        #[test]
+        fn no_false_positive_on_billing_keyword() {
+            // Bare "billing" was removed as too broad; only specific patterns
+            // like "purchase more credits" match billing-related exhaustion.
+            assert!(!is_backend_exhausted("billing address updated", ""));
         }
 
         #[test]

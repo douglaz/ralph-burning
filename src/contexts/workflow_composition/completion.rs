@@ -27,7 +27,9 @@ use crate::contexts::agent_execution::policy::ResolvedPanelMember;
 use crate::contexts::agent_execution::service::AgentExecutionPort;
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
-use crate::contexts::project_run_record::model::{ArtifactRecord, PayloadRecord};
+use crate::contexts::project_run_record::model::{
+    ArtifactRecord, LogLevel, PayloadRecord, RuntimeLogEntry,
+};
 use crate::contexts::project_run_record::service::{PayloadArtifactWritePort, RuntimeLogWritePort};
 use crate::contexts::project_run_record::task_prompt_contract;
 use crate::contexts::workflow_composition::panel_contracts::{
@@ -100,7 +102,7 @@ fn build_completer_prompt(
 pub async fn execute_completion_panel<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     artifact_write: &dyn PayloadArtifactWritePort,
-    _log_write: &dyn RuntimeLogWritePort,
+    log_write: &dyn RuntimeLogWritePort,
     base_dir: &Path,
     project_root: &Path,
     backend_working_dir: &Path,
@@ -169,6 +171,19 @@ where
                         completer = i,
                         backend = %completer_target.backend.family,
                         "completer unavailable (backend exhausted), proceeding with remaining completers"
+                    );
+                    let _ = log_write.append_runtime_log(
+                        base_dir,
+                        project_id,
+                        &RuntimeLogEntry {
+                            timestamp: Utc::now(),
+                            level: LogLevel::Warn,
+                            source: "completion_panel".to_owned(),
+                            message: format!(
+                                "completer {i} ({}) unavailable (backend exhausted), skipping",
+                                completer_target.backend.family
+                            ),
+                        },
                     );
                     continue;
                 }
