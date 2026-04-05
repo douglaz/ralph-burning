@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T03:16:17.380540832Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\n`git diff` was empty because the work is already committed, so I reviewed the cumulative 6863173..HEAD changes for bead `9ni-6-1`, read the key prompt-contract/workflow files, and ran targeted Rust tests. I found two correctness gaps: malformed canonical prompts can fall out of contract enforcement once early headings are missing, and embedded-section extraction rewrites multi-paragraph Markdown list items.\n\n## Amendments\n\n1. `src/contexts/project_run_record/task_prompt_contract.rs:128-145` makes `prompt_uses_contract()` return `true` only after the marker is followed by `## Milestone Summary` or `## Current Bead Details`. If a canonical bead prompt drifts by losing either of those early headings but still keeps the top-level marker and later canonical sections, the workflow stops treating it as contract-bound. That disables the contract guidance injected from `src/contexts/workflow_composition/engine.rs:109-110`, `src/contexts/workflow_composition/completion.rs:79-80`, `src/contexts/workflow_composition/final_review.rs:1585-1586`, and it also bypasses prompt-review drift enforcement in `src/contexts/workflow_composition/prompt_review.rs:320-325`. The fix is to treat any top-level contract marker as opting into contract enforcement, then let `validate_canonical_prompt_shape()` report the missing headings.\n   Rationale: As written, the contract-repair path turns off precisely when the prompt is malformed by dropping the first canonical sections, so later stages can continue without any of the new contract protections.\n2. `src/contexts/project_run_record/service.rs:586-608` finalizes the current extracted non-goal / acceptance item on every blank line before checking whether the next line is an indented continuation of the same Markdown list item. That means a valid multi-paragraph list item such as `- criterion` followed by a blank line and an indented explanatory paragraph is rewritten into multiple bullets in the generated canonical prompt. Preserve blank-line-plus-indented continuation paragraphs within the current item instead of unconditionally splitting on blank lines.\n   Rationale: This silently changes the meaning and structure of embedded acceptance criteria / non-goals taken from bead descriptions, which can widen or narrow scope compared with the source bead.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

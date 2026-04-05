@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr14-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T20:10:02.396048450Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the full diff for project 9ni-6-2 across 6 files (286 additions, 20 deletions). Changes cover: (1) markdown_heading_title now accepts level-1 headings and validates whitespace after hashes, with ATX closing-hash stripping, (2) MilestoneProgress::remaining() now correctly subtracts in_progress and blocked beads, (3) br list command upgraded to --all --deferred --limit=0 to capture closed/deferred beads for planned-elsewhere context, (4) br_list_exit_error_looks_corrupt no longer false-positives on missing .beads/issues.jsonl file-not-found errors, (5) planned-elsewhere summary now skips Non-goals and Acceptance Criteria labels. All 1399 tests pass. The logic is correct, edge cases are handled by saturating_sub, and both copies of markdown_heading_title in service.rs and cli/project.rs are consistent. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 14
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-plan_and_implement-c1-a1-cr10-artifact",
+  "payload_id": "run-20260405042156-plan_and_implement-c1-a1-cr10",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-05T09:03:11.158257907Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemoved the vestigial pre-commit snapshot write from `persist_plan_locked` so plan updates only publish the snapshot through the atomic snapshot+journal commit path, and corrected resume lifecycle journaling so `paused -> running` transitions use the actual resume time while preserving the original `BeadStarted` timestamp for the underlying attempt. Added regressions covering both the no-prewrite rollback path and the resumed transition timestamp behavior.\n\n## Steps\n\n1. [Completed] Confirmed the remaining atomicity gap in plan persistence and the paused->running timestamp bug in resumed milestone execution.\n2. [Completed] Patched milestone persistence to remove the standalone snapshot write before `commit_snapshot_and_journal_ops`, and updated resumed bead-start reconciliation to timestamp lifecycle transitions from the current resume call.\n3. [Completed] Added regression tests for atomic rollback without a prewrite and for resumed transition timestamps, then reran the milestone service test slice.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed.\n- `cargo test persist_plan_does_not_prewrite_snapshot_before_atomic_commit --lib` passed.\n- `cargo test resume_transition_uses_resume_time_instead_of_original_start_time --lib` passed.\n- `cargo test milestone_record::service --lib` passed (74 tests).\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 10
+}

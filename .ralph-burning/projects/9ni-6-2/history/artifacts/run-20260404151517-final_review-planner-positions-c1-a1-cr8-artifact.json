@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr8-artifact",
+  "payload_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T18:19:36.132888274Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAccepted all three amendments. One is a clear test-fixture repair for newly introduced `br list --json` calls; the other two identify real behavior regressions in `project create-from-bead` prompt/context assembly that reduce robustness or produce conflicting prompt semantics.\n\n## Votes\n\n- `fr-8-2ac0c20e`: Accept\n  The failure mode is real and reproduced: these six tests now fail during project creation because their fake `br` stub only implements `show`, while `handle_create_from_bead` now also calls `br list --json`. Updating the fixtures to use `write_show_bead_script_with_default_list` (or equivalent) is the correct fix. This is a test-harness mismatch, not a product bug, and the amendment restores the tests to exercising the intended sync-milestone behavior.\n- `fr-8-981e8e4e`: Accept\n  Unconditionally requiring `load_bead_summaries` makes `project create-from-bead` fail on any transient `br list --json` error, even when the command still has enough data from `br show`, the milestone bundle, and relation fallbacks to create a valid project. That is a robustness regression, and it is especially unjustified on the `prompt_override` path because prompt rendering is skipped entirely there. Hard failure is appropriate for corrupt bead data, but ordinary `br list` I/O/exit failures should remain best-effort.\n- `fr-8-4091b890`: Accept\n  The shared-acceptance-owner expansion currently treats direct upstream dependencies like any other related bead. That causes the same bead to appear once in dependency context and again in `Already Planned Elsewhere` under a different semantic label, which is internally contradictory and can mislead the consumer of the prompt about prerequisite work. Filtering `upstream_ids` out of the shared-ownership pass, or merging that detail into the dependency entry, is the more correct and maintainable behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 8
+}

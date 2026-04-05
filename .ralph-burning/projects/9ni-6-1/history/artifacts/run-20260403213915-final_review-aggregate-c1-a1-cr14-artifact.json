@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260403213915-final_review-aggregate-c1-a1-cr14-artifact",
+  "payload_id": "run-20260403213915-final_review-aggregate-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T02:22:44.318779579Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 14/20\n\n## Accepted\n\n- `fr-14-c8de46bb`\n\n## Rejected\n\n- `fr-14-015e8372`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-14-c8de46bb`\n\n`src/contexts/project_run_record/task_prompt_contract.rs:252-259` stops reporting canonical-heading duplicates once all expected sections have been seen, while `src/contexts/project_run_record/service.rs:920-923` emits `AGENTS / Repo Guidance` verbatim at top level. That means a prompt override/refinement can append a second top-level canonical section like `## Acceptance Criteria` after `## AGENTS / Repo Guidance` and still pass `validate_canonical_prompt_shape()`. `create_project_from_bead_context()` and prompt-review drift checks will then accept a semantically drifted contract as valid. Tighten validation so extra top-level canonical headings after the contract block are rejected unless they are structurally escaped as section body content.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 14
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T00:16:02.271707327Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 correctness/robustness gaps in the new prompt-contract parser and renderer. The focused new tests pass, but first-line fenced blocks in bullet-rendered fields and trailing spaces on canonical headings can still trigger false contract failures.\n\n## Amendments\n\n1. Special-case bullet fields whose first content line is a fence opener. `collect_non_goal_items` now preserves raw fenced blocks (`src/contexts/project_run_record/service.rs:548-570`), but `render_bullet_item` still emits the first line inline as `- ```md` (`src/contexts/project_run_record/service.rs:669-679`). `validate_canonical_prompt_shape` only recognizes a fence when the trimmed line itself starts with backticks or tildes (`src/contexts/project_run_record/task_prompt_contract.rs:177-190`), so it misses that opener, treats the closing fence as a new opener, and then skips the remaining canonical headings. A non-goal or other bullet-rendered field that begins with a fenced example will therefore generate a canonical prompt that `create_project_from_bead_context` rejects (`src/contexts/project_run_record/service.rs:384-389`). Render first-line fences on a new indented line, or teach the validator to recognize list-prefixed fence openers.\n   Rationale: This is a real prompt-generation regression: legitimate bead content can now make the generated canonical prompt fail validation and break project creation or prompt-review drift checks.\n2. Restore trailing-whitespace tolerance for canonical headings. `canonical_section_heading_index` now matches with `line.strip_prefix(\"## \")` (`src/contexts/project_run_record/task_prompt_contract.rs:66-70`), so headings like `## Review Policy ` or `## Milestone Summary   ` are no longer recognized even though they are equivalent Markdown headings. That stricter match feeds both canonical validation and prompt-review drift enforcement (`src/contexts/project_run_record/task_prompt_contract.rs:163-220`, `src/contexts/workflow_composition/prompt_review.rs:320-330`), so a refiner can preserve the contract semantically and still get forced into retry/reject loops because of harmless suffix whitespace. Keep the new column-0 requirement if you want to ignore indented body text, but trim the line ending before comparing.\n   Rationale: This turns formatting noise into false contract drift, which makes the new prompt-review enforcement brittle against normal LLM output.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T22:21:46.117657810Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the bead `9ni.6.1` changes against `origin/master`, read the changed prompt-contract/stage/template files, and ran targeted prompt-rendering tests. The stage/template wiring looks consistent, but I found two correctness gaps caused by pasting raw bead descriptions into the canonical prompt sections.\n\n## Amendments\n\n1. High: `render_bead_task_prompt` inserts `bead_description` verbatim into `## Must-Do Scope` (`src/contexts/project_run_record/service.rs:540-543,588-592`), but `validate_canonical_prompt_shape` locates each contract heading by the first matching line anywhere in the prompt (`src/contexts/project_run_record/task_prompt_contract.rs:122-145`). Real bead descriptions already contain the repo-required `## Acceptance Criteria` marker, e.g. `.beads/issues.jsonl:65`, so a canonical prompt for those beads contains an embedded `## Acceptance Criteria` before the real contract section. After validators accept, `execute_prompt_review` re-validates the refined prompt (`src/contexts/workflow_composition/prompt_review.rs:241-254`) and will reject it as \"out of order\" even though the prompt is otherwise valid. The generator needs to normalize/strip embedded contract headings before rendering, or the validator needs to scan only the top-level contract sections.\n   Rationale: This makes the new canonical contract fail on normal bead inputs from the repository backlog, so prompt review can dead-end on valid prompts.\n2. Medium: The shared consumer guidance says `Must-Do Scope` + `Acceptance Criteria` define in-scope work and `Explicit Non-Goals` is the out-of-scope section (`src/contexts/project_run_record/task_prompt_contract.rs:66-72`), but the generator still fills `Explicit Non-Goals` only from `milestone_non_goals` and dumps the full bead description into `Must-Do Scope` (`src/contexts/project_run_record/service.rs:540-547`). Real bead descriptions already carry bead-local `Non-goals:` blocks, e.g. `.beads/issues.jsonl:66`, so those deferred items stay inside `Must-Do Scope` and are presented to downstream stages as in-scope work. The contract generator should extract bead-local non-goals from the description or otherwise keep them out of the in-scope section.\n   Rationale: Producer and consumer no longer share the same scope boundary, which undermines the contract’s main purpose and will create false-positive review/completion feedback.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

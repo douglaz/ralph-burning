@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260405042156-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T08:56:47.254198781Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo amendments address concrete correctness bugs in milestone persistence and resume timestamping and should be accepted. The paused-to-completed amendment points at a plausible lifecycle inconsistency, but the proposed branch reorder is not sufficient because the transition layer still rejects `Paused -> Completed`, so it would not produce a correct or robust fix on its own.\n\n## Votes\n\n- `fr-9-990fa831`: Accept\n  `persist_plan_locked` currently writes the snapshot directly and then writes it again through `commit_snapshot_and_journal_ops`. That first write creates a crash window where `status.json` reflects the new plan state before the matching journal mutation is durably committed, which breaks the intended snapshot+journal atomicity and bypasses the helper's recovery path. Keeping `validate_snapshot` and removing only the standalone `write_snapshot` is the correct fix because the commit helper already performs the snapshot write and coordinated journal commit.\n- `fr-9-066c158d`: Reject\n  The inconsistency is plausible, but the amendment as stated is incomplete. If `reconcile_snapshot_from_lineage` starts returning `Completed` from a previously paused snapshot, `update_task_run` will then call `build_reconciled_transition_events` with `previous_status = Paused` and `snapshot.status = Completed`. The transition builder and `MilestoneStatus::allows_transition_to` currently reject `Paused -> Completed`, so a branch reorder alone would surface an invalid-transition error rather than correctly emitting a completion lifecycle event. A valid fix would need to update the transition semantics and tests together.\n- `fr-9-b5f8f18e`: Accept\n  The resume path currently feeds the original attempt start time back through `sync_milestone_bead_start`, and `record_task_run_start` can reuse an existing running lineage row whose `started_at` remains that original timestamp. `record_bead_start` then uses that stale value when building lifecycle events, so the `Paused -> Running` milestone transition is backdated to the initial start instead of the actual resume moment. That corrupts journal history and can inflate runtime accounting after pauses. Using the real resume timestamp for the lifecycle transition is the correct behavior while preserving the original attempt start time for lineage identity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

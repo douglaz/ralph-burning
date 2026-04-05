@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-vote-0-c1-a1-cr11-artifact",
+  "payload_id": "run-20260405042156-final_review-vote-0-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T09:48:17.250897173Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify genuine lifecycle reconciliation bugs confirmed by source code inspection. Amendment fr-11-677d73f5 describes a state-machine deadlock where resumable failed runs are permanently locked at the milestone layer. Amendment fr-11-25a6f69d describes a timestamp ordering defect that corrupts duration accounting. Both are real correctness issues that warrant fixes.\n\n## Votes\n\n- `fr-11-677d73f5`: Accept\n  Verified all five code locations. handle_resume (run.rs:608) explicitly allows RunStatus::Failed through. sync_terminal_milestone_task_with_options (run.rs:181-194) unconditionally maps every Failed run to MarkMilestoneFailed. The milestone state machine (model.rs:102) returns an empty transition target array for Failed. build_reconciled_transition_events has no handler for (Failed, _) so those transitions hit the default error branch. And bead starts are rejected for terminal milestones via is_terminal() check (service.rs:1800-1806). Together these create a concrete deadlock: a project that fails and is later successfully resumed will have its milestone permanently stuck in Failed with no recovery path. This is a real correctness bug in the failure-to-milestone mapping that needs to distinguish recoverable from terminal failures.\n- `fr-11-25a6f69d`: Accept\n  Verified all four code locations. update_task_run_with_disposition (service.rs:2074) and repair_task_run_with_disposition (service.rs:2204) both pass the run's started_at as the running_started_at parameter. The Paused->Failed bridge (service.rs:754-776) creates a synthetic Paused->Running event using bridge_timestamp derived from that started_at value. The NDJSON journal is read in append order by read_journal_from_path (fs.rs) with no chronological sorting, and accumulated_running_duration_seconds (service.rs:569-589) iterates in that append order. If an existing Running->Paused event at time T2 is followed by a synthetic Running event at earlier time T1, the duration calculation double-counts the overlap. This is a concrete data-integrity bug affecting both duration metadata and timeline monotonicity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 11
+}

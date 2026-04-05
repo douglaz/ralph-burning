@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr18-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T21:40:50.755452196Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe changes add progressive truncation for dependency context items and planned-elsewhere base fields (title/relationship) to keep prompt output within budget. The budget accounting in `format_dependency_context` is correct — the remaining_bytes calculation properly accounts for selected items, separators, and omission lines. Binary search fitting and the fallback omission-count fix are sound. Tests appropriately cover the new behaviors including single-oversized-item and exact-omission-count scenarios. Two issues found: a divergent `truncate_to_char_boundary` implementation in service.rs, and code duplication across files.\n\n## Amendments\n\n1. In `src/contexts/project_run_record/service.rs` lines 931-938, `truncate_to_char_boundary` returns the first character even when it exceeds `max_bytes` (e.g., a 4-byte emoji when max_bytes=2). The `project.rs` version (lines 1734-1744) correctly returns `\"\"` when `first_char_end > max_bytes`. The service.rs version should match: replace `return &value[..first_char_end.min(value.len())];` with the same `if first_char_end <= max_bytes { &value[..first_char_end] } else { \"\" }` guard used in project.rs. Without this fix, `truncate_with_ascii_ellipsis` in service.rs can produce strings exceeding the requested byte limit when input contains multi-byte characters at the start, causing fitted dependency items to silently exceed the budget.\n   Rationale: This is a correctness bug: the function's contract is to return at most `max_bytes` bytes, but it can return more. While current dependency data is likely ASCII, the function is general-purpose and the divergence from the identical function in project.rs indicates this is an oversight, not intentional.\n2. The functions `truncate_with_ascii_ellipsis` and `truncate_to_char_boundary` are now fully duplicated between `src/cli/project.rs` (lines 1706-1748) and `src/contexts/project_run_record/service.rs` (lines 903-941), with slightly different edge-case behavior (the service.rs version has the bug above). Extract these into a shared utility module so both call sites use the same implementation and stay in sync.\n   Rationale: Having two copies of the same logic with subtly divergent behavior is a maintenance hazard — fixes to one won't propagate to the other. This already caused the truncate_to_char_boundary bug above where the service.rs copy was not updated to match the project.rs fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 18
+}

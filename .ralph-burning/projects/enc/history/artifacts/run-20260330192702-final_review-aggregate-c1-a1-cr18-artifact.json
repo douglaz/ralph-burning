@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260330192702-final_review-aggregate-c1-a1-cr18-artifact",
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-31T02:11:52.306575096Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 18/20\n\n## Accepted\n\n- `fr-18-fb16fc87`\n- `fr-18-df19f0ba`\n\n## Rejected\n\n- `fr-18-ffc497f2`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-18-fb16fc87`\n\nIn `safe_plan_hash_backfill` (fs.rs ~line 3395), the call site in the `update_task_run` open-entry finalization path calls `safe_plan_hash_backfill` AFTER setting `entry.plan_hash` from the caller's explicit value (line 3389: `entry.plan_hash = Some(plan_hash.to_owned())`). This means `safe_plan_hash_backfill` will always short-circuit on `entry.plan_hash.is_some()` when the caller supplied a plan_hash. This is correct behavior. However, there is a subtle ordering issue: `safe_plan_hash_backfill` checks `entry.outcome.is_terminal()` to skip terminal entries, but it is called on line 3395 BEFORE `entry.outcome = outcome` is set on line 3396. Since this code path is inside the `else` branch (meaning the entry is NOT yet terminal — it's being transitioned TO terminal), the `is_terminal()` check will see the old Running outcome, which means the terminal guard in `safe_plan_hash_backfill` is vacuous here. The backfill still proceeds correctly because the entry is about to become terminal, and this is exactly when you'd want the last chance to backfill. Document this ordering dependency with a brief inline comment so future refactors don't reorder the calls and break the invariant.\n\n### `fr-18-df19f0ba`\n\nThe `unique_terminal_replay_match` contract enforcement (fs.rs ~line 2839) uses `AppError::CorruptRecord` for what is actually an internal programming invariant violation (caller passed `(Some(run_id), None)` for started_at). `CorruptRecord` implies corrupt on-disk data. Consider using a distinct error variant or at minimum adjust the error message prefix to say 'internal contract violation' rather than naming the ndjson file, since the file is not corrupt — the caller violated the API contract. This matters for error triage: an operator seeing 'CorruptRecord' in logs may investigate the data file rather than the calling code.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 18
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260405042156-final_review-aggregate-c1-a1-cr17-artifact",
+  "payload_id": "run-20260405042156-final_review-aggregate-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T15:33:11.782954215Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 17/20\n\n## Accepted\n\n- `fr-17-4fa1d7d0`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-17-43f9612e`\n\n## Final Accepted Amendments\n\n### `fr-17-4fa1d7d0`\n\nFix resumed-at timestamp consistency for milestone lineage. In src/contexts/workflow_composition/engine.rs:1619-1654, resume writes the durable run_resumed event at one Utc::now() and then calls sync_milestone_bead_start with a second Utc::now(). Later, src/cli/run.rs:226-243 derives the canonical attempt start from the run_resumed timestamp, and src/cli/run.rs:489-519 gates failed-resume repair on an exact lineage match. Those timestamps no longer line up, so resumed attempts can look like \"missing lineage\" even when start sync already happened; on a failed resume that can make sync_terminal_milestone_task_with_options return early and leave the milestone in the wrong lifecycle state. Capture one resumed-at timestamp and use it consistently for the run_resumed journal row, the milestone start sync, and the exact-lineage check.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 17
+}

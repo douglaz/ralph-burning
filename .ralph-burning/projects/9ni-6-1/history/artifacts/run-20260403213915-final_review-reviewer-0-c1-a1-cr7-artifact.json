@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-0-c1-a1-cr7-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-0-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T00:09:31.994425519Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed four changed files implementing proper CommonMark fence handling, multiline bullet indentation for rendered prompts, and contract drift as retryable concern in prompt review. All changes are correct and well-tested. The fence parsing correctly matches openers/closers by marker type and count (replacing the old boolean toggle). The `canonical_section_heading_index` change from `line.trim().strip_prefix` to `line.strip_prefix` correctly prevents indented continuation lines from being misidentified as canonical headings. The prompt-review refactoring to pass `contract_reference_prompt` separately from `prompt_text` ensures validators always get contract guidance even when the refined prompt drops the marker. No safety or correctness bugs found. One maintainability concern: duplicated fence handling code.\n\n## Amendments\n\n1. Extract the duplicated `FenceDelimiter` struct and its associated functions (`opening_fence_delimiter`, `closes_fence`) into a shared module (e.g., `markdown_fence` or a private utility within the `project_run_record` context). Currently identical copies exist in both `service.rs` (line 478) and `task_prompt_contract.rs` (line 16). If a bug is fixed in one copy, the other could silently diverge.\n   Rationale: Two identical copies of non-trivial parsing logic (fence matching with marker type + count semantics) in the same context is a real maintenance hazard. A future fix to one copy could miss the other, leading to subtle behavioral divergence between prompt rendering and contract validation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 7
+}

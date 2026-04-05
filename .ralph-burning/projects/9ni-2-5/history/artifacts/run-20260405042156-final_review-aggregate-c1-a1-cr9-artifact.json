@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260405042156-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260405042156-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T08:56:47.267438890Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 9/20\n\n## Accepted\n\n- `fr-9-990fa831`\n- `fr-9-b5f8f18e`\n\n## Rejected\n\n- `fr-9-066c158d`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-990fa831`\n\nIn `persist_plan_locked` (service.rs:1593), remove the standalone `snapshot_store.write_snapshot(base_dir, milestone_id, snapshot)?;` call. It is vestigial from the pre-atomic-commit code and causes a double write: the snapshot is written once at line 1593, then written again inside `commit_snapshot_and_journal_ops` at line 1601 (which internally calls `write_snapshot` at line 153). This violates the atomicity requirement ('transitions must be atomic: state file and journal event written together') because if the process crashes between the standalone write (1593) and the atomic commit (1601), the snapshot would reflect the new state but the journal would have no corresponding reopen or plan event. The `validate_snapshot` call at line 1592 should be kept; only the `write_snapshot` at 1593 should be removed since `commit_snapshot_and_journal_ops` handles both the write and rollback-on-failure.\n\n### `fr-9-b5f8f18e`\n\nUse the actual resume time for `paused -> running` lifecycle events. The resume path calls `sync_milestone_bead_start(..., resume_state.started_at)` in `src/contexts/workflow_composition/engine.rs:1648-1653`, and `record_bead_start` then forwards `started_entry.started_at` into `build_reconciled_transition_events` at `src/contexts/milestone_record/service.rs:1798-1805`. `build_reconciled_transition_events` uses that value as the running transition timestamp at `src/contexts/milestone_record/service.rs:739-748`, so resumed events are backdated to the original run start instead of the resume moment.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260404151517-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T18:03:27.622132417Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReject the summary-label parsing amendment as an intentional, narrowly ambiguous normalization; accept the silent `br list` degradation and acceptance-ownership amendments because both expose real prompt-correctness defects.\n\n## Votes\n\n- `fr-7-f80c2e20`: Reject\n  `compact_planned_elsewhere_summary` is a deliberate first-line compactor, and stripping recognized inline labels on that first substantive line is explicitly covered by tests. The renderer already prints a separate `Summary:` label and includes the bead title independently, so the reported ambiguity is narrow and mostly cosmetic rather than a clear correctness or safety defect. Tightening the rule would risk regressing the intended label-normalization behavior without strong evidence of materially wrong prompts.\n- `fr-7-464e51de`: Accept\n  `handle_create_from_bead` currently converts generic `load_bead_summaries` I/O failures into an empty summary map, so prompt rendering silently changes based on transient `br list --json` availability instead of stable project data. Downstream code then falls back to relation-local metadata or `unknown`, especially for planned-elsewhere neighbors, which means identical milestone/bead state can yield different `prompt.md` contents and hashes. That is a real determinism defect; the command should fail or source the needed fields from deterministic stored data.\n- `fr-7-e92e36d4`: Accept\n  `acceptance_map[].covered_by` is the bundle’s validated, canonical mapping of milestone acceptance ownership to beads, but `build_planned_elsewhere_context` ignores it and only uses dependency edges plus same-workstream adjacency. That misses legitimate related beads in other workstreams when they share acceptance ownership but have no direct dependency edge. Because `Already Planned Elsewhere` is meant to prevent reviewers from expanding scope into work already assigned elsewhere, omitting those co-owner beads is a real prompt-quality defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

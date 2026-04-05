@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260327233800-final_review-vote-1-c2-a1-cr19-artifact",
+  "payload_id": "run-20260327233800-final_review-vote-1-c2-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T00:53:04.196628647Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccept fr-19-b035a585 and fr-19-4993d634 because they expose real attempt-identity collisions that can reject or overwrite distinct runs. Reject fr-19-b353e532 because removing all started_at-based legacy correlation would break required idempotent repair for runless attempts without introducing any replacement identifier.\n\n## Votes\n\n- `fr-19-b035a585`: Accept\n  `matching_finalized_task_runs` currently falls back from an exact `run_id` lookup to any terminal row with the same `started_at`. That is too broad when the caller supplied a concrete `run_id`: a finalized row for `run-2` can be treated as if it were the caller's `run-3` attempt purely because the timestamps match. Elsewhere the code treats distinct named `run_id`s as distinct attempts, so this fallback can falsely block a legitimate new run. Restricting the fallback to runless terminal rows preserves the intended legacy backfill case without conflating different named attempts.\n- `fr-19-b353e532`: Reject\n  The collision concern is real, but this amendment removes the only correlation key the system has for legacy runless attempts. The current `started_at` path is what allows idempotent repair of partial start writes, replay of partial completion writes, and pairing of a legacy running row with its later terminal row. Eliminating that logic wholesale would turn same-attempt replays into duplicate attempts and regress existing recovery behavior. A sound fix would need a new durable attempt identifier for runless entries first; removing `started_at` matching by itself is not safe.\n- `fr-19-4993d634`: Accept\n  `append_event_if_missing` and `repairable_completion_event` do not key completion repair on a real attempt identity. They effectively use `timestamp + event_type + bead_id`, then merge details as long as project/outcome are compatible. That means two distinct attempts for the same bead can be collapsed if they finish at the same timestamp and one event is missing `run_id`, causing the second completion to be dropped or overwritten in the journal. Since the journal is part of the audit trail, dedupe/repair must be tied to an actual attempt identifier or disabled for this case.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 19
+}

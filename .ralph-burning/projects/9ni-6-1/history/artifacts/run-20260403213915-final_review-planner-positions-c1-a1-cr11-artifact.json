@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr11-artifact",
+  "payload_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T01:22:10.777358441Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nBoth amendments identify real correctness issues where contract behavior can silently diverge from the intended canonical prompt workflow. The first is a template-override regression path that drops required guidance without validation; the second is an overly broad detector that can misclassify non-canonical prompts and trigger incorrect enforcement.\n\n## Votes\n\n- `fr-11-32cbf896`: Accept\n  Override templates currently are allowed to omit `{{task_prompt_contract}}`, and rendering expands missing optional placeholders to empty. Since the workflow builders only pass the contract guidance through that placeholder for the affected stage/panel prompts, an override that predates this placeholder or forgets to include it silently strips the contract instructions. That is a real robustness bug: behavior changes based on template source rather than prompt semantics, and there is no validation signal to the operator. Requiring the placeholder or injecting the contract block outside the template body would close that hole.\n- `fr-11-cb96857e`: Accept\n  `prompt_uses_contract` currently treats any line equal to the marker as a declaration, even if that line appears inside a fenced code block or quoted AGENTS content. The rest of canonical-shape validation is already fence-aware, so detection and validation are using different notions of what counts as a declared contract. That mismatch can incorrectly enable contract-specific prompt injection and drift enforcement for prompts that only mention the marker text incidentally. Detection should use the same top-level, fence-aware rules as the canonical validator.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 11
+}

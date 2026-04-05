@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330014928-review-c1-a1-cr1-artifact",
+  "payload_id": "run-20260330014928-review-c1-a1-cr1",
+  "stage_id": "review",
+  "created_at": "2026-03-30T02:00:58.818350027Z",
+  "content": "# Review\n\n## Outcome\n\n**Approved**\n\n## Evidence\n\n- Reviewed src/contexts/agent_execution/model.rs:241-246; TokenCounts now includes cache_read_tokens and cache_creation_tokens, and all concrete TokenCounts struct literals were updated accordingly.\n- Reviewed src/adapters/process_backend.rs:181-198 and src/adapters/process_backend.rs:1286-1323; Claude envelope usage is mapped into TokenCounts, and Codex stdout scanning restores input/output/cached token counts from the last usage-bearing NDJSON event.\n- Reviewed src/adapters/openrouter_backend.rs:299-312 and src/adapters/openrouter_backend.rs:500-506; OpenRouter usage now passes through Anthropic cache fields and OpenAI prompt_tokens_details.cached_tokens into TokenCounts.\n- Reviewed src/contexts/agent_execution/service.rs:262-277; successful invocations now emit structured tracing::info! with invocation_id, backend, model, attempt, duration_ms, token fields, presence booleans, and session_reused after metadata finalization.\n- Validation passed with cargo test (329 lib tests, 128 cli tests, 1 run_attach_tmux test, 667 unit tests, 0 doc-test failures).\n- Validation passed with cargo clippy -- -D warnings and cargo fmt --check.\n\n## Findings and Gaps\n\nNone identified.\n\n## Follow-up and Amendments\n\nNone.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

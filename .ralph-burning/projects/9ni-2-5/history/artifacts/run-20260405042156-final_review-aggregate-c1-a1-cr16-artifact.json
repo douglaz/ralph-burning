@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260405042156-final_review-aggregate-c1-a1-cr16-artifact",
+  "payload_id": "run-20260405042156-final_review-aggregate-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T15:05:21.075521707Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 16/20\n\n## Accepted\n\n- `fr-16-d6120209`\n- `fr-16-5bcdbbf5`\n- `fr-16-26354296`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-16-d6120209`\n\nIn `FsMilestoneJournalStore::commit_snapshot_and_journal_ops` (fs.rs ~line 3236), the pending state commit sidecar is written unconditionally even when `applied == 0` (no journal ops had effect). While the snapshot itself may still need updating, the code should short-circuit or at least avoid the sidecar overhead when both `applied == 0` AND `previous_snapshot == next_snapshot`. This is a minor efficiency concern — not a correctness bug — but in high-frequency reconciliation paths it could produce unnecessary disk I/O and brief sidecar windows that trigger recovery in concurrent readers.\n\n### `fr-16-5bcdbbf5`\n\nHigh: `src/adapters/process_backend.rs:1641-1645` now unwraps any one-key object named `data` as if it were the Claude transport wrapper. That breaks legitimate contract payloads whose real schema is `{ \"data\": ... }`: the decoder strips the only top-level field and returns the inner value instead of the schema-shaped object. The old sentinel existed to disambiguate transport wrapping from real payloads, so this change regresses structured-output correctness for an entire class of valid schemas.\n\n### `fr-16-26354296`\n\nMedium: `src/contexts/milestone_record/service.rs:1530-1536` always uses `reason = \"execution started\"` for transitions to `MilestoneStatus::Running`. For the explicitly supported `paused -> running` lifecycle transition, `update_status()` therefore emits a semantically wrong journal event instead of a resume reason. That means one of the new lifecycle transitions does not produce correct audit data through the direct transition API.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 16
+}

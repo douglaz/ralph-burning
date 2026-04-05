@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260405042156-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-05T06:50:59.739541119Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the remaining milestone lifecycle amendments for `ralph-burning-9ni.2.5`. Direct `running -> completed` transitions now require a finalized/exported plan and a fully closed bead set, terminal lifecycle metadata now computes `duration_seconds` from the pre-transition running timestamp when the journal is missing the original `running` entry, and lifecycle/journal reconciliation paths now pass the prior snapshot timestamp explicitly so repaired or legacy milestones do not collapse to zero runtime. I also stopped plain filesystem snapshot/journal reads from overlaying `.state-commit.json`, keeping pending sidecars invisible until a write-locked recovery applies them, and updated the milestone/fs regression coverage for the stricter completion semantics and hidden pending state behavior.\n\n## Steps\n\n1. [Completed] Tightened milestone transition validation so `completed` requires a finalized plan plus zero open/failed beads, with descriptive rejection messages for incomplete milestones.\n2. [Completed] Refactored lifecycle duration metadata to use the pre-transition snapshot timestamp as the fallback running-start source across direct and lineage-driven transitions.\n3. [Completed] Removed pending sidecar overlay behavior from plain filesystem reads and updated milestone/fs regressions to cover hidden pending state, completion prerequisites, and legacy running-duration fallback.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed.\n- `cargo test milestone_record --lib` passed (155 tests).\n- `cargo test milestone_record::service --lib` passed (66 tests).\n- `cargo test fs:: --lib` passed (16 tests).\n- `cargo test completed_transition_requires_all_beads_closed --lib` passed.\n- `cargo test terminal_transition_duration_uses_pre_transition_timestamp_when_running_entry_is_missing --lib` passed.\n- `cargo test milestone_pending_state_commit_stays_hidden_from_plain_snapshot_and_journal_reads --lib` passed.\n\n## Outstanding Risks\n\n- `MilestoneJournalPort::commit_snapshot_and_journal_ops()` still has a sequential default implementation for non-filesystem ports; any future production port must override it to preserve the stronger filesystem behavior.\n- The filesystem commit path still has a narrow unlocked read window where `status.json` can advance before `journal.ndjson` is rewritten; write-locked flows recover coherently, but plain concurrent readers are not synchronized to a single cross-file snapshot.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 5
+}

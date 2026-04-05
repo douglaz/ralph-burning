@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260405042156-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T08:26:43.964888163Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept all five amendments. Four identify concrete defects in milestone lifecycle journaling and runtime accounting; the remaining one is a valid defensive fix in completion-event repair logic.\n\n## Votes\n\n- `fr-8-e16b55ad`: Accept\n  `persist_plan_locked` can change a terminal snapshot to `Planning` by direct mutation, but it only appends `PlanUpdated` and later `Planning -> Ready`. That leaves no explicit journal record for reopening from `Completed` or `Failed`, so audit consumers cannot reconstruct the lifecycle change cleanly. This is a real audit-trail gap.\n- `fr-8-de688938`: Accept\n  `repairable_completion_event` only checks that both events are in the completion family, not that they are the same event type. In normal cases the embedded `outcome` string usually prevents a bad merge, but the missing guard still permits cross-type repair if a row is malformed or inconsistent. Adding an explicit event-type equality check is correct hardening and matches the stricter start-event path.\n- `fr-8-c0b73905`: Accept\n  This is the reopen bug from the state-machine side. `persist_plan_locked` bypasses `build_transition_snapshot` and `allows_transition_to` by writing `snapshot.status = Planning` directly from a terminal state, then `materialize_bundle` emits only `Planning -> Ready`. The persisted snapshot therefore diverges from the lifecycle journal and replay sees an impossible transition sequence.\n- `fr-8-28cf5ef9`: Accept\n  On missed-start recovery, `build_reconciled_transition_events` timestamps the synthetic `Ready -> Running` bridge with the completion time because `update_task_run` passes `finished_at` as the single timestamp. That makes the reconstructed chronology wrong and causes terminal duration metadata to fall back to `previous_snapshot.updated_at` instead of the actual run start, which can inflate runtime and erase historical run length.\n- `fr-8-e64a5ccd`: Accept\n  `accumulated_running_duration_seconds` aggregates all prior running segments from the journal without scoping them to the current `plan_version`, even though transition metadata records that field. After a plan change reopens a milestone, a later terminal transition can include runtime from the previous incarnation of the plan, so `duration_seconds` becomes overstated. That is a concrete accounting bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

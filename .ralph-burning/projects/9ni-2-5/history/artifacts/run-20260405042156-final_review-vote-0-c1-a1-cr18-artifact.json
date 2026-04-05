@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-vote-0-c1-a1-cr18-artifact",
+  "payload_id": "run-20260405042156-final_review-vote-0-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T15:52:28.185484592Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real defects confirmed by code inspection. Amendment 1 is a concrete data-integrity bug where reopen_failed_exact_attempt fails to retarget started_at, breaking exact-lineage matching for resumed runs and suppressing terminal milestone sync. Amendment 2 exposes an unsafe pub API boundary where persist_plan leaves snapshots in Planning with no lifecycle event; while production currently compensates via materialize_bundle, the pub API is genuinely misuse-prone and test code already operates in impossible states because of it.\n\n## Votes\n\n- `fr-18-726f81f8`: Accept\n  Verified bug: reopen_failed_exact_attempt (fs.rs:3537-3542) clones the failed entry and calls backfill_running_entry, which only handles plan_hash — started_at is never retargeted to the resume timestamp. lineage_entry_matches_attempt (run.rs:430-432) requires exact started_at match, and effective_attempt_started_at (run.rs:440-448) returns the RunResumed event timestamp for resumed runs. This mismatch means resume_attempt_has_exact_lineage returns false for same-run_id resumes, making allow_missing_lineage_repair false when the resumed run fails, causing sync_terminal_milestone_task_with_options to bail at run.rs:241-243 without recording terminal state. The fix — passing the new started_at into the reopened entry — is correct, and a regression test for fail→resume→fail is warranted.\n- `fr-18-239431c7`: Accept\n  Verified inconsistency: persist_plan is pub (service.rs:1485) and writes finalized plan artifacts (plan.json, plan.md, plan_shape) and updates plan_hash/plan_version, but leaves snapshot.status in Planning and emits no Planning→Ready lifecycle event. Only materialize_bundle (service.rs:1400-1409) adds the Ready transition afterward. While current production code paths route through materialize_bundle, the pub API is genuinely unsafe: callers must know to perform an extra step or they create milestones with finalized plans in an impossible status. Test code at run.rs:911/939, engine.rs:7710, and multiple service.rs test sites already calls persist_plan directly, operating in states that cannot exist in production, which could mask lifecycle-dependent bugs. Either folding the Ready transition into plan finalization or making persist_plan non-public (with a comment explaining why) is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 18
+}

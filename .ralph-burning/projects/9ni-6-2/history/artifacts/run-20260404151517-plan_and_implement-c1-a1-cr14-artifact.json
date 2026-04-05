@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-plan_and_implement-c1-a1-cr14-artifact",
+  "payload_id": "run-20260404151517-plan_and_implement-c1-a1-cr14",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-04T20:06:45.747389016Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated bead-description section parsing in `src/contexts/project_run_record/service.rs` so markdown headings `#` through `######` are recognized consistently when extracting embedded `Non-goals` and `Acceptance Criteria` blocks. This fixes `prompt.md` generation for bead descriptions that use level-1 headings, keeping those sections out of Must-Do Scope and preserving acceptance criteria extraction. Added focused unit regressions covering both direct prompt rendering and `create_project_from_bead_context` bootstrapping with `# Non-goals` and `# Acceptance Criteria` inputs.\n\n## Steps\n\n1. [Completed] Inspected the bead-description section parsing helpers and prompt-generation tests to confirm that `markdown_heading_title()` in `src/contexts/project_run_record/service.rs` still rejected level-1 headings, leaving embedded `# Non-goals` and `# Acceptance Criteria` content inside Must-Do Scope.\n2. [Completed] Patched `markdown_heading_title()` to accept markdown heading levels 1 through 6 and to match the stricter heading parsing behavior already used elsewhere, including whitespace validation and trimming of trailing `#` markers.\n3. [Completed] Added focused regressions in `tests/unit/project_run_record_test.rs` proving that level-1 embedded `Non-goals` and `Acceptance Criteria` headings are extracted correctly during both `render_bead_task_prompt()` rendering and `create_project_from_bead_context()` project bootstrap flows.\n4. [Completed] Ran formatting and targeted unit coverage for the amended prompt-extraction paths to verify the fix and guard against regressions in adjacent section-extraction behavior.\n\n## Validation Evidence\n\n- `cargo fmt --all` passed.\n- `cargo test render_bead_task_prompt_extracts_level_one_markdown_section_headings --test unit -- --nocapture` passed.\n- `cargo test create_project_from_bead_context_extracts_level_one_markdown_sections --test unit -- --nocapture` passed.\n- `cargo test --test unit project_run_record_test::render_bead_task_prompt_ -- --nocapture` passed (20 tests).\n- `cargo test --test unit project_run_record_test::create_project_from_bead_context_ -- --nocapture` passed (14 tests).\n\n## Outstanding Risks\n\n- Validation was focused on the touched project-run-record prompt paths; I did not rerun the full repository test suite or `br lint` because no bead data changed.\n- The unrelated untracked `.ralph-burning/` directory remains in the worktree and was left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 14
+}

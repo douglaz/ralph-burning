@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr15-artifact",
+  "payload_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T02:38:16.930539815Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAll three amendments identify real correctness or maintainability issues. Two are clear behavioral defects in persisted prompt handling and prompt rendering; the third closes a meaningful test blind spot around gitdir resolution that could otherwise let regressions ship.\n\n## Votes\n\n- `fr-15-f523861e`: Accept\n  `DefaultHasher` is not a stable persisted format contract, and this hash is used for prompt-drift/resume decisions across runs. Tying that behavior to an implementation-defined std hash risks false drift after toolchain upgrades even when the prompt is unchanged. A fixed digest with a stability test is the correct, robust design.\n- `fr-15-4826f568`: Accept\n  If the contract says milestone AGENTS guidance must be preserved verbatim, then rewriting heading-looking lines inside fenced blocks is a correctness bug, not just a formatting issue. Fence-aware escaping or exempting fenced sections directly addresses the defect, and a regression test is warranted because the current logic is structurally prone to this class of corruption.\n- `fr-15-a83f6d94`: Accept\n  The new test helpers duplicate a simplified gitdir path convention instead of exercising the production resolution logic, which weakens coverage for worktrees and `.git` indirection. That creates a real regression hole: `resolve_git_dir` can break while the affected tests still pass. Reusing the production helper or a shared wrapper improves test fidelity and maintainability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 15
+}

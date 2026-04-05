@@ -1,0 +1,23 @@
+{
+  "active_run": null,
+  "status": "completed",
+  "cycle_history": [],
+  "completion_rounds": 21,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [],
+    "processed_count": 75
+  },
+  "status_summary": "completed",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-03-30T18:22:42.754743059Z",
+    "primary_target": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
+}

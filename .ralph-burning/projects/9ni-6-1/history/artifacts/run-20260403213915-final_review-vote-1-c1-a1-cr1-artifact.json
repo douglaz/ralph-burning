@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260403213915-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T22:04:39.939094900Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept all four amendments. They identify real correctness and robustness issues: an incorrect rendered contract identifier, a production-only dead field in the bead prompt contract, a broken end-to-end contract-preservation path through prompt review and later panel stages, and unsafe markdown rendering of free-form repo guidance.\n\n## Votes\n\n- `fr-1-617368af`: Accept\n  The rendered guidance currently names the contract as `bead_execution_prompt/1.` instead of `bead_execution_prompt/1`. That is a real correctness bug in the canonical guidance text and can mislead LLM consumers or any later text-based extraction logic, even if the marker itself is correct elsewhere.\n- `fr-1-74a3f619`: Accept\n  `already_planned_elsewhere` is effectively dead in production: the only real constructor hardcodes it to empty, and there is no upstream model field that can populate it. That leaves one of the canonical contract sections permanently stuck on fallback text, so the gap should either be wired or made explicitly intentional.\n- `fr-1-60ee64b1`: Accept\n  This is a real end-to-end integrity problem. Prompt review rewrites `prompt.md` without any preservation rule for the contract marker or section semantics, while contract detection later relies on an exact marker match, so a normal refinement can silently disable contract-aware handling for subsequent stages. Extending contract-aware handling beyond `build_stage_prompt()` is therefore justified.\n- `fr-1-1646d5c1`: Accept\n  Wrapping free-form `agents_guidance` in a synthetic `- ...` list item is not markdown-safe. Multi-line guidance, headings, fenced code blocks, and nested lists can be malformed or semantically altered, which is especially risky because this section carries repo-specific execution instructions.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

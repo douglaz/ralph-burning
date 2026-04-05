@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330040352-final_review-reviewer-1-c1-a1-cr18-artifact",
+  "payload_id": "run-20260330040352-final_review-reviewer-1-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T17:15:01.945198970Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the current delta in `src/contexts/workflow_composition/engine.rs` and `src/contexts/workflow_composition/retry_policy.rs` end-to-end and ran targeted resume-state tests. I found two correctness gaps: snapshot-write failures in the new backoff path can strand runs in `running`, and the new jitter mixing still produces identical delays for same-tick retries on coarse clocks.\n\n## Amendments\n\n1. src/contexts/workflow_composition/engine.rs:4643-4649 and src/contexts/workflow_composition/engine.rs:3278-3307: the new `run_snapshot_write.write_run_snapshot(...)?` in the retry-backoff path now bubbles snapshot-write failures straight out of `execute_stage_with_retry`. Because the caller also awaits that function with `?`, these errors bypass `fail_run_result`, so the already-appended `stage_failed` event is left on disk while `run.json` stays in its previous `running` state. A disk-full/permission/fs hiccup here now strands the run in the exact unresumable state this change was trying to prevent. Route this through `fail_run_result` (or otherwise guarantee a resumable failed snapshot) instead of propagating the raw write error.\n   Rationale: High severity: a snapshot-write failure during retry backoff now leaves journal and snapshot state diverged and prevents `run resume` from recovering the run.\n2. src/contexts/workflow_composition/retry_policy.rs:134-155: the new jitter implementation does not actually fix coarse-clock correlation. It still derives the delay entirely from `SystemTime::now().subsec_nanos()`, and the hash-mixing step is deterministic, so calls that happen within the same clock tick still get identical jitter values. On 1ms/10ms-resolution platforms, concurrent retries will remain synchronized despite the new comments claiming otherwise. Use a real entropy source or mix in a monotonic counter/thread-local RNG if same-tick calls need to diverge.\n   Rationale: Medium severity: the retry de-synchronization hardening described in the comments is not achieved, so concurrent retries can still herd together under coarse timer resolution.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 18
+}

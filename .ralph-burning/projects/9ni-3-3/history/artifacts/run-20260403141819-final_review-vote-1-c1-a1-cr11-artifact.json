@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260403141819-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T20:33:34.530104620Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the two amendments that expose real lineage-reset recovery bugs in milestone rematerialization and run mutation flows. Rejected the redundant-write and dotted-milestone-id amendments because they do not identify actual correctness or safety defects.\n\n## Votes\n\n- `fr-11-ab721fd7`: Reject\n  This is not a correctness, safety, or robustness defect. The proposed guard is also ineffective for the stated retry path: when retrying a pending lineage clear, `lineage_reset_required` is true, so `plan_hash_changed || lineage_reset_required` would still rewrite `plan.json` and `plan.md`. The current unconditional rewrite is acceptable in a repair flow that may also need to restore missing or stale artifacts.\n- `fr-11-631b4586`: Reject\n  `strip_prefix(&format!(\"{milestone_id}.\"))` removes the exact full prefix string, not a partial dotted segment. A milestone id containing dots therefore does not create the claimed misparse: `ms.v2.bead-1` normalizes to `bead-1`, while `v2.bead-1` correctly does not match. This amendment does not show a real bug or unsafe assumption in the current logic.\n- `fr-11-45bdde01`: Accept\n  This is a real recovery bug. After a post-commit lineage-clear failure, retrying rematerialization depends on `plan.shape.json` still parsing and still carrying the exact same `shape_signature`. If that sidecar is missing, corrupt, or no longer matches the recomputed signature, `persist_plan_locked` can rewrite the committed plan artifacts and clear the pending marker without ever calling `clear_task_run_lineage()`, leaving stale `task-runs.ndjson` inconsistent with the already-committed plan.\n- `fr-11-3979efaa`: Accept\n  This is a real correctness issue. The pending lineage-reset marker is written only to `plan.shape.json`, but `record_bead_start`, `update_task_run`, and `repair_task_run` immediately reconcile snapshot state from `task-runs.ndjson` without consulting that marker. After a failed post-commit lineage clear, those paths can resurrect stale pre-rematerialization runs into progress and active-run state, and can even block new starts if an old active row remains. The mutation flows need to block or self-heal while reset is pending.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260404151517-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260404151517-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T17:15:10.844591365Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 5/20\n\n## Accepted\n\nNone.\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-5-6cbd3c82`\n- `fr-5-6b3faff2`\n\n## Final Accepted Amendments\n\n### `fr-5-6cbd3c82`\n\nFix `load_bead_summaries` in `src/cli/project.rs:742-760` to accept the real `br list --json` envelope (`{\"issues\": [...]}`) instead of deserializing a bare `Vec<BeadSummary>`, and do not silently treat that parse failure as an empty map in `src/cli/project.rs:296-298`. The current tests stub the wrong wire format in `tests/cli.rs:1858-1893`, so in a real workspace every generated prompt falls back to `unknown` dependency/dependent status and outcome.\n\n### `fr-5-6b3faff2`\n\nThread dependency status from `br show` into the prompt builders by extending `DependencyRef` in `src/adapters/br_models.rs:227-233` and using that data in `src/cli/project.rs:1033-1097` instead of hard-coding `unknown` whenever the summary lookup misses. The fallback path locked in by `tests/cli.rs:1996-2037` currently discards status data that `br show` already returns, so any transient or partial `br list` failure still produces a non-self-contained prompt.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

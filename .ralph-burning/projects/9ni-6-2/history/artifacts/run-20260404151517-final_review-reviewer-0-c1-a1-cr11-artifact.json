@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr11-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T19:15:50.785059877Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the diff: 3 changes in src/cli/project.rs and new tests in tests/cli.rs. (1) prompt_override skips br-list/dependency hydration — correct optimization, avoids unnecessary external calls. (2) markdown_heading_title expanded from h2-h6 to h1-h6 with proper CommonMark whitespace guard and ATX closing sequence handling — fixes planned-elsewhere summaries leaking level-1 headings as content. (3) build_planned_elsewhere_context now excludes downstream dependents from shared-acceptance-ownership to avoid duplicate entries with conflicting relationship labels. All 748 tests pass, no new clippy warnings. Changes are well-scoped, correct, and properly tested.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 11
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-vote-0-c1-a1-cr8-artifact",
+  "payload_id": "run-20260403141819-final_review-vote-0-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T19:17:20.559824716Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe amendment identifies a genuine correctness bug in `backfill_legacy_explicit_bead_flags`. The function unconditionally promotes any proposal with a populated `bead_id` to `explicit_id = Some(true)`, but canonical plans rendered from implicit beads have populated `bead_id` values (auto-assigned canonical slot ids like `ms-alpha.bead-2`) with `explicit_id = Some(false)`. When older tooling round-trips such a plan (preserving `bead_id`, dropping `explicit_id`), the backfill incorrectly reclassifies them as explicit, causing `proposal_matches_bead_id` to match by id even after title drift — binding stale metadata to a bead whose identity was never explicitly pinned. The existing tests don't cover the specific canonical-slot-id + stripped-explicit_id + title-drift combination.\n\n## Votes\n\n- `fr-8-aacc0cb9`: Accept\n  The bug is real and follows a clear causal chain: (1) `canonicalize_bundle` assigns implicit beads canonical slot ids with `explicit_id=false`, (2) older tooling strips `explicit_id` while preserving `bead_id`, (3) `backfill_legacy_explicit_bead_flags` sees `bead_id.is_some()` and promotes to `explicit_id=true`, (4) `proposal_matches_bead_id` then matches by id even when the live bead's title has drifted, incorrectly preserving `flow_override`/`plan_hash`/`plan_version`. The existing tests at lines 2029 and 2131 don't cover this exact scenario (one lacks title drift, the other uses short-form bead_ids). A backward-compatible discriminator — such as treating canonical-pattern bead_ids (`{milestone_id}.bead-{N}`) as implicit when `explicit_id` is missing — plus a targeted regression test, would close the gap without breaking the existing legacy support paths.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 8
+}

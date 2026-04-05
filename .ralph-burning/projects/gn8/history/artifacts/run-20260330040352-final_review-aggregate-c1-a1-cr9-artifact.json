@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260330040352-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260330040352-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T11:08:27.961086291Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 9/20\n\n## Accepted\n\n- `fr-9-170e6cf9`\n- `fr-9-84798097`\n\n## Rejected\n\n- `fr-9-2de499b0`\n\n## Disputed\n\n- `fr-9-466cef86`\n\n## Final Accepted Amendments\n\n### `fr-9-466cef86`\n\nThe backoff `backoff_for_attempt(cursor.attempt)` is called with the *current* attempt number (1-indexed, starting at 1) before `cursor.retry()` increments it. This means the very first retry (after attempt 1 fails) waits 5 seconds. For the common case of a transient JSON parse error that would succeed immediately on retry, this adds unnecessary latency. Consider using `backoff_for_attempt(cursor.attempt - 1)` or starting the base delay at attempt 2 so the first retry is immediate and backoff kicks in only on repeated failures.\n\n### `fr-9-170e6cf9`\n\nPreserve invoke-time backend availability classifications in `src/contexts/agent_execution/service.rs:383-408`. `map_invoke_error` currently converts every non-`Invocation*` error into `InvocationFailed { failure_class: TransportFailure }`, which discards the new `BackendUnavailable.failure_class` metadata. That means invoke-time `BackendUnavailable { failure_class: Some(BinaryNotFound) }` from `src/adapters/openrouter_backend.rs:396-401` or `src/adapters/process_backend.rs:789-800` still burns the retry budget instead of failing terminally.\n\n### `fr-9-84798097`\n\nFix the process-backed OpenRouter command builder in `src/adapters/process_backend.rs:802-808` so a missing or blank `OPENROUTER_API_KEY` is treated as the same terminal infrastructure failure used elsewhere. This path currently only checks whether `std::env::var` returned `Ok`, so `\"\"` is accepted and a missing key becomes `InvocationFailed { failure_class: TransportFailure }`. That contradicts `src/adapters/process_backend.rs:1200-1208` and `src/adapters/openrouter_backend.rs:68-77`, and the stale expectation in `tests/unit/process_backend_test.rs:1394-1421` should be updated with it.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}

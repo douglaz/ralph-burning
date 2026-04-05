@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260405042156-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-05T07:14:31.076953097Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the remaining `ralph-burning-9ni.2.5` lifecycle amendments. The completed-transition prerequisite error now tells operators to re-run or skip failed beads when failed work is what blocks completion, synthetic `planning -> ready -> running` journal emission now builds the intermediate ready event from a ready-shaped snapshot so its metadata no longer reports active execution, and the filesystem milestone commit sidecar now records both the previous and next snapshot/journal so plain reads mask partially visible snapshot-only writes until locked recovery finishes the atomic commit. I also added regression coverage for the new completion hint, ready-event metadata, and torn pending-commit reads.\n\n## Steps\n\n1. [Completed] Updated milestone transition validation to keep the completed-state rejection descriptive when failed beads are the remaining blocker, including an explicit operator hint about re-running or skipping failed beads.\n2. [Completed] Refactored reconciled lifecycle journaling and filesystem pending-state commits so synthetic ready events use ready-shaped metadata and plain snapshot/journal reads hide partially visible lifecycle commits behind the sidecar until recovery completes.\n3. [Completed] Added regression tests for the failed-bead completion hint, synthetic ready metadata, hidden pending sidecars, and torn snapshot-write masking, then reran milestone, filesystem, and full library test coverage.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed.\n- `cargo test completed_transition_error_mentions_failed_bead_recovery_hint --lib` passed.\n- `cargo test synthetic_ready_event_uses_ready_shaped_metadata --lib` passed.\n- `cargo test milestone_pending_state_commit_stays_hidden_from_plain_snapshot_and_journal_reads --lib` passed.\n- `cargo test milestone_pending_state_commit_hides_partially_visible_snapshot_write --lib` passed.\n- `cargo test milestone_record::service --lib` passed (68 tests).\n- `cargo test fs:: --lib` passed (17 tests).\n- `cargo test --lib` passed (520 tests).\n\n## Outstanding Risks\n\n- `MilestoneJournalPort::commit_snapshot_and_journal_ops()` still has a sequential default implementation for non-filesystem ports; any future production port must override it to preserve the stronger filesystem behavior.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 6
+}

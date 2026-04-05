@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr13-artifact",
+  "payload_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T20:03:26.499340902Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nThe proposed amendment addresses a real parser defect in bead-description section extraction and improves consistency with existing markdown heading handling elsewhere in the codebase.\n\n## Votes\n\n- `fr-13-f33a9676`: Accept\n  `src/contexts/project_run_record/service.rs` currently treats markdown headings as section markers only when `hash_count >= 2`, so valid H1 headings like `# Non-goals` and `# Acceptance Criteria` are not recognized and remain in `Must-Do Scope`. That can incorrectly omit extracted acceptance criteria and misstate prompt scope. Accepting H1-H6 here is the technically correct behavior, matches normal markdown expectations, and aligns with the more complete `markdown_heading_title()` implementation already present in `src/cli/project.rs`. A regression test for H1 `Non-goals` and `Acceptance Criteria` is warranted to prevent this parser mismatch from recurring.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 13
+}

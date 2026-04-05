@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330040352-final_review-planner-positions-c1-a1-cr19-artifact",
+  "payload_id": "run-20260330040352-final_review-planner-positions-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T17:51:31.826737120Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the snapshot write error recovery path in engine.rs. The amendment identifies a real cascading failure scenario: when the first snapshot write (line 4658) fails, the recovery path calls fail_run_result, which calls fail_run. Inside fail_run, the second snapshot write at line 5133 uses `?` to propagate errors. If this also fails (persistent disk I/O error), the function returns early, skipping the run_failed journal event (lines 5135-5140). This leaves the project in an inconsistent state — the journal has a stage_failed event but no run_failed event, and no snapshot on disk reflects the failure. Notably, the journal event emission at lines 5138-5139 already uses a best-effort pattern (if let Ok + let _ =), showing the developers intended it to be non-fatal. Applying the same best-effort approach to the snapshot write at 5133 would allow the journal event to still be emitted even in a double-failure, which is strictly better than the current behavior.\n\n## Votes\n\n- `fr-19-e7673fe5`: Accept\n  The amendment correctly identifies a genuine consistency defect in the error recovery path. When the first snapshot write at line 4658 fails and fail_run's own snapshot write at line 5133 also fails, the `?` operator causes early return, skipping the run_failed journal event. This creates journal/snapshot divergence — exactly the condition the extensive comments at lines 4643-4656 were designed to prevent. The irony is that the recovery path itself has the same class of bug it was created to fix. The journal event emission (lines 5138-5139) already uses best-effort semantics (if let Ok + let _ =), establishing the pattern. Applying a similar best-effort approach to the snapshot write at 5133 — catching the error, logging the double-failure, and still emitting the journal event — is a low-risk change that strictly improves resilience. Even if both disk writes fail, emitting the journal event is worth attempting since it's a different write path. At minimum, a comment documenting this known limitation would be valuable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 19
+}

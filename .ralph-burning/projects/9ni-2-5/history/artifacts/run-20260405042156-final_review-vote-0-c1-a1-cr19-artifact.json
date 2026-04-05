@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-vote-0-c1-a1-cr19-artifact",
+  "payload_id": "run-20260405042156-final_review-vote-0-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T16:20:32.517866347Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real correctness bugs in the stale-terminal repair flow. Code inspection confirms: (1) the Paused->Running bridge in build_reconciled_transition_events stamps `now` instead of `running_started_at`, causing accumulated_running_duration_seconds to compute zero for the resumed interval; (2) when same_named_terminal_attempt_exists suppresses record_bead_start, the repair path only writes lifecycle transitions and completion events, leaving no bead_started journal entry for the resumed attempt.\n\n## Votes\n\n- `fr-19-cf44da58`: Accept\n  Verified in code. At line 826-827, when from_status==Paused and to_status==Running, the event_timestamp is set to `now` (the terminal event time). This bridge event is pushed to event_journal (line 877-878), and when the final Running->Completed/Failed transition calls lifecycle_transition_metadata (line 868-875), accumulated_running_duration_seconds (line 559-603) scans journal events and computes the Running interval as `terminal_time - bridge_time`. Since both are `now`, the resumed running interval is 0 seconds, dropping actual resumed runtime from duration_seconds. The fix should use `running_started_at.unwrap_or(now)` for the Paused->Running bridge, consistent with the non-Paused Running case at line 829.\n- `fr-19-a3f13968`: Accept\n  Verified in code. At run.rs:245, when same_named_terminal_attempt_exists is true, the record_bead_start call at line 272 is skipped entirely. Control flows to line 353-354 where repair_task_run_with_disposition is invoked. That function (service.rs:2283-2296) writes lifecycle transition events and a repair_completion bead event, but never emits a bead_started event for the resumed attempt. The journal ends up with the old pre-failure bead_started event but a completion referencing the resumed started_at — an internally inconsistent state. The repair path should emit a bead_started event for the resumed attempt to maintain journal coherence.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 19
+}

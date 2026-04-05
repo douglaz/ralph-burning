@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-31T03:27:55.984345462Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the milestone lineage changes against the previous final-review checkpoint and read the changed `milestone_record` model/service plus the fs adapter end-to-end. The shared journal payload refactor and the new required `run_id`/`plan_hash` path look internally consistent, and `cargo test milestone_record --quiet` passed. I found one upgrade-safety regression: existing in-flight legacy rows with `run_id: null` no longer have a safe completion/migration path.\n\n## Amendments\n\n1. Add a migration or one-time compatibility repair for persisted running task-run rows that still have `run_id: null`. `src/contexts/milestone_record/model.rs:462-477` and `src/adapters/fs.rs:2954-3005` now require an exact run-id match to finalize a row, so an in-flight legacy start from the previous build can no longer be completed after upgrade. Retrying start is not neutral either: `src/adapters/fs.rs:2893-2909` marks the legacy row failed and appends a new attempt. Without an upgrade step, mid-flight milestones from older versions will be stranded or misreported as failed.\n   Rationale: This change intentionally removes runless matching for new writes, but the persisted format still allows old `run_id: null` rows. Upgrading while a bead is in progress can now corrupt operator-visible state or make that attempt impossible to complete.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 20
+}

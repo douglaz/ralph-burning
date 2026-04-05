@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr20-artifact",
+  "payload_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T05:15:03.109799751Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAccepted the amendment because it identifies a concrete contract inconsistency: Claude receives a wrapped transport schema via the adapter while the prompt still presents the unwrapped schema as authoritative, creating conflicting top-level instructions in the same request. Unifying the schema source or removing the duplicate prompt copy, and covering it with an end-to-end Claude path test, is a sound correctness and regression-prevention change.\n\n## Votes\n\n- `fr-20-3f19da30`: Accept\n  The amendment describes a real correctness defect, not a speculative concern. If `ProcessBackendAdapter` rewrites Claude’s schema to `{ \"__rb_wrapped\": true, \"data\": ... }` but the workflow prompt still embeds the original unwrapped schema and labels it authoritative, the model is given two incompatible contracts for the same response. That can directly cause malformed outputs or prompt/transport drift, and the current split between backend-side schema processing and prompt-side schema rendering is maintainability risk. Using the same backend-processed schema everywhere, or eliminating the duplicated prompt schema, is the right fix, and an end-to-end test through the Claude process backend is appropriate to prevent recurrence.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 20
+}

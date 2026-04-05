@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330192702-final_review-vote-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260330192702-final_review-vote-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-31T01:12:25.080517434Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll three amendments are technically sound. One fixes misleading invariant handling, one documents an intentional legacy exception, and one identifies a real race that can produce false plan_hash conflicts.\n\n## Votes\n\n- `fr-15-65fc1567`: Accept\n  `unique_terminal_replay_match` currently collapses a caller contract violation into the same `None` path used for an ordinary no-match, so downstream code reports a misleading \"no matching task run\" error. Even though the current internal call sites satisfy the contract, the runtime guard does not actually return an error as the issue requires; it only logs at `warn`. Propagating a distinct `AppError` is the robust fix, and at minimum this should be logged as an error-level programming fault rather than a recoverable warning.\n- `fr-15-f8b418d4`: Accept\n  The current `safe_plan_hash_backfill` behavior for `snapshot_plan_hash_at_creation=None` is intentional and safety-driven, but the nearby Issue 3 wording broadly says omitted `plan_hash` values auto-populate from the snapshot, which is not true for these legacy rows. Adding explicit comments in the code and regression test to mark this as a deliberate exception improves maintainability and reduces the risk of future reviewers treating the preserved `None` as an accidental regression. This is low-risk and clarifies an otherwise easy-to-misread edge case.\n- `fr-15-994e9490`: Accept\n  This race exists in the current implementation. `record_task_run_start` stamps a new row with the live snapshot hash when `plan_hash` is omitted, and `update_task_run` later treats that stored value as authoritative, so a dispatch under plan v1 can be persisted as v2 if the snapshot advances before start is recorded. Finalization with the real v1 hash then fails with a false `conflicting plan_hash` error. A regression test for that sequence is warranted, and the storage layer should not infer `plan_hash` from the current snapshot unless it can prove that snapshot matches the dispatched attempt.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 15
+}

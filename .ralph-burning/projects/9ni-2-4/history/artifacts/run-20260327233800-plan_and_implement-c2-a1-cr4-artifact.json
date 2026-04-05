@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260327233800-plan_and_implement-c2-a1-cr4-artifact",
+  "payload_id": "run-20260327233800-plan_and_implement-c2-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-03-28T01:00:36.568637148Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nMade milestone completion replay-safe and invariant-preserving. `TaskRunLineagePort::update_task_run` now returns the canonical finalized entry and accepts idempotent replays of the same terminal payload, the milestone service rebuilds snapshot progress/active state from lineage before persisting so completed snapshots no longer remain `active` without an `active_bead`, and completion journal writes are deduplicated so retrying after a partial failure repairs drift without double-counting. Added regression coverage for replayed completion repair and post-completion snapshot validity.\n\n## Steps\n\n0. [Completed] Updated the task-run lineage port and filesystem adapter so completion updates return the finalized row, backfill missing optional metadata on matching terminal replays, and still reject conflicting duplicate finalizations.\n1. [Completed] Reworked milestone completion to reconcile snapshot counters and active/status fields from canonical lineage state, validate snapshot semantics before writes, and skip re-appending an already-recorded completion journal event.\n2. [Completed] Extended milestone_record tests to cover Ready-after-completion semantics and retrying a completion after a journal write failure, then reran formatting, milestone tests, and clippy.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed successfully.\n- `cargo test --lib contexts::milestone_record` passed with 68 tests.\n- `cargo clippy -- -D warnings` completed successfully.\n\n## Outstanding Risks\n\n- Milestone completion still spans separate lineage, snapshot, and journal files without a cross-file transaction, so a crash can leave snapshot or journal state temporarily behind `task-runs.ndjson` until the same completion is replayed.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

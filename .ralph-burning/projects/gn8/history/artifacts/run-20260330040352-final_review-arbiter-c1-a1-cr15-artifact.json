@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330040352-final_review-arbiter-c1-a1-cr15-artifact",
+  "payload_id": "run-20260330040352-final_review-arbiter-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T15:57:32.558787910Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected the single disputed amendment fr-15-1822a124. While the planner and one reviewer correctly identify the observability inconsistency (on-disk state shows Failed while in-memory state is Running), the second reviewer's counter-argument is decisive: writing the post-take() snapshot would replace a recoverable on-disk state with an unrecoverable one, weakening the crash-resume mechanism to fix a cosmetic issue.\n\n## Rulings\n\n- `fr-15-1822a124`: Reject\n  Reviewer 2 identifies a critical safety regression that outweighs the observability benefit. After `interrupted_run.take()`, the in-memory state has `active_run = Some(...)`, `interrupted_run = None`, `status = Running`. Persisting this to disk replaces the recoverable on-disk state (`Failed` with `interrupted_run = Some(...)`) with an unrecoverable one (`Running` with `interrupted_run = None`). Since `run resume` explicitly rejects `Running` snapshots (line 1155-1158), a crash after this proposed write but before the stage actually dispatches would leave the project stranded — worse than the current behavior where the stale `Failed` + `interrupted_run` state is fully recoverable. The observability gap (external tools briefly seeing 'Failed' during the retry window) is minor and cosmetic; weakening the crash-resume invariant to fix it is not an acceptable trade-off. If this observability gap must be addressed, it requires a more careful approach (e.g., a dedicated 'Resuming' status or preserving interrupted_run in the written snapshot) rather than a naive write of the current in-memory state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 15
+}

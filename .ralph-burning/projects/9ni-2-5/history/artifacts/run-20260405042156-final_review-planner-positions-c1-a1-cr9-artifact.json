@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr9-artifact",
+  "payload_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T08:51:25.292209552Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nTwo amendments address concrete correctness issues in milestone persistence/timestamping and should be accepted. The paused-to-completed amendment identifies a real edge case, but the proposed change is incomplete because the transition builder still rejects `Paused -> Completed`, so reordering reconciliation alone would not produce a correct or robust fix.\n\n## Votes\n\n- `fr-9-990fa831`: Accept\n  `persist_plan_locked` currently writes the snapshot once directly and then again through `commit_snapshot_and_journal_ops`. The direct write creates a crash window where `status.json` reflects the new plan state but `journal.ndjson` does not contain the matching reopen/plan event, which breaks the intended atomic snapshot+journal transition semantics. Keeping `validate_snapshot` and removing only the standalone `write_snapshot` is the correct and maintainable fix because the commit helper already performs the write and preserves rollback/recovery behavior via the pending state-commit sidecar.\n- `fr-9-066c158d`: Reject\n  The underlying inconsistency is plausible, but the amendment as described is incomplete. If `reconcile_snapshot_from_lineage` starts returning `MilestoneStatus::Completed` from a previously paused snapshot, `update_task_run` immediately calls `build_reconciled_transition_events`, and that function currently treats `Paused -> Completed` as invalid. Reordering the branches alone would therefore surface a new transition error rather than correctly emitting a completion lifecycle event. A valid fix would also need to define and handle the paused-to-completed transition path consistently.\n- `fr-9-b5f8f18e`: Accept\n  The current resume flow feeds the original run start time back into milestone bead-start reconciliation, and `build_reconciled_transition_events` uses that timestamp for the synthetic `Paused -> Running` lifecycle event. That backdates resume events, distorts journal history, and can overcount running duration after a pause. Using the actual resume timestamp for the lifecycle transition is the correct behavior; it preserves the original task-run attempt identity while making milestone lifecycle metadata and duration calculations accurate.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 9
+}

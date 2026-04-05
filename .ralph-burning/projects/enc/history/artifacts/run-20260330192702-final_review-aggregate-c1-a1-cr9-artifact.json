@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260330192702-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T22:43:08.981768258Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 9/20\n\n## Accepted\n\n- `fr-9-ed4ab282`\n- `fr-9-b6508003`\n\n## Rejected\n\n- `fr-9-05edcb4b`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-ed4ab282`\n\nIn `unique_terminal_replay_match` (fs.rs:2823-2828), when `requested_run_id` is `Some` but `requested_started_at` is `None`, a runless terminal candidate is accepted without any temporal guard. This can only happen from the call site at line 3194-3199 (the no-run_id path), which passes `None` for both — so it is currently safe. However, the function signature allows callers to pass `(Some(run_id), None)`, which would bypass the started_at guard entirely and permit backfilling the wrong legacy terminal row. Add a debug_assert or doc-comment contract stating that when `requested_run_id` is `Some`, `requested_started_at` should also be `Some` to enforce the invariant, or make the guard unconditional (reject all runless terminal candidates when `requested_started_at` is `None` and `requested_run_id` is `Some`).\n\n### `fr-9-b6508003`\n\nThe `json_fill_none` function (fs.rs:2289-2318) uses `entry(key).or_insert(value)` which means overlay values are only inserted when the key is completely absent from the base map. Since the structs use `skip_serializing_if = \"Option::is_none\"`, a `None` field is omitted from the base map (key absent), and a `Some` value from the overlay will correctly fill it. However, if a future field is added without `skip_serializing_if` (e.g., a field that serializes to `null`), the base map WILL contain the key (with a `null` value) and the overlay's non-null value will NOT fill it. Add a test that explicitly verifies `json_fill_none` fills a `None` optional field when the overlay has a `Some` value, and document that all new `Option` fields on these structs MUST use `#[serde(default, skip_serializing_if = \"Option::is_none\")]` for `json_fill_none` to work correctly.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}

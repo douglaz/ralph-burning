@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-reviewer-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260403141819-final_review-reviewer-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T20:59:15.471884024Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the milestone bundle rendering/materialization changes and the downstream bundle-loading path. I ran `cargo test milestone_record --quiet` and `cargo test project_create_from_bead --quiet`; both passed. I found one correctness/compatibility issue in `project create-from-bead`: implicit-bead resolution still confirms membership from title fallback without checking the current implicit slot, so stale bead IDs can be attached to the wrong plan hash/version.\n\n## Amendments\n\n1. In src/cli/project.rs:803-809, 833-840, and 857-885, implicit proposals are still treated as authoritative matches via title fallback once `explicit_id` has been backfilled to `false`. Because src/cli/project.rs:313-319 stamps the current `plan_hash`/`plan_version` whenever `membership_confirmed` is true, a stale bead ID after an implicit reorder can still be bound to the new plan solely because the title matches. The same gap also turns legacy plans with duplicate implicit titles into false ambiguities, even though the current implicit slot ID is available during resolution. Amend `resolve_bead_plan` so implicit proposals are only confirmed when the bead ID also matches that proposal's current implicit slot; otherwise keep the fallback non-authoritative.\n   Rationale: This keeps the milestone bundle authoritative for downstream bead creation, prevents stale bead IDs from being mapped to the wrong plan version, and preserves compatibility for legacy canonical slot IDs without relying on lossy title-only matching.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

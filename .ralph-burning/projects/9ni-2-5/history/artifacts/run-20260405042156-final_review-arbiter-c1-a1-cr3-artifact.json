@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-arbiter-c1-a1-cr3-artifact",
+  "payload_id": "run-20260405042156-final_review-arbiter-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T06:16:02.076185319Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the failed-lifecycle amendment because the surrounding code treats failed Ralph task runs as retryable bead failures, not unrecoverable milestone failures. Accepted the paused-state amendment because `update_status(...Paused)` can persist a semantically inconsistent snapshot with `active_bead` still set.\n\n## Rulings\n\n- `fr-3-64a73297`: Reject\n  The cited path is real, but the codebase evidence points to intentional retryable-bead semantics rather than a lifecycle defect. `sync_terminal_milestone_task_with_options` maps `RunStatus::Failed` to `TaskRunOutcome::Failed`, and `reconcile_snapshot_from_lineage` then returns the milestone to `paused`/`ready`; that matches the surrounding design where failed project runs are explicitly resumable (`src/cli/run.rs:594-615`) and failed bead attempts are expected to be retried (`src/contexts/milestone_record/service.rs:5337-5410`, `5428-5497`). The amendment does not show that a task-level Ralph failure is supposed to be an unrecoverable milestone-level failure. So the fact that `MilestoneStatus::Failed` is not reached from this path is not enough to call the current behavior incorrect.\n- `fr-3-2c155fe7`: Accept\n  `build_lifecycle_transition` clears `active_bead` for `planning`, `ready`, `completed`, and `failed`, but not for `paused` (`src/contexts/milestone_record/service.rs:592-606`), and `validate_semantics` likewise rejects `active_bead` for ready/terminal states but permits `paused + active_bead` (`src/contexts/milestone_record/model.rs:204-221`). That allows `update_status(..., MilestoneStatus::Paused, ...)` to persist a snapshot whose `active_bead` still names a bead that is no longer 'currently being executed', contradicting the field definition (`src/contexts/milestone_record/model.rs:176-181`) and the reconciliation path, which clears `active_bead` when a paused snapshot is rebuilt from lineage (`src/contexts/milestone_record/service.rs:782-793`). The journal-metadata point is secondary; the persisted paused snapshot inconsistency is the decisive defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-planner-positions-c1-a1-cr9-artifact",
+  "payload_id": "run-20260403141819-final_review-planner-positions-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T19:39:22.202014476Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nBoth amendments address real integrity defects: one prevents consumers from operating on semantically invalid versioned plan artifacts, and the other avoids irreversible lineage loss on partial write failures during plan updates.\n\n## Votes\n\n- `fr-9-101620e0`: Accept\n  `load_milestone_bundle()` currently trusts `plan.json` after deserialization and legacy backfill, but never enforces the bundle contract. That leaves `project create-from-bead` willing to consume unsupported schema versions and invalid plan semantics even though `MilestoneBundle` is explicitly versioned and provides `validate()` for this purpose. Downstream code only detects a narrow subset of corruption (for example ambiguous bead matches), so duplicate IDs, acceptance coverage mismatches, and bad references can survive far enough to produce incorrect behavior instead of a deterministic `CorruptRecord`. Validating immediately after backfill is the correct fail-fast boundary.\n- `fr-9-6be52542`: Accept\n  The current order in `persist_plan_locked()` is not retry-safe. On a shape change it clears `task-runs.ndjson` before several later operations that can fail, including plan artifact writes, snapshot persistence, and journal append. If any of those fail, the old lineage is already destroyed while the persisted milestone state may still reflect the previous plan or a partially updated one. The per-milestone write lock does not solve that durability gap. Deferring the destructive clear until the new plan state is durably committed, or otherwise staging it atomically, is the right fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 9
+}

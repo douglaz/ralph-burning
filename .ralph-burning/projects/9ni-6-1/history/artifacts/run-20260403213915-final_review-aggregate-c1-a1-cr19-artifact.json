@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260403213915-final_review-aggregate-c1-a1-cr19-artifact",
+  "payload_id": "run-20260403213915-final_review-aggregate-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T05:00:57.775903100Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 19/20\n\n## Accepted\n\n- `fr-19-381e9eda`\n- `fr-19-0790ab8d`\n- `fr-19-51c68ba3`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-19-381e9eda`\n\nIn `unwrap_claude_structured_output_payload` (process_backend.rs:1626-1633), the heuristic of unwrapping any single-key JSON object with a `\"data\"` key is fragile. If Claude fails to follow the wrapped schema and returns the raw contract payload directly — and that raw payload happens to be `{\"data\": <value>}` — the unwrap silently strips the legitimate key. Consider a more explicit marker (e.g., a sentinel key like `\"__rb_wrapped\": true` alongside `\"data\"`) or check during unwrapping that the inner value validates against the original contract schema, rather than relying solely on the single-key heuristic.\n\n### `fr-19-0790ab8d`\n\nThe `assemble_stdin` refactor (process_backend.rs:680) changes the schema shown in the stdin prompt for non-Claude backends (Codex, OpenRouter). Previously `assemble_stdin` called `request.contract.json_schema_value()` (raw schema without strict-mode enforcement or ref inlining). Now it receives the fully processed schema from `contract_schema_for_backend`. For Codex/OpenRouter, this means the prompt text now includes `\"additionalProperties\": false` annotations and inlined `$ref` definitions that were previously absent. Add a test that verifies non-Claude stdin schemas do NOT include the `properties.data` wrapper, and document the intentional behavior change of showing processed schemas in stdin prompts.\n\n### `fr-19-51c68ba3`\n\nIn `is_claude_structured_output_retry_failure` (process_backend.rs:1593-1613), the function does not check `is_error: true` before inspecting `subtype` or `errors` fields. While the calling context is gated by `!status.success()`, a non-error stdout JSON response that coincidentally contains `{\"subtype\": \"error_max_structured_output_retries\"}` or an `errors` array with the matching substring would trigger an unintended session-drop retry. Guard the function with an `is_error` check for consistency with `extract_stdout_error`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 19
+}

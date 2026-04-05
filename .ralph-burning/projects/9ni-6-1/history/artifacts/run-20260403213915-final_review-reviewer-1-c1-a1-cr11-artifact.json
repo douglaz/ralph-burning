@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260403213915-final_review-reviewer-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T01:21:32.939359566Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the prompt-contract, project creation, workflow-consumer, and template changes and ran targeted tests (`cargo test --quiet task_prompt_contract -- --nocapture`, `cargo test --quiet project_create_from_bead -- --nocapture`). I found two robustness gaps in how the new contract is detected and propagated.\n\n## Amendments\n\n1. Require `{{task_prompt_contract}}` in the override templates, or inject the contract block outside the template body. In `src/contexts/workspace_governance/template_catalog.rs:406-444` the new placeholder is still optional for every affected stage/panel template, and `validate_template` / `render` (`src/contexts/workspace_governance/template_catalog.rs:736-742`, `src/contexts/workspace_governance/template_catalog.rs:824-828`) therefore accept override templates that omit it and expand it to empty. Because the workflow callers only surface the contract through that placeholder (`src/contexts/workflow_composition/engine.rs:159-171`, `src/contexts/workflow_composition/prompt_review.rs:351-359`, `src/contexts/workflow_composition/completion.rs:81-90`, `src/contexts/workflow_composition/final_review.rs:1587-1595`), any workspace/project with a custom template silently loses the shared prompt-contract guidance.\n   Rationale: This breaks the acceptance criterion on a supported customization path: the prompt generator can emit the canonical contract while stage consumers quietly stop seeing it.\n2. Make contract detection top-level/fence-aware instead of matching any line anywhere. `src/contexts/project_run_record/task_prompt_contract.rs:86-87` flips on the contract whenever the exact marker text appears on any line, while the rest of the shape validator is fence-aware (`src/contexts/project_run_record/task_prompt_contract.rs:145-156`). Downstream helpers and prompt creation reuse that broad check (`src/contexts/project_run_record/task_prompt_contract.rs:113-127`, `src/contexts/project_run_record/service.rs:385-395`). A non-canonical prompt that merely quotes the marker inside a code block or AGENTS snippet will therefore be treated as canonical, causing stage prompts to inject contract instructions and prompt review to enforce canonical-section drift on a prompt that never actually declared the contract.\n   Rationale: This is a false-positive path that changes behavior outside the intended prompt-contract scope and can make generic prompts fail contract enforcement unexpectedly.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

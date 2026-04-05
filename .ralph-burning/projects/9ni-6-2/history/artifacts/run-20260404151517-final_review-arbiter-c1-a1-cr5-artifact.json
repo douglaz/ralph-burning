@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-arbiter-c1-a1-cr5-artifact",
+  "payload_id": "run-20260404151517-final_review-arbiter-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T17:15:10.830285086Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept both amendments. The decisive evidence is the live `br` output in this workspace, which outweighs stale local fixtures: `br list --json` currently returns an `{ \"issues\": [...] }` envelope, and `br show --json` currently includes per-relation `status`. The current code therefore both misparses summary data and drops status data already present in `br show`.\n\n## Rulings\n\n- `fr-5-6b3faff2`: Accept\n  The live `br show --json` contract in this workspace includes `status` on dependency and dependent entries. For example, `br show ralph-burning-9ni.2.5 --json` returns dependency objects with `id`, `title`, `status`, `priority`, and `dependency_type`. `DependencyRef` in `src/adapters/br_models.rs` only models `id`, `kind`, and `title`, so that status is currently discarded during deserialization. The prompt builders in `src/cli/project.rs` then rely solely on the separate summary map and fall back to `unknown` when that lookup misses. The rejection case depends on stale mocked fixtures, not the live command output, so the amendment fixes a real prompt-context defect.\n- `fr-5-6cbd3c82`: Accept\n  The live `br list --json` contract in this workspace is an object envelope with an `issues` array, not a bare JSON array. Running `br list --json` here returns `{ \"issues\": [ ... ] }`, while `load_bead_summaries` currently deserializes directly into `Vec<BeadSummary>`. Because `BrAdapter::exec_json` does no envelope unwrapping, that parse fails, and `handle_create_from_bead` immediately masks the failure by substituting an empty map. That means real prompt generation silently degrades to `unknown` dependency/dependent status and outcome. The contrary reviewer evidence comes from stale tests and unit fixtures, but the live wire format is the authoritative tie-breaker.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-plan_and_implement-c1-a1-cr10-artifact",
+  "payload_id": "run-20260404151517-plan_and_implement-c1-a1-cr10",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-04T18:51:05.120473800Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nTightened `project create-from-bead` bead-summary fallback so `br list --json` I/O failures only degrade to an empty summary map when every direct dependency and dependent already carries relation status from `br show`; otherwise project creation now fails before rendering `prompt.md`, preventing `unknown` dependency status/outcome leakage. Added a CLI regression covering the status-less `br show` plus failed `br list` case while preserving the existing status-rich fallback path, then reformatted and revalidated the touched bead-backed prompt-generation flows.\n\n## Steps\n\n1. [Completed] Inspected the `project create-from-bead` fallback path, direct relation status handling, and the existing CLI fallback regression to confirm that generic `br list --json` I/O failures could still render `unknown` dependency metadata when relation statuses were absent.\n2. [Completed] Patched `src/cli/project.rs` so `load_bead_summaries` I/O fallback now first verifies that all direct dependencies and dependents already have status in the `br show` payload, and otherwise aborts with an explicit error instead of generating a partial prompt.\n3. [Completed] Added a CLI regression in `tests/cli.rs` for a failed `br list --json` invocation paired with status-less dependency/dependent refs from `br show`, asserting that project creation fails and no project directory is created, while keeping the existing status-rich fallback test intact.\n4. [Completed] Ran formatting plus focused unit and CLI coverage for the touched prompt-generation and `project create-from-bead` flows.\n\n## Validation Evidence\n\n- `cargo fmt --all` passed.\n- `cargo test --test cli project_create_from_bead_falls_back_when_br_list_is_unavailable -- --nocapture` passed.\n- `cargo test --test cli project_create_from_bead_fails_when_br_list_is_unavailable_and_relation_statuses_are_missing -- --nocapture` passed.\n- `cargo test --test unit create_project_from_bead_context_ -- --nocapture` passed (13 tests).\n- `cargo test project_create_from_bead_ --test cli -- --nocapture` passed (23 tests).\n\n## Outstanding Risks\n\n- Validation was focused on the amended `project create-from-bead` paths; I did not rerun the full repository test suite or `br lint` because backlog data was unchanged.\n- The unrelated untracked `.ralph-burning/` directory remains in the worktree and was left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 10
+}

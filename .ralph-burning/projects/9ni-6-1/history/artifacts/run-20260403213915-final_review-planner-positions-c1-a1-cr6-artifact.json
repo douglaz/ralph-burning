@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr6-artifact",
+  "payload_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T23:53:21.692728871Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAccepted the amendments that identify concrete parsing and retry-path defects; rejected the pure deduplication refactor because it does not by itself address a current correctness or safety problem.\n\n## Votes\n\n- `fr-6-32a688d8`: Reject\n  The duplication is real, but this is a small private helper with identical trivial logic in two narrow modules. That is a maintainability refactor, not a demonstrated correctness or robustness defect on its own. The stronger issue is the helper’s behavior, covered by other amendments.\n- `fr-6-d4f48e45`: Accept\n  `split_bead_description_scope` does push fenced non-goal content, including delimiter lines, into `non_goal_lines`, and `collect_non_goal_items` is not fence-aware. That will misparse fenced examples into bogus non-goal items or flattened prose, so this is a real rendering bug that should be fixed or explicitly documented with tests.\n- `fr-6-9cfa9b06`: Accept\n  The fence parser is stateful but does not remember the opening fence width, so a four-backtick fence can be closed by a three-backtick line. That can incorrectly re-enable canonical-heading detection or section parsing inside what should still be fenced content. It is an actual parser defect, not just style.\n- `fr-6-7d857275`: Accept\n  The described control flow is correct: validators review `refinement.refined_prompt`, contract guidance is only injected when that prompt still advertises the contract, and the canonical-shape check runs only after unanimous validator acceptance. If the refiner transiently drops the marker/headings, the system can hard-fail with `PromptReviewRejected` instead of using the existing retry loop, which is a robustness bug.\n- `fr-6-2cdc8c50`: Accept\n  The prompt renderer emits multiline free-form fields as `- {value}` without indenting continuation lines, so embedded newlines can escape the list item and inject raw headings or top-level content. Since canonical-shape validation now runs on the rendered prompt and milestone text is allowed to be multiline, this can cause valid milestone data to corrupt or invalidate prompt generation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 6
+}

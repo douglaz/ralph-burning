@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-vote-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260404151517-final_review-vote-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T17:11:41.943989797Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments are based on incorrect premises about the actual wire formats of `br list --json` and `br show --json`. The codebase evidence (test fixtures, unit tests, model definitions, and adapter code) consistently confirms that `br list --json` returns a bare JSON array (not an `{\"issues\": [...]}` envelope) and `br show --json` does not include status on dependency/dependent entries. Implementing either amendment would introduce bugs into working, well-tested code.\n\n## Votes\n\n- `fr-5-6cbd3c82`: Reject\n  The premise is factually wrong. `br list --json` returns a bare JSON array, not an `{\"issues\": [...]}` envelope. This is confirmed by: (1) the test fixture at tests/cli.rs:1858-1893 which returns `[{...}, ...]`, (2) the unit test at br_models.rs:608-634 which explicitly deserializes `Vec<BeadSummary>` from a bare array, and (3) the `exec_json` adapter which does direct deserialization with no envelope unwrapping. The silent fallback at project.rs:296-298 is a deliberate resilience feature, validated by the test `project_create_from_bead_preserves_prompt_contract_when_br_list_fails` at line 1958, which ensures prompts are still generated when `br list` is unavailable. Changing the parser to expect an envelope would break the working integration.\n- `fr-5-6b3faff2`: Reject\n  The premise is factually wrong. `br show --json` does NOT include status on dependency/dependent entries. The test fixtures at tests/cli.rs:1834-1851 show that dependency entries contain only `id`, `dependency_type`, and `title` — no `status` field. The `DependencyRef` struct at br_models.rs:227-233 correctly models these three fields. There is no status data being 'discarded' because it simply does not exist on dependency references in the `br show` output. The only source of per-bead status is `br list --json`, and the fallback to 'unknown' when that command fails is correct and intentional behavior. Adding a status field to `DependencyRef` would serve no purpose since the upstream data source does not provide it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}

@@ -1,0 +1,75 @@
+{
+  "active_run": null,
+  "interrupted_run": {
+    "run_id": "run-20260404231226",
+    "stage_cursor": {
+      "stage": "final_review",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 2
+    },
+    "started_at": "2026-04-04T23:12:26.318197610Z",
+    "prompt_hash_at_cycle_start": "e0788727313069274623add41b4229d6ef2a42059961cded86f53b470aff9938",
+    "prompt_hash_at_stage_start": "e0788727313069274623add41b4229d6ef2a42059961cded86f53b470aff9938",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 1,
+    "stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-04-04T23:48:24.311740375Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4-xhigh"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-high"
+      },
+      "final_review_arbiter": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      }
+    }
+  },
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 2,
+  "max_completion_rounds": 30,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [],
+    "processed_count": 2
+  },
+  "status_summary": "failed at Final Review: backend invocation failed for contract 'final_review:reviewer' via 'claude': claude exited with code 1: Failed to provide valid structured output after 5 attempts",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-04T23:48:24.311740375Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-high"
+    },
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
+}

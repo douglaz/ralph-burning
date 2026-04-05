@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260405042156-final_review-aggregate-c1-a1-cr14-artifact",
+  "payload_id": "run-20260405042156-final_review-aggregate-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T13:56:59.323612632Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 14/20\n\n## Accepted\n\n- `fr-14-aecbd6e5`\n- `fr-14-87a24bda`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-14-aecbd6e5`\n\nFix pending milestone commit recovery so a torn snapshot/journal commit cannot leave the milestone permanently stuck in the old state. In `src/adapters/fs.rs:2621-2675`, `.state-commit.json` is only replayed when a later mutation acquires the write lock, while `src/adapters/fs.rs:2635-2649` and `src/adapters/fs.rs:3017-3034` merely mask the partial write by serving `previous_snapshot`/`previous_journal`. If the interrupted transition was terminal, there may be no subsequent write to trigger recovery, so a crash or post-snapshot journal failure can hide the completed/failed transition forever even though the sidecar contains the full next state.\n\n### `fr-14-87a24bda`\n\nUse the durable resume timestamp when repairing missing milestone lineage for resumed runs. `src/contexts/workflow_composition/engine.rs:1619-1654` records a `run_resumed` event and syncs milestone start with a fresh resume time, but `src/cli/run.rs:211-269` always reconstructs missing lineage from the original `run_started` event and passes `run_started.timestamp` into `record_bead_start`. A later `run sync-milestone` repair on a resumed run will therefore backdate the synthetic `paused -> running` bridge and any derived `duration_seconds` to the initial start instead of the actual resume moment.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 14
+}

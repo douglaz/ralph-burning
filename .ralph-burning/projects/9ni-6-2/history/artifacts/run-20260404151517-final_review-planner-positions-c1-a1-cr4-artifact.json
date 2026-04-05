@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr4-artifact",
+  "payload_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T16:49:12.949502285Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nBoth amendments address real robustness problems in prompt construction: one prevents false planned-elsewhere attribution under ambiguous plan membership, and the other improves determinism of prompt rendering and hashing.\n\n## Votes\n\n- `fr-4-fc86a130`: Accept\n  `build_planned_elsewhere_context` currently falls back to `infer_implicit_slot_hint` whenever membership is unconfirmed, even though unconfirmed resolution already means the code could not safely establish that the bead still occupies the inferred slot. In that state, the neighbor scan can emit a title-matching proposal under a different canonical ID as an adjacent bead, which is a concrete misclassification in the prompt, not just a cosmetic issue. Because this context is used to steer implementation scope, falsely labeling the current logical work item as planned elsewhere is unsafe. Restricting the adjacent-neighbor inference to confirmed membership, or explicitly filtering out proposals that resolve back to the current bead identity/title, is the safer and more maintainable behavior.\n- `fr-4-e1d33dd1`: Accept\n  The dependency and planned-elsewhere builders currently preserve encounter order from external data structures and traversal order rather than imposing a stable canonical order. Since `prompt.md` is hashed and persisted, this means semantically identical bead context can produce different prompt bodies and hashes solely because upstream ordering changed, which is a real determinism and reproducibility defect. Sorting these collections by a stable key before rendering is low risk, makes hashes reproducible, and improves maintainability by decoupling prompt identity from incidental input ordering.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

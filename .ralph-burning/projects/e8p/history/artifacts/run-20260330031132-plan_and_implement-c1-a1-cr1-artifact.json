@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330031132-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260330031132-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-03-30T03:13:46.127688527Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded Minimal flow preset (PlanAndImplement + FinalReview only) across 5 files: FlowPreset enum variant and methods in domain.rs, stage constants/flow definition/semantics in workflow_composition/mod.rs, planning_stage_for_flow match arm in project_run_record/service.rs, and new tests in both flow_preset_test.rs and flow_semantics_test.rs.\n\n## Steps\n\n1. [Completed] Add Minimal variant to FlowPreset enum, update ALL constant to [Self; 5], add as_str/description/FromStr branches in src/shared/domain.rs\n2. [Completed] Define MINIMAL_STAGES and MINIMAL_LATE_STAGES constants, expand FLOW_DEFINITIONS to [FlowDefinition; 5] with new entry, add flow_definition match arm, add flow_semantics match arm in src/contexts/workflow_composition/mod.rs\n3. [Completed] Add FlowPreset::Minimal arm to planning_stage_for_flow in src/contexts/project_run_record/service.rs\n4. [Completed] Update registry test name and assertion for 5 presets, add minimal_flow_stage_order_matches_spec test in tests/unit/flow_preset_test.rs\n5. [Completed] Add minimal_flow_semantics_match_spec test and include Minimal in prompt_review toggle test in tests/unit/flow_semantics_test.rs\n\n## Validation Evidence\n\n- cargo clippy -- -D warnings passes cleanly with zero warnings\n- All 6 flow_preset_test tests pass including new built_in_flow_registry_exposes_all_five_presets_in_order and minimal_flow_stage_order_matches_spec\n- All 8 flow_semantics_test tests pass including new minimal_flow_semantics_match_spec and updated non_standard_stage_plans_ignore_prompt_review_toggle\n- 669 of 670 total tests pass; the single failure (checkpoint_test::worktree_adapter_excludes_tracked_runtime_workspace_from_checkpoint_commits) is pre-existing and unrelated to these changes\n- Minimal flow semantics: execution_stage = PlanAndImplement (correct restart target for final_review), remediation_trigger_stages is empty (no intermediate review), late_stages = [FinalReview]\n\n## Outstanding Risks\n\n- The pre-existing checkpoint_test failure is unrelated but should be investigated separately to keep the test suite green\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

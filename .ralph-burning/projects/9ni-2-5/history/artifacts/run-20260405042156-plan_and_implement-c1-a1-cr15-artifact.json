@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-plan_and_implement-c1-a1-cr15-artifact",
+  "payload_id": "run-20260405042156-plan_and_implement-c1-a1-cr15",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-05T14:03:36.812179225Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the remaining `ralph-burning-9ni.2.5` amendments in the filesystem adapter and CLI milestone repair flow. Plain milestone snapshot/journal reads now opportunistically acquire the milestone mutation lock and replay `.state-commit.json`, so a torn snapshot+journal commit is durably recovered even if no later writer arrives; the old masking fallback remains only for in-thread locked reads. In `run sync-milestone`, repaired attempts now derive their effective start time from the latest durable `run_resumed` event for the run instead of always using `run_started`, so resumed lineage repair emits the correct resume timestamp and preserves accumulated runtime metadata. I added regressions covering plain-read pending-commit recovery, partially visible snapshot repair, and resumed sync repair timing/duration behavior.\n\n## Steps\n\n1. [Completed] Added plain-read pending-state recovery in `src/adapters/fs.rs`, including thread-local mutation-lock tracking to avoid recursively reacquiring the milestone write lock during in-lock reads.\n2. [Completed] Updated `src/cli/run.rs` to use the latest durable `run_resumed` timestamp as the repaired attempt start time for milestone sync, and added a resumed-run regression that checks the repaired lifecycle event timestamp and runtime metadata.\n3. [Completed] Ran formatting and regression coverage for the touched areas, then verified the full library test suite still passes.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed.\n- `cargo test fs:: --lib` passed (18 tests).\n- `cargo test cli::run::tests:: --lib` passed (14 tests).\n- `cargo test --lib` passed (532 tests).\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 15
+}

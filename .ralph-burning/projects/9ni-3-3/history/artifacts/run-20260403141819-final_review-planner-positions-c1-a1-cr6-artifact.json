@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403141819-final_review-planner-positions-c1-a1-cr6-artifact",
+  "payload_id": "run-20260403141819-final_review-planner-positions-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-03T18:20:32.736188680Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAccept all four. Two amendments identify real backward-compatibility regressions in legacy `plan.json` resolution, one identifies a real audit-mirroring omission during prompt-hash drift sync, and one identifies an unsafe progress-preservation path after a crash during milestone plan persistence.\n\n## Votes\n\n- `fr-6-ba07be65`: Accept\n  `resolve_bead_plan` currently excludes the legacy case where a canonical implicit bead was serialized with `bead_id` present but no `explicit_id`: the ID path requires `explicit_id == Some(true)`, and the fallback path only accepts `(None, None)` or `Some(false)` plus an implicit-slot match. That silently turns `membership_confirmed` off and drops per-bead metadata. Treating `explicit_id: None` plus an implicit-slot canonical ID as a title-fallback candidate is a targeted, backward-compatible fix.\n- `fr-6-c09a4a4d`: Accept\n  `sync_project_prompt_hash` updates `project.toml` through `FileSystem::project_root()` and then returns. In a live project that means only the live copy is rewritten, unlike the other write paths in this area that also mirror to the audit workspace. Leaving the audit `project.toml` with a stale `prompt_hash` breaks the expected live/audit consistency invariant.\n- `fr-6-a45ac9a6`: Accept\n  The compatibility bug is real: a legacy proposal with `bead_id` populated but no `explicit_id` fails both matching paths, so `project create-from-bead` can lose `flow_override`, `plan_hash`, and `plan_version`. The exact implementation should infer missing explicitness carefully, ideally distinguishing implicit-slot IDs from truly explicit IDs, but the backward-compatibility hole itself is valid and should be fixed.\n- `fr-6-002789ad`: Accept\n  The crash window in `persist_plan_locked()` is real because `plan.json` and `plan.shape.json` are written before `status.json`. `plan_shape_matches()` then compares against whatever plan artifact is on disk, not the plan identified by the snapshot, so a mid-write crash can cause old lineage/progress to be preserved for a plan that was never committed. Requiring the compared shape artifact to match the committed plan hash from snapshot state is the safer behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 6
+}

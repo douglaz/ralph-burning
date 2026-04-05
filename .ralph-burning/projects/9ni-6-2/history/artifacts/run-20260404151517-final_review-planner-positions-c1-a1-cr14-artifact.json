@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr14-artifact",
+  "payload_id": "run-20260404151517-final_review-planner-positions-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T20:21:32.866705918Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nThe proposed amendment addresses a real correctness issue in how planned-elsewhere context is derived when bead-plan membership is explicitly unconfirmed. Accepting it improves prompt accuracy and avoids misleading cross-bead attribution.\n\n## Votes\n\n- `fr-14-1b5a8e5d`: Accept\n  `membership_confirmed=false` means the live bead was only matched via an unstable fallback, so downstream lookups keyed through plan/bead IDs are not reliable evidence. Continuing to enrich planned-elsewhere context from `acceptance_map` and `proposal_lookup` in that state can misattribute unrelated work and inject incorrect summaries into the prompt, which is a real robustness defect rather than a cosmetic issue. Gating plan-derived enrichment on confirmed membership (or other explicit stable identity proof) is the correct safety boundary, and the requested regression test is important because the failure depends on renamed live beads plus shared acceptance ownership.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 14
+}

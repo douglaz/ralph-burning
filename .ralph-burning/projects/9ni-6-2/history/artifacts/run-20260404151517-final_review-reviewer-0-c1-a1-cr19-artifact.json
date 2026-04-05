@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr19-artifact",
+  "payload_id": "run-20260404151517-final_review-reviewer-0-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T21:52:45.208827740Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nClean deduplication refactor. Two identical copies of `truncate_with_ascii_ellipsis` / `truncate_to_char_boundary` (in `cli/project.rs` and `contexts/project_run_record/service.rs`) are consolidated into a new `shared::text` module. The consolidated version uses the `project.rs` variant, which is slightly more correct than the `service.rs` variant: when the first character of a multi-byte string exceeds the byte budget, it correctly returns \"\" instead of returning the oversized character. All 753 tests pass. No clippy warnings in changed files (13 pre-existing warnings unrelated to this diff). The only minor finding is that `truncate_to_char_boundary` is `pub` when it only needs module-level visibility.\n\n## Amendments\n\n1. In src/shared/text.rs:16, `truncate_to_char_boundary` is marked `pub` but is only used within the `text` module itself (by `truncate_with_ascii_ellipsis` and in tests). It should be `pub(crate)` or private to avoid unnecessarily expanding the public API surface of the `shared::text` module.\n   Rationale: Minor API hygiene. The function is an implementation detail of `truncate_with_ascii_ellipsis` and exposing it publicly could create an unintended stability commitment. Not a bug, but worth tightening since the module is new.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 19
+}

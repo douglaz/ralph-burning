@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-plan_and_implement-c1-a1-cr9-artifact",
+  "payload_id": "run-20260405042156-plan_and_implement-c1-a1-cr9",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-05T08:32:42.066081671Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nPatched the remaining milestone lifecycle gaps for `ralph-burning-9ni.2.5`. Terminal rematerialization now journals an explicit `completed|failed -> planning` reopen transition before the subsequent `planning -> ready` handoff, completion-event dedupe no longer conflates different terminal event types, reconciled bridge events use the actual run start timestamp and accumulate metadata against the in-memory event stream being built, and terminal `duration_seconds` now counts only running segments from the current `plan_version` so reopened milestones do not inherit prior-plan runtime.\n\n## Steps\n\n1. [Completed] Refactored milestone lifecycle helpers so reconciled transition chains can carry per-run start timestamps, compute terminal runtime only from the active plan version, and include synthetic bridge events when deriving later transition metadata.\n2. [Completed] Updated plan persistence and journal repair flows to emit a terminal reopen lifecycle event during rematerialization and to reject implicit completion-event repairs when the existing and requested terminal event types differ.\n3. [Completed] Added regression coverage for terminal reopen journaling, missed-start bridge timing and duration metadata, post-reopen runtime isolation, and mismatched completion-event dedupe behavior in both the service layer and filesystem adapter.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed.\n- `cargo test milestone_record::service --lib` passed (72 tests).\n- `cargo test fs:: --lib` passed (18 tests).\n- `cargo test milestone_record --lib` passed (161 tests).\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 9
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr7-artifact",
+  "payload_id": "run-20260403213915-final_review-planner-positions-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T00:16:44.658617084Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nAccept the two amendments that identify concrete prompt-validation failures, and reject the extraction-only amendment because it does not establish a present behavioral defect.\n\n## Votes\n\n- `fr-7-ee38ecae`: Reject\n  The duplicated fence helpers are a maintainability concern, but this amendment does not show a current correctness, safety, or robustness failure caused by the duplication. The two copies are presently identical and private to their modules, so mandatory extraction would be a refactor preference rather than a defect fix.\n- `fr-7-f054b377`: Accept\n  This is a real correctness bug. `render_bullet_item` can emit a fenced block opener as `- ```...`, while `validate_canonical_prompt_shape` only recognizes fence openers when the trimmed line itself starts with backticks or tildes. That causes the validator to miss the opening fence, treat the closing fence as a new opener, and then skip later canonical headings, so generated prompts can be rejected by `create_project_from_bead_context`.\n- `fr-7-b9b72b50`: Accept\n  This stricter heading match is unnecessarily brittle and can reject semantically equivalent Markdown. A heading like `## Review Policy ` should still count as the canonical section heading, but the current raw `strip_prefix(\"## \")` comparison treats trailing whitespace as drift. Because the same check feeds prompt-shape validation and prompt-review enforcement, harmless trailing spaces can cause avoidable retry/reject loops.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 7
+}

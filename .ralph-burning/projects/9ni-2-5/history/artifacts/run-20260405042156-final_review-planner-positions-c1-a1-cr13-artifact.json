@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr13-artifact",
+  "payload_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T13:31:54.090186129Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nOne amendment identifies a real lifecycle bug in paused-to-completed reconciliation and should be accepted. The other overcorrects by forcing failed milestone state on every failed run sync, which conflicts with the existing resume path because failed milestones are terminal and cannot accept resumed bead starts without additional reopen logic.\n\n## Votes\n\n- `fr-13-2890d3b9`: Reject\n  `RunStatus::Failed` is resumable at the project layer (`run resume` accepts failed snapshots), but `MilestoneStatus::Failed` is terminal and `record_bead_start` rejects new bead starts once a milestone is failed. Resume currently calls `sync_milestone_bead_start` -> `record_bead_start`, so changing the normal failed-run sync path to mark milestones failed would strand resumable runs unless the amendment also adds a safe reopen path for milestones before resume. The cited unreachable `running -> failed` transition is real for this path, but forcing it here is not a safe standalone fix.\n- `fr-13-40ea497d`: Accept\n  The reconciliation order is wrong: when there is no active bead and all beads are closed successfully, the paused branch preserves `Paused` before the completed-state check can run. That suppresses the terminal `completed` state and its journal transition even though the snapshot satisfies completion prerequisites. The existing transition machinery already supports synthesizing the necessary `paused -> running -> completed` bridge, so fixing this is correct, safe, and improves lifecycle consistency.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 13
+}

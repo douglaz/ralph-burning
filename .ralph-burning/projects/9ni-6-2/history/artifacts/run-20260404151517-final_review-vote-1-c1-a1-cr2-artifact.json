@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260404151517-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260404151517-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-04T16:17:12.533057639Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify concrete prompt-context correctness bugs. One prevents unconfirmed title-fallback matches from being treated as authoritative location hints and avoids self-referential `planned_elsewhere` entries; the other prevents malformed fenced summaries from breaking canonical prompt validation. Both are technically sound robustness fixes.\n\n## Votes\n\n- `fr-2-8e1b9900`: Accept\n  `resolve_bead_plan` currently preserves workstream/bead indexes even when the match is only an unconfirmed title fallback, and `build_planned_elsewhere_context` prefers those indexes before recomputing the implicit slot. In reordered implicit plans, that can scan adjacency around the wrong slot and emit the live bead itself because exclusion is by index rather than stable bead identity. Restricting adjacency hints to confirmed or implicit-slot-derived locations, and/or skipping candidates whose `proposal_id == bead.id`, fixes a real correctness defect with low risk.\n- `fr-2-64eff26f`: Accept\n  `compact_planned_elsewhere_summary` blindly taking the first non-empty line allows a bare fence opener like ```md to pass through as the summary body. `format_planned_elsewhere` then renders that into the prompt without a matching close, and the canonical prompt validator ignores headings while a fence is active, so later required sections can disappear and `create_project_from_bead` can fail. Making summary compaction fence-safe or selecting a non-fence textual line is an appropriate and maintainable fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

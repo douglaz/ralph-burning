@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr11-artifact",
+  "payload_id": "run-20260405042156-final_review-planner-positions-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-05T09:46:55.231261882Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-high\n\n## Summary\n\nBoth amendments describe real lifecycle reconciliation defects. One incorrectly makes ordinary failed runs permanently terminal at the milestone layer, and the other creates non-monotonic synthetic transitions that can corrupt duration accounting.\n\n## Votes\n\n- `fr-11-677d73f5`: Accept\n  `handle_resume` explicitly allows `RunStatus::Failed`, but `sync_terminal_milestone_task_with_options` currently maps every failed run to `MarkMilestoneFailed`, which forces the milestone snapshot to `Failed` after lineage reconciliation. That is not recoverable in the current state machine: `Failed` has no outbound targets, `build_reconciled_transition_events` rejects repairs from `failed` to `completed/paused`, and new bead starts are blocked for terminal milestones. A later successful resume of the same project can therefore leave milestone sync stuck or make further milestone progress impossible. This is a correctness bug in the failure-to-milestone mapping.\n- `fr-11-25a6f69d`: Accept\n  The `Paused -> Failed` bridge does use the original run `started_at` as the synthetic `Paused -> Running` timestamp, while the event is appended after an existing `Running -> Paused` row. The journal is then processed in append order by `accumulated_running_duration_seconds`, not sorted by timestamp, so the reconstructed running interval can be counted twice and the lifecycle history becomes temporally inconsistent. That is a concrete data-integrity bug affecting both duration metadata and event chronology.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4-high"
+  },
+  "completion_round": 11
+}
