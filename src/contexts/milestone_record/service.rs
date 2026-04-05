@@ -1642,26 +1642,35 @@ fn persist_plan_locked(
         snapshot.active_bead = None;
     }
 
+    let needs_ready_transition = snapshot.status == MilestoneStatus::Planning;
+    let mut existing_journal = if reopen_terminal_status || needs_ready_transition {
+        Some(journal_store.read_journal(base_dir, milestone_id)?)
+    } else {
+        None
+    };
     let mut journal_ops = Vec::new();
     if reopen_terminal_status {
-        let existing_journal = journal_store.read_journal(base_dir, milestone_id)?;
-        journal_ops.push(JournalWriteOp::append_if_missing(
-            MilestoneJournalEvent::lifecycle_transition(
-                now,
+        let reopen_event = MilestoneJournalEvent::lifecycle_transition(
+            now,
+            previous_snapshot.status,
+            MilestoneStatus::Planning,
+            "system",
+            "plan changed, milestone reopened",
+            lifecycle_transition_metadata(
+                snapshot,
                 previous_snapshot.status,
                 MilestoneStatus::Planning,
-                "system",
-                "plan changed, milestone reopened",
-                lifecycle_transition_metadata(
-                    snapshot,
-                    previous_snapshot.status,
-                    MilestoneStatus::Planning,
-                    &existing_journal,
-                    previous_snapshot.updated_at,
-                    now,
-                ),
+                existing_journal
+                    .as_deref()
+                    .expect("lifecycle journal should be loaded for reopen events"),
+                previous_snapshot.updated_at,
+                now,
             ),
-        ));
+        );
+        journal_ops.push(JournalWriteOp::append_if_missing(reopen_event.clone()));
+        if let Some(journal) = existing_journal.as_mut() {
+            journal.push(reopen_event);
+        }
     }
 
     if plan_hash_changed {
@@ -1670,14 +1679,49 @@ fn persist_plan_locked(
         } else {
             MilestoneEventType::PlanUpdated
         };
-
-        validate_snapshot(snapshot, milestone_id)?;
-        let event = MilestoneJournalEvent::new(event_type, now).with_details(format!(
-            "Plan v{} with {} beads",
-            snapshot.plan_version,
-            bundle.bead_count()
+        journal_ops.push(JournalWriteOp::append_if_missing(
+            MilestoneJournalEvent::new(event_type, now).with_details(format!(
+                "Plan v{} with {} beads",
+                snapshot.plan_version,
+                bundle.bead_count()
+            )),
         ));
-        journal_ops.push(JournalWriteOp::append_if_missing(event));
+    }
+
+    if needs_ready_transition {
+        let planning_snapshot = snapshot.clone();
+        let ready_snapshot = build_transition_snapshot(
+            &planning_snapshot,
+            milestone_id,
+            MilestoneStatus::Ready,
+            now,
+        )?;
+        let ready_event = MilestoneJournalEvent::lifecycle_transition(
+            now,
+            MilestoneStatus::Planning,
+            MilestoneStatus::Ready,
+            "system",
+            "plan finalized and beads exported",
+            lifecycle_transition_metadata(
+                &ready_snapshot,
+                MilestoneStatus::Planning,
+                MilestoneStatus::Ready,
+                existing_journal
+                    .as_deref()
+                    .expect("lifecycle journal should be loaded for ready transitions"),
+                planning_snapshot.updated_at,
+                now,
+            ),
+        );
+        journal_ops.push(JournalWriteOp::append_if_missing(ready_event.clone()));
+        if let Some(journal) = existing_journal.as_mut() {
+            journal.push(ready_event);
+        }
+        *snapshot = ready_snapshot;
+    }
+
+    if plan_hash_changed {
+        validate_snapshot(snapshot, milestone_id)?;
         commit_snapshot_and_journal_ops(
             snapshot_store,
             journal_store,
@@ -2885,10 +2929,10 @@ mod tests {
             &journal_store,
             base,
             &record.id,
-            MilestoneStatus::Ready,
+            MilestoneStatus::Running,
             now,
         )?;
-        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
 
         let journal = read_journal(&journal_store, base, &record.id)?;
         assert!(journal.len() >= 2);
@@ -2918,22 +2962,13 @@ mod tests {
             now,
         )?;
 
-        update_status(
-            &snapshot_store,
-            &journal_store,
-            base,
-            &record.id,
-            MilestoneStatus::Ready,
-            now + chrono::Duration::seconds(1),
-        )?;
-
         let error = update_status(
             &snapshot_store,
             &journal_store,
             base,
             &record.id,
             MilestoneStatus::Planning,
-            now + chrono::Duration::seconds(2),
+            now + chrono::Duration::seconds(1),
         )
         .expect_err("ready -> planning must be rejected");
         assert!(error.to_string().contains("ready -> planning"));
@@ -2965,14 +3000,6 @@ mod tests {
             now,
         )?;
 
-        update_status(
-            &snapshot_store,
-            &journal_store,
-            base,
-            &record.id,
-            MilestoneStatus::Ready,
-            now + chrono::Duration::seconds(1),
-        )?;
         record_bead_start(
             &snapshot_store,
             &journal_store,
@@ -3041,14 +3068,6 @@ mod tests {
             now,
         )?;
 
-        update_status(
-            &snapshot_store,
-            &journal_store,
-            base,
-            &record.id,
-            MilestoneStatus::Ready,
-            now + chrono::Duration::seconds(1),
-        )?;
         update_status(
             &snapshot_store,
             &journal_store,
@@ -3130,14 +3149,6 @@ mod tests {
             &journal_store,
             base,
             &record.id,
-            MilestoneStatus::Ready,
-            now + chrono::Duration::seconds(1),
-        )?;
-        update_status(
-            &snapshot_store,
-            &journal_store,
-            base,
-            &record.id,
             MilestoneStatus::Running,
             now + chrono::Duration::seconds(2),
         )?;
@@ -3193,14 +3204,6 @@ mod tests {
             now,
         )?;
 
-        update_status(
-            &snapshot_store,
-            &journal_store,
-            base,
-            &record.id,
-            MilestoneStatus::Ready,
-            now + chrono::Duration::seconds(1),
-        )?;
         update_status(
             &snapshot_store,
             &journal_store,
@@ -3306,15 +3309,6 @@ mod tests {
             now,
         )?;
 
-        update_status(
-            &snapshot_store,
-            &journal_store,
-            base,
-            &record.id,
-            MilestoneStatus::Ready,
-            now + chrono::Duration::seconds(1),
-        )?;
-
         let mut running_snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
         running_snapshot.status = MilestoneStatus::Running;
         running_snapshot.progress.completed_beads = running_snapshot.progress.total_beads;
@@ -3383,6 +3377,7 @@ mod tests {
 
         assert_eq!(snapshot.plan_version, 1);
         assert!(snapshot.plan_hash.is_some());
+        assert_eq!(snapshot.status, MilestoneStatus::Ready);
         assert_eq!(snapshot.progress.total_beads, 1);
 
         let plan_json = plan_store.read_plan_json(base, &record.id)?;
@@ -3390,6 +3385,14 @@ mod tests {
 
         let plan_md = plan_store.read_plan_md(base, &record.id)?;
         assert!(plan_md.contains("# Plan Test"));
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        assert!(journal.iter().any(|event| {
+            event.event_type == MilestoneEventType::StatusChanged
+                && event.from_state == Some(MilestoneStatus::Planning)
+                && event.to_state == Some(MilestoneStatus::Ready)
+                && event.reason.as_deref() == Some("plan finalized and beads exported")
+        }));
         Ok(())
     }
 
@@ -5691,14 +5694,6 @@ mod tests {
             now,
         )?;
 
-        update_status(
-            &snapshot_store,
-            &journal_store,
-            base,
-            &record.id,
-            MilestoneStatus::Ready,
-            now + chrono::Duration::seconds(1),
-        )?;
         update_status(
             &snapshot_store,
             &journal_store,

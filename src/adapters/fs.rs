@@ -3514,6 +3514,7 @@ impl FsTaskRunLineageStore {
         project_id: &str,
         run_id: &str,
         plan_hash: &str,
+        started_at: DateTime<Utc>,
     ) -> AppResult<Option<TaskRunEntry>> {
         if canonical_entry.outcome != TaskRunOutcome::Failed {
             return Ok(None);
@@ -3535,6 +3536,7 @@ impl FsTaskRunLineageStore {
 
         let target_index = exact_match_indices[0];
         let mut reopened_entry = canonical_entry.clone();
+        reopened_entry.started_at = started_at;
         reopened_entry.outcome = TaskRunOutcome::Running;
         reopened_entry.outcome_detail = None;
         reopened_entry.finished_at = None;
@@ -3981,6 +3983,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                     project_id,
                     run_id,
                     plan_hash,
+                    started_at,
                 )? {
                     Self::write_task_runs(&path, &entries)?;
                     return Ok(reopened_entry);
