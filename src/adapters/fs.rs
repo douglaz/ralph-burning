@@ -2619,9 +2619,6 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
         base_dir: &Path,
         milestone_id: &MilestoneId,
     ) -> AppResult<MilestoneSnapshot> {
-        if let Some(pending) = Self::read_pending_state_commit(base_dir, milestone_id)? {
-            return Ok(pending.snapshot);
-        }
         let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_STATUS_FILE);
         let raw = fs::read_to_string(&path)?;
         serde_json::from_str(&raw).map_err(|e| AppError::CorruptRecord {
@@ -2992,11 +2989,6 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         base_dir: &Path,
         milestone_id: &MilestoneId,
     ) -> AppResult<Vec<MilestoneJournalEvent>> {
-        if let Some(pending) =
-            FsMilestoneSnapshotStore::read_pending_state_commit(base_dir, milestone_id)?
-        {
-            return Ok(pending.journal);
-        }
         Self::read_journal_from_path(&Self::journal_path(base_dir, milestone_id), milestone_id)
     }
 
@@ -4681,7 +4673,7 @@ mod tests {
     }
 
     #[test]
-    fn milestone_pending_state_commit_overlays_snapshot_and_journal_reads() {
+    fn milestone_pending_state_commit_stays_hidden_from_plain_snapshot_and_journal_reads() {
         use crate::contexts::milestone_record::model::{
             MilestoneId, MilestoneSnapshot, MilestoneStatus,
         };
@@ -4708,7 +4700,7 @@ mod tests {
         );
         FsMilestoneJournalStore::write_journal(
             &milestone_root.join(MILESTONE_JOURNAL_FILE),
-            &[current_event],
+            &[current_event.clone()],
         )
         .expect("write current journal");
 
@@ -4739,13 +4731,13 @@ mod tests {
 
         let snapshot = FsMilestoneSnapshotStore
             .read_snapshot(temp.path(), &milestone_id)
-            .expect("read pending snapshot");
-        assert_eq!(snapshot, next_snapshot);
+            .expect("read durable snapshot");
+        assert_eq!(snapshot, current_snapshot);
 
         let journal = FsMilestoneJournalStore
             .read_journal(temp.path(), &milestone_id)
-            .expect("read pending journal");
-        assert_eq!(journal, vec![next_event]);
+            .expect("read durable journal");
+        assert_eq!(journal, vec![current_event]);
     }
 
     #[test]
