@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260406142347-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260406142347-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-06T15:18:08.358298063Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded StageSkipped event handling in derive_resume_state() (engine.rs:6418-6422) so that resuming a run after a crash that occurred between ApplyFixes being skipped and FinalReview starting correctly advances past the skipped stage. Without this fix, resume would incorrectly restart at apply_fixes even though a stage_skipped journal event was already committed, producing inconsistent durable history and wasting a backend call. Also added a regression test (workflow_engine_test.rs) that runs a QuickDev flow where FinalReview fails after ApplyFixes was skipped, resumes, and verifies resume picks up at final_review with no apply_fixes stage entered.\n\n## Steps\n\n1. [Completed] Read derive_resume_state() in engine.rs to understand how journal events drive resume state reconstruction\n2. [Completed] Add StageSkipped handler in derive_resume_state() match block (engine.rs:6418-6422) that extracts stage_id and cycle, then advances next_stage_index past the skipped stage\n3. [Completed] Add regression test resume_after_apply_fixes_skipped_does_not_rerun_apply_fixes that: (1) runs QuickDev with FinalReview failing once, (2) verifies stage_skipped event committed, (3) resumes and asserts resume_stage=final_review, (4) asserts apply_fixes never entered\n4. [Completed] Run cargo fmt to fix formatting in test file\n5. [Completed] Run full test suite — 754 passed, 0 failed\n6. [Completed] Run cargo clippy — 16 pre-existing warnings, no new warnings\n7. [Completed] Run cargo fmt --check — clean\n\n## Validation Evidence\n\n- cargo test --features test-stub resume_after_apply_fixes_skipped: 1 passed, 0 failed\n- cargo test (full suite): 754 passed, 0 failed, 0 ignored\n- cargo clippy: 16 pre-existing warnings, no new warnings from this change\n- cargo fmt --check: clean (0 diffs)\n- New test verifies: run_resumed.details[\"resume_stage\"] == \"final_review\" (not apply_fixes)\n- New test verifies: no StageEntered events for apply_fixes in the entire journal\n- engine.rs:6418-6422 mirrors the StageCompleted handler pattern: extract stage_id, update cycle, advance next_stage_index = index + 1\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

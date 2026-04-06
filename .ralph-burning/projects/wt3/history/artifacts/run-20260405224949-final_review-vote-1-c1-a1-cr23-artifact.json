@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-vote-1-c1-a1-cr23-artifact",
+  "payload_id": "run-20260405224949-final_review-vote-1-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T11:57:57.883845084Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll three amendments identify real defects. The first is an overbroad exhaustion classifier that can false-positive on non-date text, the second is an unsound terminal `BackendExhausted` escalation for mixed quorum shortfalls, and the third is a genuine preflight/runtime semantic mismatch for prompt-review panels.\n\n## Votes\n\n- `fr-23-36560720`: Accept\n  `combined.contains(\"until 20\")` is too broad. With the existing `combined.contains(\"rate limit\")` gate, strings like `rate limit reached, until 2000 requests are processed` or `until 200 more attempts` will be classified as `BackendExhausted` even though they are not reset timestamps. Tightening this to an actual ISO-date shape such as `until 20\\d\\d-` is a correct and low-risk fix.\n- `fr-23-30d465ce`: Accept\n  The current quorum-shortfall branches are logically too broad: any shortfall with `probe_exhausted_* > 0` is promoted to terminal `BackendExhausted`, even when part of the shortfall comes from a non-exhaustion availability failure. In that mixed case, the failure is not solely caused by exhaustion, so surfacing `BackendExhausted` is incorrect and can hide recoverable conditions behind a terminal classification. The exact fallback policy may need separate handling, but this amendment correctly identifies the misclassification bug.\n- `fr-23-18de2e68`: Accept\n  `preflight_panel_members` applies BackendExhausted-based degradation generically, but prompt-review explicitly does not use that rule. The mismatch is concrete: preflight skips exhausted validators before the `member.required` failure path and reduces quorum based on exhaustion, while prompt-review execution removes optional unavailable validators without lowering `min_reviewers` and immediately fails required unavailable validators. That means preflight can report success for configurations that the prompt-review stage will deterministically reject.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 23
+}

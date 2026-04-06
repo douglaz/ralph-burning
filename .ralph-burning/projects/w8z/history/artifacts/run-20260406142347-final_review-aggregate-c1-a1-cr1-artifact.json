@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260406142347-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260406142347-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T15:06:55.284338075Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-7bdc647a`\n- `fr-1-34cfb1c3`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-7bdc647a`\n\nIn derive_resume_state() (engine.rs ~line 6355), add a handler for JournalEventType::StageSkipped that advances next_stage_index past the skipped stage, mirroring the StageCompleted handler: `next_stage_index = stage_index_for(stage_plan, skipped_stage_id)? + 1`. Without this, a crash during FinalReview after ApplyFixes was skipped will cause resume to re-run ApplyFixes instead of resuming at FinalReview.\n\n### `fr-1-34cfb1c3`\n\nHandle `JournalEventType::StageSkipped` during resume reconstruction. `src/contexts/workflow_composition/engine.rs:4591-4638` now journals a `stage_skipped` event for `apply_fixes`, but `src/contexts/workflow_composition/engine.rs:6355-6421` never advances `next_stage_index` when that event is present. If the run fails after the skip is committed but before `final_review` starts, for example because `write_run_snapshot` or checkpointing fails in `src/contexts/workflow_composition/engine.rs:4688-4752`, `run resume` will incorrectly restart at `apply_fixes` instead of `final_review`. That produces inconsistent durable history (`stage_skipped` followed by a later execution of the same stage/cycle) and reintroduces the backend call this change is meant to avoid. Add `StageSkipped` handling in `derive_resume_state()` and a regression test for resume after a post-skip failure.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

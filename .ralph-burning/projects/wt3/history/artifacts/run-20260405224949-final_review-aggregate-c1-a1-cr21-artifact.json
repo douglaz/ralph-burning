@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260405224949-final_review-aggregate-c1-a1-cr21-artifact",
+  "payload_id": "run-20260405224949-final_review-aggregate-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T11:10:38.176496192Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 21/25\n\n## Accepted\n\n- `fr-21-28da6642`\n- `fr-21-af75394c`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-21-28da6642`\n\nsrc/adapters/process_backend.rs:1875-1882 classifies any `rate limit ... retry after <n>m` / `minutes` message as `BackendExhausted`, and src/adapters/process_backend.rs:3750-3763 bakes in `retry after 2m` as a terminal case. Via src/adapters/process_backend.rs:1938-1950 that becomes non-retryable, so normal minute-scale 429s will now be skipped or fail a panel instead of using the existing retry policy. This breaks the \"do not break existing retry behavior for genuinely transient errors\" requirement; short minute-based backoffs should stay `TransportFailure` unless the wait is clearly long/persistent.\n\n### `fr-21-af75394c`\n\nsrc/adapters/process_backend.rs:1639-1649 short-circuits `extract_stdout_error()` on `result` before checking `errors[]` or `subtype`. For an envelope like `{\"is_error\":true,\"result\":\"request failed\",\"errors\":[\"quota exceeded\"]}`, the helper returns `request failed`, so the new exhaustion checks at src/adapters/process_backend.rs:165-167 and src/adapters/process_backend.rs:1442-1448 miss the quota signal and still classify the failure as retryable transport noise. That leaves a real persistent-limit response inside the exact retry loop this change is meant to avoid; scan or combine all error fields instead of preferring `result`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 21
+}

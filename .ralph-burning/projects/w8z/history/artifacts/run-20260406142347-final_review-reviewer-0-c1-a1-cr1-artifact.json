@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260406142347-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260406142347-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T14:55:19.852698642Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is functionally correct for the happy path: ApplyFixes is properly skipped when Review approves with no findings/amendments, journal events are recorded, tests cover skip and no-skip scenarios, and the new StageSkipped event type integrates cleanly. One correctness bug exists: derive_resume_state() (engine.rs:6355) does not handle the new StageSkipped journal event type, so it falls through to the wildcard arm. If a run crashes after ApplyFixes is skipped but before FinalReview completes, resume would compute next_stage_index based only on StageCompleted(Review), landing on ApplyFixes — re-running the stage that was intentionally skipped.\n\n## Amendments\n\n1. In derive_resume_state() (engine.rs ~line 6355), add a handler for JournalEventType::StageSkipped that advances next_stage_index past the skipped stage, mirroring the StageCompleted handler: `next_stage_index = stage_index_for(stage_plan, skipped_stage_id)? + 1`. Without this, a crash during FinalReview after ApplyFixes was skipped will cause resume to re-run ApplyFixes instead of resuming at FinalReview.\n   Rationale: This is a correctness bug in the resume path. The skip logic in the main loop correctly advances stage_index, but derive_resume_state reconstructs the stage position from journal events and ignores StageSkipped (it falls through to `_ => {}`). The resume state will be stale if a run is interrupted after a skip.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

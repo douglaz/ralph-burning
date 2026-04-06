@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-planner-positions-c1-a1-cr21-artifact",
+  "payload_id": "run-20260405224949-final_review-planner-positions-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T11:09:03.894296179Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real bugs. Amendment fr-21-28da6642 correctly identifies an inconsistency where 2-minute durations are treated as persistent exhaustion while the equivalent 120s is treated as transient (below the 300s threshold). Amendment fr-21-af75394c correctly identifies that extract_stdout_error short-circuits on `result` before checking `errors[]`, which can cause exhaustion signals in the errors array to be missed when a generic `result` string is present.\n\n## Votes\n\n- `fr-21-28da6642`: Accept\n  The code has a clear inconsistency: second-based values use a 300s (5 min) threshold to distinguish transient from persistent, but ALL minute-based values are treated as persistent regardless of magnitude. 'retry after 2m' (120 seconds) is classified as BackendExhausted, while the equivalent 'retry after 120s' correctly remains transient. This means a standard 2-minute 429 backoff expressed in minutes kills the panel instead of retrying. The amendment correctly identifies this violates the stated requirement to preserve retry behavior for genuinely transient errors. A consistent approach would parse minute values and apply the same 5-minute threshold (e.g., < 5m stays transient, >= 5m is persistent).\n- `fr-21-af75394c`: Accept\n  extract_stdout_error uses a priority chain: result → errors[] → subtype. When an envelope contains both a generic result string ('request failed') and a specific exhaustion signal in errors[] ('quota exceeded'), the function returns only the generic result string. Callers at lines 165-167 and 1442-1448 then pass this generic text to is_backend_exhausted, which finds no exhaustion keywords and misclassifies the failure as retryable. This is precisely the scenario the exhaustion detection is meant to catch. The fix is straightforward: combine or scan all error fields (result, errors[], subtype) rather than short-circuiting on whichever is present first, so exhaustion keywords in any field are detected.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 21
+}

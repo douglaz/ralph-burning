@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260406142347-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260406142347-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T15:05:28.917973141Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify the same real bug: derive_resume_state() does not handle JournalEventType::StageSkipped, so a crash after journaling the skip but before the next stage starts will cause resume to re-run the skipped stage. The code confirms StageSkipped events are journaled (line ~4610) but fall through to the catch-all `_ => {}` in derive_resume_state() (line ~6421). StageCompleted advances next_stage_index via stage_index_for() + 1, but StageSkipped does not. A failure window exists between the journal write and the snapshot/checkpoint writes (~lines 4688-4752). Both amendments correctly prescribe adding StageSkipped handling that mirrors StageCompleted.\n\n## Votes\n\n- `fr-1-7bdc647a`: Accept\n  Code inspection confirms the bug: derive_resume_state() handles StageCompleted, StageFailed, CycleAdvanced, CompletionRoundAdvanced, and RunCompleted, but StageSkipped falls through to the no-op catch-all. The proposed fix — adding a StageSkipped handler that sets next_stage_index = stage_index_for(stage_plan, skipped_stage_id)? + 1 — exactly mirrors the StageCompleted handler and is the correct resolution. Without this, a crash between the journal append (~line 4619) and successful snapshot write (~line 4703) will cause resume to restart at the skipped stage, producing contradictory journal history and re-executing the backend call the skip was designed to avoid.\n- `fr-1-34cfb1c3`: Accept\n  This amendment identifies the same bug as fr-1-7bdc647a with additional detail about the specific failure window (write_run_snapshot or checkpointing at lines 4688-4752) and the consequence of inconsistent durable history (stage_skipped followed by later execution of the same stage). The request for a regression test is well-justified — the failure window is narrow but real, and without a test the fix could regress silently. The amendment is technically sound and adds value beyond the first by specifying the test obligation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

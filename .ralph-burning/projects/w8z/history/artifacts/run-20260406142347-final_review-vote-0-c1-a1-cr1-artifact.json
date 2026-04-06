@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260406142347-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260406142347-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T15:06:23.483863200Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify a confirmed bug: derive_resume_state() (engine.rs:6355-6422) handles StageCompleted, StageFailed, CycleAdvanced, CompletionRoundAdvanced, and RunCompleted, but StageSkipped falls through to the no-op catch-all `_ => {}` at line 6421. The code at engine.rs:4610-4619 journals a StageSkipped event for apply_fixes, and stage_index is advanced in-memory at line 4640, but derive_resume_state never reconstructs this advancement. A crash between the journal write (line 4618) and subsequent snapshot/checkpoint writes would cause resume to restart at the skipped stage, contradicting the durable journal and re-executing the backend call the skip was designed to avoid.\n\n## Votes\n\n- `fr-1-7bdc647a`: Accept\n  Verified in code: derive_resume_state() at engine.rs:6355-6422 handles StageCompleted by setting next_stage_index = stage_index_for(stage_plan, stage_id)? + 1 (line 6360), but StageSkipped has no handler and falls to `_ => {}` (line 6421). The JournalEventType::StageSkipped variant exists (model.rs:359), stage_skipped_event() creates it (journal.rs:190-201), and it is persisted at engine.rs:4618. The proposed fix — adding a StageSkipped arm mirroring StageCompleted — is correct and necessary to prevent resume from re-running a stage that the journal records as skipped.\n- `fr-1-34cfb1c3`: Accept\n  This amendment describes the same bug with precise line references for the failure window (snapshot writes and checkpointing after line 4640) and correctly identifies the consequence: inconsistent durable history where a stage_skipped event would be followed by re-execution of the same stage on resume. The additional request for a regression test is well-justified — the failure window between journal append (line 4618) and stage_index advancement in derive_resume_state is a narrow but real crash recovery gap that should be covered by an automated test, especially given the existing derive_resume_state test suite (lines 8018+).\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

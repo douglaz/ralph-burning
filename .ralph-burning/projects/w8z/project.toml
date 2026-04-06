@@ -1,0 +1,7 @@
+id = "w8z"
+name = "Skip ApplyFixes stage when review has no findings or amendments"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "2d2dc29348afc51aa37c63fc8918cc8ee5788665e256ed9e090d75c6c6182f7c"
+created_at = "2026-04-06T14:23:41.200533691Z"
+status_summary = "created"

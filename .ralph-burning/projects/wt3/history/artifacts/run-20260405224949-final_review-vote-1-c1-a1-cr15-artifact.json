@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-vote-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260405224949-final_review-vote-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T07:23:07.332170827Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nOne amendment identifies a real OpenRouter failure-classification gap that can cause futile retries; the other does not establish a real prompt-review quorum bug because the proposed early-exit condition is effectively unreachable in any time-saving way under the current quorum formula.\n\n## Votes\n\n- `fr-15-270499dd`: Reject\n  `prompt_review.rs` is missing the same in-loop check found in `completion.rs` and `final_review.rs`, but that does not make this a real correctness or efficiency bug. In this loop, after an exhaustion, `executed_count + panel.validators.len().saturating_sub(i + 1)` equals the number of non-exhausted validators that could still exist in the panel, while `effective_min` is computed as `min(min_reviewers, that_same_count).max(1)`. That means the proposed predicate can only become true when the remaining non-exhausted count is `0`, i.e. after the last validator has already exhausted, so it does not avoid invoking any additional validators or change the substantive outcome. The current post-loop check already handles the only failing case here, which is all validators exhausted and `max(1)` forces failure. Copying the same pattern from the other files would add consistency, but it does not fix the claimed wasted-work bug.\n- `fr-15-d2053cf4`: Accept\n  This is a real classification gap. In `openrouter_backend.rs`, both `send_probe` and `map_http_error` only call `is_backend_exhausted(...)` for HTTP 429. A quota or billing exhaustion response returned as 402 or 403 with an exhaustion message in the body currently falls through to `BackendUnavailable { failure_class: None }` or generic `TransportFailure`. `AppError::failure_class()` treats `BackendUnavailable(None)` as `TransportFailure`, so those cases become retryable transient failures instead of terminal `BackendExhausted`. That defeats graceful degradation and can cause repeated retries against a backend that is out of credit. The body-based exhaustion detection should run before the status split, or at minimum also cover the non-429 quota/billing statuses in both paths.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 15
+}

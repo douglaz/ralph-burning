@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-reviewer-1-c1-a1-cr22-artifact",
+  "payload_id": "run-20260405224949-final_review-reviewer-1-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T11:30:32.466508218Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 2 correctness issues: the degraded final-review optional-failure path drops retryable failure classes, and the new rate-limit detector has an overbroad `until 2` heuristic that can misclassify transient limits as terminal exhaustion.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/final_review.rs:351-406` and `src/contexts/workflow_composition/final_review.rs:959-1009` now turn an optional reviewer failure that makes quorum unreachable into `AppError::InsufficientPanelMembers` instead of propagating the underlying error. That drops the original `FailureClass` (for example `TransportFailure` or `Timeout`), so the engine stops retrying and fails the run immediately even when a retry could recover the reviewer. Preserve the original error when it is the event that causes the shortfall, or wrap it in a classified error instead of returning an unclassified quorum error.\n   Rationale: This changes retry semantics for transient reviewer failures in the degraded path and can turn recoverable final-review rounds into terminal run failures.\n2. `src/adapters/process_backend.rs:1866-1873` uses a raw substring check for `\"until 2\"` to infer a persistent reset time. Any transient rate-limit message that says things like `until 2 requests complete` or `until 2 jobs finish` will be misclassified as `BackendExhausted`, which makes the backend non-retryable and can incorrectly shrink panel quorum. Replace this with a narrower ISO-date/time check instead of treating every `until 2...` phrase as exhaustion.\n   Rationale: The current heuristic is overbroad and can permanently sideline a backend on ordinary transient concurrency or rate-limit errors.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 22
+}
