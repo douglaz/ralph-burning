@@ -442,6 +442,7 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
     probed: &mut Vec<ResolvedBackendTarget>,
 ) -> AppResult<()> {
     let mut available_members = 0usize;
+    let mut exhausted_count = 0usize;
 
     for member in members {
         let contract = InvocationContract::Panel {
@@ -481,6 +482,15 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
                 available_members += 1;
             }
             Err(error) => {
+                // BackendExhausted → skip for graceful degradation instead
+                // of aborting the entire preflight.
+                if error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                {
+                    exhausted_count += 1;
+                    continue;
+                }
                 if member.required {
                     return Err(AppError::PreflightFailed {
                         stage_id,
@@ -493,13 +503,14 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
         }
     }
 
-    if available_members < minimum {
+    let effective_min = minimum.saturating_sub(exhausted_count).max(1);
+    if available_members < effective_min {
         return Err(AppError::PreflightFailed {
             stage_id,
             details: AppError::InsufficientPanelMembers {
                 panel: panel_name.to_owned(),
                 resolved: available_members,
-                minimum,
+                minimum: effective_min,
             }
             .to_string(),
         });
@@ -1415,6 +1426,9 @@ where
         // comparison reflects the actual executable panel, not just
         // config-enabled state. Required unavailable backends fail here;
         // optional unavailable backends are removed before comparison.
+        // Track effective min when BackendExhausted members are skipped,
+        // so drift_still_satisfies_requirements uses the reduced quorum.
+        let mut resume_effective_min: Option<usize> = None;
         let new_snapshot = match current_stage {
             StageId::PromptReview => {
                 let mut panel = policy.resolve_prompt_review_panel(resume_state.cursor.cycle)?;
@@ -1494,6 +1508,9 @@ where
                     }
                 }
                 let effective_min = min_completers.saturating_sub(resume_exhausted).max(1);
+                if resume_exhausted > 0 {
+                    resume_effective_min = Some(effective_min);
+                }
                 if available.len() < effective_min {
                     return Err(AppError::ResumeDriftFailure {
                         stage_id: current_stage,
@@ -1562,6 +1579,9 @@ where
                     }
                 }
                 let effective_min = min_reviewers.saturating_sub(resume_exhausted).max(1);
+                if resume_exhausted > 0 {
+                    resume_effective_min = Some(effective_min);
+                }
                 if available.len() < effective_min {
                     return Err(AppError::ResumeDriftFailure {
                         stage_id: current_stage,
@@ -1593,7 +1613,12 @@ where
 
         if resolution_has_drifted(&old_snapshot, &new_snapshot) {
             // Fail early if requirements no longer met.
-            drift_still_satisfies_requirements(&new_snapshot, current_stage, effective_config)?;
+            drift_still_satisfies_requirements(
+                &new_snapshot,
+                current_stage,
+                effective_config,
+                resume_effective_min,
+            )?;
             // Warn and update snapshot.
             emit_resume_drift_warning(
                 &old_snapshot,
@@ -7472,10 +7497,16 @@ pub fn resolution_has_drifted(
 
 /// Check whether a drifted resolution still satisfies the required-backend
 /// and minimum-count constraints.
+///
+/// When `effective_min_override` is `Some`, it replaces the configured minimum
+/// for the current stage's panel (completion or final-review). This is used on
+/// the resume path when `BackendExhausted` members were already skipped and the
+/// effective quorum was reduced.
 pub fn drift_still_satisfies_requirements(
     new_snapshot: &StageResolutionSnapshot,
     stage_id: StageId,
     effective_config: &EffectiveConfig,
+    effective_min_override: Option<usize>,
 ) -> AppResult<()> {
     match stage_id {
         StageId::PromptReview => {
@@ -7492,7 +7523,8 @@ pub fn drift_still_satisfies_requirements(
             }
         }
         StageId::CompletionPanel => {
-            let min = effective_config.completion_policy().min_completers;
+            let min = effective_min_override
+                .unwrap_or_else(|| effective_config.completion_policy().min_completers);
             if new_snapshot.completion_completers.len() < min {
                 return Err(AppError::ResumeDriftFailure {
                     stage_id,
@@ -7505,7 +7537,8 @@ pub fn drift_still_satisfies_requirements(
             }
         }
         StageId::FinalReview => {
-            let min = effective_config.final_review_policy().min_reviewers;
+            let min = effective_min_override
+                .unwrap_or_else(|| effective_config.final_review_policy().min_reviewers);
             if new_snapshot.final_review_reviewers.len() < min {
                 return Err(AppError::ResumeDriftFailure {
                     stage_id,
@@ -7776,8 +7809,9 @@ mod tests {
             build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner, &arbiter);
         snapshot.final_review_planner = None;
 
-        let error = drift_still_satisfies_requirements(&snapshot, StageId::FinalReview, &config)
-            .expect_err("missing planner should fail final-review requirements");
+        let error =
+            drift_still_satisfies_requirements(&snapshot, StageId::FinalReview, &config, None)
+                .expect_err("missing planner should fail final-review requirements");
         assert!(matches!(
             error,
             AppError::ResumeDriftFailure {
