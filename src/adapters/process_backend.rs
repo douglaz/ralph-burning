@@ -1877,6 +1877,7 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
                 || rest.starts_with("day")
                 || rest.starts_with("min")
                 || rest.starts_with("week")
+                || (rest.starts_with('m') && !rest.starts_with("ms"))
             {
                 return true;
             }
@@ -3742,6 +3743,9 @@ mod tests {
                 "Rate limit hit, retry after 30 minutes",
                 "",
             ));
+            // "m" shorthand for minutes (not "ms" for milliseconds).
+            assert!(is_backend_exhausted("Rate limit, retry after 30m", "",));
+            assert!(is_backend_exhausted("Rate limit, retry after 2m", "",));
         }
 
         #[test]

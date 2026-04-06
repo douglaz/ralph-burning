@@ -442,7 +442,6 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
     probed: &mut Vec<ResolvedBackendTarget>,
 ) -> AppResult<()> {
     let mut available_members = 0usize;
-    let mut exhausted_count = 0usize;
 
     for member in members {
         let contract = InvocationContract::Panel {
@@ -488,7 +487,6 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted)
                 {
-                    exhausted_count += 1;
                     continue;
                 }
                 if member.required {
@@ -503,9 +501,10 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
         }
     }
 
-    let effective_min = minimum
-        .min(members.len().saturating_sub(exhausted_count))
-        .max(1);
+    // Base on available members, not original panel length: optional
+    // members removed for non-exhaustion reasons or exhausted backends
+    // should not inflate the remaining-member count.
+    let effective_min = minimum.min(available_members).max(1);
     if available_members < effective_min {
         return Err(AppError::PreflightFailed {
             stage_id,
@@ -1475,9 +1474,7 @@ where
                         }
                     }
                 }
-                let effective_min = min_reviewers
-                    .min(panel.validators.len().saturating_sub(resume_exhausted))
-                    .max(1);
+                let effective_min = min_reviewers.min(available.len()).max(1);
                 if resume_exhausted > 0 {
                     resume_effective_min = Some(effective_min);
                 }
@@ -1526,9 +1523,7 @@ where
                         }
                     }
                 }
-                let effective_min = min_completers
-                    .min(panel.completers.len().saturating_sub(resume_exhausted))
-                    .max(1);
+                let effective_min = min_completers.min(available.len()).max(1);
                 if resume_exhausted > 0 {
                     resume_effective_min = Some(effective_min);
                 }
@@ -1599,9 +1594,7 @@ where
                         }
                     }
                 }
-                let effective_min = min_reviewers
-                    .min(panel.reviewers.len().saturating_sub(resume_exhausted))
-                    .max(1);
+                let effective_min = min_reviewers.min(available.len()).max(1);
                 if resume_exhausted > 0 {
                     resume_effective_min = Some(effective_min);
                 }
@@ -6583,14 +6576,7 @@ where
             }
         }
     }
-    let effective_min_reviewers = min_reviewers
-        .min(
-            panel
-                .validators
-                .len()
-                .saturating_sub(probe_exhausted_validators),
-        )
-        .max(1);
+    let effective_min_reviewers = min_reviewers.min(available_validators.len()).max(1);
     if available_validators.len() < effective_min_reviewers {
         if probe_exhausted_validators > 0 {
             return Err(AppError::BackendUnavailable {
@@ -6892,14 +6878,7 @@ where
             }
         }
     }
-    let effective_min_completers = min_completers
-        .min(
-            panel
-                .completers
-                .len()
-                .saturating_sub(probe_exhausted_completers),
-        )
-        .max(1);
+    let effective_min_completers = min_completers.min(available_completers.len()).max(1);
     if available_completers.len() < effective_min_completers {
         if probe_exhausted_completers > 0 {
             return Err(AppError::BackendUnavailable {
@@ -7152,14 +7131,7 @@ where
             }
         }
     }
-    let effective_min_reviewers = min_reviewers
-        .min(
-            panel
-                .reviewers
-                .len()
-                .saturating_sub(probe_exhausted_reviewers),
-        )
-        .max(1);
+    let effective_min_reviewers = min_reviewers.min(available_reviewers.len()).max(1);
     if available_reviewers.len() < effective_min_reviewers {
         if probe_exhausted_reviewers > 0 {
             return Err(AppError::BackendUnavailable {

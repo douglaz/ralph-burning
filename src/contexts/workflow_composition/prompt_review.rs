@@ -78,7 +78,7 @@ pub async fn execute_prompt_review<A, R, S>(
     cursor: &StageCursor,
     panel: &PromptReviewPanelResolution,
     min_reviewers: usize,
-    _probe_exhausted_count: usize,
+    probe_exhausted_count: usize,
     max_refinement_retries: u32,
     prompt_reference: &str,
     rollback_count: u32,
@@ -98,6 +98,14 @@ where
             file: prompt_path.display().to_string(),
             details: format!("failed to read prompt for review: {e}"),
         })?;
+
+    if probe_exhausted_count > 0 {
+        tracing::warn!(
+            probe_exhausted = probe_exhausted_count,
+            validators = panel.validators.len(),
+            "prompt-review starting with {probe_exhausted_count} probe-time exhausted validator(s)"
+        );
+    }
 
     let refiner_target = &panel.refiner;
     let mut prior_concerns: Option<String> = None;
@@ -219,6 +227,8 @@ where
                         tracing::warn!(
                             validator = i,
                             backend = %validator_target.backend.family,
+                            probe_exhausted = probe_exhausted_count,
+                            invocation_exhausted = total_exhausted_count,
                             "prompt-review validator exhausted — skipping for graceful degradation"
                         );
                         let _ = log_write.append_runtime_log(
@@ -229,8 +239,10 @@ where
                                 level: LogLevel::Warn,
                                 source: "prompt_review".to_owned(),
                                 message: format!(
-                                    "validator {i} ({}) unavailable (backend exhausted), skipping",
-                                    validator_target.backend.family
+                                    "validator {i} ({}) unavailable (backend exhausted), skipping (probe_exhausted={}, invocation_exhausted={})",
+                                    validator_target.backend.family,
+                                    probe_exhausted_count,
+                                    total_exhausted_count,
                                 ),
                             },
                         );
