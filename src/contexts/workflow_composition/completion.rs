@@ -192,7 +192,11 @@ where
                     // Early-exit quorum check: if the executed voters plus
                     // the remaining members cannot reach the effective
                     // minimum, fail immediately instead of continuing.
-                    let effective_min = min_completers.saturating_sub(total_exhausted_count).max(1);
+                    // Must include probe_exhausted_count (already filtered
+                    // before execution) alongside invocation-time exhaustion.
+                    let effective_min = min_completers
+                        .saturating_sub(probe_exhausted_count + total_exhausted_count)
+                        .max(1);
                     if executed_voters.len() + completers.len().saturating_sub(i + 1)
                         < effective_min
                     {

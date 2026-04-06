@@ -33,6 +33,7 @@ pub fn reconcile_snapshot_status(snapshot: &mut RunSnapshot, events: &[JournalEv
             );
             snapshot.status = RunStatus::Failed;
             snapshot.active_run = None;
+            snapshot.status_summary = "failed (reconciled from journal)".to_owned();
             true
         }
         Some(JournalEventType::RunCompleted) => {
@@ -42,6 +43,7 @@ pub fn reconcile_snapshot_status(snapshot: &mut RunSnapshot, events: &[JournalEv
             );
             snapshot.status = RunStatus::Completed;
             snapshot.active_run = None;
+            snapshot.status_summary = "completed (reconciled from journal)".to_owned();
             true
         }
         _ => false,

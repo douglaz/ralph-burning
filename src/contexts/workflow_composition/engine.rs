@@ -1305,6 +1305,7 @@ where
                     );
                     snapshot.status = RunStatus::Failed;
                     snapshot.active_run = None;
+                    snapshot.status_summary = "failed (reconciled from journal)".to_owned();
                     // Best-effort: try to persist the reconciled snapshot so
                     // future operations don't need to reconcile again.
                     let _ = run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot);
@@ -7584,7 +7585,8 @@ pub fn drift_still_satisfies_requirements(
 ) -> AppResult<()> {
     match stage_id {
         StageId::PromptReview => {
-            let min = effective_config.prompt_review_policy().min_reviewers;
+            let min = effective_min_override
+                .unwrap_or_else(|| effective_config.prompt_review_policy().min_reviewers);
             if new_snapshot.prompt_review_validators.len() < min {
                 return Err(AppError::ResumeDriftFailure {
                     stage_id,
