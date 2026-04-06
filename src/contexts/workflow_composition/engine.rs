@@ -1282,9 +1282,35 @@ where
             });
         }
         RunStatus::Running => {
-            return Err(AppError::ResumeFailed {
-                reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
-            });
+            // The snapshot says Running, but the journal may record a terminal
+            // event that the snapshot write missed (e.g. fail_run snapshot write
+            // failed).  Cross-check the journal to reconcile.
+            let events = journal_store.read_journal(base_dir, project_id)?;
+            match journal::last_terminal_event_type(&events) {
+                Some(JournalEventType::RunFailed) => {
+                    eprintln!(
+                        "resume: snapshot shows Running but journal has run_failed — \
+                         reconciling snapshot to Failed (stale snapshot from failed write)"
+                    );
+                    snapshot.status = RunStatus::Failed;
+                    snapshot.active_run = None;
+                    // Best-effort: try to persist the reconciled snapshot so
+                    // future operations don't need to reconcile again.
+                    let _ = run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot);
+                }
+                Some(JournalEventType::RunCompleted) => {
+                    return Err(AppError::ResumeFailed {
+                        reason:
+                            "project is already completed per journal; there is nothing to resume"
+                                .to_owned(),
+                    });
+                }
+                _ => {
+                    return Err(AppError::ResumeFailed {
+                        reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
+                    });
+                }
+            }
         }
         RunStatus::Completed => {
             return Err(AppError::ResumeFailed {
@@ -5454,12 +5480,26 @@ async fn fail_run(
     // to emit the run_failed journal event.  The journal is authoritative
     // for derive_resume_state, so recording the failure there is more
     // valuable than a consistent snapshot when the disk is degraded.
-    if let Err(snapshot_err) = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
-    {
+    //
+    // We retry once after a short delay to handle transient I/O errors.
+    // If both attempts fail, the journal's run_failed event is the
+    // authoritative record and resume/status will reconcile from it.
+    if let Err(first_err) = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot) {
         eprintln!(
-            "fail_run: snapshot write failed for stage {}: {snapshot_err}",
+            "fail_run: snapshot write failed for stage {} (attempt 1): {first_err}",
             stage_id.as_str(),
         );
+        // Brief delay before retry to let transient conditions clear.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Err(second_err) =
+            run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+        {
+            eprintln!(
+                "fail_run: snapshot write failed for stage {} (attempt 2): {second_err} — \
+                 journal run_failed event is the authoritative record",
+                stage_id.as_str(),
+            );
+        }
     }
 
     *seq += 1;

@@ -511,6 +511,24 @@ pub fn durable_warning_event(
     }
 }
 
+/// Returns the last terminal event type (`RunFailed` or `RunCompleted`) from
+/// a list of journal events, or `None` if no terminal event exists.
+///
+/// Used to reconcile stale snapshots against the authoritative journal when
+/// a snapshot write failed (e.g. during `fail_run`).
+pub fn last_terminal_event_type(events: &[JournalEvent]) -> Option<JournalEventType> {
+    events
+        .iter()
+        .rev()
+        .find(|e| {
+            matches!(
+                e.event_type,
+                JournalEventType::RunFailed | JournalEventType::RunCompleted
+            )
+        })
+        .map(|e| e.event_type.clone())
+}
+
 /// Build a `run_failed` journal event.
 #[allow(clippy::too_many_arguments)]
 pub fn run_failed_event(

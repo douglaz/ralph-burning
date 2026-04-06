@@ -1456,12 +1456,32 @@ pub fn delete_project(
 }
 
 /// Get run status for the active project.
+///
+/// Cross-checks the snapshot against the journal to detect stale snapshot
+/// state caused by `fail_run()` snapshot write failures.
 pub fn run_status(
     run_port: &dyn RunSnapshotPort,
     base_dir: &Path,
     project_id: &ProjectId,
 ) -> AppResult<RunStatusView> {
     let snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    Ok(queries::build_status_view(project_id.as_str(), &snapshot))
+}
+
+/// Get run status with journal reconciliation for the active project.
+///
+/// When a journal store is available, cross-checks the snapshot against
+/// the journal's terminal events and corrects stale snapshot state.
+pub fn run_status_reconciled(
+    run_port: &dyn RunSnapshotPort,
+    journal_port: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<RunStatusView> {
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    if let Ok(events) = journal_port.read_journal(base_dir, project_id) {
+        queries::reconcile_snapshot_status(&mut snapshot, &events);
+    }
     Ok(queries::build_status_view(project_id.as_str(), &snapshot))
 }
 
@@ -1472,6 +1492,23 @@ pub fn run_status_json(
     project_id: &ProjectId,
 ) -> AppResult<RunStatusJsonView> {
     let snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    Ok(RunStatusJsonView::from_snapshot(
+        project_id.as_str(),
+        &snapshot,
+    ))
+}
+
+/// Get stable JSON run status with journal reconciliation.
+pub fn run_status_json_reconciled(
+    run_port: &dyn RunSnapshotPort,
+    journal_port: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<RunStatusJsonView> {
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    if let Ok(events) = journal_port.read_journal(base_dir, project_id) {
+        queries::reconcile_snapshot_status(&mut snapshot, &events);
+    }
     Ok(RunStatusJsonView::from_snapshot(
         project_id.as_str(),
         &snapshot,

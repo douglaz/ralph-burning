@@ -7,7 +7,46 @@ use crate::contexts::workflow_composition::panel_contracts::RecordKind;
 use crate::shared::domain::StageId;
 use crate::shared::error::AppResult;
 
-use super::model::{ArtifactRecord, JournalEvent, PayloadRecord, RunSnapshot, RuntimeLogEntry};
+use super::journal;
+use super::model::{
+    ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, RunSnapshot, RunStatus,
+    RuntimeLogEntry,
+};
+
+/// Reconcile a snapshot's status against the journal's last terminal event.
+///
+/// When a `fail_run()` snapshot write fails, `run.json` may still say `Running`
+/// while the journal has a `run_failed` event. This function detects the
+/// mismatch and patches the in-memory snapshot so downstream consumers
+/// (status display, resume) see the authoritative journal state.
+///
+/// Returns `true` if the snapshot was patched.
+pub fn reconcile_snapshot_status(snapshot: &mut RunSnapshot, events: &[JournalEvent]) -> bool {
+    if snapshot.status != RunStatus::Running {
+        return false;
+    }
+    match journal::last_terminal_event_type(events) {
+        Some(JournalEventType::RunFailed) => {
+            eprintln!(
+                "status: snapshot shows Running but journal has run_failed — \
+                 reporting as Failed (stale snapshot from failed write)"
+            );
+            snapshot.status = RunStatus::Failed;
+            snapshot.active_run = None;
+            true
+        }
+        Some(JournalEventType::RunCompleted) => {
+            eprintln!(
+                "status: snapshot shows Running but journal has run_completed — \
+                 reporting as Completed (stale snapshot from failed write)"
+            );
+            snapshot.status = RunStatus::Completed;
+            snapshot.active_run = None;
+            true
+        }
+        _ => false,
+    }
+}
 
 /// Read model for `run status`: canonical state only, no inference from artifacts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
