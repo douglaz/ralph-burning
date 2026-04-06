@@ -18,7 +18,8 @@ use tokio::sync::Mutex;
 
 use crate::adapters::fs::FileSystem;
 use crate::adapters::process_backend::{
-    classify_exit_failure_with_output, extract_stdout_error, ChildOutput, ProcessBackendAdapter,
+    classify_exit_failure_with_output, extract_stdout_error, truncate_str, ChildOutput,
+    ProcessBackendAdapter, STDOUT_EXHAUSTION_SCAN_LIMIT,
 };
 use crate::contexts::agent_execution::model::{
     InvocationContract, InvocationEnvelope, InvocationRequest,
@@ -630,9 +631,14 @@ impl AgentExecutionPort for TmuxAdapter {
             prepared.cleanup().await;
             let stdout_text = String::from_utf8_lossy(&output.stdout);
             let stdout_error = extract_stdout_error(&output.stdout);
-            // Prefer narrow extracted error text; fall back to full
-            // stdout so plain-text exhaustion messages are detected.
-            let stdout_for_class = stdout_error.as_deref().unwrap_or(&stdout_text);
+            // Prefer narrow extracted error text; fall back to a
+            // limited prefix of stdout so plain-text exhaustion
+            // messages are detected without matching model
+            // conversation content deeper in the output.
+            let stdout_for_class = match stdout_error.as_deref() {
+                Some(err) => err,
+                None => truncate_str(&stdout_text, STDOUT_EXHAUSTION_SCAN_LIMIT),
+            };
             let failure_class =
                 classify_exit_failure_with_output(output.status, &stderr, stdout_for_class);
             return Err(AppError::InvocationFailed {

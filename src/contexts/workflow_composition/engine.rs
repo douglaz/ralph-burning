@@ -6526,8 +6526,10 @@ where
 
     // Required unavailable validators fail resolution; optional
     // unavailable validators are removed so the snapshot only records
-    // members that will actually execute.
+    // members that will actually execute.  BackendExhausted validators
+    // are skipped for graceful degradation (matching completion/final-review).
     let mut available_validators = Vec::new();
+    let mut probe_exhausted_validators: usize = 0;
     for member in &panel.validators {
         match agent_service
             .adapter()
@@ -6536,6 +6538,19 @@ where
         {
             Ok(()) => available_validators.push(member.clone()),
             Err(e) => {
+                // BackendExhausted during probe → skip for graceful
+                // degradation instead of aborting the entire stage.
+                if e.failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                {
+                    probe_exhausted_validators += 1;
+                    tracing::warn!(
+                        backend = %member.target.backend.family,
+                        required = member.required,
+                        "prompt-review validator unavailable during probe (backend exhausted), skipping"
+                    );
+                    continue;
+                }
                 if member.required {
                     return Err(e);
                 }
@@ -6543,11 +6558,27 @@ where
             }
         }
     }
-    if available_validators.len() < min_reviewers {
+    let effective_min_reviewers = min_reviewers
+        .saturating_sub(probe_exhausted_validators)
+        .max(1);
+    if available_validators.len() < effective_min_reviewers {
+        if probe_exhausted_validators > 0 {
+            return Err(AppError::BackendUnavailable {
+                backend: "prompt_review".to_owned(),
+                details: format!(
+                    "insufficient prompt-review validators after exhaustion: {} available, {} needed (original min={}, {} exhausted)",
+                    available_validators.len(),
+                    effective_min_reviewers,
+                    min_reviewers,
+                    probe_exhausted_validators,
+                ),
+                failure_class: Some(FailureClass::BackendExhausted),
+            });
+        }
         return Err(AppError::InsufficientPanelMembers {
             panel: "prompt_review".to_owned(),
             resolved: available_validators.len(),
-            minimum: min_reviewers,
+            minimum: effective_min_reviewers,
         });
     }
     panel.validators = available_validators;
@@ -6624,7 +6655,7 @@ where
         run_id,
         cursor,
         &panel,
-        min_reviewers,
+        effective_min_reviewers,
         max_refinement_retries,
         prompt_reference,
         snapshot.rollback_point_meta.rollback_count,
@@ -6834,6 +6865,19 @@ where
         .saturating_sub(probe_exhausted_completers)
         .max(1);
     if available_completers.len() < effective_min_completers {
+        if probe_exhausted_completers > 0 {
+            return Err(AppError::BackendUnavailable {
+                backend: "completion".to_owned(),
+                details: format!(
+                    "insufficient completers after exhaustion: {} available, {} needed (original min={}, {} exhausted)",
+                    available_completers.len(),
+                    effective_min_completers,
+                    min_completers,
+                    probe_exhausted_completers,
+                ),
+                failure_class: Some(FailureClass::BackendExhausted),
+            });
+        }
         return Err(AppError::InsufficientPanelMembers {
             panel: "completion".to_owned(),
             resolved: available_completers.len(),
@@ -7075,6 +7119,19 @@ where
         .saturating_sub(probe_exhausted_reviewers)
         .max(1);
     if available_reviewers.len() < effective_min_reviewers {
+        if probe_exhausted_reviewers > 0 {
+            return Err(AppError::BackendUnavailable {
+                backend: "final_review".to_owned(),
+                details: format!(
+                    "insufficient final-review reviewers after exhaustion: {} available, {} needed (original min={}, {} exhausted)",
+                    available_reviewers.len(),
+                    effective_min_reviewers,
+                    min_reviewers,
+                    probe_exhausted_reviewers,
+                ),
+                failure_class: Some(FailureClass::BackendExhausted),
+            });
+        }
         return Err(AppError::InsufficientPanelMembers {
             panel: "final_review".to_owned(),
             resolved: available_reviewers.len(),

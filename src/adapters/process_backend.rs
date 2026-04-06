@@ -1424,11 +1424,14 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
                         // Prefer narrow extracted error text (avoids false
-                        // positives from echoed prompts), but fall back to the
-                        // full stdout so plain-text exhaustion messages are
-                        // still detected.
-                        let fresh_stdout_for_class =
-                            fresh_stdout_error.as_deref().unwrap_or(&fresh_stdout_text);
+                        // positives from echoed prompts), but fall back to a
+                        // limited prefix of stdout so plain-text exhaustion
+                        // messages are still detected without matching model
+                        // conversation content deeper in the output.
+                        let fresh_stdout_for_class = match fresh_stdout_error.as_deref() {
+                            Some(err) => err,
+                            None => truncate_str(&fresh_stdout_text, STDOUT_EXHAUSTION_SCAN_LIMIT),
+                        };
                         let failure_class = classify_exit_failure_with_output(
                             fresh_output.status,
                             &fresh_stderr,
@@ -1458,9 +1461,14 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 let stdout_text = String::from_utf8_lossy(&output.stdout);
                 let stdout_error = extract_stdout_error(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
-                // Prefer narrow extracted error text; fall back to full
-                // stdout so plain-text exhaustion messages are detected.
-                let stdout_for_class = stdout_error.as_deref().unwrap_or(&stdout_text);
+                // Prefer narrow extracted error text; fall back to a
+                // limited prefix of stdout so plain-text exhaustion
+                // messages are detected without matching model
+                // conversation content deeper in the output.
+                let stdout_for_class = match stdout_error.as_deref() {
+                    Some(err) => err,
+                    None => truncate_str(&stdout_text, STDOUT_EXHAUSTION_SCAN_LIMIT),
+                };
                 let failure_class =
                     classify_exit_failure_with_output(status, &stderr, stdout_for_class);
                 prepared.cleanup_failed_invocation(&request, &output).await;
@@ -1744,6 +1752,25 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
     "billing hard limit",
     "hard limit reached",
 ];
+
+/// Maximum bytes of full stdout to scan for exhaustion patterns when no
+/// structured error envelope (via [`extract_stdout_error`]) is available.
+/// Limits false positives from model conversation text that may
+/// coincidentally contain exhaustion keywords deeper in the output.
+pub(crate) const STDOUT_EXHAUSTION_SCAN_LIMIT: usize = 4096;
+
+/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8
+/// character boundary.
+pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
 
 /// Check whether error output text contains patterns indicating
 /// persistent backend unavailability (credits exhausted, usage limits).
