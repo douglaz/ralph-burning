@@ -1449,7 +1449,10 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                         // Raw stdout is NOT used as fallback because model
                         // conversation output may coincidentally contain
                         // exhaustion keywords, causing false BackendExhausted
-                        // classification of transient failures.
+                        // classification of transient failures.  Trade-off:
+                        // a backend that prints exhaustion as plain text to
+                        // stdout (no JSON envelope, no stderr) won't be
+                        // detected — stderr scanning covers all known backends.
                         let fresh_stdout_for_class =
                             fresh_stdout_error.as_deref().unwrap_or_default();
                         // Narrow stderr to its tail — codex backends may
@@ -1487,6 +1490,8 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 // Only use extracted error text for classification.
                 // Raw stdout is NOT used as fallback — model conversation
                 // output may coincidentally contain exhaustion keywords.
+                // Trade-off: plain-text-only stdout errors won't be detected;
+                // stderr scanning covers all known backends.
                 let stdout_for_class = stdout_error.as_deref().unwrap_or_default();
                 // Narrow stderr to its tail — codex backends may echo
                 // user prompts at the start of stderr.
@@ -1877,9 +1882,12 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
             }
             // Large-second values (>= 60) like "retry after 3600s" or
             // "retry after 86400 seconds" indicate a persistent wait.
-            if rest.starts_with('s') || rest.starts_with("sec") {
+            // Unitless large numbers (>= 3600) like "retry after 3600"
+            // are treated as seconds and also indicate persistence.
+            if rest.starts_with('s') || rest.starts_with("sec") || rest.is_empty() {
                 if let Ok(val) = after[..numeric_end].parse::<f64>() {
-                    if val >= 60.0 {
+                    let threshold = if rest.is_empty() { 3600.0 } else { 60.0 };
+                    if val >= threshold {
                         return true;
                     }
                 }
@@ -3763,6 +3771,11 @@ mod tests {
                 "",
             ));
             assert!(is_backend_exhausted("Rate limit, retry after 60 sec", "",));
+            // Unitless large numbers (>= 3600) are treated as seconds.
+            assert!(is_backend_exhausted("Rate limit, retry after 3600", "",));
+            assert!(is_backend_exhausted("Rate limit, retry after 86400", "",));
+            // Unitless small numbers (< 3600) are NOT treated as persistent.
+            assert!(!is_backend_exhausted("Rate limit, retry after 30", "",));
         }
 
         #[test]

@@ -633,6 +633,8 @@ impl AgentExecutionPort for TmuxAdapter {
             // Only use extracted error text for classification.
             // Raw stdout is NOT used as fallback — model conversation
             // output may coincidentally contain exhaustion keywords.
+            // Trade-off: plain-text-only stdout errors won't be detected;
+            // stderr scanning covers all known backends.
             let stdout_for_class = stdout_error.as_deref().unwrap_or_default();
             // Narrow stderr to its tail — codex backends may echo
             // user prompts at the start of stderr.

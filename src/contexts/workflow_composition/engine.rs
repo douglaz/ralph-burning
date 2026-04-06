@@ -6551,6 +6551,8 @@ where
     // unavailable validators are removed so the snapshot only records
     // members that will actually execute.  BackendExhausted validators
     // are skipped for graceful degradation (matching completion/final-review).
+    // NOTE: prompt-review degradation extends the original scope — see
+    // the comment in prompt_review.rs Step 3 for rationale.
     let mut available_validators = Vec::new();
     let mut probe_exhausted_validators: usize = 0;
     for member in &panel.validators {

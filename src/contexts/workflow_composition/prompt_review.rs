@@ -171,6 +171,13 @@ where
         // ── Step 3: Invoke validators ──────────────────────────────────────
         // BackendExhausted errors degrade gracefully: the validator is
         // skipped and execution continues with remaining members.
+        //
+        // NOTE: This extends the original scope (which only required
+        // degradation in final_review and completion).  Prompt-review
+        // degradation trades validator coverage for run survivability:
+        // a refined prompt may be accepted with fewer validators than
+        // the configured min_reviewers, but the alternative is aborting
+        // the entire run when a single backend exhausts credits.
         let mut executed_count = 0usize;
         let mut accept_count = 0usize;
         let mut reject_count = 0usize;
@@ -228,6 +235,17 @@ where
                             },
                         );
                         last_exhaustion_error = Some(error);
+                        // Early-exit: if quorum is mathematically impossible
+                        // with remaining validators, stop invoking and let the
+                        // post-loop check propagate the exhaustion error.
+                        let effective_min = min_reviewers
+                            .min(panel.validators.len().saturating_sub(total_exhausted_count))
+                            .max(1);
+                        if executed_count + panel.validators.len().saturating_sub(i + 1)
+                            < effective_min
+                        {
+                            break;
+                        }
                         continue;
                     }
                     return Err(error);
