@@ -154,6 +154,22 @@ impl PreparedCommand {
                     }
                 };
 
+                // If the envelope signals an error, check for exhaustion patterns
+                // before attempting to parse the result as a valid payload.
+                // This catches backends that exit 0 with `is_error: true` and
+                // an exhaustion message (e.g. "You've hit your usage limit").
+                if envelope.is_error && is_backend_exhausted(&envelope.result, "") {
+                    self.cleanup_failed_invocation(request, &output).await;
+                    return Err(ProcessBackendAdapter::invocation_failed(
+                        request,
+                        FailureClass::BackendExhausted,
+                        format!(
+                            "backend exhausted (exit 0 with is_error envelope): {}",
+                            truncate_str(&envelope.result, 200),
+                        ),
+                    ));
+                }
+
                 let parsed_payload = if let Some(structured) = envelope.structured_output {
                     unwrap_claude_structured_output_transport_payload(structured)
                 } else if !envelope.result.trim().is_empty() {
@@ -1550,6 +1566,8 @@ struct ClaudeEnvelope {
     structured_output: Option<serde_json::Value>,
     #[serde(default)]
     usage: Option<ClaudeUsage>,
+    #[serde(default)]
+    is_error: bool,
 }
 
 pub(crate) struct ChildOutput {

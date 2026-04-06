@@ -329,10 +329,15 @@ where
                     Some("failed_exhausted"),
                     Some(0),
                 );
-                // Reduce effective quorum for ALL exhausted backends (probe +
-                // invocation): allow proceeding with at least 1 reviewer.
+                // Reduce effective quorum only when exhaustion makes the
+                // configured minimum impossible (remaining < min).
                 let effective_min = min_reviewers
-                    .saturating_sub(probe_exhausted_count + proposal_total_exhausted)
+                    .min(
+                        panel
+                            .reviewers
+                            .len()
+                            .saturating_sub(proposal_total_exhausted),
+                    )
                     .max(1);
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
                     < effective_min
@@ -370,10 +375,15 @@ where
                     Some("failed_optional"),
                     Some(0),
                 );
-                // Use the reduced quorum: includes both probe-time and
-                // invocation-time exhausted members.
+                // Use the reduced quorum: only reduce when exhaustion
+                // makes the configured minimum impossible.
                 let effective_optional_min = min_reviewers
-                    .saturating_sub(probe_exhausted_count + proposal_total_exhausted)
+                    .min(
+                        panel
+                            .reviewers
+                            .len()
+                            .saturating_sub(proposal_total_exhausted),
+                    )
                     .max(1);
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
                     < effective_optional_min
@@ -520,7 +530,14 @@ where
     }
 
     let all_proposal_exhausted = probe_exhausted_count + proposal_total_exhausted;
-    let effective_proposal_min = min_reviewers.saturating_sub(all_proposal_exhausted).max(1);
+    let effective_proposal_min = min_reviewers
+        .min(
+            panel
+                .reviewers
+                .len()
+                .saturating_sub(proposal_total_exhausted),
+        )
+        .max(1);
     if reviewer_records.len() < effective_proposal_min {
         return Err(AppError::InsufficientPanelMembers {
             panel: "final_review".to_owned(),
@@ -907,9 +924,7 @@ where
                     Some(0),
                 );
                 let effective_min = min_reviewers
-                    .saturating_sub(
-                        probe_exhausted_count + proposal_total_exhausted + vote_total_exhausted,
-                    )
+                    .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
                     .max(1);
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
                     < effective_min
@@ -947,12 +962,10 @@ where
                     Some("failed_optional"),
                     Some(0),
                 );
-                // Use the reduced quorum: if required reviewers were already
-                // skipped as exhausted, the effective threshold is lower.
+                // Use the reduced quorum: only reduce when exhaustion
+                // makes the configured minimum impossible.
                 let effective_optional_min = min_reviewers
-                    .saturating_sub(
-                        probe_exhausted_count + proposal_total_exhausted + vote_total_exhausted,
-                    )
+                    .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
                     .max(1);
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
                     < effective_optional_min
@@ -1128,10 +1141,11 @@ where
         reviewer_votes.push(votes);
     }
 
-    // Account for both proposal-phase and vote-phase exhaustions when
-    // computing the effective vote quorum.
+    // Reduce vote quorum only when exhaustion makes the configured
+    // minimum impossible.  reviewer_records is the post-proposal panel;
+    // vote_total_exhausted is the invocation-time exhaustion during voting.
     let effective_vote_min = min_reviewers
-        .saturating_sub(probe_exhausted_count + proposal_total_exhausted + vote_total_exhausted)
+        .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
         .max(1);
     if reviewer_votes.len() < effective_vote_min {
         return Err(AppError::InsufficientPanelMembers {
@@ -1417,7 +1431,9 @@ where
 
     let total_all_exhausted =
         probe_exhausted_count + proposal_total_exhausted + vote_total_exhausted;
-    let effective_min = min_reviewers.saturating_sub(total_all_exhausted).max(1);
+    let effective_min = min_reviewers
+        .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
+        .max(1);
 
     if !final_accepted_amendments.is_empty() && final_review_restart_count >= max_restarts {
         let aggregate = FinalReviewAggregatePayload {

@@ -503,7 +503,9 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
         }
     }
 
-    let effective_min = minimum.saturating_sub(exhausted_count).max(1);
+    let effective_min = minimum
+        .min(members.len().saturating_sub(exhausted_count))
+        .max(1);
     if available_members < effective_min {
         return Err(AppError::PreflightFailed {
             stage_id,
@@ -1473,7 +1475,9 @@ where
                         }
                     }
                 }
-                let effective_min = min_reviewers.saturating_sub(resume_exhausted).max(1);
+                let effective_min = min_reviewers
+                    .min(panel.validators.len().saturating_sub(resume_exhausted))
+                    .max(1);
                 if resume_exhausted > 0 {
                     resume_effective_min = Some(effective_min);
                 }
@@ -1522,7 +1526,9 @@ where
                         }
                     }
                 }
-                let effective_min = min_completers.saturating_sub(resume_exhausted).max(1);
+                let effective_min = min_completers
+                    .min(panel.completers.len().saturating_sub(resume_exhausted))
+                    .max(1);
                 if resume_exhausted > 0 {
                     resume_effective_min = Some(effective_min);
                 }
@@ -1593,7 +1599,9 @@ where
                         }
                     }
                 }
-                let effective_min = min_reviewers.saturating_sub(resume_exhausted).max(1);
+                let effective_min = min_reviewers
+                    .min(panel.reviewers.len().saturating_sub(resume_exhausted))
+                    .max(1);
                 if resume_exhausted > 0 {
                     resume_effective_min = Some(effective_min);
                 }
@@ -5550,7 +5558,7 @@ async fn fail_run(
             stage_id.as_str(),
         );
         // Brief delay before retry to let transient conditions clear.
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if let Err(second_err) =
             run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
         {
@@ -6574,7 +6582,12 @@ where
         }
     }
     let effective_min_reviewers = min_reviewers
-        .saturating_sub(probe_exhausted_validators)
+        .min(
+            panel
+                .validators
+                .len()
+                .saturating_sub(probe_exhausted_validators),
+        )
         .max(1);
     if available_validators.len() < effective_min_reviewers {
         if probe_exhausted_validators > 0 {
@@ -6878,7 +6891,12 @@ where
         }
     }
     let effective_min_completers = min_completers
-        .saturating_sub(probe_exhausted_completers)
+        .min(
+            panel
+                .completers
+                .len()
+                .saturating_sub(probe_exhausted_completers),
+        )
         .max(1);
     if available_completers.len() < effective_min_completers {
         if probe_exhausted_completers > 0 {
@@ -7133,7 +7151,12 @@ where
         }
     }
     let effective_min_reviewers = min_reviewers
-        .saturating_sub(probe_exhausted_reviewers)
+        .min(
+            panel
+                .reviewers
+                .len()
+                .saturating_sub(probe_exhausted_reviewers),
+        )
         .max(1);
     if available_reviewers.len() < effective_min_reviewers {
         if probe_exhausted_reviewers > 0 {

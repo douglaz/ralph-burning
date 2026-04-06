@@ -195,7 +195,7 @@ where
                     // Must include probe_exhausted_count (already filtered
                     // before execution) alongside invocation-time exhaustion.
                     let effective_min = min_completers
-                        .saturating_sub(probe_exhausted_count + total_exhausted_count)
+                        .min(completers.len().saturating_sub(total_exhausted_count))
                         .max(1);
                     if executed_voters.len() + completers.len().saturating_sub(i + 1)
                         < effective_min
@@ -252,13 +252,14 @@ where
     }
 
     // ── Check min_completers after execution ──────────────────────────────
-    // Reduce effective quorum for ALL exhausted backends (probe-time +
-    // invocation-time): allow proceeding with at least 1 completer if
-    // available, rather than requiring the original min_completers which
-    // may be unachievable.
+    // Reduce effective quorum only when exhaustion makes the configured
+    // minimum impossible.  When slack members exhaust (remaining ≥ min),
+    // the configured minimum is preserved.
     let total_voters = executed_voters.len();
     let all_exhausted = probe_exhausted_count + total_exhausted_count;
-    let effective_min_completers = min_completers.saturating_sub(all_exhausted).max(1);
+    let effective_min_completers = min_completers
+        .min(completers.len().saturating_sub(total_exhausted_count))
+        .max(1);
     if total_voters < effective_min_completers {
         // When the shortfall is entirely due to backend exhaustion,
         // propagate the last BackendExhausted error so the engine's

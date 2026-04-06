@@ -76,7 +76,7 @@ pub async fn execute_prompt_review<A, R, S>(
     cursor: &StageCursor,
     panel: &PromptReviewPanelResolution,
     min_reviewers: usize,
-    probe_exhausted_count: usize,
+    _probe_exhausted_count: usize,
     max_refinement_retries: u32,
     prompt_reference: &str,
     rollback_count: u32,
@@ -264,11 +264,12 @@ where
         }
 
         // ── Step 4: Enforce min_reviewers ──────────────────────────────────
-        // Reduce the minimum by ALL exhausted validators (probe-time +
-        // invocation-time) so that exhaustion degrades gracefully instead
-        // of aborting outright.
-        let all_exhausted = probe_exhausted_count + total_exhausted_count;
-        let effective_min = min_reviewers.saturating_sub(all_exhausted).max(1);
+        // Reduce the minimum only when exhaustion makes the configured
+        // minimum impossible.  panel.validators.len() is the post-probe
+        // panel; total_exhausted_count is invocation-time exhaustion.
+        let effective_min = min_reviewers
+            .min(panel.validators.len().saturating_sub(total_exhausted_count))
+            .max(1);
         if executed_count < effective_min {
             // When the shortfall is entirely due to backend exhaustion,
             // propagate the last BackendExhausted error so the engine's
