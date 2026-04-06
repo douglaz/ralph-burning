@@ -1869,7 +1869,6 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
             "resets at",
             "reset at",
             "available at",
-            "until 20", // "until 2026-..." ISO year prefix (2000-2099)
             "until tomorrow",
         ];
         if RESET_TIME_INDICATORS
@@ -1877,6 +1876,19 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
             .any(|indicator| combined.contains(indicator))
         {
             return true;
+        }
+        // "until 2026-04-06..." — ISO date after "until".  We require
+        // "until 20" followed by exactly two digits and a dash so we
+        // match ISO years 2000-2099 without false-positiving on
+        // "until 2000 requests" or "until 200 more attempts".
+        if let Some(pos) = combined.find("until 20") {
+            let rest = &combined[pos + "until 20".len()..];
+            let mut chars = rest.chars();
+            if let (Some(c1), Some(c2), Some(c3)) = (chars.next(), chars.next(), chars.next()) {
+                if c1.is_ascii_digit() && c2.is_ascii_digit() && c3 == '-' {
+                    return true;
+                }
+            }
         }
         // "retry after <long-duration>" is persistent; short durations
         // like "retry after 1s" or "retry after 100ms" are transient
@@ -3870,13 +3882,23 @@ mod tests {
                 "",
             ));
             // "until 2 requests" must NOT trigger — "until 2" was tightened
-            // to "until 20" (ISO year prefix) to prevent this false positive.
+            // to require ISO year format (until 20XX-) to prevent this.
             assert!(!is_backend_exhausted(
                 "Rate limit hit, until 2 requests complete",
                 "",
             ));
             assert!(!is_backend_exhausted(
                 "Rate limit hit, until 2 jobs finish",
+                "",
+            ));
+            // "until 2000 requests" / "until 200 more" — the digits after
+            // "until 20" don't form an ISO year-dash pattern.
+            assert!(!is_backend_exhausted(
+                "rate limit reached, until 2000 requests are processed",
+                "",
+            ));
+            assert!(!is_backend_exhausted(
+                "rate limit reached, until 200 more attempts",
                 "",
             ));
         }

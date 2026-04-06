@@ -267,6 +267,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                     &panel.validators,
                     effective_config.prompt_review_policy().min_reviewers,
                     &mut probed,
+                    false, // prompt_review does not degrade on BackendExhausted
                 )
                 .await?;
             }
@@ -288,6 +289,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                     &panel.completers,
                     effective_config.completion_policy().min_completers,
                     &mut probed,
+                    true, // completion supports graceful degradation
                 )
                 .await?;
             }
@@ -322,6 +324,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                     &panel.reviewers,
                     effective_config.final_review_policy().min_reviewers,
                     &mut probed,
+                    true, // final_review supports graceful degradation
                 )
                 .await?;
             }
@@ -440,6 +443,7 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
     members: &[ResolvedPanelMember],
     minimum: usize,
     probed: &mut Vec<ResolvedBackendTarget>,
+    supports_degradation: bool,
 ) -> AppResult<()> {
     let mut available_members = 0usize;
     let mut exhausted_count = 0usize;
@@ -483,10 +487,14 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
             }
             Err(error) => {
                 // BackendExhausted → skip for graceful degradation instead
-                // of aborting the entire preflight.
-                if error
-                    .failure_class()
-                    .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                // of aborting the entire preflight.  Only applies to panels
+                // that support degradation (completion, final_review); for
+                // prompt_review the exhaustion falls through to the normal
+                // required/optional handling below.
+                if supports_degradation
+                    && error
+                        .failure_class()
+                        .is_some_and(|fc| fc == FailureClass::BackendExhausted)
                 {
                     exhausted_count += 1;
                     continue;
@@ -6816,6 +6824,7 @@ where
     // member is skipped and the panel proceeds if quorum still holds.
     let mut available_completers = Vec::new();
     let mut probe_exhausted_completers: usize = 0;
+    let mut probe_failed_completers: usize = 0;
     for member in &panel.completers {
         match agent_service
             .adapter()
@@ -6824,6 +6833,7 @@ where
         {
             Ok(()) => available_completers.push(member.clone()),
             Err(e) => {
+                probe_failed_completers += 1;
                 // BackendExhausted during probe → skip for graceful
                 // degradation instead of aborting the entire stage.
                 if e.failure_class()
@@ -6853,7 +6863,11 @@ where
         )
         .max(1);
     if available_completers.len() < effective_min_completers {
-        if probe_exhausted_completers > 0 {
+        // Only surface BackendExhausted when the shortfall is caused
+        // solely by exhausted members.  Mixed failures (exhausted +
+        // transiently unavailable) preserve the retryable
+        // InsufficientPanelMembers path so transient errors can retry.
+        if probe_exhausted_completers > 0 && probe_exhausted_completers == probe_failed_completers {
             return Err(AppError::BackendUnavailable {
                 backend: "completion".to_owned(),
                 details: format!(
@@ -7076,6 +7090,7 @@ where
 
     let mut available_reviewers = Vec::new();
     let mut probe_exhausted_reviewers: usize = 0;
+    let mut probe_failed_reviewers: usize = 0;
     for member in &panel.reviewers {
         match agent_service
             .adapter()
@@ -7084,6 +7099,7 @@ where
         {
             Ok(()) => available_reviewers.push(member.clone()),
             Err(error) => {
+                probe_failed_reviewers += 1;
                 // BackendExhausted during probe → skip for graceful
                 // degradation instead of aborting the entire stage.
                 if error
@@ -7113,7 +7129,11 @@ where
         )
         .max(1);
     if available_reviewers.len() < effective_min_reviewers {
-        if probe_exhausted_reviewers > 0 {
+        // Only surface BackendExhausted when the shortfall is caused
+        // solely by exhausted members.  Mixed failures (exhausted +
+        // transiently unavailable) preserve the retryable
+        // InsufficientPanelMembers path so transient errors can retry.
+        if probe_exhausted_reviewers > 0 && probe_exhausted_reviewers == probe_failed_reviewers {
             return Err(AppError::BackendUnavailable {
                 backend: "final_review".to_owned(),
                 details: format!(
