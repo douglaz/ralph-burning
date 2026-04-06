@@ -158,16 +158,23 @@ impl PreparedCommand {
                 // before attempting to parse the result as a valid payload.
                 // This catches backends that exit 0 with `is_error: true` and
                 // an exhaustion message (e.g. "You've hit your usage limit").
-                if envelope.is_error && is_backend_exhausted(&envelope.result, "") {
-                    self.cleanup_failed_invocation(request, &output).await;
-                    return Err(ProcessBackendAdapter::invocation_failed(
-                        request,
-                        FailureClass::BackendExhausted,
-                        format!(
-                            "backend exhausted (exit 0 with is_error envelope): {}",
-                            truncate_str(&envelope.result, 200),
-                        ),
-                    ));
+                // Use extract_stdout_error to pull error text from `result`,
+                // `errors[]`, or `subtype` — not just `envelope.result` alone —
+                // so envelopes like {"is_error":true,"errors":["quota exceeded"]}
+                // are correctly detected.
+                if envelope.is_error {
+                    let error_text = extract_stdout_error(&output.stdout).unwrap_or_default();
+                    if is_backend_exhausted(&error_text, "") {
+                        self.cleanup_failed_invocation(request, &output).await;
+                        return Err(ProcessBackendAdapter::invocation_failed(
+                            request,
+                            FailureClass::BackendExhausted,
+                            format!(
+                                "backend exhausted (exit 0 with is_error envelope): {}",
+                                truncate_str(&error_text, 200),
+                            ),
+                        ));
+                    }
                 }
 
                 let parsed_payload = if let Some(structured) = envelope.structured_output {
@@ -1839,13 +1846,49 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
     {
         return true;
     }
-    // Compound check: "rate limit" + "try again at" together indicates a
-    // persistent rate cap with a reset time (e.g. "Rate limit reached, try
-    // again at 3:03 PM").  Neither substring alone is sufficient — "rate
-    // limit" alone matches transient 429s, and "try again at" alone is too
-    // broad.  Combining them narrows to persistent-reset-time messages.
+    // Compound check: "rate limit" paired with a reset-time indicator
+    // signals a persistent rate cap (e.g. "Rate limit reached, try again
+    // at 3:03 PM" or "Rate limit, retry after 2h").  Neither component
+    // alone is sufficient — "rate limit" alone matches transient 429s, and
+    // the reset phrases alone are too broad.  Combining them narrows to
+    // persistent-reset-time messages.
     let combined = format!("{stderr_lower} {stdout_lower}");
-    combined.contains("rate limit") && combined.contains("try again at")
+    if combined.contains("rate limit") {
+        // Fixed-time reset indicators: always persistent when paired with
+        // "rate limit".
+        const RESET_TIME_INDICATORS: &[&str] = &[
+            "try again at",
+            "retry at",
+            "resets at",
+            "reset at",
+            "available at",
+            "until 2", // "until 2026-..." ISO timestamps
+            "until tomorrow",
+        ];
+        if RESET_TIME_INDICATORS
+            .iter()
+            .any(|indicator| combined.contains(indicator))
+        {
+            return true;
+        }
+        // "retry after <long-duration>" is persistent; short durations
+        // like "retry after 1s" or "retry after 100ms" are transient
+        // (standard 429 backoff) and must NOT trigger exhaustion.
+        if let Some(pos) = combined.find("retry after ") {
+            let after = &combined[pos + "retry after ".len()..];
+            let rest =
+                after.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ');
+            if rest.starts_with('h')
+                || rest.starts_with("hour")
+                || rest.starts_with("day")
+                || rest.starts_with("min")
+                || rest.starts_with("week")
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Classify a non-zero exit, upgrading to `BackendExhausted` when the
@@ -3641,10 +3684,6 @@ mod tests {
             // Transient rate limits should NOT be classified as exhausted —
             // they are retryable via TransportFailure.
             assert!(!is_backend_exhausted("rate limit exceeded", ""));
-            assert!(!is_backend_exhausted(
-                "Rate limit exceeded. Please retry after 1s",
-                ""
-            ));
         }
 
         #[test]
@@ -3670,6 +3709,52 @@ mod tests {
             assert!(is_backend_exhausted(
                 "Rate limit exceeded",
                 "try again at 3:03 PM",
+            ));
+        }
+
+        #[test]
+        fn detects_rate_limit_with_retry_after_long_duration() {
+            // "retry after <hours/days/minutes>" is persistent exhaustion.
+            assert!(is_backend_exhausted(
+                "Rate limit reached, retry after 2h",
+                "",
+            ));
+            assert!(is_backend_exhausted("Rate limit. retry after 1 day", "",));
+            assert!(is_backend_exhausted(
+                "Rate limit hit, retry after 30 minutes",
+                "",
+            ));
+        }
+
+        #[test]
+        fn detects_rate_limit_with_until_timestamp() {
+            // "until 2026-..." ISO timestamps indicate a persistent reset.
+            assert!(is_backend_exhausted(
+                "Rate limit reached, until 2026-04-06T15:03Z",
+                "",
+            ));
+        }
+
+        #[test]
+        fn detects_rate_limit_with_resets_at() {
+            assert!(is_backend_exhausted(
+                "Rate limit reached, resets at midnight",
+                "",
+            ));
+            assert!(is_backend_exhausted("Rate limit, available at 3:00 PM", "",));
+        }
+
+        #[test]
+        fn no_false_positive_on_retry_after_short_duration() {
+            // "retry after 1s" or "retry after 100ms" are transient 429 backoff
+            // and must NOT trigger exhaustion.
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. Please retry after 1s",
+                "",
+            ));
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. Please retry after 100ms",
+                "",
             ));
         }
 
