@@ -1869,7 +1869,7 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
             "resets at",
             "reset at",
             "available at",
-            "until 2", // "until 2026-..." ISO timestamps
+            "until 20", // "until 2026-..." ISO year prefix (2000-2099)
             "until tomorrow",
         ];
         if RESET_TIME_INDICATORS
@@ -3867,6 +3867,16 @@ mod tests {
             // "until 100 requests" is not a time either.
             assert!(!is_backend_exhausted(
                 "Rate limit hit, until 100 requests processed",
+                "",
+            ));
+            // "until 2 requests" must NOT trigger — "until 2" was tightened
+            // to "until 20" (ISO year prefix) to prevent this false positive.
+            assert!(!is_backend_exhausted(
+                "Rate limit hit, until 2 requests complete",
+                "",
+            ));
+            assert!(!is_backend_exhausted(
+                "Rate limit hit, until 2 jobs finish",
                 "",
             ));
         }

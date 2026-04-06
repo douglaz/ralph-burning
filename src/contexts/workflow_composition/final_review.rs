@@ -348,7 +348,7 @@ where
                 }
                 continue;
             }
-            Err(_error) if !member.required => {
+            Err(error) if !member.required => {
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,
@@ -399,11 +399,9 @@ where
                         effective_min = effective_optional_min,
                         "proposal quorum shortfall: optional failure + exhaustion makes minimum unreachable"
                     );
-                    return Err(AppError::InsufficientPanelMembers {
-                        panel: "final_review:proposal".to_owned(),
-                        resolved: reviewer_records.len(),
-                        minimum: effective_optional_min,
-                    });
+                    // Propagate the original error so its FailureClass is
+                    // preserved for the engine's retry decision.
+                    return Err(error);
                 }
                 continue;
             }
@@ -956,7 +954,7 @@ where
                 }
                 continue;
             }
-            Err(_error) if !reviewer.required => {
+            Err(error) if !reviewer.required => {
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,
@@ -1002,11 +1000,9 @@ where
                         effective_min = effective_optional_min,
                         "vote quorum shortfall: optional failure + exhaustion makes minimum unreachable"
                     );
-                    return Err(AppError::InsufficientPanelMembers {
-                        panel: "final_review:vote".to_owned(),
-                        resolved: reviewer_votes.len(),
-                        minimum: effective_optional_min,
-                    });
+                    // Propagate the original error so its FailureClass is
+                    // preserved for the engine's retry decision.
+                    return Err(error);
                 }
                 continue;
             }
