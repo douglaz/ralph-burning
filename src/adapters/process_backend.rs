@@ -1417,15 +1417,22 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     };
                     if !fresh_output.status.success() {
                         let fresh_stderr = String::from_utf8_lossy(&fresh_output.stderr);
+                        let fresh_stdout_text = String::from_utf8_lossy(&fresh_output.stdout);
                         let fresh_stdout_error = extract_stdout_error(&fresh_output.stdout);
                         let code = fresh_output
                             .status
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
+                        // Prefer narrow extracted error text (avoids false
+                        // positives from echoed prompts), but fall back to the
+                        // full stdout so plain-text exhaustion messages are
+                        // still detected.
+                        let fresh_stdout_for_class =
+                            fresh_stdout_error.as_deref().unwrap_or(&fresh_stdout_text);
                         let failure_class = classify_exit_failure_with_output(
                             fresh_output.status,
                             &fresh_stderr,
-                            fresh_stdout_error.as_deref().unwrap_or(""),
+                            fresh_stdout_for_class,
                         );
                         fresh_prepared
                             .cleanup_failed_invocation(&fresh_request, &fresh_output)
@@ -1448,13 +1455,14 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     return fresh_prepared.finish(&fresh_request, fresh_output).await;
                 }
 
+                let stdout_text = String::from_utf8_lossy(&output.stdout);
                 let stdout_error = extract_stdout_error(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
-                let failure_class = classify_exit_failure_with_output(
-                    status,
-                    &stderr,
-                    stdout_error.as_deref().unwrap_or(""),
-                );
+                // Prefer narrow extracted error text; fall back to full
+                // stdout so plain-text exhaustion messages are detected.
+                let stdout_for_class = stdout_error.as_deref().unwrap_or(&stdout_text);
+                let failure_class =
+                    classify_exit_failure_with_output(status, &stderr, stdout_for_class);
                 prepared.cleanup_failed_invocation(&request, &output).await;
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
@@ -1745,9 +1753,9 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
 /// because error messages vary across backend providers.
 ///
 /// **Important**: The `stdout` parameter should contain only the
-/// extracted error text (via [`extract_stdout_error`]), not the full
-/// raw stdout transcript.  Full transcripts can include echoed prompts
-/// or conversation text that coincidentally match exhaustion keywords.
+/// extracted error text (via [`extract_stdout_error`]) when available.
+/// When no structured error envelope exists, callers may pass the full
+/// stdout text so that plain-text exhaustion messages are still caught.
 pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
     let stderr_lower = stderr.to_lowercase();
     let stdout_lower = stdout.to_lowercase();
@@ -1769,9 +1777,10 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
 /// Classify a non-zero exit, upgrading to `BackendExhausted` when the
 /// error output indicates a persistent usage/billing limit.
 ///
-/// The `stdout` parameter should contain only the extracted error text
-/// (via [`extract_stdout_error`]), not the full raw stdout transcript,
-/// to avoid false positives from echoed prompt/conversation content.
+/// The `stdout` parameter should preferably contain extracted error text
+/// (via [`extract_stdout_error`]) to minimise false positives, but may
+/// fall back to the full stdout text when no structured error envelope
+/// is present so that plain-text exhaustion messages are still detected.
 ///
 /// Exit code 127 (command not found) always wins as `BinaryNotFound`
 /// regardless of output content — a missing binary cannot be a quota issue.

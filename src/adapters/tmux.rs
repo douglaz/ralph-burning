@@ -628,12 +628,13 @@ impl AgentExecutionPort for TmuxAdapter {
             }
 
             prepared.cleanup().await;
+            let stdout_text = String::from_utf8_lossy(&output.stdout);
             let stdout_error = extract_stdout_error(&output.stdout);
-            let failure_class = classify_exit_failure_with_output(
-                output.status,
-                &stderr,
-                stdout_error.as_deref().unwrap_or(""),
-            );
+            // Prefer narrow extracted error text; fall back to full
+            // stdout so plain-text exhaustion messages are detected.
+            let stdout_for_class = stdout_error.as_deref().unwrap_or(&stdout_text);
+            let failure_class =
+                classify_exit_failure_with_output(output.status, &stderr, stdout_for_class);
             return Err(AppError::InvocationFailed {
                 backend: request.resolved_target.backend.family.to_string(),
                 contract_id: request.contract.label(),
