@@ -348,7 +348,7 @@ where
                 }
                 continue;
             }
-            Err(error) if !member.required => {
+            Err(_error) if !member.required => {
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,
@@ -390,7 +390,20 @@ where
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
                     < effective_optional_min
                 {
-                    return Err(error);
+                    tracing::warn!(
+                        reviewer = idx,
+                        backend = %member.target.backend.family,
+                        successful = reviewer_records.len(),
+                        remaining = panel.reviewers.len().saturating_sub(idx + 1),
+                        exhausted = proposal_total_exhausted,
+                        effective_min = effective_optional_min,
+                        "proposal quorum shortfall: optional failure + exhaustion makes minimum unreachable"
+                    );
+                    return Err(AppError::InsufficientPanelMembers {
+                        panel: "final_review:proposal".to_owned(),
+                        resolved: reviewer_records.len(),
+                        minimum: effective_optional_min,
+                    });
                 }
                 continue;
             }
@@ -943,7 +956,7 @@ where
                 }
                 continue;
             }
-            Err(error) if !reviewer.required => {
+            Err(_error) if !reviewer.required => {
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,
@@ -980,7 +993,20 @@ where
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
                     < effective_optional_min
                 {
-                    return Err(error);
+                    tracing::warn!(
+                        reviewer = idx,
+                        backend = %reviewer.target.backend.family,
+                        successful_votes = reviewer_votes.len(),
+                        remaining = reviewer_records.len().saturating_sub(idx + 1),
+                        exhausted = vote_total_exhausted,
+                        effective_min = effective_optional_min,
+                        "vote quorum shortfall: optional failure + exhaustion makes minimum unreachable"
+                    );
+                    return Err(AppError::InsufficientPanelMembers {
+                        panel: "final_review:vote".to_owned(),
+                        resolved: reviewer_votes.len(),
+                        minimum: effective_optional_min,
+                    });
                 }
                 continue;
             }

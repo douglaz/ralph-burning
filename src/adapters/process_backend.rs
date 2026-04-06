@@ -1898,12 +1898,27 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
             }
         }
         // "until <time-of-day>" e.g. "until 9:00 PM UTC", "until 3:30 AM".
-        // A digit following "until " that isn't "2" (already caught by
-        // "until 2" for ISO timestamps) indicates a time-of-day format.
+        // Requires a time-of-day indicator after the digit: a colon (9:00)
+        // or an AM/PM marker (9am, 3 PM).  This avoids false positives on
+        // phrases like "until 5 retries are completed".
         if let Some(pos) = combined.find("until ") {
             let after = &combined[pos + "until ".len()..];
             if after.starts_with(|c: char| c.is_ascii_digit()) {
-                return true;
+                // Skip past the leading digits to inspect what follows.
+                let rest = after.trim_start_matches(|c: char| c.is_ascii_digit());
+                // Colon → time format (9:00, 12:30).
+                if rest.starts_with(':') {
+                    return true;
+                }
+                // AM/PM immediately after digits or after optional space.
+                let rest_trimmed = rest.trim_start();
+                if rest_trimmed.starts_with("am")
+                    || rest_trimmed.starts_with("pm")
+                    || rest_trimmed.starts_with("AM")
+                    || rest_trimmed.starts_with("PM")
+                {
+                    return true;
+                }
             }
         }
     }
@@ -3800,6 +3815,26 @@ mod tests {
             ));
             assert!(is_backend_exhausted(
                 "Rate limit reached, until 3:30 AM",
+                "",
+            ));
+            // AM/PM directly after digit (no space).
+            assert!(is_backend_exhausted(
+                "Rate limit reached, until 9am tomorrow",
+                "",
+            ));
+            assert!(is_backend_exhausted("Rate limit reached, until 5PM", "",));
+        }
+
+        #[test]
+        fn no_false_positive_on_until_non_time() {
+            // "until 5 retries" is NOT a time-of-day — should not trigger.
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded, until 5 retries are completed",
+                "",
+            ));
+            // "until 100 requests" is not a time either.
+            assert!(!is_backend_exhausted(
+                "Rate limit hit, until 100 requests processed",
                 "",
             ));
         }

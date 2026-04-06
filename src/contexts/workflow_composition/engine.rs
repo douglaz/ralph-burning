@@ -442,6 +442,7 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
     probed: &mut Vec<ResolvedBackendTarget>,
 ) -> AppResult<()> {
     let mut available_members = 0usize;
+    let mut exhausted_count = 0usize;
 
     for member in members {
         let contract = InvocationContract::Panel {
@@ -487,6 +488,7 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted)
                 {
+                    exhausted_count += 1;
                     continue;
                 }
                 if member.required {
@@ -501,10 +503,11 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
         }
     }
 
-    // Base on available members, not original panel length: optional
-    // members removed for non-exhaustion reasons or exhausted backends
-    // should not inflate the remaining-member count.
-    let effective_min = minimum.min(available_members).max(1);
+    // Only BackendExhausted skips reduce quorum — other optional
+    // unavailability keeps the original configured minimum.
+    let effective_min = minimum
+        .min(members.len().saturating_sub(exhausted_count))
+        .max(1);
     if available_members < effective_min {
         return Err(AppError::PreflightFailed {
             stage_id,
@@ -1448,7 +1451,6 @@ where
                     })?;
                 let min_reviewers = effective_config.prompt_review_policy().min_reviewers;
                 let mut available = Vec::new();
-                let mut resume_exhausted: usize = 0;
                 for member in &panel.validators {
                     match agent_service
                         .adapter()
@@ -1457,14 +1459,8 @@ where
                     {
                         Ok(()) => available.push(member.clone()),
                         Err(e) => {
-                            // BackendExhausted on resume → skip for graceful
-                            // degradation instead of aborting.
-                            if e.failure_class()
-                                .is_some_and(|fc| fc == FailureClass::BackendExhausted)
-                            {
-                                resume_exhausted += 1;
-                                continue;
-                            }
+                            // Prompt-review does NOT degrade on BackendExhausted
+                            // — any unavailable validator follows normal rules.
                             if member.required {
                                 return Err(AppError::ResumeDriftFailure {
                                     stage_id: current_stage,
@@ -1474,17 +1470,13 @@ where
                         }
                     }
                 }
-                let effective_min = min_reviewers.min(available.len()).max(1);
-                if resume_exhausted > 0 {
-                    resume_effective_min = Some(effective_min);
-                }
-                if available.len() < effective_min {
+                if available.len() < min_reviewers {
                     return Err(AppError::ResumeDriftFailure {
                         stage_id: current_stage,
                         details: format!(
-                            "available prompt-review validators ({}) < effective min_reviewers ({}) on resume",
+                            "available prompt-review validators ({}) < min_reviewers ({}) on resume",
                             available.len(),
-                            effective_min,
+                            min_reviewers,
                         ),
                     });
                 }
@@ -1523,7 +1515,9 @@ where
                         }
                     }
                 }
-                let effective_min = min_completers.min(available.len()).max(1);
+                let effective_min = min_completers
+                    .min(panel.completers.len().saturating_sub(resume_exhausted))
+                    .max(1);
                 if resume_exhausted > 0 {
                     resume_effective_min = Some(effective_min);
                 }
@@ -1594,7 +1588,9 @@ where
                         }
                     }
                 }
-                let effective_min = min_reviewers.min(available.len()).max(1);
+                let effective_min = min_reviewers
+                    .min(panel.reviewers.len().saturating_sub(resume_exhausted))
+                    .max(1);
                 if resume_exhausted > 0 {
                     resume_effective_min = Some(effective_min);
                 }
@@ -6542,12 +6538,10 @@ where
 
     // Required unavailable validators fail resolution; optional
     // unavailable validators are removed so the snapshot only records
-    // members that will actually execute.  BackendExhausted validators
-    // are skipped for graceful degradation (matching completion/final-review).
-    // NOTE: prompt-review degradation extends the original scope — see
-    // the comment in prompt_review.rs Step 3 for rationale.
+    // members that will actually execute.  Unlike completion/final-review,
+    // prompt-review does NOT degrade on BackendExhausted — any unavailable
+    // validator (exhausted or otherwise) follows normal required/optional rules.
     let mut available_validators = Vec::new();
-    let mut probe_exhausted_validators: usize = 0;
     for member in &panel.validators {
         match agent_service
             .adapter()
@@ -6556,19 +6550,6 @@ where
         {
             Ok(()) => available_validators.push(member.clone()),
             Err(e) => {
-                // BackendExhausted during probe → skip for graceful
-                // degradation instead of aborting the entire stage.
-                if e.failure_class()
-                    .is_some_and(|fc| fc == FailureClass::BackendExhausted)
-                {
-                    probe_exhausted_validators += 1;
-                    tracing::warn!(
-                        backend = %member.target.backend.family,
-                        required = member.required,
-                        "prompt-review validator unavailable during probe (backend exhausted), skipping"
-                    );
-                    continue;
-                }
                 if member.required {
                     return Err(e);
                 }
@@ -6576,25 +6557,11 @@ where
             }
         }
     }
-    let effective_min_reviewers = min_reviewers.min(available_validators.len()).max(1);
-    if available_validators.len() < effective_min_reviewers {
-        if probe_exhausted_validators > 0 {
-            return Err(AppError::BackendUnavailable {
-                backend: "prompt_review".to_owned(),
-                details: format!(
-                    "insufficient prompt-review validators after exhaustion: {} available, {} needed (original min={}, {} exhausted)",
-                    available_validators.len(),
-                    effective_min_reviewers,
-                    min_reviewers,
-                    probe_exhausted_validators,
-                ),
-                failure_class: Some(FailureClass::BackendExhausted),
-            });
-        }
+    if available_validators.len() < min_reviewers {
         return Err(AppError::InsufficientPanelMembers {
             panel: "prompt_review".to_owned(),
             resolved: available_validators.len(),
-            minimum: effective_min_reviewers,
+            minimum: min_reviewers,
         });
     }
     panel.validators = available_validators;
@@ -6672,7 +6639,6 @@ where
         cursor,
         &panel,
         min_reviewers,
-        probe_exhausted_validators,
         max_refinement_retries,
         prompt_reference,
         snapshot.rollback_point_meta.rollback_count,
@@ -6878,7 +6844,14 @@ where
             }
         }
     }
-    let effective_min_completers = min_completers.min(available_completers.len()).max(1);
+    let effective_min_completers = min_completers
+        .min(
+            panel
+                .completers
+                .len()
+                .saturating_sub(probe_exhausted_completers),
+        )
+        .max(1);
     if available_completers.len() < effective_min_completers {
         if probe_exhausted_completers > 0 {
             return Err(AppError::BackendUnavailable {
@@ -7131,7 +7104,14 @@ where
             }
         }
     }
-    let effective_min_reviewers = min_reviewers.min(available_reviewers.len()).max(1);
+    let effective_min_reviewers = min_reviewers
+        .min(
+            panel
+                .reviewers
+                .len()
+                .saturating_sub(probe_exhausted_reviewers),
+        )
+        .max(1);
     if available_reviewers.len() < effective_min_reviewers {
         if probe_exhausted_reviewers > 0 {
             return Err(AppError::BackendUnavailable {

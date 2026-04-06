@@ -28,9 +28,7 @@ use crate::contexts::agent_execution::policy::PromptReviewPanelResolution;
 use crate::contexts::agent_execution::service::AgentExecutionPort;
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
-use crate::contexts::project_run_record::model::{
-    ArtifactRecord, LogLevel, PayloadRecord, RuntimeLogEntry,
-};
+use crate::contexts::project_run_record::model::{ArtifactRecord, PayloadRecord};
 use crate::contexts::project_run_record::service::{PayloadArtifactWritePort, RuntimeLogWritePort};
 use crate::contexts::project_run_record::task_prompt_contract;
 use crate::contexts::workflow_composition::panel_contracts::{
@@ -69,7 +67,7 @@ pub struct PromptReviewResult {
 pub async fn execute_prompt_review<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     artifact_write: &dyn PayloadArtifactWritePort,
-    log_write: &dyn RuntimeLogWritePort,
+    _log_write: &dyn RuntimeLogWritePort,
     base_dir: &Path,
     project_root: &Path,
     backend_working_dir: &Path,
@@ -78,7 +76,6 @@ pub async fn execute_prompt_review<A, R, S>(
     cursor: &StageCursor,
     panel: &PromptReviewPanelResolution,
     min_reviewers: usize,
-    probe_exhausted_count: usize,
     max_refinement_retries: u32,
     prompt_reference: &str,
     rollback_count: u32,
@@ -98,14 +95,6 @@ where
             file: prompt_path.display().to_string(),
             details: format!("failed to read prompt for review: {e}"),
         })?;
-
-    if probe_exhausted_count > 0 {
-        tracing::warn!(
-            probe_exhausted = probe_exhausted_count,
-            validators = panel.validators.len(),
-            "prompt-review starting with {probe_exhausted_count} probe-time exhausted validator(s)"
-        );
-    }
 
     let refiner_target = &panel.refiner;
     let mut prior_concerns: Option<String> = None;
@@ -177,21 +166,12 @@ where
         )?;
 
         // ── Step 3: Invoke validators ──────────────────────────────────────
-        // BackendExhausted errors degrade gracefully: the validator is
-        // skipped and execution continues with remaining members.
-        //
-        // NOTE: This extends the original scope (which only required
-        // degradation in final_review and completion).  Prompt-review
-        // degradation trades validator coverage for run survivability:
-        // a refined prompt may be accepted with fewer validators than
-        // the configured min_reviewers, but the alternative is aborting
-        // the entire run when a single backend exhausts credits.
+        // Unlike completion/final-review, prompt-review does NOT degrade on
+        // BackendExhausted — any validator error aborts the stage.
         let mut executed_count = 0usize;
         let mut accept_count = 0usize;
         let mut reject_count = 0usize;
         let mut collected_concerns: Vec<String> = Vec::new();
-        let mut total_exhausted_count: usize = 0;
-        let mut last_exhaustion_error: Option<AppError> = None;
 
         for (i, member) in panel.validators.iter().enumerate() {
             let validator_target = &member.target;
@@ -218,50 +198,7 @@ where
 
             let (validation_payload, validator_producer) = match invocation_result {
                 Ok(result) => result,
-                Err(error) => {
-                    let is_exhausted = error
-                        .failure_class()
-                        .is_some_and(|fc| fc == FailureClass::BackendExhausted);
-                    if is_exhausted {
-                        total_exhausted_count += 1;
-                        tracing::warn!(
-                            validator = i,
-                            backend = %validator_target.backend.family,
-                            probe_exhausted = probe_exhausted_count,
-                            invocation_exhausted = total_exhausted_count,
-                            "prompt-review validator exhausted — skipping for graceful degradation"
-                        );
-                        let _ = log_write.append_runtime_log(
-                            base_dir,
-                            project_id,
-                            &RuntimeLogEntry {
-                                timestamp: Utc::now(),
-                                level: LogLevel::Warn,
-                                source: "prompt_review".to_owned(),
-                                message: format!(
-                                    "validator {i} ({}) unavailable (backend exhausted), skipping (probe_exhausted={}, invocation_exhausted={})",
-                                    validator_target.backend.family,
-                                    probe_exhausted_count,
-                                    total_exhausted_count,
-                                ),
-                            },
-                        );
-                        last_exhaustion_error = Some(error);
-                        // Early-exit: if quorum is mathematically impossible
-                        // with remaining validators, stop invoking and let the
-                        // post-loop check propagate the exhaustion error.
-                        let effective_min = min_reviewers
-                            .min(panel.validators.len().saturating_sub(total_exhausted_count))
-                            .max(1);
-                        if executed_count + panel.validators.len().saturating_sub(i + 1)
-                            < effective_min
-                        {
-                            break;
-                        }
-                        continue;
-                    }
-                    return Err(error);
-                }
+                Err(error) => return Err(error),
             };
 
             let validation: PromptValidationPayload =
@@ -309,19 +246,7 @@ where
         }
 
         // ── Step 4: Enforce min_reviewers ──────────────────────────────────
-        // Reduce the minimum only when exhaustion makes the configured
-        // minimum impossible.  panel.validators.len() is the post-probe
-        // panel; total_exhausted_count is invocation-time exhaustion.
-        let effective_min = min_reviewers
-            .min(panel.validators.len().saturating_sub(total_exhausted_count))
-            .max(1);
-        if executed_count < effective_min {
-            // When the shortfall is entirely due to backend exhaustion,
-            // propagate the last BackendExhausted error so the engine's
-            // failure-class-aware handling can apply (e.g., non-retryable).
-            if let Some(exhaustion_error) = last_exhaustion_error {
-                return Err(exhaustion_error);
-            }
+        if executed_count < min_reviewers {
             return Err(AppError::InsufficientPanelMembers {
                 panel: "prompt_review".to_owned(),
                 resolved: executed_count,
@@ -880,7 +805,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prompt_review_degrades_when_one_validator_exhausted() {
+    async fn prompt_review_fails_when_one_validator_exhausted() {
         let tmp = tempdir().expect("tempdir");
         let base_dir = tmp.path();
         let (project_id, project_root) = setup_prompt_review_project(base_dir, "pr-one-exhausted");
@@ -923,7 +848,6 @@ mod tests {
             &cursor,
             &panel,
             2, // min_reviewers
-            0, // probe_exhausted_count
             0, // max_refinement_retries
             "prompt.md",
             0, // rollback_count
@@ -933,10 +857,16 @@ mod tests {
         )
         .await;
 
+        // Prompt-review does NOT degrade on BackendExhausted — the first
+        // exhausted validator should immediately fail the stage.
+        let error = result
+            .err()
+            .expect("prompt-review should fail when any validator is exhausted (no degradation)");
         assert!(
-            result.is_ok(),
-            "panel should succeed with one exhausted validator: {}",
-            result.err().map_or("ok".to_owned(), |e| e.to_string())
+            error
+                .failure_class()
+                .is_some_and(|fc| fc == FailureClass::BackendExhausted),
+            "error should carry BackendExhausted failure class: {error:?}"
         );
     }
 
@@ -983,7 +913,6 @@ mod tests {
             &cursor,
             &panel,
             2, // min_reviewers
-            0, // probe_exhausted_count
             0, // max_refinement_retries
             "prompt.md",
             0, // rollback_count
@@ -993,10 +922,10 @@ mod tests {
         )
         .await
         .err()
-        .expect("panel should fail when all validators are exhausted");
+        .expect("panel should fail when first validator is exhausted");
 
-        // When all validators are exhausted, the quorum check propagates
-        // the BackendExhausted error for the engine's failure-class-aware handling.
+        // Prompt-review does not degrade — the first exhausted validator
+        // immediately propagates BackendExhausted.
         assert!(
             error
                 .failure_class()
