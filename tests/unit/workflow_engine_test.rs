@@ -1447,6 +1447,89 @@ async fn quick_dev_review_approved_with_amendments_runs_apply_fixes() {
 }
 
 #[tokio::test]
+async fn resume_after_apply_fixes_skipped_does_not_rerun_apply_fixes() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-skip-resume", FlowPreset::QuickDev);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    // FinalReview fails once (simulates crash after ApplyFixes was skipped),
+    // then succeeds on resume.
+    let failing_agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_transient_failure(StageId::FinalReview, 1),
+    );
+    let first_result = engine::execute_run(
+        &failing_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+    assert!(first_result.is_err());
+
+    // Verify that the StageSkipped event was committed before the failure.
+    let events_before = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let skipped: Vec<_> = events_before
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::StageSkipped)
+        .collect();
+    assert_eq!(skipped.len(), 1, "apply_fixes skip event must be committed");
+    assert_eq!(skipped[0].details["stage_id"], "apply_fixes");
+
+    // Resume — should pick up at FinalReview, not re-run ApplyFixes.
+    let resume_agent_service = build_agent_service();
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+
+    // Resume should start at final_review, not apply_fixes.
+    let run_resumed = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunResumed)
+        .expect("run_resumed");
+    assert_eq!(
+        run_resumed.details["resume_stage"], "final_review",
+        "resume must skip past apply_fixes which was already skipped"
+    );
+
+    // ApplyFixes must never have been entered.
+    let apply_fixes_entered = stage_events(&events, JournalEventType::StageEntered, "apply_fixes");
+    assert!(
+        apply_fixes_entered.is_empty(),
+        "apply_fixes must not be entered after being skipped"
+    );
+}
+
+#[tokio::test]
 async fn quick_dev_review_request_changes_restarts_from_apply_fixes() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();

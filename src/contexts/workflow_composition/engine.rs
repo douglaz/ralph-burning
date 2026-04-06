@@ -6415,6 +6415,11 @@ fn derive_resume_state(
                 // into the new round's budget.
                 retryable_failed_attempts.clear();
             }
+            crate::contexts::project_run_record::model::JournalEventType::StageSkipped => {
+                let stage_id = detail_stage_id(event, "stage_id")?;
+                current_cycle = detail_u32(event, "cycle").unwrap_or(current_cycle);
+                next_stage_index = stage_index_for(stage_plan, stage_id)? + 1;
+            }
             crate::contexts::project_run_record::model::JournalEventType::RunCompleted => {
                 next_stage_index = stage_plan.len();
             }
