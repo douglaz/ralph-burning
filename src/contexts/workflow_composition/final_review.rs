@@ -286,13 +286,18 @@ where
         let (reviewer_payload, producer) = match reviewer_payload {
             Ok(payload) => payload,
             // BackendExhausted is handled first regardless of required/optional
-            // status — an exhausted backend degrades with reduced quorum.
+            // status — an exhausted backend is skipped gracefully.
             Err(error)
                 if error
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
             {
-                proposal_exhausted_count += 1;
+                // Only reduce quorum for required members. Optional members
+                // were never counted toward min_reviewers, so exhausting one
+                // must not lower the effective threshold.
+                if member.required {
+                    proposal_exhausted_count += 1;
+                }
                 tracing::warn!(
                     reviewer = %reviewer_id,
                     "reviewer unavailable (backend exhausted), proceeding with remaining reviewers"
@@ -325,8 +330,8 @@ where
                     Some("failed_exhausted"),
                     Some(0),
                 );
-                // Reduce effective quorum for exhausted backends: allow
-                // proceeding with at least 1 reviewer if available.
+                // Reduce effective quorum for exhausted required backends:
+                // allow proceeding with at least 1 reviewer if available.
                 let effective_min = min_reviewers
                     .saturating_sub(proposal_exhausted_count)
                     .max(1);
@@ -540,6 +545,10 @@ where
             final_review_restart_count,
             max_restarts,
             summary: "No final-review amendments were proposed.".to_owned(),
+            exhausted_count: proposal_exhausted_count,
+            effective_min_reviewers: min_reviewers
+                .saturating_sub(proposal_exhausted_count)
+                .max(1),
         };
         let aggregate_payload = serde_json::to_value(&aggregate)?;
         let aggregate_artifact = renderers::render_final_review_aggregate(&aggregate);
@@ -854,13 +863,16 @@ where
         let (vote_payload, producer) = match vote_payload {
             Ok(payload) => payload,
             // BackendExhausted is handled first regardless of required/optional
-            // status — an exhausted backend degrades with reduced quorum.
+            // status — an exhausted backend is skipped gracefully.
             Err(error)
                 if error
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
             {
-                vote_exhausted_count += 1;
+                // Only reduce quorum for required members.
+                if reviewer.required {
+                    vote_exhausted_count += 1;
+                }
                 tracing::warn!(
                     reviewer = %reviewer.reviewer_id,
                     "reviewer unavailable during vote (backend exhausted), proceeding with remaining reviewers"
@@ -1393,6 +1405,9 @@ where
         .cloned()
         .collect();
 
+    let total_exhausted = proposal_exhausted_count + vote_exhausted_count;
+    let effective_min = min_reviewers.saturating_sub(total_exhausted).max(1);
+
     if !final_accepted_amendments.is_empty() && final_review_restart_count >= max_restarts {
         let aggregate = FinalReviewAggregatePayload {
             restart_required: false,
@@ -1417,6 +1432,8 @@ where
                 "Final-review restart cap reached ({final_review_restart_count}/{max_restarts}); force-completing instead of restarting with {} accepted amendment(s).",
                 final_accepted_amendments.len()
             ),
+            exhausted_count: total_exhausted,
+            effective_min_reviewers: effective_min,
         };
         let aggregate_payload = serde_json::to_value(&aggregate)?;
         let aggregate_artifact = renderers::render_final_review_aggregate(&aggregate);
@@ -1468,6 +1485,8 @@ where
                 final_accepted_amendments.len()
             )
         },
+        exhausted_count: total_exhausted,
+        effective_min_reviewers: effective_min,
     };
     let aggregate_payload = serde_json::to_value(&aggregate)?;
     let aggregate_artifact = renderers::render_final_review_aggregate(&aggregate);

@@ -459,6 +459,15 @@ pub fn render_final_review_aggregate(payload: &FinalReviewAggregatePayload) -> S
         payload.final_review_restart_count, payload.max_restarts
     )
     .unwrap();
+    if payload.exhausted_count > 0 {
+        writeln!(
+            out,
+            "**Effective Min Reviewers:** {}",
+            payload.effective_min_reviewers
+        )
+        .unwrap();
+        writeln!(out, "**Exhausted Count:** {}", payload.exhausted_count).unwrap();
+    }
     writeln!(out).unwrap();
 
     writeln!(out, "## Accepted").unwrap();

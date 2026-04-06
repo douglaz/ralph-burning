@@ -227,6 +227,13 @@ pub struct FinalReviewAggregatePayload {
     pub final_review_restart_count: u32,
     pub max_restarts: u32,
     pub summary: String,
+    /// Number of reviewers skipped due to backend exhaustion.
+    #[serde(default)]
+    pub exhausted_count: usize,
+    /// Effective minimum reviewers after reducing for exhausted backends.
+    /// When no backends are exhausted this equals the configured minimum.
+    #[serde(default)]
+    pub effective_min_reviewers: usize,
 }
 
 // ── Record Kind ────────────────────────────────────────────────────────────

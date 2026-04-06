@@ -168,7 +168,12 @@ where
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted);
                 if is_exhausted {
-                    exhausted_count += 1;
+                    // Only reduce quorum for required members. Optional
+                    // members were never counted toward min_completers, so
+                    // exhausting one must not lower the effective threshold.
+                    if member.required {
+                        exhausted_count += 1;
+                    }
                     tracing::warn!(
                         completer = i,
                         backend = %completer_target.backend.family,

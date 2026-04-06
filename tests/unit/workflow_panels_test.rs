@@ -194,6 +194,8 @@ fn final_review_aggregate_payload_round_trips() {
         final_review_restart_count: 1,
         max_restarts: 2,
         summary: "Restart required.".to_string(),
+        exhausted_count: 0,
+        effective_min_reviewers: 2,
     };
     let json = serde_json::to_string(&payload).expect("serializes");
     let restored: FinalReviewAggregatePayload = serde_json::from_str(&json).expect("deserializes");

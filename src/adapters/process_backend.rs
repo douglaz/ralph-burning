@@ -186,7 +186,7 @@ impl PreparedCommand {
                         .ok()
                         .filter(|val| !looks_like_claude_envelope(val))
                     {
-                        Some(val) => unwrap_claude_structured_output_payload(val),
+                        Some(val) => unwrap_claude_structured_output_transport_payload(val),
                         None => {
                             self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
