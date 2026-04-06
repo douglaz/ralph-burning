@@ -111,6 +111,7 @@ pub async fn execute_completion_panel<A, R, S>(
     cursor: &StageCursor,
     completers: &[ResolvedPanelMember],
     min_completers: usize,
+    probe_exhausted_count: usize,
     consensus_threshold: f64,
     prompt_reference: &str,
     rollback_count: u32,
@@ -247,11 +248,13 @@ where
     }
 
     // ── Check min_completers after execution ──────────────────────────────
-    // Reduce effective quorum for exhausted backends: allow proceeding with
-    // at least 1 completer if available, rather than requiring the original
-    // min_completers which may be unachievable.
+    // Reduce effective quorum for ALL exhausted backends (probe-time +
+    // invocation-time): allow proceeding with at least 1 completer if
+    // available, rather than requiring the original min_completers which
+    // may be unachievable.
     let total_voters = executed_voters.len();
-    let effective_min_completers = min_completers.saturating_sub(total_exhausted_count).max(1);
+    let all_exhausted = probe_exhausted_count + total_exhausted_count;
+    let effective_min_completers = min_completers.saturating_sub(all_exhausted).max(1);
     if total_voters < effective_min_completers {
         // When the shortfall is entirely due to backend exhaustion,
         // propagate the last BackendExhausted error so the engine's
@@ -284,7 +287,8 @@ where
         consensus_threshold,
         min_completers,
         effective_min_completers,
-        exhausted_count: total_exhausted_count,
+        exhausted_count: all_exhausted,
+        probe_exhausted_count,
         executed_voters,
     };
 
@@ -741,6 +745,7 @@ mod tests {
             &cursor,
             &completers,
             2,    // min_completers
+            0,    // probe_exhausted_count
             0.66, // consensus_threshold
             "prompt.md",
             0, // rollback_count
@@ -793,6 +798,7 @@ mod tests {
             &cursor,
             &completers,
             2,    // min_completers
+            0,    // probe_exhausted_count
             0.66, // consensus_threshold
             "prompt.md",
             0, // rollback_count

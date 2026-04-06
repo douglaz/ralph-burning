@@ -210,6 +210,7 @@ pub async fn execute_final_review_panel<A, R, S>(
     cursor: &StageCursor,
     panel: &FinalReviewPanelResolution,
     min_reviewers: usize,
+    probe_exhausted_count: usize,
     consensus_threshold: f64,
     max_restarts: u32,
     final_review_restart_count: u32,
@@ -328,10 +329,10 @@ where
                     Some("failed_exhausted"),
                     Some(0),
                 );
-                // Reduce effective quorum for exhausted required backends:
-                // allow proceeding with at least 1 reviewer if available.
+                // Reduce effective quorum for ALL exhausted backends (probe +
+                // invocation): allow proceeding with at least 1 reviewer.
                 let effective_min = min_reviewers
-                    .saturating_sub(proposal_total_exhausted)
+                    .saturating_sub(probe_exhausted_count + proposal_total_exhausted)
                     .max(1);
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
                     < effective_min
@@ -369,10 +370,10 @@ where
                     Some("failed_optional"),
                     Some(0),
                 );
-                // Use the reduced quorum: if a required reviewer was already
-                // skipped as exhausted, the effective threshold is lower.
+                // Use the reduced quorum: includes both probe-time and
+                // invocation-time exhausted members.
                 let effective_optional_min = min_reviewers
-                    .saturating_sub(proposal_total_exhausted)
+                    .saturating_sub(probe_exhausted_count + proposal_total_exhausted)
                     .max(1);
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
                     < effective_optional_min
@@ -518,9 +519,8 @@ where
         });
     }
 
-    let effective_proposal_min = min_reviewers
-        .saturating_sub(proposal_total_exhausted)
-        .max(1);
+    let all_proposal_exhausted = probe_exhausted_count + proposal_total_exhausted;
+    let effective_proposal_min = min_reviewers.saturating_sub(all_proposal_exhausted).max(1);
     if reviewer_records.len() < effective_proposal_min {
         return Err(AppError::InsufficientPanelMembers {
             panel: "final_review".to_owned(),
@@ -548,10 +548,9 @@ where
             final_review_restart_count,
             max_restarts,
             summary: "No final-review amendments were proposed.".to_owned(),
-            exhausted_count: proposal_total_exhausted,
-            effective_min_reviewers: min_reviewers
-                .saturating_sub(proposal_total_exhausted)
-                .max(1),
+            exhausted_count: all_proposal_exhausted,
+            probe_exhausted_count,
+            effective_min_reviewers: effective_proposal_min,
         };
         let aggregate_payload = serde_json::to_value(&aggregate)?;
         let aggregate_artifact = renderers::render_final_review_aggregate(&aggregate);
@@ -908,7 +907,9 @@ where
                     Some(0),
                 );
                 let effective_min = min_reviewers
-                    .saturating_sub(proposal_total_exhausted + vote_total_exhausted)
+                    .saturating_sub(
+                        probe_exhausted_count + proposal_total_exhausted + vote_total_exhausted,
+                    )
                     .max(1);
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
                     < effective_min
@@ -949,7 +950,9 @@ where
                 // Use the reduced quorum: if required reviewers were already
                 // skipped as exhausted, the effective threshold is lower.
                 let effective_optional_min = min_reviewers
-                    .saturating_sub(proposal_total_exhausted + vote_total_exhausted)
+                    .saturating_sub(
+                        probe_exhausted_count + proposal_total_exhausted + vote_total_exhausted,
+                    )
                     .max(1);
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
                     < effective_optional_min
@@ -1128,7 +1131,7 @@ where
     // Account for both proposal-phase and vote-phase exhaustions when
     // computing the effective vote quorum.
     let effective_vote_min = min_reviewers
-        .saturating_sub(proposal_total_exhausted + vote_total_exhausted)
+        .saturating_sub(probe_exhausted_count + proposal_total_exhausted + vote_total_exhausted)
         .max(1);
     if reviewer_votes.len() < effective_vote_min {
         return Err(AppError::InsufficientPanelMembers {
@@ -1412,7 +1415,8 @@ where
         .cloned()
         .collect();
 
-    let total_all_exhausted = proposal_total_exhausted + vote_total_exhausted;
+    let total_all_exhausted =
+        probe_exhausted_count + proposal_total_exhausted + vote_total_exhausted;
     let effective_min = min_reviewers.saturating_sub(total_all_exhausted).max(1);
 
     if !final_accepted_amendments.is_empty() && final_review_restart_count >= max_restarts {
@@ -1440,6 +1444,7 @@ where
                 final_accepted_amendments.len()
             ),
             exhausted_count: total_all_exhausted,
+            probe_exhausted_count,
             effective_min_reviewers: effective_min,
         };
         let aggregate_payload = serde_json::to_value(&aggregate)?;
@@ -1493,6 +1498,7 @@ where
             )
         },
         exhausted_count: total_all_exhausted,
+        probe_exhausted_count,
         effective_min_reviewers: effective_min,
     };
     let aggregate_payload = serde_json::to_value(&aggregate)?;
@@ -2563,6 +2569,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.0,
             0,
             0,
@@ -2641,6 +2648,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.0,
             0,
             0,
@@ -2720,6 +2728,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.0,
             0,
             0,
@@ -2801,6 +2810,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.1,
             0,
             0,
@@ -2894,6 +2904,7 @@ mod tests {
             &cursor,
             &panel,
             2,
+            0,
             0.66,
             2,
             0,
@@ -2992,6 +3003,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.0,
             0,
             0,
@@ -3072,6 +3084,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.0,
             0,
             0,
@@ -3159,6 +3172,7 @@ mod tests {
             &cursor,
             &panel,
             2,
+            0,
             0.66,
             2,
             0,
@@ -3228,6 +3242,7 @@ mod tests {
             &cursor,
             &panel,
             2,
+            0,
             0.5,
             2,
             0,
@@ -3316,6 +3331,7 @@ mod tests {
             &cursor,
             &panel,
             2,    // min_reviewers
+            0,    // probe_exhausted_count
             0.66, // acceptance_threshold
             2,    // total_reviewers
             0,    // rollback_count
@@ -3395,6 +3411,7 @@ mod tests {
             &cursor,
             &panel,
             2,    // min_reviewers
+            0,    // probe_exhausted_count
             0.66, // acceptance_threshold
             2,    // total_reviewers
             0,    // rollback_count

@@ -38,8 +38,8 @@ use crate::contexts::workflow_composition::panel_contracts::{
 use crate::contexts::workflow_composition::renderers;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
-    BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
-    StageCursor, StageId,
+    BackendFamily, BackendRole, FailureClass, ProjectId, ResolvedBackendTarget, RunId,
+    SessionPolicy, StageCursor, StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -76,6 +76,7 @@ pub async fn execute_prompt_review<A, R, S>(
     cursor: &StageCursor,
     panel: &PromptReviewPanelResolution,
     min_reviewers: usize,
+    probe_exhausted_count: usize,
     max_refinement_retries: u32,
     prompt_reference: &str,
     rollback_count: u32,
@@ -166,15 +167,19 @@ where
         )?;
 
         // ── Step 3: Invoke validators ──────────────────────────────────────
+        // BackendExhausted errors degrade gracefully: the validator is
+        // skipped and execution continues with remaining members.
         let mut executed_count = 0usize;
         let mut accept_count = 0usize;
         let mut reject_count = 0usize;
         let mut collected_concerns: Vec<String> = Vec::new();
+        let mut total_exhausted_count: usize = 0;
+        let mut last_exhaustion_error: Option<AppError> = None;
 
         for (i, member) in panel.validators.iter().enumerate() {
             let validator_target = &member.target;
             let validator_timeout = timeout_for_backend(validator_target.backend.family);
-            let (validation_payload, validator_producer) = invoke_panel_member(
+            let invocation_result = invoke_panel_member(
                 agent_service,
                 base_dir,
                 project_root,
@@ -192,14 +197,34 @@ where
                 &[],
                 &retry_suffix,
             )
-            .await?;
+            .await;
+
+            let (validation_payload, validator_producer) = match invocation_result {
+                Ok(result) => result,
+                Err(error) => {
+                    let is_exhausted = error
+                        .failure_class()
+                        .is_some_and(|fc| fc == FailureClass::BackendExhausted);
+                    if is_exhausted {
+                        total_exhausted_count += 1;
+                        tracing::warn!(
+                            validator = i,
+                            backend = %validator_target.backend.family,
+                            "prompt-review validator exhausted — skipping for graceful degradation"
+                        );
+                        last_exhaustion_error = Some(error);
+                        continue;
+                    }
+                    return Err(error);
+                }
+            };
 
             let validation: PromptValidationPayload =
                 serde_json::from_value(validation_payload.clone()).map_err(|e| {
                     AppError::InvocationFailed {
                         backend: validator_target.backend.family.to_string(),
                         contract_id: "prompt_review:validator".to_owned(),
-                        failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                        failure_class: FailureClass::SchemaValidationFailure,
                         details: format!("validator output schema validation failed: {e}"),
                     }
                 })?;
@@ -239,7 +264,18 @@ where
         }
 
         // ── Step 4: Enforce min_reviewers ──────────────────────────────────
-        if executed_count < min_reviewers {
+        // Reduce the minimum by ALL exhausted validators (probe-time +
+        // invocation-time) so that exhaustion degrades gracefully instead
+        // of aborting outright.
+        let all_exhausted = probe_exhausted_count + total_exhausted_count;
+        let effective_min = min_reviewers.saturating_sub(all_exhausted).max(1);
+        if executed_count < effective_min {
+            // When the shortfall is entirely due to backend exhaustion,
+            // propagate the last BackendExhausted error so the engine's
+            // failure-class-aware handling can apply (e.g., non-retryable).
+            if let Some(exhaustion_error) = last_exhaustion_error {
+                return Err(exhaustion_error);
+            }
             return Err(AppError::InsufficientPanelMembers {
                 panel: "prompt_review".to_owned(),
                 resolved: executed_count,

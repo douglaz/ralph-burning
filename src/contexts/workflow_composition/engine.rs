@@ -1446,6 +1446,7 @@ where
                     })?;
                 let min_reviewers = effective_config.prompt_review_policy().min_reviewers;
                 let mut available = Vec::new();
+                let mut resume_exhausted: usize = 0;
                 for member in &panel.validators {
                     match agent_service
                         .adapter()
@@ -1454,6 +1455,14 @@ where
                     {
                         Ok(()) => available.push(member.clone()),
                         Err(e) => {
+                            // BackendExhausted on resume → skip for graceful
+                            // degradation instead of aborting.
+                            if e.failure_class()
+                                .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                            {
+                                resume_exhausted += 1;
+                                continue;
+                            }
                             if member.required {
                                 return Err(AppError::ResumeDriftFailure {
                                     stage_id: current_stage,
@@ -1463,12 +1472,17 @@ where
                         }
                     }
                 }
-                if available.len() < min_reviewers {
+                let effective_min = min_reviewers.saturating_sub(resume_exhausted).max(1);
+                if resume_exhausted > 0 {
+                    resume_effective_min = Some(effective_min);
+                }
+                if available.len() < effective_min {
                     return Err(AppError::ResumeDriftFailure {
                         stage_id: current_stage,
                         details: format!(
-                            "available prompt-review validators ({}) < min_reviewers ({}) on resume",
-                            available.len(), min_reviewers,
+                            "available prompt-review validators ({}) < effective min_reviewers ({}) on resume",
+                            available.len(),
+                            effective_min,
                         ),
                     });
                 }
@@ -6655,7 +6669,8 @@ where
         run_id,
         cursor,
         &panel,
-        effective_min_reviewers,
+        min_reviewers,
+        probe_exhausted_validators,
         max_refinement_retries,
         prompt_reference,
         snapshot.rollback_point_meta.rollback_count,
@@ -6954,7 +6969,8 @@ where
         run_id,
         cursor,
         &panel.completers,
-        effective_min_completers,
+        min_completers,
+        probe_exhausted_completers,
         consensus_threshold,
         prompt_reference,
         snapshot.rollback_point_meta.rollback_count,
@@ -7210,7 +7226,8 @@ where
         seq,
         cursor,
         &panel,
-        effective_min_reviewers,
+        min_reviewers,
+        probe_exhausted_reviewers,
         consensus_threshold,
         max_restarts,
         current_active_run(snapshot)?.final_review_restart_count,

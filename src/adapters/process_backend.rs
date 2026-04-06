@@ -1432,9 +1432,13 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             Some(err) => err,
                             None => truncate_str(&fresh_stdout_text, STDOUT_EXHAUSTION_SCAN_LIMIT),
                         };
+                        // Narrow stderr to its tail — codex backends may
+                        // echo user prompts at the start of stderr.
+                        let fresh_stderr_for_class =
+                            truncate_str_tail(&fresh_stderr, STDERR_EXHAUSTION_SCAN_LIMIT);
                         let failure_class = classify_exit_failure_with_output(
                             fresh_output.status,
-                            &fresh_stderr,
+                            fresh_stderr_for_class,
                             fresh_stdout_for_class,
                         );
                         fresh_prepared
@@ -1469,8 +1473,11 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     Some(err) => err,
                     None => truncate_str(&stdout_text, STDOUT_EXHAUSTION_SCAN_LIMIT),
                 };
+                // Narrow stderr to its tail — codex backends may echo
+                // user prompts at the start of stderr.
+                let stderr_for_class = truncate_str_tail(&stderr, STDERR_EXHAUSTION_SCAN_LIMIT);
                 let failure_class =
-                    classify_exit_failure_with_output(status, &stderr, stdout_for_class);
+                    classify_exit_failure_with_output(status, stderr_for_class, stdout_for_class);
                 prepared.cleanup_failed_invocation(&request, &output).await;
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
@@ -1759,6 +1766,13 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
 /// coincidentally contain exhaustion keywords deeper in the output.
 pub(crate) const STDOUT_EXHAUSTION_SCAN_LIMIT: usize = 4096;
 
+/// Maximum bytes of stderr tail to scan for exhaustion patterns.
+/// Codex-style backends may echo user prompts (which could contain
+/// exhaustion keywords) at the beginning of stderr; the actual error
+/// message lives at the end. Scanning only the tail avoids false
+/// positives from prompt echo content.
+pub(crate) const STDERR_EXHAUSTION_SCAN_LIMIT: usize = 4096;
+
 /// Truncate a string to at most `max_bytes` bytes at a valid UTF-8
 /// character boundary.
 pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
@@ -1770,6 +1784,21 @@ pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Return the last `max_bytes` bytes of a string at a valid UTF-8
+/// character boundary. Used to narrow stderr to its tail where the
+/// actual error message resides, skipping echoed prompt content at
+/// the start.
+pub(crate) fn truncate_str_tail(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut start = s.len() - max_bytes;
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
 }
 
 /// Check whether error output text contains patterns indicating

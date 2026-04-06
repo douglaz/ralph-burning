@@ -11185,6 +11185,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                 min_completers: 1,
                 effective_min_completers: 1,
                 exhausted_count: 0,
+                probe_exhausted_count: 0,
                 executed_voters: vec![
                     "claude:claude-opus-4-6".to_owned(),
                     "codex:codex-1".to_owned(),
@@ -11313,6 +11314,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             min_completers: 1,
             effective_min_completers: 1,
             exhausted_count: 0,
+            probe_exhausted_count: 0,
             executed_voters: vec![
                 "claude:claude-opus-4-6".to_owned(),
                 "codex:codex-1".to_owned(),

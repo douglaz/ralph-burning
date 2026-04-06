@@ -107,6 +107,7 @@ fn completion_aggregate_payload_round_trips() {
         min_completers: 2,
         effective_min_completers: 2,
         exhausted_count: 0,
+        probe_exhausted_count: 0,
         executed_voters: vec!["claude/claude-3-5-sonnet".to_string()],
     };
     let json = serde_json::to_string(&payload).expect("serializes");
@@ -195,6 +196,7 @@ fn final_review_aggregate_payload_round_trips() {
         max_restarts: 2,
         summary: "Restart required.".to_string(),
         exhausted_count: 0,
+        probe_exhausted_count: 0,
         effective_min_reviewers: 2,
     };
     let json = serde_json::to_string(&payload).expect("serializes");
