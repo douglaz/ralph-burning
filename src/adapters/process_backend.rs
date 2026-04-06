@@ -1734,6 +1734,7 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
     "insufficient_quota",
     "billing hard limit",
     "hard limit reached",
+    "rate limit reached",
 ];
 
 /// Check whether process output text contains patterns indicating
@@ -3541,6 +3542,18 @@ mod tests {
             assert!(!is_backend_exhausted(
                 "Rate limit exceeded. Please retry after 1s",
                 ""
+            ));
+        }
+
+        #[test]
+        fn detects_rate_limit_reached_with_reset_time() {
+            assert!(is_backend_exhausted(
+                "Rate limit reached, try again at 3:03 PM",
+                "",
+            ));
+            assert!(is_backend_exhausted(
+                "",
+                "Error: rate limit reached for this model",
             ));
         }
 

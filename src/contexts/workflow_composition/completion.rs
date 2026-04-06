@@ -139,7 +139,9 @@ where
     let mut complete_votes = 0usize;
     let mut continue_votes = 0usize;
     let mut executed_voters: Vec<String> = Vec::new();
-    let mut exhausted_count: usize = 0;
+    let mut required_exhausted_count: usize = 0;
+    let mut total_exhausted_count: usize = 0;
+    let mut last_exhaustion_error: Option<AppError> = None;
 
     for (i, member) in completers.iter().enumerate() {
         let completer_target = &member.target;
@@ -168,11 +170,13 @@ where
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted);
                 if is_exhausted {
+                    // Track all exhausted members for aggregate reporting.
+                    total_exhausted_count += 1;
                     // Only reduce quorum for required members. Optional
                     // members were never counted toward min_completers, so
                     // exhausting one must not lower the effective threshold.
                     if member.required {
-                        exhausted_count += 1;
+                        required_exhausted_count += 1;
                     }
                     tracing::warn!(
                         completer = i,
@@ -192,6 +196,18 @@ where
                             ),
                         },
                     );
+                    // Early-exit quorum check: if the executed voters plus
+                    // the remaining members cannot reach the effective
+                    // minimum, fail immediately instead of continuing.
+                    let effective_min = min_completers
+                        .saturating_sub(required_exhausted_count)
+                        .max(1);
+                    if executed_voters.len() + completers.len().saturating_sub(i + 1)
+                        < effective_min
+                    {
+                        last_exhaustion_error = Some(error);
+                        break;
+                    }
                     continue;
                 }
                 return Err(error);
@@ -245,12 +261,20 @@ where
     // at least 1 completer if available, rather than requiring the original
     // min_completers which may be unachievable.
     let total_voters = executed_voters.len();
-    let effective_min_completers = min_completers.saturating_sub(exhausted_count).max(1);
+    let effective_min_completers = min_completers
+        .saturating_sub(required_exhausted_count)
+        .max(1);
     if total_voters < effective_min_completers {
+        // When the shortfall is entirely due to backend exhaustion,
+        // propagate the last BackendExhausted error so the engine's
+        // failure-class-aware handling can apply (e.g., non-retryable).
+        if let Some(exhaustion_error) = last_exhaustion_error {
+            return Err(exhaustion_error);
+        }
         return Err(AppError::InsufficientPanelMembers {
             panel: "completion".to_owned(),
             resolved: total_voters,
-            minimum: min_completers,
+            minimum: effective_min_completers,
         });
     }
 
@@ -272,7 +296,7 @@ where
         consensus_threshold,
         min_completers,
         effective_min_completers,
-        exhausted_count,
+        exhausted_count: total_exhausted_count,
         executed_voters,
     };
 
@@ -791,9 +815,14 @@ mod tests {
         .err()
         .expect("panel should fail when all completers are exhausted");
 
+        // When all completers are exhausted, the early-exit quorum check
+        // propagates the BackendExhausted error so the engine's
+        // failure-class-aware handling applies (non-retryable).
         assert!(
-            matches!(error, AppError::InsufficientPanelMembers { .. }),
-            "error should be InsufficientPanelMembers: {error:?}"
+            error
+                .failure_class()
+                .is_some_and(|fc| fc == FailureClass::BackendExhausted),
+            "error should carry BackendExhausted failure class: {error:?}"
         );
     }
 }

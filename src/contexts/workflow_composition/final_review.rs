@@ -235,6 +235,7 @@ where
 
     let mut reviewer_records = Vec::new();
     let mut proposal_exhausted_count: usize = 0;
+    let mut proposal_total_exhausted: usize = 0;
     for (idx, member) in panel.reviewers.iter().enumerate() {
         let reviewer_id = final_review_reviewer_id(idx);
         let reviewer_prompt =
@@ -292,6 +293,8 @@ where
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
             {
+                // Track all exhausted members for aggregate reporting.
+                proposal_total_exhausted += 1;
                 // Only reduce quorum for required members. Optional members
                 // were never counted toward min_reviewers, so exhausting one
                 // must not lower the effective threshold.
@@ -522,7 +525,7 @@ where
         return Err(AppError::InsufficientPanelMembers {
             panel: "final_review".to_owned(),
             resolved: reviewer_records.len(),
-            minimum: min_reviewers,
+            minimum: effective_proposal_min,
         });
     }
 
@@ -545,7 +548,7 @@ where
             final_review_restart_count,
             max_restarts,
             summary: "No final-review amendments were proposed.".to_owned(),
-            exhausted_count: proposal_exhausted_count,
+            exhausted_count: proposal_total_exhausted,
             effective_min_reviewers: min_reviewers
                 .saturating_sub(proposal_exhausted_count)
                 .max(1),
@@ -794,6 +797,7 @@ where
 
     let mut reviewer_votes = Vec::new();
     let mut vote_exhausted_count: usize = 0;
+    let mut vote_total_exhausted: usize = 0;
     for (idx, reviewer) in reviewer_records.iter().enumerate() {
         let vote_prompt = build_voter_prompt(
             "Final Review Votes",
@@ -869,6 +873,8 @@ where
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
             {
+                // Track all exhausted members for aggregate reporting.
+                vote_total_exhausted += 1;
                 // Only reduce quorum for required members.
                 if reviewer.required {
                     vote_exhausted_count += 1;
@@ -1127,7 +1133,7 @@ where
         return Err(AppError::InsufficientPanelMembers {
             panel: "final_review_vote".to_owned(),
             resolved: reviewer_votes.len(),
-            minimum: min_reviewers,
+            minimum: effective_vote_min,
         });
     }
 
@@ -1405,8 +1411,11 @@ where
         .cloned()
         .collect();
 
-    let total_exhausted = proposal_exhausted_count + vote_exhausted_count;
-    let effective_min = min_reviewers.saturating_sub(total_exhausted).max(1);
+    let total_all_exhausted = proposal_total_exhausted + vote_total_exhausted;
+    let total_required_exhausted = proposal_exhausted_count + vote_exhausted_count;
+    let effective_min = min_reviewers
+        .saturating_sub(total_required_exhausted)
+        .max(1);
 
     if !final_accepted_amendments.is_empty() && final_review_restart_count >= max_restarts {
         let aggregate = FinalReviewAggregatePayload {
@@ -1432,7 +1441,7 @@ where
                 "Final-review restart cap reached ({final_review_restart_count}/{max_restarts}); force-completing instead of restarting with {} accepted amendment(s).",
                 final_accepted_amendments.len()
             ),
-            exhausted_count: total_exhausted,
+            exhausted_count: total_all_exhausted,
             effective_min_reviewers: effective_min,
         };
         let aggregate_payload = serde_json::to_value(&aggregate)?;
@@ -1485,7 +1494,7 @@ where
                 final_accepted_amendments.len()
             )
         },
-        exhausted_count: total_exhausted,
+        exhausted_count: total_all_exhausted,
         effective_min_reviewers: effective_min,
     };
     let aggregate_payload = serde_json::to_value(&aggregate)?;
