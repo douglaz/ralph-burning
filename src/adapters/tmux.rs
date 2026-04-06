@@ -17,7 +17,10 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::adapters::fs::FileSystem;
-use crate::adapters::process_backend::{classify_exit_failure, ChildOutput, ProcessBackendAdapter};
+use crate::adapters::process_backend::{
+    classify_exit_failure_with_output, extract_stdout_error, truncate_str_tail, ChildOutput,
+    ProcessBackendAdapter, STDERR_EXHAUSTION_SCAN_LIMIT,
+};
 use crate::contexts::agent_execution::model::{
     InvocationContract, InvocationEnvelope, InvocationRequest,
 };
@@ -626,7 +629,21 @@ impl AgentExecutionPort for TmuxAdapter {
             }
 
             prepared.cleanup().await;
-            let failure_class = classify_exit_failure(output.status);
+            let stdout_error = extract_stdout_error(&output.stdout);
+            // Only use extracted error text for classification.
+            // Raw stdout is NOT used as fallback — model conversation
+            // output may coincidentally contain exhaustion keywords.
+            // Trade-off: plain-text-only stdout errors won't be detected;
+            // stderr scanning covers all known backends.
+            let stdout_for_class = stdout_error.as_deref().unwrap_or_default();
+            // Narrow stderr to its tail — codex backends may echo
+            // user prompts at the start of stderr.
+            let stderr_for_class = truncate_str_tail(&stderr, STDERR_EXHAUSTION_SCAN_LIMIT);
+            let failure_class = classify_exit_failure_with_output(
+                output.status,
+                stderr_for_class,
+                stdout_for_class,
+            );
             return Err(AppError::InvocationFailed {
                 backend: request.resolved_target.backend.family.to_string(),
                 contract_id: request.contract.label(),

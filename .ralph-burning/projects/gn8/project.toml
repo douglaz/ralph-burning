@@ -1,7 +1,0 @@
-id = "gn8"
-name = "Harden retry policy"
-flow = "minimal"
-prompt_reference = "prompt.md"
-prompt_hash = "3bfdc4d039c93b65"
-created_at = "2026-03-30T04:03:33.255648271Z"
-status_summary = "created"

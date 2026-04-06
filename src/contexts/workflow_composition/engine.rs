@@ -267,6 +267,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                     &panel.validators,
                     effective_config.prompt_review_policy().min_reviewers,
                     &mut probed,
+                    false, // prompt_review does not degrade on BackendExhausted
                 )
                 .await?;
             }
@@ -288,6 +289,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                     &panel.completers,
                     effective_config.completion_policy().min_completers,
                     &mut probed,
+                    true, // completion supports graceful degradation
                 )
                 .await?;
             }
@@ -322,6 +324,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                     &panel.reviewers,
                     effective_config.final_review_policy().min_reviewers,
                     &mut probed,
+                    true, // final_review supports graceful degradation
                 )
                 .await?;
             }
@@ -440,8 +443,10 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
     members: &[ResolvedPanelMember],
     minimum: usize,
     probed: &mut Vec<ResolvedBackendTarget>,
+    supports_degradation: bool,
 ) -> AppResult<()> {
     let mut available_members = 0usize;
+    let mut exhausted_count = 0usize;
 
     for member in members {
         let contract = InvocationContract::Panel {
@@ -481,6 +486,19 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
                 available_members += 1;
             }
             Err(error) => {
+                // BackendExhausted → skip for graceful degradation instead
+                // of aborting the entire preflight.  Only applies to panels
+                // that support degradation (completion, final_review); for
+                // prompt_review the exhaustion falls through to the normal
+                // required/optional handling below.
+                if supports_degradation
+                    && error
+                        .failure_class()
+                        .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                {
+                    exhausted_count += 1;
+                    continue;
+                }
                 if member.required {
                     return Err(AppError::PreflightFailed {
                         stage_id,
@@ -493,13 +511,18 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
         }
     }
 
-    if available_members < minimum {
+    // Only BackendExhausted skips reduce quorum — other optional
+    // unavailability keeps the original configured minimum.
+    let effective_min = minimum
+        .min(members.len().saturating_sub(exhausted_count))
+        .max(1);
+    if available_members < effective_min {
         return Err(AppError::PreflightFailed {
             stage_id,
             details: AppError::InsufficientPanelMembers {
                 panel: panel_name.to_owned(),
                 resolved: available_members,
-                minimum,
+                minimum: effective_min,
             }
             .to_string(),
         });
@@ -1294,6 +1317,7 @@ where
                     );
                     snapshot.status = RunStatus::Failed;
                     snapshot.active_run = None;
+                    snapshot.status_summary = "failed (reconciled from journal)".to_owned();
                     // Best-effort: try to persist the reconciled snapshot so
                     // future operations don't need to reconcile again.
                     let _ = run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot);
@@ -1415,6 +1439,9 @@ where
         // comparison reflects the actual executable panel, not just
         // config-enabled state. Required unavailable backends fail here;
         // optional unavailable backends are removed before comparison.
+        // Track effective min when BackendExhausted members are skipped,
+        // so drift_still_satisfies_requirements uses the reduced quorum.
+        let mut resume_effective_min: Option<usize> = None;
         let new_snapshot = match current_stage {
             StageId::PromptReview => {
                 let mut panel = policy.resolve_prompt_review_panel(resume_state.cursor.cycle)?;
@@ -1440,6 +1467,8 @@ where
                     {
                         Ok(()) => available.push(member.clone()),
                         Err(e) => {
+                            // Prompt-review does NOT degrade on BackendExhausted
+                            // — any unavailable validator follows normal rules.
                             if member.required {
                                 return Err(AppError::ResumeDriftFailure {
                                     stage_id: current_stage,
@@ -1454,7 +1483,8 @@ where
                         stage_id: current_stage,
                         details: format!(
                             "available prompt-review validators ({}) < min_reviewers ({}) on resume",
-                            available.len(), min_reviewers,
+                            available.len(),
+                            min_reviewers,
                         ),
                     });
                 }
@@ -1465,6 +1495,7 @@ where
                 let mut panel = policy.resolve_completion_panel(resume_state.cursor.cycle)?;
                 let min_completers = effective_config.completion_policy().min_completers;
                 let mut available = Vec::new();
+                let mut resume_exhausted: usize = 0;
                 for member in &panel.completers {
                     match agent_service
                         .adapter()
@@ -1473,6 +1504,14 @@ where
                     {
                         Ok(()) => available.push(member.clone()),
                         Err(e) => {
+                            // BackendExhausted on resume → skip for graceful
+                            // degradation instead of aborting.
+                            if e.failure_class()
+                                .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                            {
+                                resume_exhausted += 1;
+                                continue;
+                            }
                             if member.required {
                                 return Err(AppError::ResumeDriftFailure {
                                     stage_id: current_stage,
@@ -1484,13 +1523,19 @@ where
                         }
                     }
                 }
-                if available.len() < min_completers {
+                let effective_min = min_completers
+                    .min(panel.completers.len().saturating_sub(resume_exhausted))
+                    .max(1);
+                if resume_exhausted > 0 {
+                    resume_effective_min = Some(effective_min);
+                }
+                if available.len() < effective_min {
                     return Err(AppError::ResumeDriftFailure {
                         stage_id: current_stage,
                         details: format!(
-                            "available completers ({}) < min_completers ({}) on resume",
+                            "available completers ({}) < effective min_completers ({}) on resume",
                             available.len(),
-                            min_completers,
+                            effective_min,
                         ),
                     });
                 }
@@ -1523,6 +1568,7 @@ where
                         ),
                     })?;
                 let mut available = Vec::new();
+                let mut resume_exhausted: usize = 0;
                 for member in &panel.reviewers {
                     match agent_service
                         .adapter()
@@ -1531,6 +1577,14 @@ where
                     {
                         Ok(()) => available.push(member.clone()),
                         Err(e) => {
+                            // BackendExhausted on resume → skip for graceful
+                            // degradation instead of aborting.
+                            if e.failure_class()
+                                .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                            {
+                                resume_exhausted += 1;
+                                continue;
+                            }
                             if member.required {
                                 return Err(AppError::ResumeDriftFailure {
                                     stage_id: current_stage,
@@ -1542,13 +1596,19 @@ where
                         }
                     }
                 }
-                if available.len() < min_reviewers {
+                let effective_min = min_reviewers
+                    .min(panel.reviewers.len().saturating_sub(resume_exhausted))
+                    .max(1);
+                if resume_exhausted > 0 {
+                    resume_effective_min = Some(effective_min);
+                }
+                if available.len() < effective_min {
                     return Err(AppError::ResumeDriftFailure {
                         stage_id: current_stage,
                         details: format!(
-                            "available final-review reviewers ({}) < min_reviewers ({}) on resume",
+                            "available final-review reviewers ({}) < effective min_reviewers ({}) on resume",
                             available.len(),
-                            min_reviewers,
+                            effective_min,
                         ),
                     });
                 }
@@ -1573,7 +1633,12 @@ where
 
         if resolution_has_drifted(&old_snapshot, &new_snapshot) {
             // Fail early if requirements no longer met.
-            drift_still_satisfies_requirements(&new_snapshot, current_stage, effective_config)?;
+            drift_still_satisfies_requirements(
+                &new_snapshot,
+                current_stage,
+                effective_config,
+                resume_effective_min,
+            )?;
             // Warn and update snapshot.
             emit_resume_drift_warning(
                 &old_snapshot,
@@ -5490,7 +5555,7 @@ async fn fail_run(
             stage_id.as_str(),
         );
         // Brief delay before retry to let transient conditions clear.
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if let Err(second_err) =
             run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
         {
@@ -6481,7 +6546,9 @@ where
 
     // Required unavailable validators fail resolution; optional
     // unavailable validators are removed so the snapshot only records
-    // members that will actually execute.
+    // members that will actually execute.  Unlike completion/final-review,
+    // prompt-review does NOT degrade on BackendExhausted — any unavailable
+    // validator (exhausted or otherwise) follows normal required/optional rules.
     let mut available_validators = Vec::new();
     for member in &panel.validators {
         match agent_service
@@ -6753,7 +6820,11 @@ where
     // persisting the snapshot. Required unavailable backends fail
     // resolution; optional unavailable backends are removed so the
     // snapshot only records members that will actually execute.
+    // BackendExhausted probes are treated as graceful degradation: the
+    // member is skipped and the panel proceeds if quorum still holds.
     let mut available_completers = Vec::new();
+    let mut probe_exhausted_completers: usize = 0;
+    let mut probe_failed_completers: usize = 0;
     for member in &panel.completers {
         match agent_service
             .adapter()
@@ -6762,6 +6833,20 @@ where
         {
             Ok(()) => available_completers.push(member.clone()),
             Err(e) => {
+                probe_failed_completers += 1;
+                // BackendExhausted during probe → skip for graceful
+                // degradation instead of aborting the entire stage.
+                if e.failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                {
+                    probe_exhausted_completers += 1;
+                    tracing::warn!(
+                        backend = %member.target.backend.family,
+                        required = member.required,
+                        "completer unavailable during probe (backend exhausted), skipping"
+                    );
+                    continue;
+                }
                 if member.required {
                     return Err(e);
                 }
@@ -6769,11 +6854,36 @@ where
             }
         }
     }
-    if available_completers.len() < min_completers {
+    let effective_min_completers = min_completers
+        .min(
+            panel
+                .completers
+                .len()
+                .saturating_sub(probe_exhausted_completers),
+        )
+        .max(1);
+    if available_completers.len() < effective_min_completers {
+        // Only surface BackendExhausted when the shortfall is caused
+        // solely by exhausted members.  Mixed failures (exhausted +
+        // transiently unavailable) preserve the retryable
+        // InsufficientPanelMembers path so transient errors can retry.
+        if probe_exhausted_completers > 0 && probe_exhausted_completers == probe_failed_completers {
+            return Err(AppError::BackendUnavailable {
+                backend: "completion".to_owned(),
+                details: format!(
+                    "insufficient completers after exhaustion: {} available, {} needed (original min={}, {} exhausted)",
+                    available_completers.len(),
+                    effective_min_completers,
+                    min_completers,
+                    probe_exhausted_completers,
+                ),
+                failure_class: Some(FailureClass::BackendExhausted),
+            });
+        }
         return Err(AppError::InsufficientPanelMembers {
             panel: "completion".to_owned(),
             resolved: available_completers.len(),
-            minimum: min_completers,
+            minimum: effective_min_completers,
         });
     }
     panel.completers = available_completers;
@@ -6825,9 +6935,10 @@ where
             level: LogLevel::Info,
             source: "engine".to_owned(),
             message: format!(
-                "completion panel: {} completers, min={}, threshold={}",
+                "completion panel: {} completers, min={} (effective={}), threshold={}",
                 panel.completers.len(),
                 min_completers,
+                effective_min_completers,
                 consensus_threshold
             ),
         },
@@ -6846,6 +6957,7 @@ where
         cursor,
         &panel.completers,
         min_completers,
+        probe_exhausted_completers,
         consensus_threshold,
         prompt_reference,
         snapshot.rollback_point_meta.rollback_count,
@@ -6977,6 +7089,8 @@ where
         })?;
 
     let mut available_reviewers = Vec::new();
+    let mut probe_exhausted_reviewers: usize = 0;
+    let mut probe_failed_reviewers: usize = 0;
     for member in &panel.reviewers {
         match agent_service
             .adapter()
@@ -6985,17 +7099,57 @@ where
         {
             Ok(()) => available_reviewers.push(member.clone()),
             Err(error) => {
+                probe_failed_reviewers += 1;
+                // BackendExhausted during probe → skip for graceful
+                // degradation instead of aborting the entire stage.
+                if error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                {
+                    probe_exhausted_reviewers += 1;
+                    tracing::warn!(
+                        backend = %member.target.backend.family,
+                        required = member.required,
+                        "reviewer unavailable during probe (backend exhausted), skipping"
+                    );
+                    continue;
+                }
                 if member.required {
                     return Err(error);
                 }
             }
         }
     }
-    if available_reviewers.len() < min_reviewers {
+    let effective_min_reviewers = min_reviewers
+        .min(
+            panel
+                .reviewers
+                .len()
+                .saturating_sub(probe_exhausted_reviewers),
+        )
+        .max(1);
+    if available_reviewers.len() < effective_min_reviewers {
+        // Only surface BackendExhausted when the shortfall is caused
+        // solely by exhausted members.  Mixed failures (exhausted +
+        // transiently unavailable) preserve the retryable
+        // InsufficientPanelMembers path so transient errors can retry.
+        if probe_exhausted_reviewers > 0 && probe_exhausted_reviewers == probe_failed_reviewers {
+            return Err(AppError::BackendUnavailable {
+                backend: "final_review".to_owned(),
+                details: format!(
+                    "insufficient final-review reviewers after exhaustion: {} available, {} needed (original min={}, {} exhausted)",
+                    available_reviewers.len(),
+                    effective_min_reviewers,
+                    min_reviewers,
+                    probe_exhausted_reviewers,
+                ),
+                failure_class: Some(FailureClass::BackendExhausted),
+            });
+        }
         return Err(AppError::InsufficientPanelMembers {
             panel: "final_review".to_owned(),
             resolved: available_reviewers.len(),
-            minimum: min_reviewers,
+            minimum: effective_min_reviewers,
         });
     }
     panel.reviewers = available_reviewers;
@@ -7071,6 +7225,7 @@ where
         cursor,
         &panel,
         min_reviewers,
+        probe_exhausted_reviewers,
         consensus_threshold,
         max_restarts,
         current_active_run(snapshot)?.final_review_restart_count,
@@ -7414,14 +7569,21 @@ pub fn resolution_has_drifted(
 
 /// Check whether a drifted resolution still satisfies the required-backend
 /// and minimum-count constraints.
+///
+/// When `effective_min_override` is `Some`, it replaces the configured minimum
+/// for the current stage's panel (completion or final-review). This is used on
+/// the resume path when `BackendExhausted` members were already skipped and the
+/// effective quorum was reduced.
 pub fn drift_still_satisfies_requirements(
     new_snapshot: &StageResolutionSnapshot,
     stage_id: StageId,
     effective_config: &EffectiveConfig,
+    effective_min_override: Option<usize>,
 ) -> AppResult<()> {
     match stage_id {
         StageId::PromptReview => {
-            let min = effective_config.prompt_review_policy().min_reviewers;
+            let min = effective_min_override
+                .unwrap_or_else(|| effective_config.prompt_review_policy().min_reviewers);
             if new_snapshot.prompt_review_validators.len() < min {
                 return Err(AppError::ResumeDriftFailure {
                     stage_id,
@@ -7434,7 +7596,8 @@ pub fn drift_still_satisfies_requirements(
             }
         }
         StageId::CompletionPanel => {
-            let min = effective_config.completion_policy().min_completers;
+            let min = effective_min_override
+                .unwrap_or_else(|| effective_config.completion_policy().min_completers);
             if new_snapshot.completion_completers.len() < min {
                 return Err(AppError::ResumeDriftFailure {
                     stage_id,
@@ -7447,7 +7610,8 @@ pub fn drift_still_satisfies_requirements(
             }
         }
         StageId::FinalReview => {
-            let min = effective_config.final_review_policy().min_reviewers;
+            let min = effective_min_override
+                .unwrap_or_else(|| effective_config.final_review_policy().min_reviewers);
             if new_snapshot.final_review_reviewers.len() < min {
                 return Err(AppError::ResumeDriftFailure {
                     stage_id,
@@ -7718,8 +7882,9 @@ mod tests {
             build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner, &arbiter);
         snapshot.final_review_planner = None;
 
-        let error = drift_still_satisfies_requirements(&snapshot, StageId::FinalReview, &config)
-            .expect_err("missing planner should fail final-review requirements");
+        let error =
+            drift_still_satisfies_requirements(&snapshot, StageId::FinalReview, &config, None)
+                .expect_err("missing planner should fail final-review requirements");
         assert!(matches!(
             error,
             AppError::ResumeDriftFailure {

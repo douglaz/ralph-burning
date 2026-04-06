@@ -177,6 +177,13 @@ impl OpenRouterBackendAdapter {
         })
     }
 
+    /// Send a lightweight probe to verify API key validity.
+    ///
+    /// **Known limitation**: this targets the `/models/<id>` metadata endpoint,
+    /// which does not require billing credits.  Quota/credit exhaustion errors
+    /// typically only surface on the `/chat/completions` endpoint, so a
+    /// successful probe does NOT guarantee that the key has remaining credits.
+    /// Exhaustion is instead detected at invocation time via `map_http_error`.
     async fn send_probe(&self, api_key: &str) -> AppResult<()> {
         let client = reqwest::Client::builder()
             .timeout(AVAILABILITY_TIMEOUT)
@@ -204,10 +211,24 @@ impl OpenRouterBackendAdapter {
 
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
+        // Check the response body for exhaustion patterns regardless of
+        // HTTP status code.  Credit/billing exhaustion may arrive as 429
+        // (rate limit), 402 (payment required), 403 (forbidden), or other
+        // 4xx codes depending on the upstream provider.
+        let failure_class = if crate::adapters::process_backend::is_backend_exhausted(&body, "") {
+            Some(FailureClass::BackendExhausted)
+        } else if status.as_u16() == 402 {
+            // HTTP 402 Payment Required is inherently a billing/credit
+            // signal — treat as BackendExhausted even when the body
+            // doesn't match the keyword list.
+            Some(FailureClass::BackendExhausted)
+        } else {
+            None
+        };
         Err(AppError::BackendUnavailable {
             backend: BackendFamily::OpenRouter.to_string(),
             details: format_http_error_details(status, &body),
-            failure_class: None,
+            failure_class,
         })
     }
 
@@ -332,7 +353,25 @@ impl OpenRouterBackendAdapter {
 
     fn map_http_error(request: &InvocationRequest, status: StatusCode, body: &str) -> AppError {
         let details = format_http_error_details(status, body);
+        // Check for exhaustion patterns BEFORE the status-code split.
+        // Credit/billing exhaustion may arrive as 429, 402, 403, or other
+        // status codes depending on the upstream provider.
+        if crate::adapters::process_backend::is_backend_exhausted(body, "") {
+            return Self::invocation_failed(
+                request,
+                FailureClass::BackendExhausted,
+                format!("OpenRouter quota exhausted: {details}"),
+            );
+        }
         match status.as_u16() {
+            // HTTP 402 Payment Required is inherently a billing/credit
+            // signal — classify as BackendExhausted even when the body
+            // doesn't match the exhaustion keyword list.
+            402 => Self::invocation_failed(
+                request,
+                FailureClass::BackendExhausted,
+                format!("OpenRouter payment required: {details}"),
+            ),
             401 | 403 => AppError::BackendUnavailable {
                 backend: request.resolved_target.backend.family.to_string(),
                 details,
@@ -855,6 +894,121 @@ mod tests {
                 assert!(details.contains("rate limit"));
             }
             other => panic!("expected transport failure, got: {other:?}"),
+        }
+
+        // 429 with exhaustion pattern → BackendExhausted (not retryable)
+        let exhausted_server = MockHttpServer::start(vec![ResponsePlan::json(
+            429,
+            json!({"error": {"message": "quota exceeded for your organization"}}),
+        )]);
+        set_openrouter_env(&exhausted_server.base_url);
+        let adapter = OpenRouterBackendAdapter::with_base_url(exhausted_server.base_url.clone());
+        let exhausted = adapter
+            .invoke(request.clone())
+            .await
+            .expect_err("429 with exhaustion should fail");
+        match exhausted {
+            AppError::InvocationFailed {
+                failure_class,
+                details,
+                ..
+            } => {
+                assert_eq!(failure_class, FailureClass::BackendExhausted);
+                assert!(details.contains("quota exhausted"));
+            }
+            other => panic!("expected backend exhausted, got: {other:?}"),
+        }
+
+        // 402 with exhaustion pattern → BackendExhausted (not retryable)
+        // Credit/billing exhaustion may arrive as 402 Payment Required.
+        let payment_required_server = MockHttpServer::start(vec![ResponsePlan::json(
+            402,
+            json!({"error": {"message": "credits exhausted, please purchase more credits"}}),
+        )]);
+        set_openrouter_env(&payment_required_server.base_url);
+        let adapter =
+            OpenRouterBackendAdapter::with_base_url(payment_required_server.base_url.clone());
+        let payment_err = adapter
+            .invoke(request.clone())
+            .await
+            .expect_err("402 with exhaustion should fail");
+        match payment_err {
+            AppError::InvocationFailed {
+                failure_class,
+                details,
+                ..
+            } => {
+                assert_eq!(failure_class, FailureClass::BackendExhausted);
+                assert!(details.contains("quota exhausted"));
+            }
+            other => panic!("expected backend exhausted for 402, got: {other:?}"),
+        }
+
+        // Bare 402 without exhaustion keywords → still BackendExhausted.
+        // HTTP 402 Payment Required is inherently a billing signal.
+        let bare_402_server = MockHttpServer::start(vec![ResponsePlan::json(
+            402,
+            json!({"error": {"message": "Payment Required"}}),
+        )]);
+        set_openrouter_env(&bare_402_server.base_url);
+        let adapter = OpenRouterBackendAdapter::with_base_url(bare_402_server.base_url.clone());
+        let bare_402_err = adapter
+            .invoke(request.clone())
+            .await
+            .expect_err("bare 402 should fail");
+        match bare_402_err {
+            AppError::InvocationFailed {
+                failure_class,
+                details,
+                ..
+            } => {
+                assert_eq!(failure_class, FailureClass::BackendExhausted);
+                assert!(details.contains("payment required"));
+            }
+            other => panic!("expected backend exhausted for bare 402, got: {other:?}"),
+        }
+
+        // 403 with exhaustion pattern → BackendExhausted (not retryable)
+        let forbidden_exhausted_server = MockHttpServer::start(vec![ResponsePlan::json(
+            403,
+            json!({"error": {"message": "insufficient_quota"}}),
+        )]);
+        set_openrouter_env(&forbidden_exhausted_server.base_url);
+        let adapter =
+            OpenRouterBackendAdapter::with_base_url(forbidden_exhausted_server.base_url.clone());
+        let forbidden_err = adapter
+            .invoke(request.clone())
+            .await
+            .expect_err("403 with exhaustion should fail");
+        match forbidden_err {
+            AppError::InvocationFailed {
+                failure_class,
+                details,
+                ..
+            } => {
+                assert_eq!(failure_class, FailureClass::BackendExhausted);
+                assert!(details.contains("quota exhausted"));
+            }
+            other => panic!("expected backend exhausted for 403, got: {other:?}"),
+        }
+
+        // 403 without exhaustion pattern → BackendUnavailable (not exhaustion)
+        let forbidden_noexhaust_server = MockHttpServer::start(vec![ResponsePlan::json(
+            403,
+            json!({"error": {"message": "access denied"}}),
+        )]);
+        set_openrouter_env(&forbidden_noexhaust_server.base_url);
+        let adapter =
+            OpenRouterBackendAdapter::with_base_url(forbidden_noexhaust_server.base_url.clone());
+        let forbidden_plain = adapter
+            .invoke(request.clone())
+            .await
+            .expect_err("403 should fail");
+        match forbidden_plain {
+            AppError::BackendUnavailable { failure_class, .. } => {
+                assert_eq!(failure_class, None);
+            }
+            other => panic!("expected BackendUnavailable for plain 403, got: {other:?}"),
         }
 
         let malformed_server =

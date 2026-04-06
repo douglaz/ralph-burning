@@ -38,8 +38,8 @@ use crate::contexts::workflow_composition::panel_contracts::{
 use crate::contexts::workflow_composition::renderers;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
-    BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
-    StageCursor, StageId,
+    BackendFamily, BackendRole, FailureClass, ProjectId, ResolvedBackendTarget, RunId,
+    SessionPolicy, StageCursor, StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -166,6 +166,8 @@ where
         )?;
 
         // ── Step 3: Invoke validators ──────────────────────────────────────
+        // Unlike completion/final-review, prompt-review does NOT degrade on
+        // BackendExhausted — any validator error aborts the stage.
         let mut executed_count = 0usize;
         let mut accept_count = 0usize;
         let mut reject_count = 0usize;
@@ -174,7 +176,7 @@ where
         for (i, member) in panel.validators.iter().enumerate() {
             let validator_target = &member.target;
             let validator_timeout = timeout_for_backend(validator_target.backend.family);
-            let (validation_payload, validator_producer) = invoke_panel_member(
+            let invocation_result = invoke_panel_member(
                 agent_service,
                 base_dir,
                 project_root,
@@ -192,14 +194,19 @@ where
                 &[],
                 &retry_suffix,
             )
-            .await?;
+            .await;
+
+            let (validation_payload, validator_producer) = match invocation_result {
+                Ok(result) => result,
+                Err(error) => return Err(error),
+            };
 
             let validation: PromptValidationPayload =
                 serde_json::from_value(validation_payload.clone()).map_err(|e| {
                     AppError::InvocationFailed {
                         backend: validator_target.backend.family.to_string(),
                         contract_id: "prompt_review:validator".to_owned(),
-                        failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                        failure_class: FailureClass::SchemaValidationFailure,
                         details: format!("validator output schema validation failed: {e}"),
                     }
                 })?;
@@ -639,5 +646,291 @@ mod tests {
 
         assert_eq!(concerns.len(), 1);
         assert!(concerns[0].contains("unexpected extra canonical heading `## Acceptance Criteria`"));
+    }
+
+    // ── Panel degradation tests ──────────────────────────────────────────
+
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use chrono::Utc;
+    use serde_json::json;
+
+    use crate::adapters::fs::{
+        FileSystem, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore,
+        FsRuntimeLogWriteStore, FsSessionStore,
+    };
+    use crate::contexts::agent_execution::model::{
+        InvocationEnvelope, InvocationMetadata, RawOutputReference, TokenCounts,
+    };
+    use crate::contexts::agent_execution::policy::ResolvedPanelMember;
+    use crate::contexts::agent_execution::service::AgentExecutionPort;
+    use crate::contexts::agent_execution::AgentExecutionService;
+    use crate::contexts::project_run_record::service::{self, CreateProjectInput};
+    use crate::contexts::workspace_governance;
+    use crate::shared::domain::{
+        BackendFamily, FailureClass, FlowPreset, RunId, StageCursor, StageId,
+    };
+    use crate::shared::error::AppError;
+
+    #[derive(Clone, Default)]
+    struct RecordingPromptReviewAdapter {
+        requests: Arc<Mutex<Vec<String>>>,
+        /// Validator indices whose invocations fail with BackendExhausted.
+        exhausted_validator_indices: Arc<HashSet<usize>>,
+    }
+
+    impl RecordingPromptReviewAdapter {
+        fn with_exhausted_validators(indices: &[usize]) -> Self {
+            Self {
+                exhausted_validator_indices: Arc::new(indices.iter().copied().collect()),
+                ..Default::default()
+            }
+        }
+    }
+
+    impl AgentExecutionPort for RecordingPromptReviewAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &crate::contexts::agent_execution::model::InvocationContract,
+        ) -> crate::shared::error::AppResult<()> {
+            Ok(())
+        }
+
+        async fn check_availability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+        ) -> crate::shared::error::AppResult<()> {
+            Ok(())
+        }
+
+        async fn invoke(
+            &self,
+            request: crate::contexts::agent_execution::model::InvocationRequest,
+        ) -> crate::shared::error::AppResult<InvocationEnvelope> {
+            self.requests
+                .lock()
+                .expect("lock")
+                .push(request.invocation_id.clone());
+
+            // Check for exhausted validators by matching on model name,
+            // since prompt_review invocation IDs don't include the validator
+            // index (unlike completion which uses completer-{i}).
+            for &idx in self.exhausted_validator_indices.iter() {
+                let model_fragment = format!("validator-{idx}");
+                if request
+                    .resolved_target
+                    .model
+                    .model_id
+                    .contains(&model_fragment)
+                {
+                    return Err(AppError::InvocationFailed {
+                        backend: request.resolved_target.backend.family.to_string(),
+                        contract_id: "prompt_review:validator".to_owned(),
+                        failure_class: FailureClass::BackendExhausted,
+                        details: "validator backend exhausted".to_owned(),
+                    });
+                }
+            }
+
+            // Determine role from invocation_id.
+            let payload = if request.invocation_id.contains("refiner") {
+                json!({
+                    "refined_prompt": "# Refined Prompt\n\nImproved.",
+                    "refinement_summary": "Improved clarity.",
+                    "improvements": ["clarity"]
+                })
+            } else {
+                // Validator: accept the prompt.
+                json!({
+                    "accepted": true,
+                    "evidence": ["looks good"],
+                    "concerns": []
+                })
+            };
+
+            Ok(InvocationEnvelope {
+                raw_output_reference: RawOutputReference::Inline("{}".to_owned()),
+                parsed_payload: payload,
+                metadata: InvocationMetadata {
+                    invocation_id: request.invocation_id,
+                    duration: Duration::from_millis(1),
+                    token_counts: TokenCounts::default(),
+                    backend_used: request.resolved_target.backend.clone(),
+                    model_used: request.resolved_target.model.clone(),
+                    adapter_reported_backend: None,
+                    adapter_reported_model: None,
+                    attempt_number: request.attempt_number,
+                    session_id: None,
+                    session_reused: false,
+                },
+                timestamp: Utc::now(),
+            })
+        }
+
+        async fn cancel(&self, _invocation_id: &str) -> crate::shared::error::AppResult<()> {
+            Ok(())
+        }
+    }
+
+    fn setup_prompt_review_project(
+        base_dir: &Path,
+        project_name: &str,
+    ) -> (crate::shared::domain::ProjectId, PathBuf) {
+        workspace_governance::initialize_workspace(base_dir, Utc::now()).expect("workspace init");
+        let project_id = crate::shared::domain::ProjectId::new(project_name).expect("project id");
+        service::create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base_dir,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: project_name.to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt\n\nTest prompt.\n".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt\n\nTest prompt.\n"),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("project creation");
+        let project_root = base_dir
+            .join(".ralph-burning")
+            .join("projects")
+            .join(project_id.as_str());
+        (project_id, project_root)
+    }
+
+    #[tokio::test]
+    async fn prompt_review_fails_when_one_validator_exhausted() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let (project_id, project_root) = setup_prompt_review_project(base_dir, "pr-one-exhausted");
+        let adapter = RecordingPromptReviewAdapter::with_exhausted_validators(&[0]);
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-pr-one-exhausted").expect("run id");
+        let cursor = StageCursor::new(StageId::PromptReview, 1, 1, 1).expect("cursor");
+
+        let refiner_target = ResolvedBackendTarget::new(BackendFamily::Claude, "refiner-model");
+        let panel = crate::contexts::agent_execution::policy::PromptReviewPanelResolution {
+            refiner: refiner_target,
+            validators: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "validator-0-model"),
+                    required: true,
+                    configured_index: 0,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "validator-1-model"),
+                    required: true,
+                    configured_index: 1,
+                },
+            ],
+        };
+
+        // Write prompt.md so the executor can read it.
+        std::fs::write(project_root.join("prompt.md"), "# Prompt\n\nTest prompt.\n")
+            .expect("write prompt");
+
+        let result = execute_prompt_review(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            base_dir,
+            &project_root,
+            base_dir,
+            &project_id,
+            &run_id,
+            &cursor,
+            &panel,
+            2, // min_reviewers
+            0, // max_refinement_retries
+            "prompt.md",
+            0, // rollback_count
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await;
+
+        // Prompt-review does NOT degrade on BackendExhausted — the first
+        // exhausted validator should immediately fail the stage.
+        let error = result
+            .err()
+            .expect("prompt-review should fail when any validator is exhausted (no degradation)");
+        assert!(
+            error
+                .failure_class()
+                .is_some_and(|fc| fc == FailureClass::BackendExhausted),
+            "error should carry BackendExhausted failure class: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_review_fails_when_all_validators_exhausted() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let (project_id, project_root) = setup_prompt_review_project(base_dir, "pr-all-exhausted");
+        let adapter = RecordingPromptReviewAdapter::with_exhausted_validators(&[0, 1]);
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-pr-all-exhausted").expect("run id");
+        let cursor = StageCursor::new(StageId::PromptReview, 1, 1, 1).expect("cursor");
+
+        let refiner_target = ResolvedBackendTarget::new(BackendFamily::Claude, "refiner-model");
+        let panel = crate::contexts::agent_execution::policy::PromptReviewPanelResolution {
+            refiner: refiner_target,
+            validators: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "validator-0-model"),
+                    required: true,
+                    configured_index: 0,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "validator-1-model"),
+                    required: true,
+                    configured_index: 1,
+                },
+            ],
+        };
+
+        std::fs::write(project_root.join("prompt.md"), "# Prompt\n\nTest prompt.\n")
+            .expect("write prompt");
+
+        let error = execute_prompt_review(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            base_dir,
+            &project_root,
+            base_dir,
+            &project_id,
+            &run_id,
+            &cursor,
+            &panel,
+            2, // min_reviewers
+            0, // max_refinement_retries
+            "prompt.md",
+            0, // rollback_count
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("panel should fail when first validator is exhausted");
+
+        // Prompt-review does not degrade — the first exhausted validator
+        // immediately propagates BackendExhausted.
+        assert!(
+            error
+                .failure_class()
+                .is_some_and(|fc| fc == FailureClass::BackendExhausted),
+            "error should carry BackendExhausted failure class: {error:?}"
+        );
     }
 }

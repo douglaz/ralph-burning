@@ -27,7 +27,9 @@ use crate::contexts::agent_execution::policy::ResolvedPanelMember;
 use crate::contexts::agent_execution::service::AgentExecutionPort;
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
-use crate::contexts::project_run_record::model::{ArtifactRecord, PayloadRecord};
+use crate::contexts::project_run_record::model::{
+    ArtifactRecord, LogLevel, PayloadRecord, RuntimeLogEntry,
+};
 use crate::contexts::project_run_record::service::{PayloadArtifactWritePort, RuntimeLogWritePort};
 use crate::contexts::project_run_record::task_prompt_contract;
 use crate::contexts::workflow_composition::panel_contracts::{
@@ -37,8 +39,8 @@ use crate::contexts::workflow_composition::panel_contracts::{
 use crate::contexts::workflow_composition::renderers;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
-    BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
-    StageCursor, StageId,
+    BackendFamily, BackendRole, FailureClass, ProjectId, ResolvedBackendTarget, RunId,
+    SessionPolicy, StageCursor, StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -100,7 +102,7 @@ fn build_completer_prompt(
 pub async fn execute_completion_panel<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     artifact_write: &dyn PayloadArtifactWritePort,
-    _log_write: &dyn RuntimeLogWritePort,
+    log_write: &dyn RuntimeLogWritePort,
     base_dir: &Path,
     project_root: &Path,
     backend_working_dir: &Path,
@@ -109,6 +111,7 @@ pub async fn execute_completion_panel<A, R, S>(
     cursor: &StageCursor,
     completers: &[ResolvedPanelMember],
     min_completers: usize,
+    probe_exhausted_count: usize,
     consensus_threshold: f64,
     prompt_reference: &str,
     rollback_count: u32,
@@ -131,15 +134,19 @@ where
     // ── Invoke completers and persist supporting records ──────────────────
     // Availability filtering is done by the engine before snapshot
     // persistence; all completers in the panel are available and expected
-    // to execute. Any invocation error is propagated directly.
+    // to execute. Non-exhausted invocation errors are propagated directly.
+    // BackendExhausted errors degrade gracefully: the completer is skipped
+    // and execution continues with remaining members.
     let mut complete_votes = 0usize;
     let mut continue_votes = 0usize;
     let mut executed_voters: Vec<String> = Vec::new();
+    let mut total_exhausted_count: usize = 0;
+    let mut last_exhaustion_error: Option<AppError> = None;
 
     for (i, member) in completers.iter().enumerate() {
         let completer_target = &member.target;
         let completer_timeout = timeout_for_backend(completer_target.backend.family);
-        let (vote_payload, producer) = invoke_completer(
+        let invocation_result = invoke_completer(
             agent_service,
             base_dir,
             project_root,
@@ -154,7 +161,53 @@ where
             cancellation_token.clone(),
             Some(project_id),
         )
-        .await?;
+        .await;
+
+        let (vote_payload, producer) = match invocation_result {
+            Ok(result) => result,
+            Err(error) => {
+                let is_exhausted = error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted);
+                if is_exhausted {
+                    total_exhausted_count += 1;
+                    tracing::warn!(
+                        completer = i,
+                        backend = %completer_target.backend.family,
+                        "completer unavailable (backend exhausted), proceeding with remaining completers"
+                    );
+                    let _ = log_write.append_runtime_log(
+                        base_dir,
+                        project_id,
+                        &RuntimeLogEntry {
+                            timestamp: Utc::now(),
+                            level: LogLevel::Warn,
+                            source: "completion_panel".to_owned(),
+                            message: format!(
+                                "completer {i} ({}) unavailable (backend exhausted), skipping",
+                                completer_target.backend.family
+                            ),
+                        },
+                    );
+                    // Early-exit quorum check: if the executed voters plus
+                    // the remaining members cannot reach the effective
+                    // minimum, fail immediately instead of continuing.
+                    // Must include probe_exhausted_count (already filtered
+                    // before execution) alongside invocation-time exhaustion.
+                    let effective_min = min_completers
+                        .min(completers.len().saturating_sub(total_exhausted_count))
+                        .max(1);
+                    if executed_voters.len() + completers.len().saturating_sub(i + 1)
+                        < effective_min
+                    {
+                        last_exhaustion_error = Some(error);
+                        break;
+                    }
+                    continue;
+                }
+                return Err(error);
+            }
+        };
 
         let vote: CompletionVotePayload =
             serde_json::from_value(vote_payload.clone()).map_err(|e| {
@@ -199,20 +252,35 @@ where
     }
 
     // ── Check min_completers after execution ──────────────────────────────
+    // Reduce effective quorum only when exhaustion makes the configured
+    // minimum impossible.  When slack members exhaust (remaining ≥ min),
+    // the configured minimum is preserved.
     let total_voters = executed_voters.len();
-    if total_voters < min_completers {
+    let all_exhausted = probe_exhausted_count + total_exhausted_count;
+    let effective_min_completers = min_completers
+        .min(completers.len().saturating_sub(total_exhausted_count))
+        .max(1);
+    if total_voters < effective_min_completers {
+        // When the shortfall is entirely due to backend exhaustion,
+        // propagate the last BackendExhausted error so the engine's
+        // failure-class-aware handling can apply (e.g., non-retryable).
+        if let Some(exhaustion_error) = last_exhaustion_error {
+            return Err(exhaustion_error);
+        }
         return Err(AppError::InsufficientPanelMembers {
             panel: "completion".to_owned(),
             resolved: total_voters,
-            minimum: min_completers,
+            minimum: effective_min_completers,
         });
     }
 
     // ── Compute aggregate verdict ─────────────────────────────────────────
+    // Use effective quorum so that a degraded panel (some backends exhausted)
+    // can still reach a Complete verdict with fewer voters.
     let verdict = compute_completion_verdict(
         complete_votes,
         total_voters,
-        min_completers,
+        effective_min_completers,
         consensus_threshold,
     );
 
@@ -223,6 +291,9 @@ where
         total_voters,
         consensus_threshold,
         min_completers,
+        effective_min_completers,
+        exhausted_count: all_exhausted,
+        probe_exhausted_count,
         executed_voters,
     };
 
@@ -505,6 +576,253 @@ mod tests {
 
         assert_eq!(prompt_schema, transport_schema);
         assert_eq!(stdin_schema, transport_schema);
+    }
+
+    // ── Panel degradation tests ──────────────────────────────────────────
+
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use chrono::Utc;
+    use serde_json::json;
+
+    use crate::adapters::fs::{
+        FileSystem, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore,
+        FsRuntimeLogWriteStore, FsSessionStore,
+    };
+    use crate::contexts::agent_execution::model::{
+        InvocationEnvelope, InvocationMetadata, RawOutputReference, TokenCounts,
+    };
+    use crate::contexts::agent_execution::policy::ResolvedPanelMember;
+    use crate::contexts::agent_execution::service::AgentExecutionPort;
+    use crate::contexts::agent_execution::AgentExecutionService;
+    use crate::contexts::project_run_record::service::{self, CreateProjectInput};
+    use crate::contexts::workspace_governance;
+    use crate::shared::domain::{
+        BackendFamily, FailureClass, FlowPreset, RunId, StageCursor, StageId,
+    };
+    use crate::shared::error::AppError;
+
+    #[derive(Clone, Default)]
+    struct RecordingCompletionAdapter {
+        requests: Arc<Mutex<Vec<String>>>,
+        exhausted_indices: Arc<HashSet<usize>>,
+    }
+
+    impl RecordingCompletionAdapter {
+        fn with_exhausted(indices: &[usize]) -> Self {
+            Self {
+                exhausted_indices: Arc::new(indices.iter().copied().collect()),
+                ..Default::default()
+            }
+        }
+    }
+
+    impl AgentExecutionPort for RecordingCompletionAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &crate::contexts::agent_execution::model::InvocationContract,
+        ) -> crate::shared::error::AppResult<()> {
+            Ok(())
+        }
+
+        async fn check_availability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+        ) -> crate::shared::error::AppResult<()> {
+            Ok(())
+        }
+
+        async fn invoke(
+            &self,
+            request: crate::contexts::agent_execution::model::InvocationRequest,
+        ) -> crate::shared::error::AppResult<InvocationEnvelope> {
+            self.requests
+                .lock()
+                .expect("lock")
+                .push(request.invocation_id.clone());
+
+            for &idx in self.exhausted_indices.iter() {
+                let fragment = format!("completer-{idx}");
+                if request.invocation_id.contains(&fragment) {
+                    return Err(AppError::InvocationFailed {
+                        backend: request.resolved_target.backend.family.to_string(),
+                        contract_id: "completion_panel:completer".to_owned(),
+                        failure_class: FailureClass::BackendExhausted,
+                        details: "completer backend exhausted".to_owned(),
+                    });
+                }
+            }
+
+            let payload = json!({
+                "vote_complete": true,
+                "evidence": ["looks good"],
+                "remaining_work": []
+            });
+
+            Ok(InvocationEnvelope {
+                raw_output_reference: RawOutputReference::Inline("{}".to_owned()),
+                parsed_payload: payload,
+                metadata: InvocationMetadata {
+                    invocation_id: request.invocation_id,
+                    duration: Duration::from_millis(1),
+                    token_counts: TokenCounts::default(),
+                    backend_used: request.resolved_target.backend.clone(),
+                    model_used: request.resolved_target.model.clone(),
+                    adapter_reported_backend: None,
+                    adapter_reported_model: None,
+                    attempt_number: request.attempt_number,
+                    session_id: None,
+                    session_reused: false,
+                },
+                timestamp: Utc::now(),
+            })
+        }
+
+        async fn cancel(&self, _invocation_id: &str) -> crate::shared::error::AppResult<()> {
+            Ok(())
+        }
+    }
+
+    fn setup_completion_project(
+        base_dir: &Path,
+        project_name: &str,
+    ) -> (crate::shared::domain::ProjectId, PathBuf) {
+        workspace_governance::initialize_workspace(base_dir, Utc::now()).expect("workspace init");
+        let project_id = crate::shared::domain::ProjectId::new(project_name).expect("project id");
+        service::create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base_dir,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: project_name.to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt\n\nTest prompt.\n".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt\n\nTest prompt.\n"),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("project creation");
+        let project_root = base_dir
+            .join(".ralph-burning")
+            .join("projects")
+            .join(project_id.as_str());
+        (project_id, project_root)
+    }
+
+    #[tokio::test]
+    async fn completion_degrades_when_one_completer_exhausted() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let (project_id, project_root) = setup_completion_project(base_dir, "cp-one-exhausted");
+        let adapter = RecordingCompletionAdapter::with_exhausted(&[0]);
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-cp-one-exhausted").expect("run id");
+        let cursor = StageCursor::new(StageId::CompletionPanel, 1, 1, 1).expect("cursor");
+        let completers = vec![
+            ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "completer-0-model"),
+                required: true,
+                configured_index: 0,
+            },
+            ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Claude, "completer-1-model"),
+                required: true,
+                configured_index: 1,
+            },
+        ];
+
+        let result = execute_completion_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            base_dir,
+            &project_root,
+            base_dir,
+            &project_id,
+            &run_id,
+            &cursor,
+            &completers,
+            2,    // min_completers
+            0,    // probe_exhausted_count
+            0.66, // consensus_threshold
+            "prompt.md",
+            0, // rollback_count
+            &|_| Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "panel should succeed with one exhausted completer: {}",
+            result.err().map_or("ok".to_owned(), |e| e.to_string())
+        );
+        let completion = result.unwrap();
+        assert_eq!(completion.verdict, super::CompletionVerdict::Complete);
+    }
+
+    #[tokio::test]
+    async fn completion_fails_when_all_completers_exhausted() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let (project_id, project_root) = setup_completion_project(base_dir, "cp-all-exhausted");
+        let adapter = RecordingCompletionAdapter::with_exhausted(&[0, 1]);
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-cp-all-exhausted").expect("run id");
+        let cursor = StageCursor::new(StageId::CompletionPanel, 1, 1, 1).expect("cursor");
+        let completers = vec![
+            ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "completer-0-model"),
+                required: true,
+                configured_index: 0,
+            },
+            ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Claude, "completer-1-model"),
+                required: true,
+                configured_index: 1,
+            },
+        ];
+
+        let error = execute_completion_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            base_dir,
+            &project_root,
+            base_dir,
+            &project_id,
+            &run_id,
+            &cursor,
+            &completers,
+            2,    // min_completers
+            0,    // probe_exhausted_count
+            0.66, // consensus_threshold
+            "prompt.md",
+            0, // rollback_count
+            &|_| Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("panel should fail when all completers are exhausted");
+
+        // When all completers are exhausted, the early-exit quorum check
+        // propagates the BackendExhausted error so the engine's
+        // failure-class-aware handling applies (non-retryable).
+        assert!(
+            error
+                .failure_class()
+                .is_some_and(|fc| fc == FailureClass::BackendExhausted),
+            "error should carry BackendExhausted failure class: {error:?}"
+        );
     }
 }
 

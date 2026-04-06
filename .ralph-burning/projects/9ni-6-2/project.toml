@@ -1,7 +1,0 @@
-id = "9ni-6-2"
-name = "Generate prompt.md from milestone summary, bead scope, dependencies, and planned-elsewhere context"
-flow = "minimal"
-prompt_reference = "prompt.md"
-prompt_hash = "61f0b28cd747c1b3d8eef6bd8722b92b42224b79aaa581f444c4771012d60d01"
-created_at = "2026-04-04T15:15:16.967287161Z"
-status_summary = "created"

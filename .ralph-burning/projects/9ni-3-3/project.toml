@@ -1,7 +1,0 @@
-id = "9ni-3-3"
-name = "Render plan.md, plan.json, and an explicit acceptance map from the milestone planner"
-flow = "minimal"
-prompt_reference = "prompt.md"
-prompt_hash = "5fe667bbbbf1fef2"
-created_at = "2026-04-03T14:18:19.778913889Z"
-status_summary = "active"

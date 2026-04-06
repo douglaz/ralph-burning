@@ -154,6 +154,29 @@ impl PreparedCommand {
                     }
                 };
 
+                // If the envelope signals an error, check for exhaustion patterns
+                // before attempting to parse the result as a valid payload.
+                // This catches backends that exit 0 with `is_error: true` and
+                // an exhaustion message (e.g. "You've hit your usage limit").
+                // Use extract_stdout_error to pull error text from `result`,
+                // `errors[]`, or `subtype` — not just `envelope.result` alone —
+                // so envelopes like {"is_error":true,"errors":["quota exceeded"]}
+                // are correctly detected.
+                if envelope.is_error {
+                    let error_text = extract_stdout_error(&output.stdout).unwrap_or_default();
+                    if is_backend_exhausted(&error_text, "") {
+                        self.cleanup_failed_invocation(request, &output).await;
+                        return Err(ProcessBackendAdapter::invocation_failed(
+                            request,
+                            FailureClass::BackendExhausted,
+                            format!(
+                                "backend exhausted (exit 0 with is_error envelope): {}",
+                                truncate_str(&error_text, 200),
+                            ),
+                        ));
+                    }
+                }
+
                 let parsed_payload = if let Some(structured) = envelope.structured_output {
                     unwrap_claude_structured_output_transport_payload(structured)
                 } else if !envelope.result.trim().is_empty() {
@@ -161,7 +184,7 @@ impl PreparedCommand {
                     match serde_json::from_str(&envelope.result)
                         .or_else(|_| extract_json_from_text(&envelope.result))
                     {
-                        Ok(val) => unwrap_claude_structured_output_payload(val),
+                        Ok(val) => unwrap_claude_structured_output_transport_payload(val),
                         Err(error) => {
                             self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
@@ -186,7 +209,7 @@ impl PreparedCommand {
                         .ok()
                         .filter(|val| !looks_like_claude_envelope(val))
                     {
-                        Some(val) => unwrap_claude_structured_output_payload(val),
+                        Some(val) => unwrap_claude_structured_output_transport_payload(val),
                         None => {
                             self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
@@ -1422,7 +1445,25 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             .status
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
-                        let failure_class = classify_exit_failure(fresh_output.status);
+                        // Only use extracted error text for classification.
+                        // Raw stdout is NOT used as fallback because model
+                        // conversation output may coincidentally contain
+                        // exhaustion keywords, causing false BackendExhausted
+                        // classification of transient failures.  Trade-off:
+                        // a backend that prints exhaustion as plain text to
+                        // stdout (no JSON envelope, no stderr) won't be
+                        // detected — stderr scanning covers all known backends.
+                        let fresh_stdout_for_class =
+                            fresh_stdout_error.as_deref().unwrap_or_default();
+                        // Narrow stderr to its tail — codex backends may
+                        // echo user prompts at the start of stderr.
+                        let fresh_stderr_for_class =
+                            truncate_str_tail(&fresh_stderr, STDERR_EXHAUSTION_SCAN_LIMIT);
+                        let failure_class = classify_exit_failure_with_output(
+                            fresh_output.status,
+                            fresh_stderr_for_class,
+                            fresh_stdout_for_class,
+                        );
                         fresh_prepared
                             .cleanup_failed_invocation(&fresh_request, &fresh_output)
                             .await;
@@ -1446,7 +1487,17 @@ impl AgentExecutionPort for ProcessBackendAdapter {
 
                 let stdout_error = extract_stdout_error(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
-                let failure_class = classify_exit_failure(status);
+                // Only use extracted error text for classification.
+                // Raw stdout is NOT used as fallback — model conversation
+                // output may coincidentally contain exhaustion keywords.
+                // Trade-off: plain-text-only stdout errors won't be detected;
+                // stderr scanning covers all known backends.
+                let stdout_for_class = stdout_error.as_deref().unwrap_or_default();
+                // Narrow stderr to its tail — codex backends may echo
+                // user prompts at the start of stderr.
+                let stderr_for_class = truncate_str_tail(&stderr, STDERR_EXHAUSTION_SCAN_LIMIT);
+                let failure_class =
+                    classify_exit_failure_with_output(status, stderr_for_class, stdout_for_class);
                 prepared.cleanup_failed_invocation(&request, &output).await;
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
@@ -1519,6 +1570,8 @@ struct ClaudeEnvelope {
     structured_output: Option<serde_json::Value>,
     #[serde(default)]
     usage: Option<ClaudeUsage>,
+    #[serde(default)]
+    is_error: bool,
 }
 
 pub(crate) struct ChildOutput {
@@ -1580,26 +1633,42 @@ fn extract_codex_usage_from_stdout(stdout: &[u8]) -> TokenCounts {
 
 /// Try to extract an error message from Claude's stdout JSON envelope.
 /// Returns `Some(detail)` if stdout contains JSON with `is_error: true`.
-fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
+///
+/// Combines all error-carrying fields (`result`, `errors[]`, `subtype`)
+/// into a single string so that exhaustion patterns in *any* field are
+/// visible to downstream `is_backend_exhausted` checks.  For example,
+/// an envelope like `{"is_error":true,"result":"request failed",
+/// "errors":["quota exceeded"]}` yields `"request failed; quota exceeded"`.
+pub(crate) fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
     if value.get("is_error")?.as_bool()? {
-        value
-            .get("result")
-            .and_then(|r| r.as_str())
-            .map(|s| s.to_owned())
-            .or_else(|| {
-                value
-                    .get("errors")
-                    .and_then(|v| v.as_array())
-                    .and_then(|errors| errors.iter().find_map(|e| e.as_str()))
-                    .map(|s| s.to_owned())
-            })
-            .or_else(|| {
-                value
-                    .get("subtype")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_owned())
-            })
+        let mut parts: Vec<&str> = Vec::new();
+
+        if let Some(result) = value.get("result").and_then(|r| r.as_str()) {
+            if !result.is_empty() {
+                parts.push(result);
+            }
+        }
+
+        // Collect all string entries from the `errors` array.
+        let errors_strs: Vec<&str> = value
+            .get("errors")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|e| e.as_str()).collect())
+            .unwrap_or_default();
+        parts.extend(&errors_strs);
+
+        if let Some(subtype) = value.get("subtype").and_then(|v| v.as_str()) {
+            if !subtype.is_empty() {
+                parts.push(subtype);
+            }
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("; "))
+        }
     } else {
         None
     }
@@ -1711,6 +1780,214 @@ pub(crate) fn classify_exit_failure(status: ExitStatus) -> FailureClass {
             FailureClass::TransportFailure
         }
     }
+}
+
+/// Patterns in stderr/stdout that indicate the backend has permanently
+/// exhausted its credits or hit a persistent usage limit that will not
+/// resolve between retry attempts.
+const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
+    "usage limit",
+    "hit your usage limit",
+    "quota exceeded",
+    "exceeded your current quota",
+    "credits exhausted",
+    "credits depleted",
+    "purchase more credits",
+    "insufficient_quota",
+    "billing hard limit",
+    "hard limit reached",
+];
+
+/// Maximum bytes of stderr tail to scan for exhaustion patterns.
+/// Codex-style backends may echo user prompts (which could contain
+/// exhaustion keywords) at the beginning of stderr; the actual error
+/// message lives at the end. Scanning only the tail avoids false
+/// positives from prompt echo content.
+pub(crate) const STDERR_EXHAUSTION_SCAN_LIMIT: usize = 4096;
+
+/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8
+/// character boundary.
+pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Return the last `max_bytes` bytes of a string at a valid UTF-8
+/// character boundary. Used to narrow stderr to its tail where the
+/// actual error message resides, skipping echoed prompt content at
+/// the start.
+pub(crate) fn truncate_str_tail(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut start = s.len() - max_bytes;
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
+}
+
+/// Check whether error output text contains patterns indicating
+/// persistent backend unavailability (credits exhausted, usage limits).
+///
+/// Returns `true` when the combined stderr + stdout-error content matches
+/// any known exhaustion pattern.  Case-insensitive matching is used
+/// because error messages vary across backend providers.
+///
+/// **Important**: The `stdout` parameter should contain only the
+/// extracted error text (via [`extract_stdout_error`]) when available.
+/// When no structured error envelope exists, callers may pass the full
+/// stdout text so that plain-text exhaustion messages are still caught.
+pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
+    let stderr_lower = stderr.to_lowercase();
+    let stdout_lower = stdout.to_lowercase();
+    if BACKEND_EXHAUSTED_PATTERNS
+        .iter()
+        .any(|pattern| stderr_lower.contains(pattern) || stdout_lower.contains(pattern))
+    {
+        return true;
+    }
+    // Compound check: "rate limit" paired with a reset-time indicator
+    // signals a persistent rate cap (e.g. "Rate limit reached, try again
+    // at 3:03 PM" or "Rate limit, retry after 2h").  Neither component
+    // alone is sufficient — "rate limit" alone matches transient 429s, and
+    // the reset phrases alone are too broad.  Combining them narrows to
+    // persistent-reset-time messages.
+    let combined = format!("{stderr_lower} {stdout_lower}");
+    if combined.contains("rate limit") {
+        // Fixed-time reset indicators: always persistent when paired with
+        // "rate limit".
+        const RESET_TIME_INDICATORS: &[&str] = &[
+            "try again at",
+            "retry at",
+            "resets at",
+            "reset at",
+            "available at",
+            "until tomorrow",
+        ];
+        if RESET_TIME_INDICATORS
+            .iter()
+            .any(|indicator| combined.contains(indicator))
+        {
+            return true;
+        }
+        // "until 2026-04-06..." — ISO date after "until".  We require
+        // "until 20" followed by exactly two digits and a dash so we
+        // match ISO years 2000-2099 without false-positiving on
+        // "until 2000 requests" or "until 200 more attempts".
+        if let Some(pos) = combined.find("until 20") {
+            let rest = &combined[pos + "until 20".len()..];
+            let mut chars = rest.chars();
+            if let (Some(c1), Some(c2), Some(c3)) = (chars.next(), chars.next(), chars.next()) {
+                if c1.is_ascii_digit() && c2.is_ascii_digit() && c3 == '-' {
+                    return true;
+                }
+            }
+        }
+        // "retry after <long-duration>" is persistent; short durations
+        // like "retry after 1s" or "retry after 100ms" are transient
+        // (standard 429 backoff) and must NOT trigger exhaustion.
+        if let Some(pos) = combined.find("retry after ") {
+            let after = &combined[pos + "retry after ".len()..];
+            // Extract leading numeric portion for large-second checks.
+            let numeric_end = after
+                .find(|c: char| !c.is_ascii_digit() && c != '.')
+                .unwrap_or(after.len());
+            let rest = after[numeric_end..].trim_start();
+            if rest.starts_with('h')
+                || rest.starts_with("hour")
+                || rest.starts_with("day")
+                || rest.starts_with("week")
+            {
+                return true;
+            }
+            // "min" / "minute" / bare "m" (not "ms") — only persistent
+            // when the numeric portion is >= 5 minutes.  Short minute
+            // durations like "retry after 2m" are standard 429 backoff
+            // and must stay TransportFailure.
+            if rest.starts_with("min") || (rest.starts_with('m') && !rest.starts_with("ms")) {
+                if let Ok(val) = after[..numeric_end].parse::<f64>() {
+                    if val >= 5.0 {
+                        return true;
+                    }
+                }
+                // < 5 minutes — transient, fall through to other checks.
+            }
+            // Large-second values (>= 300) like "retry after 3600s" or
+            // "retry after 86400 seconds" indicate a persistent wait.
+            // The 300s (5 min) threshold separates persistent quota resets
+            // from transient 429 backoff (typically 1-120s).  Values below
+            // 300s are left to the normal retry machinery.
+            // Unitless large numbers (>= 3600) like "retry after 3600"
+            // are treated as seconds and also indicate persistence.
+            if rest.starts_with('s') || rest.starts_with("sec") || rest.is_empty() {
+                if let Ok(val) = after[..numeric_end].parse::<f64>() {
+                    let threshold = if rest.is_empty() { 3600.0 } else { 300.0 };
+                    if val >= threshold {
+                        return true;
+                    }
+                }
+            }
+        }
+        // "until <time-of-day>" e.g. "until 9:00 PM UTC", "until 3:30 AM".
+        // Requires a time-of-day indicator after the digit: a colon (9:00)
+        // or an AM/PM marker (9am, 3 PM).  This avoids false positives on
+        // phrases like "until 5 retries are completed".
+        if let Some(pos) = combined.find("until ") {
+            let after = &combined[pos + "until ".len()..];
+            if after.starts_with(|c: char| c.is_ascii_digit()) {
+                // Skip past the leading digits to inspect what follows.
+                let rest = after.trim_start_matches(|c: char| c.is_ascii_digit());
+                // Colon → time format (9:00, 12:30).
+                if rest.starts_with(':') {
+                    return true;
+                }
+                // AM/PM immediately after digits or after optional space.
+                let rest_trimmed = rest.trim_start();
+                if rest_trimmed.starts_with("am")
+                    || rest_trimmed.starts_with("pm")
+                    || rest_trimmed.starts_with("AM")
+                    || rest_trimmed.starts_with("PM")
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Classify a non-zero exit, upgrading to `BackendExhausted` when the
+/// error output indicates a persistent usage/billing limit.
+///
+/// The `stdout` parameter should contain extracted error text
+/// (via [`extract_stdout_error`]), or an empty string when no structured
+/// error envelope is present.  Raw stdout must NOT be passed because
+/// model conversation output may coincidentally contain exhaustion keywords.
+///
+/// Exit code 127 (command not found) always wins as `BinaryNotFound`
+/// regardless of output content — a missing binary cannot be a quota issue.
+pub(crate) fn classify_exit_failure_with_output(
+    status: ExitStatus,
+    stderr: &str,
+    stdout: &str,
+) -> FailureClass {
+    // Exit 127 = "command not found": always terminal BinaryNotFound,
+    // even if stderr/stdout coincidentally contains exhaustion patterns.
+    if status.code() == Some(127) {
+        return FailureClass::BinaryNotFound;
+    }
+    if is_backend_exhausted(stderr, stdout) {
+        tracing::warn!("backend reported exhausted credits/usage limit — classifying as BackendExhausted (non-retryable)");
+        return FailureClass::BackendExhausted;
+    }
+    classify_exit_failure(status)
 }
 
 fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {
@@ -2845,7 +3122,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finish_claude_result_raw_json_preserves_legitimate_data_payload_shape() {
+    async fn finish_claude_result_raw_json_unwraps_transport_data_wrapper() {
         let envelope = json!({
             "result": "{\"data\": {\"outcome\": \"approved\", \"evidence\": [\"test passed\"]}}",
             "session_id": "sess-test-001b",
@@ -2866,7 +3143,10 @@ mod tests {
 
         let request = make_test_request();
         let result = prepared.finish(&request, output).await.unwrap();
-        assert_eq!(result.parsed_payload["data"]["outcome"], "approved");
+        // unwrap_claude_structured_output_transport_payload strips the
+        // single-key {"data": ...} wrapper, so the payload is the inner
+        // value directly.
+        assert_eq!(result.parsed_payload["outcome"], "approved");
     }
 
     #[tokio::test]
@@ -3404,6 +3684,411 @@ mod tests {
                 classify_exit_failure(status),
                 FailureClass::TransportFailure
             );
+        }
+    }
+
+    // ── is_backend_exhausted pattern detection tests ──────────────────
+
+    mod backend_exhausted_tests {
+        use super::super::{
+            classify_exit_failure_with_output, extract_stdout_error, is_backend_exhausted,
+        };
+        use crate::shared::domain::FailureClass;
+
+        #[test]
+        fn detects_usage_limit_in_stderr() {
+            assert!(is_backend_exhausted(
+                "ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits.",
+                "",
+            ));
+        }
+
+        #[test]
+        fn detects_quota_exceeded_in_stderr() {
+            assert!(is_backend_exhausted("Error: quota exceeded", ""));
+        }
+
+        #[test]
+        fn detects_credits_exhausted_in_stdout() {
+            assert!(is_backend_exhausted(
+                "",
+                "credits exhausted for this period"
+            ));
+        }
+
+        #[test]
+        fn detects_insufficient_quota_in_stderr() {
+            assert!(is_backend_exhausted("Error code: insufficient_quota", ""));
+        }
+
+        #[test]
+        fn detects_exceeded_your_current_quota() {
+            assert!(is_backend_exhausted(
+                "You exceeded your current quota, please check your plan and billing details",
+                "",
+            ));
+        }
+
+        #[test]
+        fn detects_credits_depleted() {
+            assert!(is_backend_exhausted(
+                "Error: credits depleted for this organization",
+                ""
+            ));
+        }
+
+        #[test]
+        fn detects_billing_hard_limit() {
+            assert!(is_backend_exhausted(
+                "You exceeded your billing hard limit. Please check your plan.",
+                "",
+            ));
+        }
+
+        #[test]
+        fn detects_hard_limit_reached() {
+            assert!(is_backend_exhausted(
+                "Error: hard limit reached for this account",
+                "",
+            ));
+        }
+
+        #[test]
+        fn no_false_positive_on_transient_rate_limit() {
+            // Transient rate limits should NOT be classified as exhausted —
+            // they are retryable via TransportFailure.
+            assert!(!is_backend_exhausted("rate limit exceeded", ""));
+        }
+
+        #[test]
+        fn no_false_positive_on_transient_rate_limit_reached() {
+            // "Rate limit reached" alone (without a reset-time indicator) is
+            // too broad — OpenAI sends this for transient per-minute TPM
+            // limits that resolve in seconds.
+            assert!(!is_backend_exhausted(
+                "Rate limit reached for gpt-4o in organization org-xyz on tokens per min (TPM): Limit 800000",
+                "",
+            ));
+        }
+
+        #[test]
+        fn detects_rate_limit_with_reset_time() {
+            // "rate limit" + "try again at" together indicates a persistent
+            // rate cap with a reset time — this IS exhaustion.
+            assert!(is_backend_exhausted(
+                "Rate limit reached, try again at 3:03 PM",
+                "",
+            ));
+            // Works across stderr/stdout combination too.
+            assert!(is_backend_exhausted(
+                "Rate limit exceeded",
+                "try again at 3:03 PM",
+            ));
+        }
+
+        #[test]
+        fn detects_rate_limit_with_retry_after_long_duration() {
+            // "retry after <hours/days/minutes>" is persistent exhaustion.
+            assert!(is_backend_exhausted(
+                "Rate limit reached, retry after 2h",
+                "",
+            ));
+            assert!(is_backend_exhausted("Rate limit. retry after 1 day", "",));
+            assert!(is_backend_exhausted(
+                "Rate limit hit, retry after 30 minutes",
+                "",
+            ));
+            // "m" shorthand for minutes (not "ms" for milliseconds).
+            // Only >= 5 minutes is persistent; short durations are transient.
+            assert!(is_backend_exhausted("Rate limit, retry after 30m", "",));
+            assert!(is_backend_exhausted("Rate limit, retry after 5m", "",));
+            // < 5 minutes is transient 429 backoff, NOT exhaustion.
+            assert!(!is_backend_exhausted("Rate limit, retry after 2m", "",));
+            assert!(!is_backend_exhausted("Rate limit, retry after 4m", "",));
+        }
+
+        #[test]
+        fn detects_rate_limit_with_until_timestamp() {
+            // "until 2026-..." ISO timestamps indicate a persistent reset.
+            assert!(is_backend_exhausted(
+                "Rate limit reached, until 2026-04-06T15:03Z",
+                "",
+            ));
+        }
+
+        #[test]
+        fn detects_rate_limit_with_resets_at() {
+            assert!(is_backend_exhausted(
+                "Rate limit reached, resets at midnight",
+                "",
+            ));
+            assert!(is_backend_exhausted("Rate limit, available at 3:00 PM", "",));
+        }
+
+        #[test]
+        fn detects_rate_limit_with_retry_after_large_seconds() {
+            // "retry after 3600s" or "retry after 86400 seconds" are persistent.
+            assert!(is_backend_exhausted(
+                "Rate limit exceeded. retry after 3600s",
+                "",
+            ));
+            assert!(is_backend_exhausted(
+                "Rate limit hit, retry after 86400 seconds",
+                "",
+            ));
+            // 300s (5 min) is the boundary — at or above is persistent.
+            assert!(is_backend_exhausted("Rate limit, retry after 300 sec", "",));
+            assert!(is_backend_exhausted("Rate limit, retry after 600s", "",));
+            // Below 300s with unit suffix is transient backoff, not exhaustion.
+            assert!(!is_backend_exhausted("Rate limit, retry after 60 sec", "",));
+            assert!(!is_backend_exhausted("Rate limit, retry after 120s", "",));
+            // Unitless large numbers (>= 3600) are treated as seconds.
+            assert!(is_backend_exhausted("Rate limit, retry after 3600", "",));
+            assert!(is_backend_exhausted("Rate limit, retry after 86400", "",));
+            // Unitless small numbers (< 3600) are NOT treated as persistent.
+            assert!(!is_backend_exhausted("Rate limit, retry after 30", "",));
+            assert!(!is_backend_exhausted("Rate limit, retry after 299", "",));
+        }
+
+        #[test]
+        fn detects_rate_limit_with_until_time_of_day() {
+            // "until 9:00 PM UTC" or "until 3:30 AM" are persistent.
+            assert!(is_backend_exhausted(
+                "Rate limit exceeded, until 9:00 PM UTC",
+                "",
+            ));
+            assert!(is_backend_exhausted(
+                "Rate limit reached, until 3:30 AM",
+                "",
+            ));
+            // AM/PM directly after digit (no space).
+            assert!(is_backend_exhausted(
+                "Rate limit reached, until 9am tomorrow",
+                "",
+            ));
+            assert!(is_backend_exhausted("Rate limit reached, until 5PM", "",));
+        }
+
+        #[test]
+        fn no_false_positive_on_until_non_time() {
+            // "until 5 retries" is NOT a time-of-day — should not trigger.
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded, until 5 retries are completed",
+                "",
+            ));
+            // "until 100 requests" is not a time either.
+            assert!(!is_backend_exhausted(
+                "Rate limit hit, until 100 requests processed",
+                "",
+            ));
+            // "until 2 requests" must NOT trigger — "until 2" was tightened
+            // to require ISO year format (until 20XX-) to prevent this.
+            assert!(!is_backend_exhausted(
+                "Rate limit hit, until 2 requests complete",
+                "",
+            ));
+            assert!(!is_backend_exhausted(
+                "Rate limit hit, until 2 jobs finish",
+                "",
+            ));
+            // "until 2000 requests" / "until 200 more" — the digits after
+            // "until 20" don't form an ISO year-dash pattern.
+            assert!(!is_backend_exhausted(
+                "rate limit reached, until 2000 requests are processed",
+                "",
+            ));
+            assert!(!is_backend_exhausted(
+                "rate limit reached, until 200 more attempts",
+                "",
+            ));
+        }
+
+        #[test]
+        fn no_false_positive_on_retry_after_short_duration() {
+            // "retry after 1s" or "retry after 100ms" are transient 429 backoff
+            // and must NOT trigger exhaustion.
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. Please retry after 1s",
+                "",
+            ));
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. Please retry after 100ms",
+                "",
+            ));
+            // "retry after 30s" is < 300 seconds — still transient.
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. retry after 30s",
+                "",
+            ));
+            // "retry after 60s" is standard 429 backoff — transient, not exhaustion.
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. retry after 60s",
+                "",
+            ));
+            // Short minute durations (< 5 min) are transient, not exhaustion.
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. retry after 1 minute",
+                "",
+            ));
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. retry after 3min",
+                "",
+            ));
+        }
+
+        #[test]
+        fn no_false_positive_on_billing_keyword() {
+            // Bare "billing" was removed as too broad; only specific patterns
+            // like "purchase more credits" match billing-related exhaustion.
+            assert!(!is_backend_exhausted("billing address updated", ""));
+        }
+
+        #[test]
+        fn case_insensitive_matching() {
+            assert!(is_backend_exhausted("QUOTA EXCEEDED", ""));
+            assert!(is_backend_exhausted("Usage Limit reached", ""));
+        }
+
+        #[test]
+        fn no_false_positive_on_normal_errors() {
+            assert!(!is_backend_exhausted(
+                "connection refused",
+                "unexpected EOF",
+            ));
+        }
+
+        #[test]
+        fn no_false_positive_on_empty_output() {
+            assert!(!is_backend_exhausted("", ""));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn classify_with_output_upgrades_to_backend_exhausted() {
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::ExitStatus;
+
+            let status = ExitStatus::from_raw(1 << 8);
+            assert_eq!(
+                classify_exit_failure_with_output(
+                    status,
+                    "ERROR: You've hit your usage limit.",
+                    "",
+                ),
+                FailureClass::BackendExhausted
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn classify_with_output_preserves_transport_failure_for_normal_errors() {
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::ExitStatus;
+
+            let status = ExitStatus::from_raw(1 << 8);
+            assert_eq!(
+                classify_exit_failure_with_output(status, "connection timeout", ""),
+                FailureClass::TransportFailure
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn classify_with_output_preserves_binary_not_found_for_exit_127() {
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::ExitStatus;
+
+            let status = ExitStatus::from_raw(127 << 8);
+            assert_eq!(
+                classify_exit_failure_with_output(status, "command not found", ""),
+                FailureClass::BinaryNotFound
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn exit_127_beats_exhaustion_pattern_in_output() {
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::ExitStatus;
+
+            // Exit 127 must always be BinaryNotFound even when stderr
+            // coincidentally contains an exhaustion pattern.
+            let status = ExitStatus::from_raw(127 << 8);
+            assert_eq!(
+                classify_exit_failure_with_output(status, "quota exceeded", ""),
+                FailureClass::BinaryNotFound
+            );
+        }
+
+        #[test]
+        fn extract_stdout_error_combines_result_and_errors() {
+            // When both `result` and `errors[]` are present, all fields
+            // should appear in the output so exhaustion patterns in any
+            // field are detected.
+            let json =
+                br#"{"is_error":true,"result":"request failed","errors":["quota exceeded"]}"#;
+            let extracted = extract_stdout_error(json).unwrap();
+            assert!(
+                extracted.contains("request failed"),
+                "should contain result: {extracted}"
+            );
+            assert!(
+                extracted.contains("quota exceeded"),
+                "should contain errors entry: {extracted}"
+            );
+        }
+
+        #[test]
+        fn extract_stdout_error_combines_result_and_subtype() {
+            let json = br#"{"is_error":true,"result":"something went wrong","subtype":"insufficient_quota"}"#;
+            let extracted = extract_stdout_error(json).unwrap();
+            assert!(extracted.contains("something went wrong"));
+            assert!(extracted.contains("insufficient_quota"));
+        }
+
+        #[test]
+        fn extract_stdout_error_all_three_fields() {
+            let json = br#"{"is_error":true,"result":"fail","errors":["quota exceeded","billing issue"],"subtype":"hard_limit"}"#;
+            let extracted = extract_stdout_error(json).unwrap();
+            assert!(extracted.contains("fail"));
+            assert!(extracted.contains("quota exceeded"));
+            assert!(extracted.contains("billing issue"));
+            assert!(extracted.contains("hard_limit"));
+        }
+
+        #[test]
+        fn extract_stdout_error_result_only() {
+            // Backwards compatibility: if only `result` is present, return it.
+            let json = br#"{"is_error":true,"result":"credits exhausted"}"#;
+            assert_eq!(extract_stdout_error(json).unwrap(), "credits exhausted");
+        }
+
+        #[test]
+        fn extract_stdout_error_errors_only() {
+            let json = br#"{"is_error":true,"errors":["quota exceeded"]}"#;
+            assert_eq!(extract_stdout_error(json).unwrap(), "quota exceeded");
+        }
+
+        #[test]
+        fn extract_stdout_error_subtype_only() {
+            let json = br#"{"is_error":true,"subtype":"insufficient_quota"}"#;
+            assert_eq!(extract_stdout_error(json).unwrap(), "insufficient_quota");
+        }
+
+        #[test]
+        fn extract_stdout_error_not_error() {
+            let json = br#"{"is_error":false,"result":"ok"}"#;
+            assert!(extract_stdout_error(json).is_none());
+        }
+
+        #[test]
+        fn extract_stdout_error_combined_envelope_triggers_exhaustion() {
+            // End-to-end: an envelope with exhaustion in `errors[]` but
+            // generic text in `result` must be detected by is_backend_exhausted.
+            let json =
+                br#"{"is_error":true,"result":"request failed","errors":["quota exceeded"]}"#;
+            let extracted = extract_stdout_error(json).unwrap();
+            assert!(is_backend_exhausted(&extracted, ""));
         }
     }
 }

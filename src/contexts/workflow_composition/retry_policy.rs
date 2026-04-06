@@ -64,6 +64,7 @@ impl RetryPolicy {
         rules.insert(FailureClass::Cancellation, RetryRule::terminal());
         rules.insert(FailureClass::QaReviewOutcomeFailure, RetryRule::terminal());
         rules.insert(FailureClass::BinaryNotFound, RetryRule::terminal());
+        rules.insert(FailureClass::BackendExhausted, RetryRule::terminal());
 
         Self {
             rules,

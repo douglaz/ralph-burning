@@ -44,7 +44,8 @@ use crate::contexts::workflow_composition::panel_contracts::{
 use crate::contexts::workflow_composition::renderers;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
-    BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor, StageId,
+    BackendRole, FailureClass, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor,
+    StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -209,6 +210,7 @@ pub async fn execute_final_review_panel<A, R, S>(
     cursor: &StageCursor,
     panel: &FinalReviewPanelResolution,
     min_reviewers: usize,
+    probe_exhausted_count: usize,
     consensus_threshold: f64,
     max_restarts: u32,
     final_review_restart_count: u32,
@@ -233,6 +235,8 @@ where
         })?;
 
     let mut reviewer_records = Vec::new();
+    let mut proposal_total_exhausted: usize = 0;
+    let mut last_proposal_exhaustion_error: Option<AppError> = None;
     for (idx, member) in panel.reviewers.iter().enumerate() {
         let reviewer_id = final_review_reviewer_id(idx);
         let reviewer_prompt =
@@ -283,6 +287,67 @@ where
 
         let (reviewer_payload, producer) = match reviewer_payload {
             Ok(payload) => payload,
+            // BackendExhausted is handled first regardless of required/optional
+            // status — an exhausted backend is skipped gracefully.
+            Err(error)
+                if error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
+            {
+                // Track all exhausted members — both required and optional
+                // count toward quorum reduction because resolve_panel_backends
+                // counts all resolved members toward the configured minimum.
+                proposal_total_exhausted += 1;
+                tracing::warn!(
+                    reviewer = %reviewer_id,
+                    "reviewer unavailable (backend exhausted), proceeding with remaining reviewers"
+                );
+                append_panel_member_completed_event(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "proposal",
+                    &reviewer_id,
+                    "reviewer",
+                    &member.target,
+                    started_at.elapsed(),
+                    "failed_exhausted",
+                    0,
+                )?;
+                append_panel_member_runtime_log(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "proposal",
+                    &reviewer_id,
+                    "reviewer",
+                    &member.target,
+                    Some(started_at.elapsed()),
+                    Some("failed_exhausted"),
+                    Some(0),
+                );
+                // Reduce effective quorum only when exhaustion makes the
+                // configured minimum impossible (remaining < min).
+                let effective_min = min_reviewers
+                    .min(
+                        panel
+                            .reviewers
+                            .len()
+                            .saturating_sub(proposal_total_exhausted),
+                    )
+                    .max(1);
+                if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
+                    < effective_min
+                {
+                    last_proposal_exhaustion_error = Some(error);
+                    break;
+                }
+                continue;
+            }
             Err(error) if !member.required => {
                 append_panel_member_completed_event(
                     journal_store,
@@ -312,9 +377,30 @@ where
                     Some("failed_optional"),
                     Some(0),
                 );
+                // Use the reduced quorum: only reduce when exhaustion
+                // makes the configured minimum impossible.
+                let effective_optional_min = min_reviewers
+                    .min(
+                        panel
+                            .reviewers
+                            .len()
+                            .saturating_sub(proposal_total_exhausted),
+                    )
+                    .max(1);
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
-                    < min_reviewers
+                    < effective_optional_min
                 {
+                    tracing::warn!(
+                        reviewer = idx,
+                        backend = %member.target.backend.family,
+                        successful = reviewer_records.len(),
+                        remaining = panel.reviewers.len().saturating_sub(idx + 1),
+                        exhausted = proposal_total_exhausted,
+                        effective_min = effective_optional_min,
+                        "proposal quorum shortfall: optional failure + exhaustion makes minimum unreachable"
+                    );
+                    // Propagate the original error so its FailureClass is
+                    // preserved for the engine's retry decision.
                     return Err(error);
                 }
                 continue;
@@ -456,11 +542,26 @@ where
         });
     }
 
-    if reviewer_records.len() < min_reviewers {
+    let all_proposal_exhausted = probe_exhausted_count + proposal_total_exhausted;
+    let effective_proposal_min = min_reviewers
+        .min(
+            panel
+                .reviewers
+                .len()
+                .saturating_sub(proposal_total_exhausted),
+        )
+        .max(1);
+    if reviewer_records.len() < effective_proposal_min {
+        // When the shortfall is entirely due to backend exhaustion,
+        // propagate the last BackendExhausted error so the engine's
+        // failure-class-aware handling can apply (e.g., non-retryable).
+        if let Some(exhaustion_error) = last_proposal_exhaustion_error {
+            return Err(exhaustion_error);
+        }
         return Err(AppError::InsufficientPanelMembers {
             panel: "final_review".to_owned(),
             resolved: reviewer_records.len(),
-            minimum: min_reviewers,
+            minimum: effective_proposal_min,
         });
     }
 
@@ -483,6 +584,9 @@ where
             final_review_restart_count,
             max_restarts,
             summary: "No final-review amendments were proposed.".to_owned(),
+            exhausted_count: all_proposal_exhausted,
+            probe_exhausted_count,
+            effective_min_reviewers: effective_proposal_min,
         };
         let aggregate_payload = serde_json::to_value(&aggregate)?;
         let aggregate_artifact = renderers::render_final_review_aggregate(&aggregate);
@@ -727,6 +831,8 @@ where
         .collect();
 
     let mut reviewer_votes = Vec::new();
+    let mut vote_total_exhausted: usize = 0;
+    let mut last_vote_exhaustion_error: Option<AppError> = None;
     for (idx, reviewer) in reviewer_records.iter().enumerate() {
         let vote_prompt = build_voter_prompt(
             "Final Review Votes",
@@ -795,6 +901,59 @@ where
 
         let (vote_payload, producer) = match vote_payload {
             Ok(payload) => payload,
+            // BackendExhausted is handled first regardless of required/optional
+            // status — an exhausted backend is skipped gracefully.
+            Err(error)
+                if error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
+            {
+                // Track all exhausted members — both required and optional
+                // count toward quorum reduction (see proposal phase comment).
+                vote_total_exhausted += 1;
+                tracing::warn!(
+                    reviewer = %reviewer.reviewer_id,
+                    "reviewer unavailable during vote (backend exhausted), proceeding with remaining reviewers"
+                );
+                append_panel_member_completed_event(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &reviewer.target,
+                    started_at.elapsed(),
+                    "failed_exhausted",
+                    0,
+                )?;
+                append_panel_member_runtime_log(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &reviewer.target,
+                    Some(started_at.elapsed()),
+                    Some("failed_exhausted"),
+                    Some(0),
+                );
+                let effective_min = min_reviewers
+                    .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
+                    .max(1);
+                if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
+                    < effective_min
+                {
+                    last_vote_exhaustion_error = Some(error);
+                    break;
+                }
+                continue;
+            }
             Err(error) if !reviewer.required => {
                 append_panel_member_completed_event(
                     journal_store,
@@ -824,9 +983,25 @@ where
                     Some("failed_optional"),
                     Some(0),
                 );
+                // Use the reduced quorum: only reduce when exhaustion
+                // makes the configured minimum impossible.
+                let effective_optional_min = min_reviewers
+                    .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
+                    .max(1);
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
-                    < min_reviewers
+                    < effective_optional_min
                 {
+                    tracing::warn!(
+                        reviewer = idx,
+                        backend = %reviewer.target.backend.family,
+                        successful_votes = reviewer_votes.len(),
+                        remaining = reviewer_records.len().saturating_sub(idx + 1),
+                        exhausted = vote_total_exhausted,
+                        effective_min = effective_optional_min,
+                        "vote quorum shortfall: optional failure + exhaustion makes minimum unreachable"
+                    );
+                    // Propagate the original error so its FailureClass is
+                    // preserved for the engine's retry decision.
                     return Err(error);
                 }
                 continue;
@@ -998,11 +1173,23 @@ where
         reviewer_votes.push(votes);
     }
 
-    if reviewer_votes.len() < min_reviewers {
+    // Reduce vote quorum only when exhaustion makes the configured
+    // minimum impossible.  reviewer_records is the post-proposal panel;
+    // vote_total_exhausted is the invocation-time exhaustion during voting.
+    let effective_vote_min = min_reviewers
+        .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
+        .max(1);
+    if reviewer_votes.len() < effective_vote_min {
+        // When the shortfall is entirely due to backend exhaustion,
+        // propagate the last BackendExhausted error so the engine's
+        // failure-class-aware handling can apply (e.g., non-retryable).
+        if let Some(exhaustion_error) = last_vote_exhaustion_error {
+            return Err(exhaustion_error);
+        }
         return Err(AppError::InsufficientPanelMembers {
             panel: "final_review_vote".to_owned(),
             resolved: reviewer_votes.len(),
-            minimum: min_reviewers,
+            minimum: effective_vote_min,
         });
     }
 
@@ -1280,6 +1467,12 @@ where
         .cloned()
         .collect();
 
+    let total_all_exhausted =
+        probe_exhausted_count + proposal_total_exhausted + vote_total_exhausted;
+    let effective_min = min_reviewers
+        .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
+        .max(1);
+
     if !final_accepted_amendments.is_empty() && final_review_restart_count >= max_restarts {
         let aggregate = FinalReviewAggregatePayload {
             restart_required: false,
@@ -1304,6 +1497,9 @@ where
                 "Final-review restart cap reached ({final_review_restart_count}/{max_restarts}); force-completing instead of restarting with {} accepted amendment(s).",
                 final_accepted_amendments.len()
             ),
+            exhausted_count: total_all_exhausted,
+            probe_exhausted_count,
+            effective_min_reviewers: effective_min,
         };
         let aggregate_payload = serde_json::to_value(&aggregate)?;
         let aggregate_artifact = renderers::render_final_review_aggregate(&aggregate);
@@ -1355,6 +1551,9 @@ where
                 final_accepted_amendments.len()
             )
         },
+        exhausted_count: total_all_exhausted,
+        probe_exhausted_count,
+        effective_min_reviewers: effective_min,
     };
     let aggregate_payload = serde_json::to_value(&aggregate)?;
     let aggregate_artifact = renderers::render_final_review_aggregate(&aggregate);
@@ -1910,6 +2109,8 @@ mod tests {
         requests: Arc<Mutex<Vec<(String, String)>>>,
         proposal_failures: Arc<HashSet<String>>,
         vote_failures: Arc<HashSet<String>>,
+        /// Members whose proposal invocations fail with BackendExhausted.
+        proposal_exhausted: Arc<HashSet<String>>,
         actual_targets: Arc<HashMap<String, ResolvedBackendTarget>>,
         deferred_template_override: Arc<Mutex<Option<DeferredTemplateOverride>>>,
     }
@@ -1924,34 +2125,32 @@ mod tests {
     impl RecordingFinalReviewAdapter {
         fn with_proposal_failure(member_key: &str) -> Self {
             Self {
-                requests: Arc::default(),
                 proposal_failures: Arc::new(HashSet::from([member_key.to_owned()])),
-                vote_failures: Arc::default(),
-                actual_targets: Arc::default(),
-                deferred_template_override: Arc::default(),
+                ..Default::default()
             }
         }
 
         fn with_vote_failure(member_key: &str) -> Self {
             Self {
-                requests: Arc::default(),
-                proposal_failures: Arc::default(),
                 vote_failures: Arc::new(HashSet::from([member_key.to_owned()])),
-                actual_targets: Arc::default(),
-                deferred_template_override: Arc::default(),
+                ..Default::default()
+            }
+        }
+
+        fn with_proposal_exhausted(keys: &[&str]) -> Self {
+            Self {
+                proposal_exhausted: Arc::new(keys.iter().map(|k| (*k).to_owned()).collect()),
+                ..Default::default()
             }
         }
 
         fn with_actual_target(member_key: &str, backend: BackendFamily, model_id: &str) -> Self {
             Self {
-                requests: Arc::default(),
-                proposal_failures: Arc::default(),
-                vote_failures: Arc::default(),
                 actual_targets: Arc::new(HashMap::from([(
                     member_key.to_owned(),
                     ResolvedBackendTarget::new(backend, model_id),
                 )])),
-                deferred_template_override: Arc::default(),
+                ..Default::default()
             }
         }
 
@@ -1961,15 +2160,12 @@ mod tests {
             content: &str,
         ) -> Self {
             Self {
-                requests: Arc::default(),
-                proposal_failures: Arc::default(),
-                vote_failures: Arc::default(),
-                actual_targets: Arc::default(),
                 deferred_template_override: Arc::new(Mutex::new(Some(DeferredTemplateOverride {
                     invocation_id_fragment: invocation_id_fragment.to_owned(),
                     template_id: template_id.to_owned(),
                     content: content.to_owned(),
                 }))),
+                ..Default::default()
             }
         }
 
@@ -2024,6 +2220,19 @@ mod tests {
                     contract_id: contract_label,
                     failure_class: crate::shared::domain::FailureClass::TransportFailure,
                     details: "optional reviewer failed during proposals".to_owned(),
+                });
+            }
+            if contract_label == "final_review:reviewer"
+                && self
+                    .proposal_exhausted
+                    .iter()
+                    .any(|member_key| request.invocation_id.contains(member_key))
+            {
+                return Err(AppError::InvocationFailed {
+                    backend: request.resolved_target.backend.family.to_string(),
+                    contract_id: contract_label,
+                    failure_class: crate::shared::domain::FailureClass::BackendExhausted,
+                    details: "reviewer backend exhausted (credits/quota)".to_owned(),
                 });
             }
             if contract_label == "final_review:voter"
@@ -2414,6 +2623,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.0,
             0,
             0,
@@ -2492,6 +2702,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.0,
             0,
             0,
@@ -2571,6 +2782,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.0,
             0,
             0,
@@ -2652,6 +2864,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.1,
             0,
             0,
@@ -2745,6 +2958,7 @@ mod tests {
             &cursor,
             &panel,
             2,
+            0,
             0.66,
             2,
             0,
@@ -2843,6 +3057,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.0,
             0,
             0,
@@ -2923,6 +3138,7 @@ mod tests {
             &cursor,
             &panel,
             1,
+            0,
             1.0,
             0,
             0,
@@ -3010,6 +3226,7 @@ mod tests {
             &cursor,
             &panel,
             2,
+            0,
             0.66,
             2,
             0,
@@ -3079,6 +3296,7 @@ mod tests {
             &cursor,
             &panel,
             2,
+            0,
             0.5,
             2,
             0,
@@ -3117,6 +3335,156 @@ mod tests {
                 }) if !backend_family.is_empty() && !model_id.is_empty()
             )),
             "final-review supporting artifacts must persist agent producer metadata: {supporting_final_review_artifacts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn final_review_degrades_when_one_reviewer_backend_exhausted() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-one-exhausted");
+        let adapter = RecordingFinalReviewAdapter::with_proposal_exhausted(&["reviewer-1"]);
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-fr-one-exhausted").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        // Two required reviewers, min_reviewers=2. One exhausts.
+        // With quorum reduction, effective min becomes 1, so panel succeeds.
+        let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
+            reviewers: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-1-model"),
+                    required: true,
+                    configured_index: 0,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-2-model"),
+                    required: true,
+                    configured_index: 1,
+                },
+            ],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let result = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            2,    // min_reviewers
+            0,    // probe_exhausted_count
+            0.66, // acceptance_threshold
+            2,    // total_reviewers
+            0,    // rollback_count
+            "prompt.md",
+            0, // skip_final_validation_rounds
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "panel should succeed with one exhausted reviewer: {}",
+            result.err().map_or("ok".to_owned(), |e| e.to_string())
+        );
+        // Verify the exhausted reviewer was logged in journal details
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        let exhausted_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                matches!(e.event_type, JournalEventType::ReviewerCompleted)
+                    && e.details.get("outcome").and_then(|s| s.as_str()) == Some("failed_exhausted")
+            })
+            .collect();
+        assert_eq!(
+            exhausted_events.len(),
+            1,
+            "expected exactly one failed_exhausted reviewer event"
+        );
+    }
+
+    #[tokio::test]
+    async fn final_review_fails_when_all_reviewers_exhausted() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-all-exhausted");
+        let adapter =
+            RecordingFinalReviewAdapter::with_proposal_exhausted(&["reviewer-1", "reviewer-2"]);
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-fr-all-exhausted").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
+            reviewers: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-0-model"),
+                    required: true,
+                    configured_index: 0,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                    required: true,
+                    configured_index: 1,
+                },
+            ],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let error = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            2,    // min_reviewers
+            0,    // probe_exhausted_count
+            0.66, // acceptance_threshold
+            2,    // total_reviewers
+            0,    // rollback_count
+            "prompt.md",
+            0, // skip_final_validation_rounds
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("panel should fail when all reviewers are exhausted");
+
+        assert!(
+            error
+                .failure_class()
+                .is_some_and(|fc| fc == FailureClass::BackendExhausted),
+            "error should be BackendExhausted: {error:?}"
         );
     }
 }

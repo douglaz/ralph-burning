@@ -113,8 +113,20 @@ pub struct CompletionAggregatePayload {
     pub total_voters: usize,
     /// Consensus threshold used for the decision.
     pub consensus_threshold: f64,
-    /// Minimum completers required.
+    /// Originally configured minimum completers.
     pub min_completers: usize,
+    /// Effective minimum after reducing for exhausted backends.
+    /// When no backends are exhausted this equals `min_completers`.
+    #[serde(default)]
+    pub effective_min_completers: usize,
+    /// Number of completers skipped due to backend exhaustion
+    /// (probe-time + invocation-time combined).
+    #[serde(default)]
+    pub exhausted_count: usize,
+    /// Number of completers already exhausted at probe time (before
+    /// invocation). Subset of `exhausted_count`.
+    #[serde(default)]
+    pub probe_exhausted_count: usize,
     /// Identifiers of the executed voters (backend family / model pairs).
     pub executed_voters: Vec<String>,
 }
@@ -220,6 +232,18 @@ pub struct FinalReviewAggregatePayload {
     pub final_review_restart_count: u32,
     pub max_restarts: u32,
     pub summary: String,
+    /// Number of reviewers skipped due to backend exhaustion
+    /// (probe-time + invocation-time combined).
+    #[serde(default)]
+    pub exhausted_count: usize,
+    /// Number of reviewers already exhausted at probe time (before
+    /// invocation). Subset of `exhausted_count`.
+    #[serde(default)]
+    pub probe_exhausted_count: usize,
+    /// Effective minimum reviewers after reducing for exhausted backends.
+    /// When no backends are exhausted this equals the configured minimum.
+    #[serde(default)]
+    pub effective_min_reviewers: usize,
 }
 
 // ── Record Kind ────────────────────────────────────────────────────────────

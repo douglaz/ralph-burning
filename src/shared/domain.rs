@@ -25,6 +25,10 @@ pub enum FailureClass {
     /// Also used for fatal configuration issues (e.g. missing API key) that
     /// won't resolve between retry attempts.
     BinaryNotFound,
+    /// Terminal: the backend has exhausted credits, hit a persistent usage
+    /// limit, or is otherwise unavailable for reasons that won't resolve
+    /// between retry attempts within the same run.
+    BackendExhausted,
 }
 
 impl FailureClass {
@@ -37,6 +41,7 @@ impl FailureClass {
             Self::Cancellation => "cancellation",
             Self::QaReviewOutcomeFailure => "qa_review_outcome_failure",
             Self::BinaryNotFound => "binary_not_found",
+            Self::BackendExhausted => "backend_exhausted",
         }
     }
 }

@@ -11183,6 +11183,9 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                 total_voters: 2,
                 consensus_threshold: 0.5,
                 min_completers: 1,
+                effective_min_completers: 1,
+                exhausted_count: 0,
+                probe_exhausted_count: 0,
                 executed_voters: vec![
                     "claude:claude-opus-4-6".to_owned(),
                     "codex:codex-1".to_owned(),
@@ -11309,6 +11312,9 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             total_voters: 2,
             consensus_threshold: 0.5,
             min_completers: 1,
+            effective_min_completers: 1,
+            exhausted_count: 0,
+            probe_exhausted_count: 0,
             executed_voters: vec![
                 "claude:claude-opus-4-6".to_owned(),
                 "codex:codex-1".to_owned(),
@@ -11980,10 +11986,11 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                 ws_helper.path(),
             )
             .map_err(|e| format!("load effective config: {e}"))?;
-            drift_still_satisfies_requirements(&new, StageId::CompletionPanel, &config)
+            drift_still_satisfies_requirements(&new, StageId::CompletionPanel, &config, None)
                 .map_err(|e| format!("expected panel drift to satisfy requirements: {e}"))?;
             let empty = build_completion_snapshot(StageId::CompletionPanel, &[]);
-            if drift_still_satisfies_requirements(&empty, StageId::CompletionPanel, &config).is_ok()
+            if drift_still_satisfies_requirements(&empty, StageId::CompletionPanel, &config, None)
+                .is_ok()
             {
                 return Err("expected failure when no completers remain".to_owned());
             }
