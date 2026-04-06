@@ -374,8 +374,13 @@ where
                     Some("failed_optional"),
                     Some(0),
                 );
+                // Use the reduced quorum: if a required reviewer was already
+                // skipped as exhausted, the effective threshold is lower.
+                let effective_optional_min = min_reviewers
+                    .saturating_sub(proposal_exhausted_count)
+                    .max(1);
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
-                    < min_reviewers
+                    < effective_optional_min
                 {
                     return Err(error);
                 }
@@ -950,8 +955,13 @@ where
                     Some("failed_optional"),
                     Some(0),
                 );
+                // Use the reduced quorum: if required reviewers were already
+                // skipped as exhausted, the effective threshold is lower.
+                let effective_optional_min = min_reviewers
+                    .saturating_sub(proposal_exhausted_count + vote_exhausted_count)
+                    .max(1);
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
-                    < min_reviewers
+                    < effective_optional_min
                 {
                     return Err(error);
                 }

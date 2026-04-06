@@ -6753,6 +6753,8 @@ where
     // persisting the snapshot. Required unavailable backends fail
     // resolution; optional unavailable backends are removed so the
     // snapshot only records members that will actually execute.
+    // BackendExhausted probes are treated as graceful degradation: the
+    // member is skipped and the panel proceeds if quorum still holds.
     let mut available_completers = Vec::new();
     for member in &panel.completers {
         match agent_service
@@ -6763,6 +6765,17 @@ where
             Ok(()) => available_completers.push(member.clone()),
             Err(e) => {
                 if member.required {
+                    // BackendExhausted during probe → skip for graceful
+                    // degradation instead of aborting the entire stage.
+                    if e.failure_class()
+                        .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                    {
+                        tracing::warn!(
+                            backend = %member.target.backend.family,
+                            "required completer unavailable during probe (backend exhausted), skipping"
+                        );
+                        continue;
+                    }
                     return Err(e);
                 }
                 // Optional completer unavailable — remove before snapshot.
@@ -6986,6 +6999,18 @@ where
             Ok(()) => available_reviewers.push(member.clone()),
             Err(error) => {
                 if member.required {
+                    // BackendExhausted during probe → skip for graceful
+                    // degradation instead of aborting the entire stage.
+                    if error
+                        .failure_class()
+                        .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                    {
+                        tracing::warn!(
+                            backend = %member.target.backend.family,
+                            "required reviewer unavailable during probe (backend exhausted), skipping"
+                        );
+                        continue;
+                    }
                     return Err(error);
                 }
             }

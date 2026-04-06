@@ -204,10 +204,20 @@ impl OpenRouterBackendAdapter {
 
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
+        // If the probe gets a 429 with exhaustion patterns, classify as
+        // BackendExhausted so the engine's pre-snapshot filtering can
+        // skip the member gracefully instead of aborting the stage.
+        let failure_class = if status.as_u16() == 429
+            && crate::adapters::process_backend::is_backend_exhausted(&body, "")
+        {
+            Some(FailureClass::BackendExhausted)
+        } else {
+            None
+        };
         Err(AppError::BackendUnavailable {
             backend: BackendFamily::OpenRouter.to_string(),
             details: format_http_error_details(status, &body),
-            failure_class: None,
+            failure_class,
         })
     }
 

@@ -1422,11 +1422,10 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             .status
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
-                        let fresh_stdout_text = String::from_utf8_lossy(&fresh_output.stdout);
                         let failure_class = classify_exit_failure_with_output(
                             fresh_output.status,
                             &fresh_stderr,
-                            &fresh_stdout_text,
+                            fresh_stdout_error.as_deref().unwrap_or(""),
                         );
                         fresh_prepared
                             .cleanup_failed_invocation(&fresh_request, &fresh_output)
@@ -1450,10 +1449,12 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 }
 
                 let stdout_error = extract_stdout_error(&output.stdout);
-                let stdout_text = String::from_utf8_lossy(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
-                let failure_class =
-                    classify_exit_failure_with_output(status, &stderr, &stdout_text);
+                let failure_class = classify_exit_failure_with_output(
+                    status,
+                    &stderr,
+                    stdout_error.as_deref().unwrap_or(""),
+                );
                 prepared.cleanup_failed_invocation(&request, &output).await;
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
@@ -1587,7 +1588,7 @@ fn extract_codex_usage_from_stdout(stdout: &[u8]) -> TokenCounts {
 
 /// Try to extract an error message from Claude's stdout JSON envelope.
 /// Returns `Some(detail)` if stdout contains JSON with `is_error: true`.
-fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
+pub(crate) fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
     if value.get("is_error")?.as_bool()? {
         value
@@ -1734,15 +1735,19 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
     "insufficient_quota",
     "billing hard limit",
     "hard limit reached",
-    "rate limit reached",
 ];
 
-/// Check whether process output text contains patterns indicating
+/// Check whether error output text contains patterns indicating
 /// persistent backend unavailability (credits exhausted, usage limits).
 ///
-/// Returns `true` when the combined stderr+stdout content matches any
-/// known exhaustion pattern.  Case-insensitive matching is used because
-/// error messages vary across backend providers.
+/// Returns `true` when the combined stderr + stdout-error content matches
+/// any known exhaustion pattern.  Case-insensitive matching is used
+/// because error messages vary across backend providers.
+///
+/// **Important**: The `stdout` parameter should contain only the
+/// extracted error text (via [`extract_stdout_error`]), not the full
+/// raw stdout transcript.  Full transcripts can include echoed prompts
+/// or conversation text that coincidentally match exhaustion keywords.
 pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
     let stderr_lower = stderr.to_lowercase();
     let stdout_lower = stdout.to_lowercase();
@@ -1752,7 +1757,11 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
 }
 
 /// Classify a non-zero exit, upgrading to `BackendExhausted` when the
-/// process output indicates a persistent usage/billing limit.
+/// error output indicates a persistent usage/billing limit.
+///
+/// The `stdout` parameter should contain only the extracted error text
+/// (via [`extract_stdout_error`]), not the full raw stdout transcript,
+/// to avoid false positives from echoed prompt/conversation content.
 ///
 /// Exit code 127 (command not found) always wins as `BinaryNotFound`
 /// regardless of output content — a missing binary cannot be a quota issue.
@@ -3546,14 +3555,17 @@ mod tests {
         }
 
         #[test]
-        fn detects_rate_limit_reached_with_reset_time() {
-            assert!(is_backend_exhausted(
-                "Rate limit reached, try again at 3:03 PM",
+        fn no_false_positive_on_rate_limit_reached() {
+            // "Rate limit reached" alone is too broad — OpenAI sends this for
+            // transient per-minute TPM limits that resolve in seconds.  The
+            // original Codex error is already covered by "usage limit".
+            assert!(!is_backend_exhausted(
+                "Rate limit reached for gpt-4o in organization org-xyz on tokens per min (TPM): Limit 800000",
                 "",
             ));
-            assert!(is_backend_exhausted(
+            assert!(!is_backend_exhausted(
+                "Rate limit reached, try again at 3:03 PM",
                 "",
-                "Error: rate limit reached for this model",
             ));
         }
 
