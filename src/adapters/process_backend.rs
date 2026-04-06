@@ -1633,26 +1633,42 @@ fn extract_codex_usage_from_stdout(stdout: &[u8]) -> TokenCounts {
 
 /// Try to extract an error message from Claude's stdout JSON envelope.
 /// Returns `Some(detail)` if stdout contains JSON with `is_error: true`.
+///
+/// Combines all error-carrying fields (`result`, `errors[]`, `subtype`)
+/// into a single string so that exhaustion patterns in *any* field are
+/// visible to downstream `is_backend_exhausted` checks.  For example,
+/// an envelope like `{"is_error":true,"result":"request failed",
+/// "errors":["quota exceeded"]}` yields `"request failed; quota exceeded"`.
 pub(crate) fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
     if value.get("is_error")?.as_bool()? {
-        value
-            .get("result")
-            .and_then(|r| r.as_str())
-            .map(|s| s.to_owned())
-            .or_else(|| {
-                value
-                    .get("errors")
-                    .and_then(|v| v.as_array())
-                    .and_then(|errors| errors.iter().find_map(|e| e.as_str()))
-                    .map(|s| s.to_owned())
-            })
-            .or_else(|| {
-                value
-                    .get("subtype")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_owned())
-            })
+        let mut parts: Vec<&str> = Vec::new();
+
+        if let Some(result) = value.get("result").and_then(|r| r.as_str()) {
+            if !result.is_empty() {
+                parts.push(result);
+            }
+        }
+
+        // Collect all string entries from the `errors` array.
+        let errors_strs: Vec<&str> = value
+            .get("errors")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|e| e.as_str()).collect())
+            .unwrap_or_default();
+        parts.extend(&errors_strs);
+
+        if let Some(subtype) = value.get("subtype").and_then(|v| v.as_str()) {
+            if !subtype.is_empty() {
+                parts.push(subtype);
+            }
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("; "))
+        }
     } else {
         None
     }
@@ -1875,11 +1891,21 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
             if rest.starts_with('h')
                 || rest.starts_with("hour")
                 || rest.starts_with("day")
-                || rest.starts_with("min")
                 || rest.starts_with("week")
-                || (rest.starts_with('m') && !rest.starts_with("ms"))
             {
                 return true;
+            }
+            // "min" / "minute" / bare "m" (not "ms") — only persistent
+            // when the numeric portion is >= 5 minutes.  Short minute
+            // durations like "retry after 2m" are standard 429 backoff
+            // and must stay TransportFailure.
+            if rest.starts_with("min") || (rest.starts_with('m') && !rest.starts_with("ms")) {
+                if let Ok(val) = after[..numeric_end].parse::<f64>() {
+                    if val >= 5.0 {
+                        return true;
+                    }
+                }
+                // < 5 minutes — transient, fall through to other checks.
             }
             // Large-second values (>= 300) like "retry after 3600s" or
             // "retry after 86400 seconds" indicate a persistent wait.
@@ -3652,7 +3678,9 @@ mod tests {
     // ── is_backend_exhausted pattern detection tests ──────────────────
 
     mod backend_exhausted_tests {
-        use super::super::{classify_exit_failure_with_output, is_backend_exhausted};
+        use super::super::{
+            classify_exit_failure_with_output, extract_stdout_error, is_backend_exhausted,
+        };
         use crate::shared::domain::FailureClass;
 
         #[test]
@@ -3759,8 +3787,12 @@ mod tests {
                 "",
             ));
             // "m" shorthand for minutes (not "ms" for milliseconds).
+            // Only >= 5 minutes is persistent; short durations are transient.
             assert!(is_backend_exhausted("Rate limit, retry after 30m", "",));
-            assert!(is_backend_exhausted("Rate limit, retry after 2m", "",));
+            assert!(is_backend_exhausted("Rate limit, retry after 5m", "",));
+            // < 5 minutes is transient 429 backoff, NOT exhaustion.
+            assert!(!is_backend_exhausted("Rate limit, retry after 2m", "",));
+            assert!(!is_backend_exhausted("Rate limit, retry after 4m", "",));
         }
 
         #[test]
@@ -3861,6 +3893,15 @@ mod tests {
                 "Rate limit exceeded. retry after 60s",
                 "",
             ));
+            // Short minute durations (< 5 min) are transient, not exhaustion.
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. retry after 1 minute",
+                "",
+            ));
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. retry after 3min",
+                "",
+            ));
         }
 
         #[test]
@@ -3945,6 +3986,77 @@ mod tests {
                 classify_exit_failure_with_output(status, "quota exceeded", ""),
                 FailureClass::BinaryNotFound
             );
+        }
+
+        #[test]
+        fn extract_stdout_error_combines_result_and_errors() {
+            // When both `result` and `errors[]` are present, all fields
+            // should appear in the output so exhaustion patterns in any
+            // field are detected.
+            let json =
+                br#"{"is_error":true,"result":"request failed","errors":["quota exceeded"]}"#;
+            let extracted = extract_stdout_error(json).unwrap();
+            assert!(
+                extracted.contains("request failed"),
+                "should contain result: {extracted}"
+            );
+            assert!(
+                extracted.contains("quota exceeded"),
+                "should contain errors entry: {extracted}"
+            );
+        }
+
+        #[test]
+        fn extract_stdout_error_combines_result_and_subtype() {
+            let json = br#"{"is_error":true,"result":"something went wrong","subtype":"insufficient_quota"}"#;
+            let extracted = extract_stdout_error(json).unwrap();
+            assert!(extracted.contains("something went wrong"));
+            assert!(extracted.contains("insufficient_quota"));
+        }
+
+        #[test]
+        fn extract_stdout_error_all_three_fields() {
+            let json = br#"{"is_error":true,"result":"fail","errors":["quota exceeded","billing issue"],"subtype":"hard_limit"}"#;
+            let extracted = extract_stdout_error(json).unwrap();
+            assert!(extracted.contains("fail"));
+            assert!(extracted.contains("quota exceeded"));
+            assert!(extracted.contains("billing issue"));
+            assert!(extracted.contains("hard_limit"));
+        }
+
+        #[test]
+        fn extract_stdout_error_result_only() {
+            // Backwards compatibility: if only `result` is present, return it.
+            let json = br#"{"is_error":true,"result":"credits exhausted"}"#;
+            assert_eq!(extract_stdout_error(json).unwrap(), "credits exhausted");
+        }
+
+        #[test]
+        fn extract_stdout_error_errors_only() {
+            let json = br#"{"is_error":true,"errors":["quota exceeded"]}"#;
+            assert_eq!(extract_stdout_error(json).unwrap(), "quota exceeded");
+        }
+
+        #[test]
+        fn extract_stdout_error_subtype_only() {
+            let json = br#"{"is_error":true,"subtype":"insufficient_quota"}"#;
+            assert_eq!(extract_stdout_error(json).unwrap(), "insufficient_quota");
+        }
+
+        #[test]
+        fn extract_stdout_error_not_error() {
+            let json = br#"{"is_error":false,"result":"ok"}"#;
+            assert!(extract_stdout_error(json).is_none());
+        }
+
+        #[test]
+        fn extract_stdout_error_combined_envelope_triggers_exhaustion() {
+            // End-to-end: an envelope with exhaustion in `errors[]` but
+            // generic text in `result` must be detected by is_backend_exhausted.
+            let json =
+                br#"{"is_error":true,"result":"request failed","errors":["quota exceeded"]}"#;
+            let extracted = extract_stdout_error(json).unwrap();
+            assert!(is_backend_exhausted(&extracted, ""));
         }
     }
 }
