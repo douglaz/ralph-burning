@@ -186,6 +186,28 @@ pub fn stage_completed_event(
     }
 }
 
+/// Build a `stage_skipped` journal event.
+pub fn stage_skipped_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    stage_id: StageId,
+    cycle: u32,
+    reason: &str,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::StageSkipped,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "stage_id": stage_id.as_str(),
+            "cycle": cycle,
+            "reason": reason,
+        }),
+    }
+}
+
 /// Build a `stage_failed` journal event.
 #[allow(clippy::too_many_arguments)]
 pub fn stage_failed_event(

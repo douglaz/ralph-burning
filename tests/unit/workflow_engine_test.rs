@@ -1293,14 +1293,22 @@ async fn happy_path_quick_dev_run_completes() {
         .filter(|event| event.event_type == JournalEventType::StageEntered)
         .map(|event| event.details["stage_id"].as_str().unwrap().to_owned())
         .collect();
+    // ApplyFixes is skipped when Review approves with no findings.
     assert_eq!(
-        vec![
-            "plan_and_implement",
-            "review",
-            "apply_fixes",
-            "final_review"
-        ],
+        vec!["plan_and_implement", "review", "final_review"],
         entered
+    );
+
+    // Verify the StageSkipped journal event was recorded for apply_fixes.
+    let skipped: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::StageSkipped)
+        .collect();
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].details["stage_id"], "apply_fixes");
+    assert_eq!(
+        skipped[0].details["reason"],
+        "review approved with no findings"
     );
 
     let payload_count = fs::read_dir(project_root(base_dir, "qd-happy").join("history/payloads"))
@@ -1309,8 +1317,133 @@ async fn happy_path_quick_dev_run_completes() {
     let artifact_count = fs::read_dir(project_root(base_dir, "qd-happy").join("history/artifacts"))
         .unwrap()
         .count();
-    assert_eq!(payload_count, 6);
-    assert_eq!(artifact_count, 6);
+    // One fewer payload/artifact pair since ApplyFixes was skipped.
+    assert_eq!(payload_count, 5);
+    assert_eq!(artifact_count, 5);
+}
+
+#[tokio::test]
+async fn quick_dev_review_approved_with_findings_runs_apply_fixes() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-findings", FlowPreset::QuickDev);
+
+    // Review returns Approved but with non-empty findings_or_gaps.
+    let agent_service =
+        build_agent_service_with_adapter(StubBackendAdapter::default().with_stage_payload(
+            StageId::Review,
+            json!({
+                "outcome": "approved",
+                "evidence": ["looks good overall"],
+                "findings_or_gaps": ["minor style issue detected"],
+                "follow_up_or_amendments": [],
+            }),
+        ));
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let entered: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::StageEntered)
+        .map(|event| event.details["stage_id"].as_str().unwrap().to_owned())
+        .collect();
+    // ApplyFixes should NOT be skipped when Review has findings.
+    assert_eq!(
+        vec![
+            "plan_and_implement",
+            "review",
+            "apply_fixes",
+            "final_review"
+        ],
+        entered,
+        "apply_fixes must run when review has findings"
+    );
+
+    // No StageSkipped events should be present.
+    let skipped: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::StageSkipped)
+        .collect();
+    assert!(
+        skipped.is_empty(),
+        "no stages should be skipped when review has findings"
+    );
+}
+
+#[tokio::test]
+async fn quick_dev_review_approved_with_amendments_runs_apply_fixes() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-amendments", FlowPreset::QuickDev);
+
+    // Review returns Approved but with non-empty follow_up_or_amendments.
+    let agent_service =
+        build_agent_service_with_adapter(StubBackendAdapter::default().with_stage_payload(
+            StageId::Review,
+            json!({
+                "outcome": "approved",
+                "evidence": ["looks good overall"],
+                "findings_or_gaps": [],
+                "follow_up_or_amendments": ["add a test for edge case"],
+            }),
+        ));
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let entered: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::StageEntered)
+        .map(|event| event.details["stage_id"].as_str().unwrap().to_owned())
+        .collect();
+    // ApplyFixes should NOT be skipped when Review has amendments.
+    assert_eq!(
+        vec![
+            "plan_and_implement",
+            "review",
+            "apply_fixes",
+            "final_review"
+        ],
+        entered,
+        "apply_fixes must run when review has amendments"
+    );
 }
 
 #[tokio::test]
