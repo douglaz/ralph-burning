@@ -1440,21 +1440,18 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     };
                     if !fresh_output.status.success() {
                         let fresh_stderr = String::from_utf8_lossy(&fresh_output.stderr);
-                        let fresh_stdout_text = String::from_utf8_lossy(&fresh_output.stdout);
                         let fresh_stdout_error = extract_stdout_error(&fresh_output.stdout);
                         let code = fresh_output
                             .status
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
-                        // Prefer narrow extracted error text (avoids false
-                        // positives from echoed prompts), but fall back to a
-                        // limited prefix of stdout so plain-text exhaustion
-                        // messages are still detected without matching model
-                        // conversation content deeper in the output.
-                        let fresh_stdout_for_class = match fresh_stdout_error.as_deref() {
-                            Some(err) => err,
-                            None => truncate_str(&fresh_stdout_text, STDOUT_EXHAUSTION_SCAN_LIMIT),
-                        };
+                        // Only use extracted error text for classification.
+                        // Raw stdout is NOT used as fallback because model
+                        // conversation output may coincidentally contain
+                        // exhaustion keywords, causing false BackendExhausted
+                        // classification of transient failures.
+                        let fresh_stdout_for_class =
+                            fresh_stdout_error.as_deref().unwrap_or_default();
                         // Narrow stderr to its tail — codex backends may
                         // echo user prompts at the start of stderr.
                         let fresh_stderr_for_class =
@@ -1485,17 +1482,12 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     return fresh_prepared.finish(&fresh_request, fresh_output).await;
                 }
 
-                let stdout_text = String::from_utf8_lossy(&output.stdout);
                 let stdout_error = extract_stdout_error(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
-                // Prefer narrow extracted error text; fall back to a
-                // limited prefix of stdout so plain-text exhaustion
-                // messages are detected without matching model
-                // conversation content deeper in the output.
-                let stdout_for_class = match stdout_error.as_deref() {
-                    Some(err) => err,
-                    None => truncate_str(&stdout_text, STDOUT_EXHAUSTION_SCAN_LIMIT),
-                };
+                // Only use extracted error text for classification.
+                // Raw stdout is NOT used as fallback — model conversation
+                // output may coincidentally contain exhaustion keywords.
+                let stdout_for_class = stdout_error.as_deref().unwrap_or_default();
                 // Narrow stderr to its tail — codex backends may echo
                 // user prompts at the start of stderr.
                 let stderr_for_class = truncate_str_tail(&stderr, STDERR_EXHAUSTION_SCAN_LIMIT);
@@ -1785,12 +1777,6 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
     "hard limit reached",
 ];
 
-/// Maximum bytes of full stdout to scan for exhaustion patterns when no
-/// structured error envelope (via [`extract_stdout_error`]) is available.
-/// Limits false positives from model conversation text that may
-/// coincidentally contain exhaustion keywords deeper in the output.
-pub(crate) const STDOUT_EXHAUSTION_SCAN_LIMIT: usize = 4096;
-
 /// Maximum bytes of stderr tail to scan for exhaustion patterns.
 /// Codex-style backends may echo user prompts (which could contain
 /// exhaustion keywords) at the beginning of stderr; the actual error
@@ -1876,14 +1862,35 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
         // (standard 429 backoff) and must NOT trigger exhaustion.
         if let Some(pos) = combined.find("retry after ") {
             let after = &combined[pos + "retry after ".len()..];
-            let rest =
-                after.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ');
+            // Extract leading numeric portion for large-second checks.
+            let numeric_end = after
+                .find(|c: char| !c.is_ascii_digit() && c != '.')
+                .unwrap_or(after.len());
+            let rest = after[numeric_end..].trim_start();
             if rest.starts_with('h')
                 || rest.starts_with("hour")
                 || rest.starts_with("day")
                 || rest.starts_with("min")
                 || rest.starts_with("week")
             {
+                return true;
+            }
+            // Large-second values (>= 60) like "retry after 3600s" or
+            // "retry after 86400 seconds" indicate a persistent wait.
+            if rest.starts_with('s') || rest.starts_with("sec") {
+                if let Ok(val) = after[..numeric_end].parse::<f64>() {
+                    if val >= 60.0 {
+                        return true;
+                    }
+                }
+            }
+        }
+        // "until <time-of-day>" e.g. "until 9:00 PM UTC", "until 3:30 AM".
+        // A digit following "until " that isn't "2" (already caught by
+        // "until 2" for ISO timestamps) indicates a time-of-day format.
+        if let Some(pos) = combined.find("until ") {
+            let after = &combined[pos + "until ".len()..];
+            if after.starts_with(|c: char| c.is_ascii_digit()) {
                 return true;
             }
         }
@@ -1894,10 +1901,10 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
 /// Classify a non-zero exit, upgrading to `BackendExhausted` when the
 /// error output indicates a persistent usage/billing limit.
 ///
-/// The `stdout` parameter should preferably contain extracted error text
-/// (via [`extract_stdout_error`]) to minimise false positives, but may
-/// fall back to the full stdout text when no structured error envelope
-/// is present so that plain-text exhaustion messages are still detected.
+/// The `stdout` parameter should contain extracted error text
+/// (via [`extract_stdout_error`]), or an empty string when no structured
+/// error envelope is present.  Raw stdout must NOT be passed because
+/// model conversation output may coincidentally contain exhaustion keywords.
 ///
 /// Exit code 127 (command not found) always wins as `BinaryNotFound`
 /// regardless of output content — a missing binary cannot be a quota issue.
@@ -3745,6 +3752,33 @@ mod tests {
         }
 
         #[test]
+        fn detects_rate_limit_with_retry_after_large_seconds() {
+            // "retry after 3600s" or "retry after 86400 seconds" are persistent.
+            assert!(is_backend_exhausted(
+                "Rate limit exceeded. retry after 3600s",
+                "",
+            ));
+            assert!(is_backend_exhausted(
+                "Rate limit hit, retry after 86400 seconds",
+                "",
+            ));
+            assert!(is_backend_exhausted("Rate limit, retry after 60 sec", "",));
+        }
+
+        #[test]
+        fn detects_rate_limit_with_until_time_of_day() {
+            // "until 9:00 PM UTC" or "until 3:30 AM" are persistent.
+            assert!(is_backend_exhausted(
+                "Rate limit exceeded, until 9:00 PM UTC",
+                "",
+            ));
+            assert!(is_backend_exhausted(
+                "Rate limit reached, until 3:30 AM",
+                "",
+            ));
+        }
+
+        #[test]
         fn no_false_positive_on_retry_after_short_duration() {
             // "retry after 1s" or "retry after 100ms" are transient 429 backoff
             // and must NOT trigger exhaustion.
@@ -3754,6 +3788,11 @@ mod tests {
             ));
             assert!(!is_backend_exhausted(
                 "Rate limit exceeded. Please retry after 100ms",
+                "",
+            ));
+            // "retry after 30s" is < 60 seconds — still transient.
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. retry after 30s",
                 "",
             ));
         }

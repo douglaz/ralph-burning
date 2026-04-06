@@ -236,6 +236,7 @@ where
 
     let mut reviewer_records = Vec::new();
     let mut proposal_total_exhausted: usize = 0;
+    let mut last_proposal_exhaustion_error: Option<AppError> = None;
     for (idx, member) in panel.reviewers.iter().enumerate() {
         let reviewer_id = final_review_reviewer_id(idx);
         let reviewer_prompt =
@@ -342,7 +343,8 @@ where
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
                     < effective_min
                 {
-                    return Err(error);
+                    last_proposal_exhaustion_error = Some(error);
+                    break;
                 }
                 continue;
             }
@@ -539,6 +541,12 @@ where
         )
         .max(1);
     if reviewer_records.len() < effective_proposal_min {
+        // When the shortfall is entirely due to backend exhaustion,
+        // propagate the last BackendExhausted error so the engine's
+        // failure-class-aware handling can apply (e.g., non-retryable).
+        if let Some(exhaustion_error) = last_proposal_exhaustion_error {
+            return Err(exhaustion_error);
+        }
         return Err(AppError::InsufficientPanelMembers {
             panel: "final_review".to_owned(),
             resolved: reviewer_records.len(),
@@ -813,6 +821,7 @@ where
 
     let mut reviewer_votes = Vec::new();
     let mut vote_total_exhausted: usize = 0;
+    let mut last_vote_exhaustion_error: Option<AppError> = None;
     for (idx, reviewer) in reviewer_records.iter().enumerate() {
         let vote_prompt = build_voter_prompt(
             "Final Review Votes",
@@ -929,7 +938,8 @@ where
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
                     < effective_min
                 {
-                    return Err(error);
+                    last_vote_exhaustion_error = Some(error);
+                    break;
                 }
                 continue;
             }
@@ -1148,6 +1158,12 @@ where
         .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
         .max(1);
     if reviewer_votes.len() < effective_vote_min {
+        // When the shortfall is entirely due to backend exhaustion,
+        // propagate the last BackendExhausted error so the engine's
+        // failure-class-aware handling can apply (e.g., non-retryable).
+        if let Some(exhaustion_error) = last_vote_exhaustion_error {
+            return Err(exhaustion_error);
+        }
         return Err(AppError::InsufficientPanelMembers {
             panel: "final_review_vote".to_owned(),
             resolved: reviewer_votes.len(),

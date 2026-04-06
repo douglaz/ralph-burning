@@ -177,6 +177,13 @@ impl OpenRouterBackendAdapter {
         })
     }
 
+    /// Send a lightweight probe to verify API key validity.
+    ///
+    /// **Known limitation**: this targets the `/models/<id>` metadata endpoint,
+    /// which does not require billing credits.  Quota/credit exhaustion errors
+    /// typically only surface on the `/chat/completions` endpoint, so a
+    /// successful probe does NOT guarantee that the key has remaining credits.
+    /// Exhaustion is instead detected at invocation time via `map_http_error`.
     async fn send_probe(&self, api_key: &str) -> AppResult<()> {
         let client = reqwest::Client::builder()
             .timeout(AVAILABILITY_TIMEOUT)

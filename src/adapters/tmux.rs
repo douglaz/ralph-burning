@@ -18,8 +18,8 @@ use tokio::sync::Mutex;
 
 use crate::adapters::fs::FileSystem;
 use crate::adapters::process_backend::{
-    classify_exit_failure_with_output, extract_stdout_error, truncate_str, truncate_str_tail,
-    ChildOutput, ProcessBackendAdapter, STDERR_EXHAUSTION_SCAN_LIMIT, STDOUT_EXHAUSTION_SCAN_LIMIT,
+    classify_exit_failure_with_output, extract_stdout_error, truncate_str_tail, ChildOutput,
+    ProcessBackendAdapter, STDERR_EXHAUSTION_SCAN_LIMIT,
 };
 use crate::contexts::agent_execution::model::{
     InvocationContract, InvocationEnvelope, InvocationRequest,
@@ -629,16 +629,11 @@ impl AgentExecutionPort for TmuxAdapter {
             }
 
             prepared.cleanup().await;
-            let stdout_text = String::from_utf8_lossy(&output.stdout);
             let stdout_error = extract_stdout_error(&output.stdout);
-            // Prefer narrow extracted error text; fall back to a
-            // limited prefix of stdout so plain-text exhaustion
-            // messages are detected without matching model
-            // conversation content deeper in the output.
-            let stdout_for_class = match stdout_error.as_deref() {
-                Some(err) => err,
-                None => truncate_str(&stdout_text, STDOUT_EXHAUSTION_SCAN_LIMIT),
-            };
+            // Only use extracted error text for classification.
+            // Raw stdout is NOT used as fallback — model conversation
+            // output may coincidentally contain exhaustion keywords.
+            let stdout_for_class = stdout_error.as_deref().unwrap_or_default();
             // Narrow stderr to its tail — codex backends may echo
             // user prompts at the start of stderr.
             let stderr_for_class = truncate_str_tail(&stderr, STDERR_EXHAUSTION_SCAN_LIMIT);
