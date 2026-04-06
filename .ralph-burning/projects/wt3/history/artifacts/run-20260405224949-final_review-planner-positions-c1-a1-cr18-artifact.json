@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-planner-positions-c1-a1-cr18-artifact",
+  "payload_id": "run-20260405224949-final_review-planner-positions-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T08:45:49.768506138Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAmendment fr-18-1231d75e identifies a real over-classification bug: the 60-second threshold for explicit-unit seconds and the blanket 'starts_with(min)' match cause standard transient 429s (e.g., 'retry after 60 seconds', 'retry after 1 minute') to permanently drop backends via BackendExhausted. This is especially dangerous in the OpenRouter path where exhaustion is checked before the 429 retry fallback. Amendment fr-18-cb7331b6 identifies a gap that is already explicitly documented as an intentional design trade-off — scanning raw stdout risks false positives from model conversation text containing exhaustion keywords, which would cause worse failures than missing rare stdout-only errors.\n\n## Votes\n\n- `fr-18-1231d75e`: Accept\n  The heuristic is genuinely too broad. Tracing through 'Rate limit reached, retry after 60 seconds': rest='seconds...' starts_with('s') → true, threshold=60.0, val=60.0 → 60.0 >= 60.0 → BackendExhausted. A 60-second backoff is textbook transient rate limiting, not quota exhaustion. Worse, rest.starts_with('min') catches 'retry after 1 minute' — also clearly transient. In the OpenRouter path (line 354), is_backend_exhausted runs BEFORE the 429 status-code branch, so a normal transient 429 with a short retry window will bypass the retry logic at line 367-370 and permanently drop the backend. The seconds threshold should be significantly higher (e.g., 300-600s), and the 'min' branch should require a numeric check (e.g., >= 30 minutes) to avoid classifying short rate-limit windows as permanent exhaustion.\n- `fr-18-cb7331b6`: Reject\n  This gap is explicitly documented as an intentional design decision at three separate locations (lines 1448-1455, 1490-1494, and 1914-1915). The comments explain the reasoning: model conversation output on stdout may coincidentally contain exhaustion keywords ('usage limit', 'quota exceeded'), which would cause false-positive BackendExhausted classification and permanently drop healthy backends. This false-positive risk is more damaging than the false-negative risk of missing stdout-only exhaustion messages, especially since 'stderr scanning covers all known backends' (line 1455). The amendment identifies a real gap but doesn't propose a mechanism to distinguish error output from model output on stdout — without that, adding raw stdout scanning would introduce a worse class of failures.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 18
+}

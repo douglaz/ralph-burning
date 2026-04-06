@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-vote-1-c1-a1-cr22-artifact",
+  "payload_id": "run-20260405224949-final_review-vote-1-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T11:33:34.484832926Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments describe real classification bugs with concrete runtime impact: one drops retry-relevant failure metadata during final-review quorum handling, and the other over-broadly classifies transient rate-limit text as terminal backend exhaustion.\n\n## Votes\n\n- `fr-22-4c585346`: Accept\n  The proposal and vote paths in `src/contexts/workflow_composition/final_review.rs` discard the underlying optional-reviewer error when that failure makes quorum unreachable and instead return `AppError::InsufficientPanelMembers`. In `src/shared/error.rs`, that variant has no `failure_class()`, and `engine.rs` treats unclassified errors as terminal rather than retryable. That means a transient `TransportFailure` or `Timeout` from the reviewer that actually caused the shortfall will not be retried, unlike the nearby `BackendExhausted` path which preserves and later rethrows the classified error. The amendment identifies a real correctness bug; the failure class needs to be preserved or wrapped so retry policy can still apply.\n- `fr-22-03479007`: Accept\n  `src/adapters/process_backend.rs` currently treats any rate-limit message containing the substring `\"until 2\"` as persistent exhaustion. That is too broad: messages such as `rate limit until 2 requests complete` or similar transient queue/backoff text would be misclassified as `FailureClass::BackendExhausted`. Since `BackendExhausted` is terminal in retry policy and is also used to shrink effective panel quorum, this false positive can incorrectly suppress retries and distort final-review quorum handling. A narrower ISO timestamp/date-time check is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 22
+}

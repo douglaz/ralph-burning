@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-vote-0-c1-a1-cr22-artifact",
+  "payload_id": "run-20260405224949-final_review-vote-0-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T11:32:33.552928084Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real, verifiable bugs in the code. fr-22-4c585346: InsufficientPanelMembers has failure_class() -> None (error.rs:318 catch-all), so the engine cannot retry, even when the original error was a retryable TransportFailure or Timeout. The exhaustion path correctly preserves the original error (lines 560-561) but the optional-failure path discards it. fr-22-03479007: the \"until 2\" substring at line 1872 is documented as targeting ISO timestamps but would match any message containing that phrase, causing false BackendExhausted classification.\n\n## Votes\n\n- `fr-22-4c585346`: Accept\n  Verified in code: AppError::InsufficientPanelMembers matches the _ => None arm at error.rs:318, so it carries no FailureClass. The exhaustion path (lines 346, 560-561) correctly stores the original error in last_proposal_exhaustion_error and propagates it, preserving retry eligibility. But the optional-failure path (lines 351, 402-406 and 959, 1005-1009) binds the error as _error and returns InsufficientPanelMembers instead. If the original error was TransportFailure or Timeout (both retryable per lines 311-316), the engine loses that classification and treats the failure as terminal. This is an asymmetry with the exhaustion path and a real bug: a transient network blip on an optional reviewer that tips quorum below minimum should be retryable, not terminal.\n- `fr-22-03479007`: Accept\n  Verified in code: line 1872 uses the literal string \"until 2\" with the comment \"// 'until 2026-...' ISO timestamps\", confirming the intent is to match ISO date prefixes. However, the substring check is too broad. A rate-limit message like \"rate limit reached, wait until 2 pending requests complete\" would match both the \"rate limit\" check (line 1863) and the \"until 2\" indicator, falsely classifying a transient 429-style message as persistent BackendExhausted. A narrower check like \"until 20\" (matching 2000s-era years) or a regex for ISO date patterns (\"until \\d{4}-\") would preserve the intended detection while eliminating false positives.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 22
+}

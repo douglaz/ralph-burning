@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260406142347-plan_and_implement-c1-a2-cr1-artifact",
+  "payload_id": "run-20260406142347-plan_and_implement-c1-a2-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-06T14:50:01.346385580Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nThe ApplyFixes skip-when-no-findings feature is already fully implemented and tested. The engine (engine.rs:4590-4641) checks after Review completion whether outcome is Approved with empty findings_or_gaps and empty follow_up_or_amendments, and if the next stage is ApplyFixes. When all conditions hold, it logs the skip, persists a StageSkipped journal event, and advances past ApplyFixes. The journal module (journal.rs:190) provides stage_skipped_event() and the model (model.rs:359) includes the StageSkipped event type. Three unit tests cover skip/no-skip logic and one CLI integration test validates end-to-end behavior. All 754 tests pass, clippy and fmt are clean.\n\n## Steps\n\n1. [Completed] Read and understand engine.rs stage progression loop and existing skip logic at lines 4590-4641\n2. [Completed] Verify journal.rs has stage_skipped_event() builder (line 190) and model.rs has StageSkipped event type (line 359)\n3. [Completed] Verify unit tests: happy_path skip (line 1256), findings-present no-skip (line 1326), amendments-present no-skip (line 1393)\n4. [Completed] Verify CLI integration test validates skipped stage behavior (cli.rs:7903)\n5. [Completed] Run full test suite — 754 passed, 0 failed\n6. [Completed] Run cargo clippy and cargo fmt --check — only pre-existing warnings, no new issues\n\n## Validation Evidence\n\n- cargo test: 754 passed, 0 failed, 0 ignored (lib tests); 9 ignored doc-tests\n- cargo clippy: 16 pre-existing warnings (9 auto-fixable), no new warnings from this feature\n- cargo fmt --check: no formatting issues\n- engine.rs:4591-4596 implements the skip condition: Approved outcome + empty findings + empty follow_ups + next stage is ApplyFixes\n- engine.rs:4598-4641 handles skip: logs info, persists StageSkipped journal event, increments stage_index\n- Tests cover all three acceptance criteria paths: skip when no findings, run when findings present, run when amendments present\n- CLI integration test (cli.rs:7903-7915) confirms only 5 payload files produced when ApplyFixes is skipped\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

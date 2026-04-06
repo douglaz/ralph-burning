@@ -550,7 +550,7 @@ async fn service_does_not_reuse_sessions_for_roles_that_disallow_it() {
     assert_eq!(persisted.sessions[0].invocation_count, 1);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn service_emits_invocation_completed_trace_with_token_fields() {
     let capture = log_capture();
 

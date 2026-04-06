@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260406142347-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260406142347-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T15:04:04.146627897Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nInspected the diff against master, read the engine/journal/test changes, and found one material correctness gap: the new skipped-stage journal event is not honored by resume logic. Targeted quick-dev unit and CLI tests otherwise passed.\n\n## Amendments\n\n1. Handle `JournalEventType::StageSkipped` during resume reconstruction. `src/contexts/workflow_composition/engine.rs:4591-4638` now journals a `stage_skipped` event for `apply_fixes`, but `src/contexts/workflow_composition/engine.rs:6355-6421` never advances `next_stage_index` when that event is present. If the run fails after the skip is committed but before `final_review` starts, for example because `write_run_snapshot` or checkpointing fails in `src/contexts/workflow_composition/engine.rs:4688-4752`, `run resume` will incorrectly restart at `apply_fixes` instead of `final_review`. That produces inconsistent durable history (`stage_skipped` followed by a later execution of the same stage/cycle) and reintroduces the backend call this change is meant to avoid. Add `StageSkipped` handling in `derive_resume_state()` and a regression test for resume after a post-skip failure.\n   Rationale: This is a real correctness bug in the durable restart path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

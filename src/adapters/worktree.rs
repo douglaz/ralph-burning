@@ -14,7 +14,6 @@ use crate::contexts::project_run_record::service::RepositoryResetPort;
 use crate::contexts::workflow_composition::checkpoints::{
     checkpoint_body, checkpoint_subject, parse_checkpoint_commit_message, VcsCheckpointPort,
 };
-use crate::contexts::workspace_governance::WORKSPACE_DIR;
 use crate::shared::domain::EffectiveRebasePolicy;
 use crate::shared::domain::{ProjectId, RunId, StageId};
 use crate::shared::error::{AppError, AppResult};
@@ -86,28 +85,10 @@ impl WorktreeAdapter {
             return Err(Self::git_error(&read_tree_output));
         }
 
-        let remove_workspace_output = Self::git_in_index(
-            repo_root,
-            index_path,
-            &[
-                "rm",
-                "-r",
-                "--cached",
-                "--ignore-unmatch",
-                "--quiet",
-                "--",
-                WORKSPACE_DIR,
-            ],
-        )?;
-        if !remove_workspace_output.status.success() {
-            return Err(Self::git_error(&remove_workspace_output));
-        }
-
-        let workspace_exclude = format!(":(exclude){WORKSPACE_DIR}");
         let add_output = Self::git_in_index(
             repo_root,
             index_path,
-            &["add", "-A", "--", ".", &workspace_exclude],
+            &["add", "-A", "--", "."],
         )?;
         if !add_output.status.success() {
             return Err(Self::git_error(&add_output));

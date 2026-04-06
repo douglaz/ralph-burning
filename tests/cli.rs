@@ -7900,15 +7900,18 @@ fn run_start_completes_quick_dev_flow_end_to_end() {
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
             .collect();
-    assert_eq!(payload_files.len(), 6);
+    // ApplyFixes is skipped when Review approves with no findings (stub default).
+    assert_eq!(payload_files.len(), 5);
 
     let journal =
         fs::read_to_string(project_root(temp_dir.path(), "qd-run").join("journal.ndjson"))
             .expect("read journal");
     assert!(journal.contains("\"plan_and_implement\""));
     assert!(journal.contains("\"review\""));
+    // apply_fixes is skipped but still referenced in the stage_skipped event.
     assert!(journal.contains("\"apply_fixes\""));
     assert!(journal.contains("\"final_review\""));
+    assert!(journal.contains("\"stage_skipped\""));
 }
 
 #[cfg(feature = "test-stub")]

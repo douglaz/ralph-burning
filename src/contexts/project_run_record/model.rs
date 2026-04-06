@@ -356,6 +356,7 @@ pub enum JournalEventType {
     StageEntered,
     StageFailed,
     StageCompleted,
+    StageSkipped,
     CycleAdvanced,
     CompletionRoundAdvanced,
     RunCompleted,

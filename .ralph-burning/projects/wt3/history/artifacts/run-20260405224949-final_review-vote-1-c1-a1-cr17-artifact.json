@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-vote-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260405224949-final_review-vote-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T08:27:40.280992716Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments have technical merit. Three identify concrete defects in backend-exhaustion handling or classification, and one identifies a real safety/correctness regression from weakening prompt-review quorum under exhaustion.\n\n## Votes\n\n- `fr-17-ee863f4e`: Accept\n  `prompt_review.rs` skips exhausted validators but does not perform the same early-exit quorum check already present in `completion.rs` and `final_review.rs`. Once `executed_count + remaining < effective_min`, continuing cannot change the outcome; it only burns additional validator calls and delays surfacing the terminal exhaustion result. Aligning prompt review with the other panels is a straightforward correctness and efficiency fix.\n- `fr-17-f03f73ab`: Accept\n  The parser gap is real. For strings like `retry after 3600`, the numeric prefix is parsed but the empty remainder means none of the unit branches match, so a long cooldown is treated as transient. That misclassifies some persistent rate-limit responses and causes unnecessary retries. The exact heuristic can be tuned, but the current behavior needs either proper unitless-number handling or a regression test that documents the limitation.\n- `fr-17-b172ab07`: Accept\n  The cited non-zero-exit paths only classify using `extract_stdout_error()`, which returns data only for structured JSON error envelopes. If a backend exits non-zero and writes a plain-text exhaustion message to stdout, the classifier sees an empty stdout string and falls back to `TransportFailure`, so the system retries instead of degrading. That is a real robustness bug; a constrained raw-stdout fallback is needed when structured stdout error extraction fails.\n- `fr-17-ac1f5acc`: Accept\n  Applying degraded quorum to prompt review weakens a safety gate that rewrites the project prompt and drives the refinement loop. The module contract still describes prompt review as failing when executed validators are below configured `min_reviewers`, but the new logic lowers that threshold under exhaustion and the engine removes exhausted validators from the persisted snapshot, making the reduction effectively invisible. Mechanical contract-drift checks do not replace independent semantic validation, so silently accepting a refined prompt with fewer validators than configured is a correctness and safety regression.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 17
+}

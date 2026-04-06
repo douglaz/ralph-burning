@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260406142347-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260406142347-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T15:06:55.262948929Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments identify a real resume bug in `derive_resume_state()`: the engine journals `stage_skipped` for skipped `apply_fixes`, but resume reconstruction ignores `JournalEventType::StageSkipped`, so a failure after the skip is durably recorded and before the next stage cursor/snapshot is fully persisted will resume at the skipped stage and re-execute it. Advancing `next_stage_index` for skipped stages the same way as completed stages is the correct fix; adding a regression test is also warranted.\n\n## Votes\n\n- `fr-1-7bdc647a`: Accept\n  `stage_skipped` events are emitted with `stage_id` and `cycle`, but `derive_resume_state()` only advances `next_stage_index` for `StageCompleted` and ignores `StageSkipped`. That leaves resume reconstruction behind the durable journal history after a post-skip crash, causing the skipped stage to run again. Mirroring the `StageCompleted` logic with `next_stage_index = stage_index_for(stage_plan, skipped_stage_id)? + 1` is correct and maintains consistent stage progression.\n- `fr-1-34cfb1c3`: Accept\n  This describes the same defect more completely: there is a real failure window after the `stage_skipped` journal append and before the next-stage snapshot/checkpoint persistence finishes, and resume currently mishandles that state. The proposed fix is technically correct, and the requested regression test is justified because this is a narrow but durable-history-sensitive failure mode that could silently regress without dedicated coverage.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

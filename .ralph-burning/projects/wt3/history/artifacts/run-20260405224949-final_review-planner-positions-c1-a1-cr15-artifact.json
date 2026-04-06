@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-planner-positions-c1-a1-cr15-artifact",
+  "payload_id": "run-20260405224949-final_review-planner-positions-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T07:19:45.524761965Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments address real gaps in the graceful backend degradation implementation. Amendment fr-15-270499dd correctly identifies a missing early-exit quorum check in prompt_review.rs that completion.rs and final_review.rs already have. Amendment fr-15-d2053cf4 identifies that HTTP 402/403 quota-related errors won't be classified as BackendExhausted, causing futile retries.\n\n## Votes\n\n- `fr-15-270499dd`: Accept\n  Verified by reading the code. prompt_review.rs:210-231 handles BackendExhausted by incrementing total_exhausted_count and doing `continue;` without any early-exit quorum check. In contrast, completion.rs:192-206 and final_review.rs:334-347 both compute effective_min and break early when `executed_count + remaining < effective_min`. The post-loop quorum check exists at prompt_review.rs:285-300 but this only fires after all remaining validators have been invoked. The amendment correctly identifies that without the in-loop early-exit, prompt_review will waste time and tokens invoking validators when quorum is already impossible. This is a real consistency bug — all three panel execution loops should have the same early-exit pattern.\n- `fr-15-d2053cf4`: Accept\n  Verified by reading openrouter_backend.rs:343-379. The map_http_error function only checks is_backend_exhausted for HTTP 429. HTTP 401/403 are mapped to BackendUnavailable with failure_class: None, and the catch-all maps everything else to TransportFailure. OpenRouter (and providers behind it) can return 402 Payment Required or 403 Forbidden with quota/billing exhaustion messages in the body. These would not be classified as BackendExhausted, so the engine would keep retrying them as transient failures instead of degrading gracefully. Similarly, send_probe (lines 210-216) only checks for exhaustion patterns on 429 responses. The fix should run the is_backend_exhausted body check on 402/403 responses as well, at minimum in both send_probe and map_http_error. This is a real gap that would cause futile retries and wasted resources when billing/quota limits are hit via non-429 status codes.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 15
+}

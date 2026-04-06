@@ -159,7 +159,7 @@ fn worktree_adapter_creates_finds_and_resets_checkpoint_commits() {
 }
 
 #[test]
-fn worktree_adapter_excludes_runtime_workspace_from_checkpoint_commits() {
+fn worktree_adapter_includes_workspace_in_checkpoint_commits() {
     let tmp = init_repo();
     let adapter = WorktreeAdapter;
     let project_id = ProjectId::new("checkpoint-proj").expect("project id");
@@ -174,8 +174,6 @@ fn worktree_adapter_excludes_runtime_workspace_from_checkpoint_commits() {
     .expect("write runtime snapshot");
     fs::write(tmp.path().join("README.md"), "checkpointed content\n").expect("update README");
 
-    // Simulate a caller that already staged the runtime workspace before the
-    // checkpoint adapter runs. The checkpoint commit must still exclude it.
     run_git(tmp.path(), &["add", "-A"]);
 
     let checkpoint_sha = adapter
@@ -195,19 +193,14 @@ fn worktree_adapter_excludes_runtime_workspace_from_checkpoint_commits() {
     );
     assert!(tree.lines().any(|line| line == "README.md"));
     assert!(
-        !tree.lines().any(|line| line.starts_with(".ralph-burning/")),
-        "checkpoint commit should exclude runtime workspace files, got:\n{tree}"
-    );
-
-    assert_eq!(
-        fs::read_to_string(tmp.path().join(".ralph-burning/projects/demo/run.json"))
-            .expect("read runtime snapshot"),
-        "{\"status\":\"running\"}\n"
+        tree.lines()
+            .any(|line| line == ".ralph-burning/projects/demo/run.json"),
+        "checkpoint commit should include workspace files, got:\n{tree}"
     );
 }
 
 #[test]
-fn worktree_adapter_excludes_tracked_runtime_workspace_from_checkpoint_commits() {
+fn worktree_adapter_includes_tracked_workspace_in_checkpoint_commits() {
     let tmp = init_repo_with_tracked_runtime_workspace();
     let adapter = WorktreeAdapter;
     let project_id = ProjectId::new("checkpoint-proj").expect("project id");
@@ -220,8 +213,6 @@ fn worktree_adapter_excludes_tracked_runtime_workspace_from_checkpoint_commits()
     .expect("update runtime snapshot");
     fs::write(tmp.path().join("README.md"), "checkpointed content\n").expect("update README");
 
-    // Simulate a caller that already staged both tracked repo changes and the
-    // tracked runtime workspace before the checkpoint adapter runs.
     run_git(tmp.path(), &["add", "-A"]);
 
     let checkpoint_sha = adapter
@@ -241,8 +232,9 @@ fn worktree_adapter_excludes_tracked_runtime_workspace_from_checkpoint_commits()
     );
     assert!(tree.lines().any(|line| line == "README.md"));
     assert!(
-        !tree.lines().any(|line| line.starts_with(".ralph-burning/")),
-        "checkpoint commit should exclude tracked runtime workspace files, got:\n{tree}"
+        tree.lines()
+            .any(|line| line == ".ralph-burning/projects/demo/run.json"),
+        "checkpoint commit should include tracked workspace files, got:\n{tree}"
     );
 
     let show_runtime = git_command()
@@ -258,14 +250,11 @@ fn worktree_adapter_excludes_tracked_runtime_workspace_from_checkpoint_commits()
         .output()
         .expect("git show");
     assert!(
-        !show_runtime.status.success(),
-        "checkpoint commit should not expose tracked runtime state: {}",
-        String::from_utf8_lossy(&show_runtime.stdout)
+        show_runtime.status.success(),
+        "checkpoint commit should include workspace state"
     );
-
     assert_eq!(
-        fs::read_to_string(tmp.path().join(".ralph-burning/projects/demo/run.json"))
-            .expect("read runtime snapshot"),
-        "{\"status\":\"paused\"}\n"
+        String::from_utf8_lossy(&show_runtime.stdout).trim(),
+        "{\"status\":\"paused\"}"
     );
 }

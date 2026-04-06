@@ -6008,12 +6008,12 @@ fn register_workflow_checkpoint(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &["ls-tree", "-r", "--name-only", &checkpoint_sha],
         )?;
-        if checkpoint_tree
+        if !checkpoint_tree
             .lines()
             .any(|line| line.starts_with(".ralph-burning/"))
         {
             return Err(format!(
-                "checkpoint commit should omit runtime workspace files, got tree:\n{checkpoint_tree}"
+                "checkpoint commit should include workspace files, got tree:\n{checkpoint_tree}"
             ));
         }
 

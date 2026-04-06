@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-arbiter-c1-a1-cr20-artifact",
+  "payload_id": "run-20260405224949-final_review-arbiter-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T09:59:01.180163499Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected the disputed transport-unwrap amendment. Investigation of the actual code structure shows finish() dispatches on ResponseDecoder, and the transport unwrapper is exclusively inside the Claude match arm — not applied to all backends as the amendment claims. The Codex path parses JSON directly. Since schema wrapping is also Claude-only, the wrap/unwrap is symmetric. The amendment's core claim ('behavioral change affecting ALL payload parsing') is factually incorrect — it only affects Claude payload parsing, where the wrapping guarantee ensures correctness.\n\n## Rulings\n\n- `fr-20-ec9988d2`: Reject\n  The behavioral change is real — the new function unwraps any single-key {\"data\": ...} without a sentinel — but it is NOT applied to all payload parsing as claimed. The finish() method dispatches on ResponseDecoder, and the transport unwrapper (lines 181, 187, 212) is exclusively inside the ResponseDecoder::Claude match arm (line 139). The Codex branch (line 275) parses JSON directly without any unwrapping. Since wrap_claude_structured_output_schema (line 1705-1706) also only wraps for BackendFamily::Claude, the wrap/unwrap is symmetric and scoped to Claude transport only. No non-Claude backend is affected. For Claude backends, the schema is always wrapped with a top-level {\"data\": ...}, so Claude always returns {\"data\": <payload>}; the transport unwrapper correctly strips this one layer. The unwrapper runs once, so even if the inner payload itself has a \"data\" key, it is not double-stripped. The concrete example cited (FinalReviewVotePayload with top-level \"data\") would only be problematic if processed through a non-Claude backend, which uses the Codex path that never calls this function. Reviewer 2's assessment is correct: this is a speculative compatibility concern, not a demonstrated bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 20
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260406142347-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260406142347-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T18:38:30.172859469Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is correct, safe, and well-tested. The skip logic in engine.rs (line 4591) properly checks all four conditions: outcome is Approved, findings are empty, follow-ups are empty, and the next stage is ApplyFixes. The journal event (StageSkipped) is persisted before advancing, with proper seq rollback on failure. The resume path in derive_resume_state (line 6418) correctly handles StageSkipped events by advancing past the skipped stage. Four new unit tests cover the key scenarios: happy-path skip, findings-present no-skip, amendments-present no-skip, and resume-after-skip. The CLI test was also updated to expect the new behavior. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

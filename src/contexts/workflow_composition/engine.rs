@@ -4587,6 +4587,59 @@ where
             }
         }
 
+        // ── Skip ApplyFixes when review approved with no findings ──────
+        let skip_next_apply_fixes = validation_outcome(&bundle.payload)
+            == Some(ReviewOutcome::Approved)
+            && validation_findings(&bundle.payload).is_empty()
+            && validation_follow_ups(&bundle.payload).is_empty()
+            && stage_plan.get(stage_index + 1).map(|entry| entry.stage_id)
+                == Some(StageId::ApplyFixes);
+
+        if skip_next_apply_fixes {
+            let _ = log_write.append_runtime_log(
+                base_dir,
+                project_id,
+                &RuntimeLogEntry {
+                    timestamp: Utc::now(),
+                    level: LogLevel::Info,
+                    source: "engine".to_owned(),
+                    message: "skipping apply_fixes: review approved with no findings".to_owned(),
+                },
+            );
+            *seq += 1;
+            let skipped_event = journal::stage_skipped_event(
+                *seq,
+                Utc::now(),
+                run_id,
+                StageId::ApplyFixes,
+                cursor.cycle,
+                "review approved with no findings",
+            );
+            let skipped_line = journal::serialize_event(&skipped_event)?;
+            if let Err(error) = journal_store.append_event(base_dir, project_id, &skipped_line) {
+                *seq -= 1;
+                return fail_run_result(
+                    &AppError::StageCommitFailed {
+                        stage_id: StageId::ApplyFixes,
+                        details: format!(
+                            "failed to persist stage_skipped event for apply_fixes: {error}",
+                        ),
+                    },
+                    stage_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    journal_store,
+                    run_snapshot_write,
+                    base_dir,
+                    project_id,
+                    origin,
+                )
+                .await;
+            }
+            stage_index += 1;
+        }
+
         // Completion-round restarts only advance `completion_round`; `cycle`
         // remains remediation-only state.
 
@@ -5696,6 +5749,13 @@ fn validation_follow_ups(payload: &StagePayload) -> &[String] {
     }
 }
 
+fn validation_findings(payload: &StagePayload) -> &[String] {
+    match payload {
+        StagePayload::Validation(validation) => &validation.findings_or_gaps,
+        _ => &[],
+    }
+}
+
 /// Build typed QueuedAmendment records from follow-up strings.
 fn build_queued_amendments(
     follow_ups: &[String],
@@ -6354,6 +6414,12 @@ fn derive_resume_state(
                 // clear retry history so prior-round failures don't bleed
                 // into the new round's budget.
                 retryable_failed_attempts.clear();
+            }
+            crate::contexts::project_run_record::model::JournalEventType::StageSkipped => {
+                let stage_id = detail_stage_id(event, "stage_id")?;
+                current_cycle = detail_u32(event, "cycle").unwrap_or(current_cycle);
+                next_stage_index = stage_index_for(stage_plan, stage_id)? + 1;
+                last_completed_stage = Some(stage_id);
             }
             crate::contexts::project_run_record::model::JournalEventType::RunCompleted => {
                 next_stage_index = stage_plan.len();

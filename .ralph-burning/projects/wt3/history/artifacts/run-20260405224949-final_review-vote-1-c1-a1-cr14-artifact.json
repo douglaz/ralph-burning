@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-vote-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260405224949-final_review-vote-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T06:50:25.101891709Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments identify real issues. Two are clear behavior/coverage bugs in prompt-review and Claude error-envelope handling, one is a valid observability gap, and one is a legitimate robustness problem in exhaustion classification so long as the broader match still avoids transient short-window rate limits.\n\n## Votes\n\n- `fr-14-39039ac7`: Accept\n  In prompt_review, invocation-time BackendExhausted only emits tracing::warn and then skips the validator. No supporting record is written for exhausted members, and the passed runtime log writer is unused, so durable post-mortem state loses which validator exhausted and when. final_review and completion already persist this kind of degradation signal. Adding a runtime log entry, and a journal completion event or equivalent durable audit entry, is technically justified.\n- `fr-14-6b780df6`: Accept\n  This is a real test gap. prompt_review contains graceful-degradation logic for BackendExhausted validators and quorum reduction, but its tests cover prompt-contract behavior only. completion and final_review both have paired one-exhausted/all-exhausted tests. Equivalent prompt_review tests are needed to catch regressions in both the degraded-success path and the all-exhausted terminal-failure path.\n- `fr-14-f2d64a23`: Accept\n  The bug is real. The exit-0 Claude is_error path checks only envelope.result, but ClaudeEnvelope does not surface errors[] or subtype, and extract_stdout_error already exists specifically to normalize those fields. For envelopes where the exhaustion text lives in errors[] or subtype, the current code misses BackendExhausted, falls through to payload parsing, and can become a retryable schema failure instead of a terminal graceful-degradation signal.\n- `fr-14-c670b878`: Accept\n  The current detection is too brittle because it hard-codes the exact reset phrase try again at. Real provider messages can express the same persistent reset-time semantics with other wording, so some genuine exhausted states will be misclassified as TransportFailure and retried. The fix should broaden the reset-time half of the check carefully, preserving the distinction from short transient retry-after messages, but the amendment’s underlying concern is valid.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 14
+}
