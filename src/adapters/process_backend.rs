@@ -1880,13 +1880,16 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
             {
                 return true;
             }
-            // Large-second values (>= 60) like "retry after 3600s" or
+            // Large-second values (>= 300) like "retry after 3600s" or
             // "retry after 86400 seconds" indicate a persistent wait.
+            // The 300s (5 min) threshold separates persistent quota resets
+            // from transient 429 backoff (typically 1-120s).  Values below
+            // 300s are left to the normal retry machinery.
             // Unitless large numbers (>= 3600) like "retry after 3600"
             // are treated as seconds and also indicate persistence.
             if rest.starts_with('s') || rest.starts_with("sec") || rest.is_empty() {
                 if let Ok(val) = after[..numeric_end].parse::<f64>() {
-                    let threshold = if rest.is_empty() { 3600.0 } else { 60.0 };
+                    let threshold = if rest.is_empty() { 3600.0 } else { 300.0 };
                     if val >= threshold {
                         return true;
                     }
@@ -3770,12 +3773,18 @@ mod tests {
                 "Rate limit hit, retry after 86400 seconds",
                 "",
             ));
-            assert!(is_backend_exhausted("Rate limit, retry after 60 sec", "",));
+            // 300s (5 min) is the boundary — at or above is persistent.
+            assert!(is_backend_exhausted("Rate limit, retry after 300 sec", "",));
+            assert!(is_backend_exhausted("Rate limit, retry after 600s", "",));
+            // Below 300s with unit suffix is transient backoff, not exhaustion.
+            assert!(!is_backend_exhausted("Rate limit, retry after 60 sec", "",));
+            assert!(!is_backend_exhausted("Rate limit, retry after 120s", "",));
             // Unitless large numbers (>= 3600) are treated as seconds.
             assert!(is_backend_exhausted("Rate limit, retry after 3600", "",));
             assert!(is_backend_exhausted("Rate limit, retry after 86400", "",));
             // Unitless small numbers (< 3600) are NOT treated as persistent.
             assert!(!is_backend_exhausted("Rate limit, retry after 30", "",));
+            assert!(!is_backend_exhausted("Rate limit, retry after 299", "",));
         }
 
         #[test]
@@ -3803,9 +3812,14 @@ mod tests {
                 "Rate limit exceeded. Please retry after 100ms",
                 "",
             ));
-            // "retry after 30s" is < 60 seconds — still transient.
+            // "retry after 30s" is < 300 seconds — still transient.
             assert!(!is_backend_exhausted(
                 "Rate limit exceeded. retry after 30s",
+                "",
+            ));
+            // "retry after 60s" is standard 429 backoff — transient, not exhaustion.
+            assert!(!is_backend_exhausted(
+                "Rate limit exceeded. retry after 60s",
                 "",
             ));
         }
