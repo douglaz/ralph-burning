@@ -1727,9 +1727,11 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
     "usage limit",
     "hit your usage limit",
     "quota exceeded",
+    "exceeded your current quota",
     "credits exhausted",
     "purchase more credits",
     "insufficient_quota",
+    "try again at",
 ];
 
 /// Check whether process output text contains patterns indicating
@@ -1748,11 +1750,19 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
 
 /// Classify a non-zero exit, upgrading to `BackendExhausted` when the
 /// process output indicates a persistent usage/billing limit.
+///
+/// Exit code 127 (command not found) always wins as `BinaryNotFound`
+/// regardless of output content — a missing binary cannot be a quota issue.
 pub(crate) fn classify_exit_failure_with_output(
     status: ExitStatus,
     stderr: &str,
     stdout: &str,
 ) -> FailureClass {
+    // Exit 127 = "command not found": always terminal BinaryNotFound,
+    // even if stderr/stdout coincidentally contains exhaustion patterns.
+    if status.code() == Some(127) {
+        return FailureClass::BinaryNotFound;
+    }
     if is_backend_exhausted(stderr, stdout) {
         tracing::warn!("backend reported exhausted credits/usage limit — classifying as BackendExhausted (non-retryable)");
         return FailureClass::BackendExhausted;
@@ -3486,7 +3496,25 @@ mod tests {
 
         #[test]
         fn detects_insufficient_quota_in_stderr() {
-            assert!(is_backend_exhausted("Error code: insufficient_quota", "",));
+            assert!(is_backend_exhausted("Error code: insufficient_quota", ""));
+        }
+
+        #[test]
+        fn detects_exceeded_your_current_quota() {
+            assert!(is_backend_exhausted(
+                "You exceeded your current quota, please check your plan and billing details",
+                "",
+            ));
+        }
+
+        #[test]
+        fn detects_try_again_at_reset_time() {
+            // "try again at <time>" indicates a persistent limit with a distant
+            // reset time, as in the original Codex error message.
+            assert!(is_backend_exhausted(
+                "ERROR: You've hit your usage limit. try again at 3:03 PM.",
+                "",
+            ));
         }
 
         #[test]
@@ -3562,12 +3590,24 @@ mod tests {
             use std::os::unix::process::ExitStatusExt;
             use std::process::ExitStatus;
 
-            // Exit 127 is BinaryNotFound even when exhaustion patterns
-            // are NOT present — and exhaustion check takes priority when
-            // patterns ARE present (unlikely for 127 but tests the logic).
             let status = ExitStatus::from_raw(127 << 8);
             assert_eq!(
                 classify_exit_failure_with_output(status, "command not found", ""),
+                FailureClass::BinaryNotFound
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn exit_127_beats_exhaustion_pattern_in_output() {
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::ExitStatus;
+
+            // Exit 127 must always be BinaryNotFound even when stderr
+            // coincidentally contains an exhaustion pattern.
+            let status = ExitStatus::from_raw(127 << 8);
+            assert_eq!(
+                classify_exit_failure_with_output(status, "quota exceeded", ""),
                 FailureClass::BinaryNotFound
             );
         }
