@@ -1729,9 +1729,11 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
     "quota exceeded",
     "exceeded your current quota",
     "credits exhausted",
+    "credits depleted",
     "purchase more credits",
     "insufficient_quota",
-    "try again at",
+    "billing hard limit",
+    "hard limit reached",
 ];
 
 /// Check whether process output text contains patterns indicating
@@ -3508,11 +3510,25 @@ mod tests {
         }
 
         #[test]
-        fn detects_try_again_at_reset_time() {
-            // "try again at <time>" indicates a persistent limit with a distant
-            // reset time, as in the original Codex error message.
+        fn detects_credits_depleted() {
             assert!(is_backend_exhausted(
-                "ERROR: You've hit your usage limit. try again at 3:03 PM.",
+                "Error: credits depleted for this organization",
+                ""
+            ));
+        }
+
+        #[test]
+        fn detects_billing_hard_limit() {
+            assert!(is_backend_exhausted(
+                "You exceeded your billing hard limit. Please check your plan.",
+                "",
+            ));
+        }
+
+        #[test]
+        fn detects_hard_limit_reached() {
+            assert!(is_backend_exhausted(
+                "Error: hard limit reached for this account",
                 "",
             ));
         }

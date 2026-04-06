@@ -113,8 +113,15 @@ pub struct CompletionAggregatePayload {
     pub total_voters: usize,
     /// Consensus threshold used for the decision.
     pub consensus_threshold: f64,
-    /// Minimum completers required.
+    /// Originally configured minimum completers.
     pub min_completers: usize,
+    /// Effective minimum after reducing for exhausted backends.
+    /// When no backends are exhausted this equals `min_completers`.
+    #[serde(default)]
+    pub effective_min_completers: usize,
+    /// Number of completers skipped due to backend exhaustion.
+    #[serde(default)]
+    pub exhausted_count: usize,
     /// Identifiers of the executed voters (backend family / model pairs).
     pub executed_voters: Vec<String>,
 }

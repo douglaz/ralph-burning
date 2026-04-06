@@ -266,6 +266,8 @@ where
         total_voters,
         consensus_threshold,
         min_completers,
+        effective_min_completers,
+        exhausted_count,
         executed_voters,
     };
 

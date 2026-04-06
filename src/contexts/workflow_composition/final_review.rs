@@ -285,6 +285,58 @@ where
 
         let (reviewer_payload, producer) = match reviewer_payload {
             Ok(payload) => payload,
+            // BackendExhausted is handled first regardless of required/optional
+            // status — an exhausted backend degrades with reduced quorum.
+            Err(error)
+                if error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
+            {
+                proposal_exhausted_count += 1;
+                tracing::warn!(
+                    reviewer = %reviewer_id,
+                    "reviewer unavailable (backend exhausted), proceeding with remaining reviewers"
+                );
+                append_panel_member_completed_event(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "proposal",
+                    &reviewer_id,
+                    "reviewer",
+                    &member.target,
+                    started_at.elapsed(),
+                    "failed_exhausted",
+                    0,
+                )?;
+                append_panel_member_runtime_log(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "proposal",
+                    &reviewer_id,
+                    "reviewer",
+                    &member.target,
+                    Some(started_at.elapsed()),
+                    Some("failed_exhausted"),
+                    Some(0),
+                );
+                // Reduce effective quorum for exhausted backends: allow
+                // proceeding with at least 1 reviewer if available.
+                let effective_min = min_reviewers
+                    .saturating_sub(proposal_exhausted_count)
+                    .max(1);
+                if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
+                    < effective_min
+                {
+                    return Err(error);
+                }
+                continue;
+            }
             Err(error) if !member.required => {
                 append_panel_member_completed_event(
                     journal_store,
@@ -322,59 +374,6 @@ where
                 continue;
             }
             Err(error) => {
-                // When a required reviewer fails with BackendExhausted
-                // (credits/quota exhausted), degrade gracefully: skip this
-                // reviewer and proceed with remaining members if minimum
-                // quorum is still achievable — rather than killing the run.
-                let is_exhausted = error
-                    .failure_class()
-                    .is_some_and(|fc| fc == FailureClass::BackendExhausted);
-                if is_exhausted {
-                    proposal_exhausted_count += 1;
-                    tracing::warn!(
-                        reviewer = %reviewer_id,
-                        "reviewer unavailable (backend exhausted), proceeding with remaining reviewers"
-                    );
-                    append_panel_member_completed_event(
-                        journal_store,
-                        base_dir,
-                        project_id,
-                        seq,
-                        run_id,
-                        cursor,
-                        "proposal",
-                        &reviewer_id,
-                        "reviewer",
-                        &member.target,
-                        started_at.elapsed(),
-                        "failed_exhausted",
-                        0,
-                    )?;
-                    append_panel_member_runtime_log(
-                        log_write,
-                        base_dir,
-                        project_id,
-                        "completed",
-                        "proposal",
-                        &reviewer_id,
-                        "reviewer",
-                        &member.target,
-                        Some(started_at.elapsed()),
-                        Some("failed_exhausted"),
-                        Some(0),
-                    );
-                    // Reduce effective quorum for exhausted backends: allow
-                    // proceeding with at least 1 reviewer if available.
-                    let effective_min = min_reviewers
-                        .saturating_sub(proposal_exhausted_count)
-                        .max(1);
-                    if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
-                        < effective_min
-                    {
-                        return Err(error);
-                    }
-                    continue;
-                }
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,
@@ -854,6 +853,56 @@ where
 
         let (vote_payload, producer) = match vote_payload {
             Ok(payload) => payload,
+            // BackendExhausted is handled first regardless of required/optional
+            // status — an exhausted backend degrades with reduced quorum.
+            Err(error)
+                if error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
+            {
+                vote_exhausted_count += 1;
+                tracing::warn!(
+                    reviewer = %reviewer.reviewer_id,
+                    "reviewer unavailable during vote (backend exhausted), proceeding with remaining reviewers"
+                );
+                append_panel_member_completed_event(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &reviewer.target,
+                    started_at.elapsed(),
+                    "failed_exhausted",
+                    0,
+                )?;
+                append_panel_member_runtime_log(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &reviewer.target,
+                    Some(started_at.elapsed()),
+                    Some("failed_exhausted"),
+                    Some(0),
+                );
+                let effective_min = min_reviewers
+                    .saturating_sub(proposal_exhausted_count + vote_exhausted_count)
+                    .max(1);
+                if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
+                    < effective_min
+                {
+                    return Err(error);
+                }
+                continue;
+            }
             Err(error) if !reviewer.required => {
                 append_panel_member_completed_event(
                     journal_store,
@@ -891,57 +940,6 @@ where
                 continue;
             }
             Err(error) => {
-                // When a required reviewer fails with BackendExhausted
-                // (credits/quota exhausted), degrade gracefully: skip this
-                // reviewer and proceed with remaining members if minimum
-                // quorum is still achievable.
-                let is_exhausted = error
-                    .failure_class()
-                    .is_some_and(|fc| fc == FailureClass::BackendExhausted);
-                if is_exhausted {
-                    vote_exhausted_count += 1;
-                    tracing::warn!(
-                        reviewer = %reviewer.reviewer_id,
-                        "reviewer unavailable during vote (backend exhausted), proceeding with remaining reviewers"
-                    );
-                    append_panel_member_completed_event(
-                        journal_store,
-                        base_dir,
-                        project_id,
-                        seq,
-                        run_id,
-                        cursor,
-                        "vote",
-                        &reviewer.reviewer_id,
-                        "reviewer",
-                        &reviewer.target,
-                        started_at.elapsed(),
-                        "failed_exhausted",
-                        0,
-                    )?;
-                    append_panel_member_runtime_log(
-                        log_write,
-                        base_dir,
-                        project_id,
-                        "completed",
-                        "vote",
-                        &reviewer.reviewer_id,
-                        "reviewer",
-                        &reviewer.target,
-                        Some(started_at.elapsed()),
-                        Some("failed_exhausted"),
-                        Some(0),
-                    );
-                    let effective_min = min_reviewers
-                        .saturating_sub(proposal_exhausted_count + vote_exhausted_count)
-                        .max(1);
-                    if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
-                        < effective_min
-                    {
-                        return Err(error);
-                    }
-                    continue;
-                }
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,
