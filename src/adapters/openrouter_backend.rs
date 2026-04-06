@@ -217,6 +217,11 @@ impl OpenRouterBackendAdapter {
         // 4xx codes depending on the upstream provider.
         let failure_class = if crate::adapters::process_backend::is_backend_exhausted(&body, "") {
             Some(FailureClass::BackendExhausted)
+        } else if status.as_u16() == 402 {
+            // HTTP 402 Payment Required is inherently a billing/credit
+            // signal — treat as BackendExhausted even when the body
+            // doesn't match the keyword list.
+            Some(FailureClass::BackendExhausted)
         } else {
             None
         };
@@ -359,6 +364,14 @@ impl OpenRouterBackendAdapter {
             );
         }
         match status.as_u16() {
+            // HTTP 402 Payment Required is inherently a billing/credit
+            // signal — classify as BackendExhausted even when the body
+            // doesn't match the exhaustion keyword list.
+            402 => Self::invocation_failed(
+                request,
+                FailureClass::BackendExhausted,
+                format!("OpenRouter payment required: {details}"),
+            ),
             401 | 403 => AppError::BackendUnavailable {
                 backend: request.resolved_target.backend.family.to_string(),
                 details,
@@ -929,6 +942,30 @@ mod tests {
                 assert!(details.contains("quota exhausted"));
             }
             other => panic!("expected backend exhausted for 402, got: {other:?}"),
+        }
+
+        // Bare 402 without exhaustion keywords → still BackendExhausted.
+        // HTTP 402 Payment Required is inherently a billing signal.
+        let bare_402_server = MockHttpServer::start(vec![ResponsePlan::json(
+            402,
+            json!({"error": {"message": "Payment Required"}}),
+        )]);
+        set_openrouter_env(&bare_402_server.base_url);
+        let adapter = OpenRouterBackendAdapter::with_base_url(bare_402_server.base_url.clone());
+        let bare_402_err = adapter
+            .invoke(request.clone())
+            .await
+            .expect_err("bare 402 should fail");
+        match bare_402_err {
+            AppError::InvocationFailed {
+                failure_class,
+                details,
+                ..
+            } => {
+                assert_eq!(failure_class, FailureClass::BackendExhausted);
+                assert!(details.contains("payment required"));
+            }
+            other => panic!("expected backend exhausted for bare 402, got: {other:?}"),
         }
 
         // 403 with exhaustion pattern → BackendExhausted (not retryable)
