@@ -1465,6 +1465,7 @@ where
                 let mut panel = policy.resolve_completion_panel(resume_state.cursor.cycle)?;
                 let min_completers = effective_config.completion_policy().min_completers;
                 let mut available = Vec::new();
+                let mut resume_exhausted: usize = 0;
                 for member in &panel.completers {
                     match agent_service
                         .adapter()
@@ -1473,6 +1474,14 @@ where
                     {
                         Ok(()) => available.push(member.clone()),
                         Err(e) => {
+                            // BackendExhausted on resume → skip for graceful
+                            // degradation instead of aborting.
+                            if e.failure_class()
+                                .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                            {
+                                resume_exhausted += 1;
+                                continue;
+                            }
                             if member.required {
                                 return Err(AppError::ResumeDriftFailure {
                                     stage_id: current_stage,
@@ -1484,13 +1493,14 @@ where
                         }
                     }
                 }
-                if available.len() < min_completers {
+                let effective_min = min_completers.saturating_sub(resume_exhausted).max(1);
+                if available.len() < effective_min {
                     return Err(AppError::ResumeDriftFailure {
                         stage_id: current_stage,
                         details: format!(
-                            "available completers ({}) < min_completers ({}) on resume",
+                            "available completers ({}) < effective min_completers ({}) on resume",
                             available.len(),
-                            min_completers,
+                            effective_min,
                         ),
                     });
                 }
@@ -1523,6 +1533,7 @@ where
                         ),
                     })?;
                 let mut available = Vec::new();
+                let mut resume_exhausted: usize = 0;
                 for member in &panel.reviewers {
                     match agent_service
                         .adapter()
@@ -1531,6 +1542,14 @@ where
                     {
                         Ok(()) => available.push(member.clone()),
                         Err(e) => {
+                            // BackendExhausted on resume → skip for graceful
+                            // degradation instead of aborting.
+                            if e.failure_class()
+                                .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                            {
+                                resume_exhausted += 1;
+                                continue;
+                            }
                             if member.required {
                                 return Err(AppError::ResumeDriftFailure {
                                     stage_id: current_stage,
@@ -1542,13 +1561,14 @@ where
                         }
                     }
                 }
-                if available.len() < min_reviewers {
+                let effective_min = min_reviewers.saturating_sub(resume_exhausted).max(1);
+                if available.len() < effective_min {
                     return Err(AppError::ResumeDriftFailure {
                         stage_id: current_stage,
                         details: format!(
-                            "available final-review reviewers ({}) < min_reviewers ({}) on resume",
+                            "available final-review reviewers ({}) < effective min_reviewers ({}) on resume",
                             available.len(),
-                            min_reviewers,
+                            effective_min,
                         ),
                     });
                 }
@@ -6756,6 +6776,7 @@ where
     // BackendExhausted probes are treated as graceful degradation: the
     // member is skipped and the panel proceeds if quorum still holds.
     let mut available_completers = Vec::new();
+    let mut probe_exhausted_completers: usize = 0;
     for member in &panel.completers {
         match agent_service
             .adapter()
@@ -6764,29 +6785,34 @@ where
         {
             Ok(()) => available_completers.push(member.clone()),
             Err(e) => {
+                // BackendExhausted during probe → skip for graceful
+                // degradation instead of aborting the entire stage.
+                if e.failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                {
+                    probe_exhausted_completers += 1;
+                    tracing::warn!(
+                        backend = %member.target.backend.family,
+                        required = member.required,
+                        "completer unavailable during probe (backend exhausted), skipping"
+                    );
+                    continue;
+                }
                 if member.required {
-                    // BackendExhausted during probe → skip for graceful
-                    // degradation instead of aborting the entire stage.
-                    if e.failure_class()
-                        .is_some_and(|fc| fc == FailureClass::BackendExhausted)
-                    {
-                        tracing::warn!(
-                            backend = %member.target.backend.family,
-                            "required completer unavailable during probe (backend exhausted), skipping"
-                        );
-                        continue;
-                    }
                     return Err(e);
                 }
                 // Optional completer unavailable — remove before snapshot.
             }
         }
     }
-    if available_completers.len() < min_completers {
+    let effective_min_completers = min_completers
+        .saturating_sub(probe_exhausted_completers)
+        .max(1);
+    if available_completers.len() < effective_min_completers {
         return Err(AppError::InsufficientPanelMembers {
             panel: "completion".to_owned(),
             resolved: available_completers.len(),
-            minimum: min_completers,
+            minimum: effective_min_completers,
         });
     }
     panel.completers = available_completers;
@@ -6990,6 +7016,7 @@ where
         })?;
 
     let mut available_reviewers = Vec::new();
+    let mut probe_exhausted_reviewers: usize = 0;
     for member in &panel.reviewers {
         match agent_service
             .adapter()
@@ -6998,29 +7025,34 @@ where
         {
             Ok(()) => available_reviewers.push(member.clone()),
             Err(error) => {
+                // BackendExhausted during probe → skip for graceful
+                // degradation instead of aborting the entire stage.
+                if error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted)
+                {
+                    probe_exhausted_reviewers += 1;
+                    tracing::warn!(
+                        backend = %member.target.backend.family,
+                        required = member.required,
+                        "reviewer unavailable during probe (backend exhausted), skipping"
+                    );
+                    continue;
+                }
                 if member.required {
-                    // BackendExhausted during probe → skip for graceful
-                    // degradation instead of aborting the entire stage.
-                    if error
-                        .failure_class()
-                        .is_some_and(|fc| fc == FailureClass::BackendExhausted)
-                    {
-                        tracing::warn!(
-                            backend = %member.target.backend.family,
-                            "required reviewer unavailable during probe (backend exhausted), skipping"
-                        );
-                        continue;
-                    }
                     return Err(error);
                 }
             }
         }
     }
-    if available_reviewers.len() < min_reviewers {
+    let effective_min_reviewers = min_reviewers
+        .saturating_sub(probe_exhausted_reviewers)
+        .max(1);
+    if available_reviewers.len() < effective_min_reviewers {
         return Err(AppError::InsufficientPanelMembers {
             panel: "final_review".to_owned(),
             resolved: available_reviewers.len(),
-            minimum: min_reviewers,
+            minimum: effective_min_reviewers,
         });
     }
     panel.reviewers = available_reviewers;

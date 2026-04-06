@@ -1751,9 +1751,19 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
 pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
     let stderr_lower = stderr.to_lowercase();
     let stdout_lower = stdout.to_lowercase();
-    BACKEND_EXHAUSTED_PATTERNS
+    if BACKEND_EXHAUSTED_PATTERNS
         .iter()
         .any(|pattern| stderr_lower.contains(pattern) || stdout_lower.contains(pattern))
+    {
+        return true;
+    }
+    // Compound check: "rate limit" + "try again at" together indicates a
+    // persistent rate cap with a reset time (e.g. "Rate limit reached, try
+    // again at 3:03 PM").  Neither substring alone is sufficient — "rate
+    // limit" alone matches transient 429s, and "try again at" alone is too
+    // broad.  Combining them narrows to persistent-reset-time messages.
+    let combined = format!("{stderr_lower} {stdout_lower}");
+    combined.contains("rate limit") && combined.contains("try again at")
 }
 
 /// Classify a non-zero exit, upgrading to `BackendExhausted` when the
@@ -3555,17 +3565,28 @@ mod tests {
         }
 
         #[test]
-        fn no_false_positive_on_rate_limit_reached() {
-            // "Rate limit reached" alone is too broad — OpenAI sends this for
-            // transient per-minute TPM limits that resolve in seconds.  The
-            // original Codex error is already covered by "usage limit".
+        fn no_false_positive_on_transient_rate_limit_reached() {
+            // "Rate limit reached" alone (without a reset-time indicator) is
+            // too broad — OpenAI sends this for transient per-minute TPM
+            // limits that resolve in seconds.
             assert!(!is_backend_exhausted(
                 "Rate limit reached for gpt-4o in organization org-xyz on tokens per min (TPM): Limit 800000",
                 "",
             ));
-            assert!(!is_backend_exhausted(
+        }
+
+        #[test]
+        fn detects_rate_limit_with_reset_time() {
+            // "rate limit" + "try again at" together indicates a persistent
+            // rate cap with a reset time — this IS exhaustion.
+            assert!(is_backend_exhausted(
                 "Rate limit reached, try again at 3:03 PM",
                 "",
+            ));
+            // Works across stderr/stdout combination too.
+            assert!(is_backend_exhausted(
+                "Rate limit exceeded",
+                "try again at 3:03 PM",
             ));
         }
 

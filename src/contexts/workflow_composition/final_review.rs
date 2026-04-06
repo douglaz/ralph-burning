@@ -234,7 +234,6 @@ where
         })?;
 
     let mut reviewer_records = Vec::new();
-    let mut proposal_exhausted_count: usize = 0;
     let mut proposal_total_exhausted: usize = 0;
     for (idx, member) in panel.reviewers.iter().enumerate() {
         let reviewer_id = final_review_reviewer_id(idx);
@@ -293,14 +292,10 @@ where
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
             {
-                // Track all exhausted members for aggregate reporting.
+                // Track all exhausted members — both required and optional
+                // count toward quorum reduction because resolve_panel_backends
+                // counts all resolved members toward the configured minimum.
                 proposal_total_exhausted += 1;
-                // Only reduce quorum for required members. Optional members
-                // were never counted toward min_reviewers, so exhausting one
-                // must not lower the effective threshold.
-                if member.required {
-                    proposal_exhausted_count += 1;
-                }
                 tracing::warn!(
                     reviewer = %reviewer_id,
                     "reviewer unavailable (backend exhausted), proceeding with remaining reviewers"
@@ -336,7 +331,7 @@ where
                 // Reduce effective quorum for exhausted required backends:
                 // allow proceeding with at least 1 reviewer if available.
                 let effective_min = min_reviewers
-                    .saturating_sub(proposal_exhausted_count)
+                    .saturating_sub(proposal_total_exhausted)
                     .max(1);
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
                     < effective_min
@@ -377,7 +372,7 @@ where
                 // Use the reduced quorum: if a required reviewer was already
                 // skipped as exhausted, the effective threshold is lower.
                 let effective_optional_min = min_reviewers
-                    .saturating_sub(proposal_exhausted_count)
+                    .saturating_sub(proposal_total_exhausted)
                     .max(1);
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
                     < effective_optional_min
@@ -524,7 +519,7 @@ where
     }
 
     let effective_proposal_min = min_reviewers
-        .saturating_sub(proposal_exhausted_count)
+        .saturating_sub(proposal_total_exhausted)
         .max(1);
     if reviewer_records.len() < effective_proposal_min {
         return Err(AppError::InsufficientPanelMembers {
@@ -555,7 +550,7 @@ where
             summary: "No final-review amendments were proposed.".to_owned(),
             exhausted_count: proposal_total_exhausted,
             effective_min_reviewers: min_reviewers
-                .saturating_sub(proposal_exhausted_count)
+                .saturating_sub(proposal_total_exhausted)
                 .max(1),
         };
         let aggregate_payload = serde_json::to_value(&aggregate)?;
@@ -801,7 +796,6 @@ where
         .collect();
 
     let mut reviewer_votes = Vec::new();
-    let mut vote_exhausted_count: usize = 0;
     let mut vote_total_exhausted: usize = 0;
     for (idx, reviewer) in reviewer_records.iter().enumerate() {
         let vote_prompt = build_voter_prompt(
@@ -878,12 +872,9 @@ where
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
             {
-                // Track all exhausted members for aggregate reporting.
+                // Track all exhausted members — both required and optional
+                // count toward quorum reduction (see proposal phase comment).
                 vote_total_exhausted += 1;
-                // Only reduce quorum for required members.
-                if reviewer.required {
-                    vote_exhausted_count += 1;
-                }
                 tracing::warn!(
                     reviewer = %reviewer.reviewer_id,
                     "reviewer unavailable during vote (backend exhausted), proceeding with remaining reviewers"
@@ -917,7 +908,7 @@ where
                     Some(0),
                 );
                 let effective_min = min_reviewers
-                    .saturating_sub(proposal_exhausted_count + vote_exhausted_count)
+                    .saturating_sub(proposal_total_exhausted + vote_total_exhausted)
                     .max(1);
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
                     < effective_min
@@ -958,7 +949,7 @@ where
                 // Use the reduced quorum: if required reviewers were already
                 // skipped as exhausted, the effective threshold is lower.
                 let effective_optional_min = min_reviewers
-                    .saturating_sub(proposal_exhausted_count + vote_exhausted_count)
+                    .saturating_sub(proposal_total_exhausted + vote_total_exhausted)
                     .max(1);
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
                     < effective_optional_min
@@ -1137,7 +1128,7 @@ where
     // Account for both proposal-phase and vote-phase exhaustions when
     // computing the effective vote quorum.
     let effective_vote_min = min_reviewers
-        .saturating_sub(proposal_exhausted_count + vote_exhausted_count)
+        .saturating_sub(proposal_total_exhausted + vote_total_exhausted)
         .max(1);
     if reviewer_votes.len() < effective_vote_min {
         return Err(AppError::InsufficientPanelMembers {
@@ -1422,10 +1413,7 @@ where
         .collect();
 
     let total_all_exhausted = proposal_total_exhausted + vote_total_exhausted;
-    let total_required_exhausted = proposal_exhausted_count + vote_exhausted_count;
-    let effective_min = min_reviewers
-        .saturating_sub(total_required_exhausted)
-        .max(1);
+    let effective_min = min_reviewers.saturating_sub(total_all_exhausted).max(1);
 
     if !final_accepted_amendments.is_empty() && final_review_restart_count >= max_restarts {
         let aggregate = FinalReviewAggregatePayload {
