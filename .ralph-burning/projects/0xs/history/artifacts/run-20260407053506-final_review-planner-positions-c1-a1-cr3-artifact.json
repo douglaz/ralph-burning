@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407053506-final_review-planner-positions-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407053506-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T07:18:45.514376682Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe amendment correctly identifies that the `result` Nix symlink is tracked by git and appears in diffs. While `result` is already in .gitignore, it was committed before that entry was added, so git continues tracking it. The fix requires `git rm --cached result` to untrack it. This is a valid hygiene issue — committing machine-local Nix store paths pollutes the branch.\n\n## Votes\n\n- `fr-3-05f23d9b`: Accept\n  Verified: `result` is a symlink to `/nix/store/...` that was committed in 18abf13 before the .gitignore entry existed. Despite `.gitignore` now listing `result`, git continues tracking it because gitignore only affects untracked files. The symlink changed between recent commits (visible in diff). This is a real issue — machine-local Nix store paths should not be in version control. The fix is `git rm --cached result` to stop tracking the already-committed file, after which the existing .gitignore entry will prevent re-addition.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

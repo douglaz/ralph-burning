@@ -1,0 +1,7 @@
+id = "0xs"
+name = "final-review-planner-backend"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "4d3124ae76087968a5c65c2ea6330ad4ce25055322252d429ffee2dfe911a8df"
+created_at = "2026-04-07T05:35:00.529380824Z"
+status_summary = "created"

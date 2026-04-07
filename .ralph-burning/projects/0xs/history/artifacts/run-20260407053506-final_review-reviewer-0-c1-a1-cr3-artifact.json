@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407053506-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407053506-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T07:11:53.819159288Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all changed files (policy.rs, engine.rs, two test files, result symlink). The core fix is correct: preflight now routes the final-review planner through `resolve_final_review_planner_target` which honours the dedicated `final_review_planner_backend` config key, falling back to the generic planner when unset. The new helper methods (`resolve_final_review_reviewers`, `resolve_prompt_review_validators`) are clean extractions consistent with the existing full-panel resolvers. Engine refactoring properly decomposes member resolution for per-member error attribution. All 35 final-review-related tests pass (including both new tests). Clippy errors in the changed files: none (the 16 errors are pre-existing in other files). Config wiring is complete: `FinalReviewSettings.planner_backend` → `EffectiveBackendPolicy.final_review_planner_backend` → `resolve_final_review_planner_target` → preflight and diagnostics. No correctness bugs or safety issues found.\n\n## Amendments\n\n1. The `result` symlink (Nix store path) is included in the diff as a changed file. This is a build artifact that points to a machine-local `/nix/store/...` path and should not be committed. Add `result` to `.gitignore` or exclude it from the commit to avoid polluting the branch with environment-specific state.\n   Rationale: The symlink change has no functional impact but creates unnecessary noise in diffs and is not portable across machines. It could also cause confusion during code review or merge conflicts if another build changes the store hash.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

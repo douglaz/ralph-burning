@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407053506-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260407053506-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T05:53:23.371613179Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify verified bugs. fr-1-55ffd426: resolve_prompt_review_panel_for_preflight independently resolves refiner via resolve_role_target at line 357, then unconditionally overwrites panel.refiner at line 369, bypassing the correct prompt_review_policy().refiner_backend check in resolve_prompt_review_panel (policy.rs:111). Identical pattern to the final_review bug already fixed. fr-1-b1f75686: The delegated final_review preflight (engine.rs:381-385) wraps all errors with generic 'final-review panel resolution failed', but the inner resolve_final_review_planner_target (policy.rs:151-163) returns only BackendUnavailable errors without member-specific context. The test at workflow_engine_test.rs:2063 asserts details.contains(\"planner\") which will fail since 'planner' no longer appears in the error string.\n\n## Votes\n\n- `fr-1-55ffd426`: Accept\n  Verified: resolve_prompt_review_panel_for_preflight (engine.rs:352-371) resolves refiner via resolve_role_target(BackendPolicyRole::PromptReviewer, cycle) at line 357, then unconditionally overwrites panel.refiner at line 369. Meanwhile, resolve_prompt_review_panel (policy.rs:104-126) already correctly checks prompt_review_policy().refiner_backend at line 111 and falls back to generic resolution only when no dedicated override exists. The preflight's independent resolution and overwrite silently ignores any configured refiner_backend — the exact same bug pattern just fixed for final_review. Delegating entirely to resolve_prompt_review_panel is the correct and consistent fix.\n- `fr-1-b1f75686`: Accept\n  Verified: The new final_review preflight (engine.rs:381-385) wraps all errors from resolve_final_review_panel with a generic 'final-review panel resolution failed: {error}' message. The inner functions (resolve_final_review_planner_target at policy.rs:151-163, selection_to_target at policy.rs:269-283) return BackendUnavailable errors containing only backend family name and availability details — no member-specific role context. The test preflight_check_validates_final_review_planner_member (workflow_engine_test.rs:2055-2069) asserts details.contains(\"planner\") at line 2063, which now fails because 'planner' never appears in the composed error string. This is a real diagnostics regression. The fix should preserve delegation (to avoid the override-bypass bug) while adding member-specific wrapping, e.g., resolving planner/arbiter/reviewers individually through the policy methods but wrapping each with identifying context.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

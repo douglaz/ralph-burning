@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407053506-final_review-reviewer-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260407053506-final_review-reviewer-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T07:22:45.351893111Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all changed files: engine.rs preflight functions, policy.rs new helper methods, config wiring in domain.rs and config.rs, diagnostics integration, and three new tests. The core fix correctly routes the final-review planner through resolve_final_review_planner_target instead of the generic Planner role. Fallback chain, config resolution, diagnostics, and backward compatibility are all sound. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

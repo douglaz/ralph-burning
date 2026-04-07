@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407053506-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407053506-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T07:18:20.661007341Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nNo correctness or safety issues found in the branch diff. The preflight path now resolves the final-review planner through `resolve_final_review_planner_target` instead of the generic planner role, which matches the existing execution-time panel resolution, and the added fallback/override tests are consistent with that behavior. I also ran targeted tests, including `cargo test --features test-stub preflight_check_ --test unit` and the related final-review planner policy tests, and they passed.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

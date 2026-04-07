@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407053506-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260407053506-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T05:44:20.114354306Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe fix is correct: `resolve_final_review_panel_for_preflight` now delegates to `resolve_final_review_panel()` which properly honors the dedicated `final_review_planner_backend` and `final_review.arbiter_backend` overrides, instead of resolving via generic role targets and overwriting the panel values. The new fallback test is appropriate. No safety or correctness issues in the changed code itself.\n\n## Amendments\n\n1. The analogous function `resolve_prompt_review_panel_for_preflight` (engine.rs:352-371) has the exact same bug pattern that was just fixed for final_review: it resolves `refiner` via generic `resolve_role_target(BackendPolicyRole::PromptReviewer, cycle)` then overwrites `panel.refiner` returned by `resolve_prompt_review_panel()`, which already correctly checks `prompt_review_policy().refiner_backend` for a dedicated override. If `prompt_review.refiner_backend` is configured, the preflight silently ignores it. Apply the same delegation pattern: replace the body with a direct call to `policy.resolve_prompt_review_panel(cycle).map_err(...)` to avoid the override bypass.\n   Rationale: This is the identical class of bug in a sibling function. The artifact explicitly notes it as an outstanding risk. Fixing it now prevents a future incident where an operator configures prompt_review.refiner_backend and gets silently ignored during preflight — the exact problem this bead was created to solve for final_review.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

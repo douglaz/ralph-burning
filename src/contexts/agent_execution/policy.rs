@@ -148,6 +148,26 @@ impl<'a> BackendPolicyService<'a> {
         })
     }
 
+    /// Resolve only the final-review reviewer panel members (no planner/arbiter).
+    /// Used by preflight to assemble the panel with member-specific error wrapping.
+    pub fn resolve_final_review_reviewers(&self) -> AppResult<Vec<ResolvedPanelMember>> {
+        self.resolve_panel_backends(
+            &self.config.final_review_policy().backends,
+            self.config.final_review_policy().min_reviewers,
+            BackendPolicyRole::FinalReviewer,
+        )
+    }
+
+    /// Resolve only the prompt-review validator panel members (no refiner).
+    /// Used by preflight to assemble the panel with member-specific error wrapping.
+    pub fn resolve_prompt_review_validators(&self) -> AppResult<Vec<ResolvedPanelMember>> {
+        self.resolve_panel_backends(
+            &self.config.prompt_review_policy().validator_backends,
+            self.config.prompt_review_policy().min_reviewers,
+            BackendPolicyRole::PromptValidator,
+        )
+    }
+
     pub fn resolve_final_review_planner_target(
         &self,
         cycle: u32,
