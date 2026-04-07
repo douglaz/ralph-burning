@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407031708-final_review-aggregate-c1-a1-cr8-artifact",
+  "payload_id": "run-20260407031708-final_review-aggregate-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T04:48:22.498875390Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 8/25\n\n## Accepted\n\n- `fr-8-52abe7e6`\n- `fr-8-b362cf8e`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-8-52abe7e6`\n\nThe `spawn_background_reap_calls_real_function` test sleeps for a real 1 second without `start_paused`, making it non-hermetic. On a heavily-loaded CI host or under resource pressure, the SIGKILL+reap could theoretically take longer (e.g., process group cleanup, slow NFS-backed /proc). Consider either (a) increasing the sleep to 5s with a comment explaining the generous margin, or (b) polling `weak.upgrade().is_none()` in a retry loop with a generous total timeout, so the test is robust to scheduling jitter without being slow in the common case.\n\n### `fr-8-b362cf8e`\n\nThe `result` symlink change (Nix store path update) is included in the branch diff but is unrelated to the feature. It should be excluded from the final commit or PR to keep the change focused.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 8
+}

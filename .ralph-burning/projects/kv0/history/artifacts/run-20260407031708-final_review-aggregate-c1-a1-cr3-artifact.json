@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407031708-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407031708-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T04:02:32.213927125Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 3/25\n\n## Accepted\n\n- `fr-3-228f4433`\n- `fr-3-08099011`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-3-510c6e8d`\n\n## Final Accepted Amendments\n\n### `fr-3-228f4433`\n\nThe `background_reap_timeout_drops_handle` test replicates the internal timeout+drop pattern manually rather than calling `spawn_background_reap_with_timeout`. This means someone could accidentally remove the timeout from the real function and the test would still pass. Consider adding a test that calls `spawn_background_reap_with_timeout` directly with a very short timeout (e.g., 1ms) and a process that ignores SIGKILL in userspace (impossible, but `cat` with piped stdin where `force_kill` succeeds instantly still exercises the function path). Alternatively, assert that `spawn_background_reap_with_timeout` is the sole caller body of `spawn_background_reap` via a code comment/doc obligation, or add an integration test that calls the real function and verifies the Arc is dropped within the expected timeframe.\n\n### `fr-3-08099011`\n\n`src/adapters/process_backend.rs:4124-4129` and `src/adapters/process_backend.rs:4156-4161` add tests that unconditionally call `Command::process_group(0)` and spawn `cat`. Both are Unix-specific, while this module still has explicit `#[cfg(not(unix))]` behavior. On Windows these tests either fail to compile (`process_group`) or fail at runtime (`cat`), so the patch regresses non-Unix `cargo test` builds. Gate these tests with `#[cfg(unix)]` or switch them to a portable helper process.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260407031708-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T03:29:24.999291465Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll three amendments raise valid concerns. Two (ea92fa9d and 395731ad) identify the same fundamental test weakness: the test background_reap_completes_on_timeout cannot deterministically exercise the timeout branch because SIGKILL kills sleep nearly instantly and try_wait() picks up the zombie on its first poll, before the 1ms timeout fires. The third (115d7e89) identifies a real structural issue on non-Unix platforms where force_kill().await calls tokio's Child::kill().await (which itself waits for exit), meaning the 30s timeout never starts if the hang is inside force_kill rather than wait.\n\n## Votes\n\n- `fr-1-ea92fa9d`: Accept\n  Valid. On Unix, send_sigkill() (line 449) is a non-blocking signal dispatch via nix::sys::signal::kill(). After SIGKILL, the kernel marks the process for termination almost immediately. In wait() (line 487), the first try_wait() call at line 494 will find the zombie before the 10ms poll interval, so tokio::time::timeout(1ms, child.wait()) returns Ok(...) — the timeout branch is never taken. The assertion weak.upgrade().is_none() passes in both the normal-exit and timeout paths since both drop the Arc. The test therefore does not prove the timeout codepath works. The suggested fix (capturing tracing output to assert 'background reap timed out' was emitted, or at minimum adding a comment acknowledging the non-determinism) is appropriate.\n- `fr-1-115d7e89`: Accept\n  Valid. On non-Unix (line 477-484), force_kill() calls child.kill().await on a tokio::process::Child. Tokio's kill() sends TerminateProcess and then waits for the child to exit. In spawn_background_reap_with_timeout (line 2005-2007), the timeout wraps only child.wait(), not force_kill(). If the pathological case is that the process won't die (the whole reason the timeout exists), then force_kill().await itself hangs indefinitely and the timeout is never reached. The timeout should either wrap both force_kill + wait, or force_kill should be made non-blocking on non-Unix (just send the signal without awaiting exit). This is a real gap in the safety net the timeout was designed to provide.\n- `fr-1-395731ad`: Accept\n  Valid and substantively identical to fr-1-ea92fa9d. The analysis is correct: after SIGKILL, sleep is killed immediately. ManagedChild::wait()'s first try_wait() at line 494 finds the dead process before CHILD_WAIT_POLL_INTERVAL (10ms) elapses, so the 1ms timeout wrapper returns Ok and the warning path is skipped. The test passes regardless of which branch executes. This is a real test quality issue — the test name claims to cover the timeout path but cannot reliably do so with the current approach.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

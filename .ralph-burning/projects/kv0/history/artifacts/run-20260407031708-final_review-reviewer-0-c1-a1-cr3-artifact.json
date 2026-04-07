@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407031708-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T03:53:30.078704478Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation correctly adds a 30-second bounded timeout to `spawn_background_reap` by wrapping both `force_kill()` and `wait()` inside `tokio::time::timeout`. On timeout, a structured tracing warning is emitted and the `Arc<ManagedChild>` handle is dropped, allowing the tokio task to complete. The `spawn_background_reap_with_timeout` helper cleanly separates the configurable-timeout logic for testability. Ownership semantics are correct: `child` is borrowed (not moved) by the inner `async` block, so on timeout cancellation, the Arc is properly dropped at the end of the outer `async move` block. Both new tests pass, all 51 existing process_backend tests pass, and no new clippy warnings are introduced in the changed file. The pre-existing 16 clippy errors are unrelated.\n\n## Amendments\n\n1. The `background_reap_timeout_drops_handle` test replicates the internal timeout+drop pattern manually rather than calling `spawn_background_reap_with_timeout`. This means someone could accidentally remove the timeout from the real function and the test would still pass. Consider adding a test that calls `spawn_background_reap_with_timeout` directly with a very short timeout (e.g., 1ms) and a process that ignores SIGKILL in userspace (impossible, but `cat` with piped stdin where `force_kill` succeeds instantly still exercises the function path). Alternatively, assert that `spawn_background_reap_with_timeout` is the sole caller body of `spawn_background_reap` via a code comment/doc obligation, or add an integration test that calls the real function and verifies the Arc is dropped within the expected timeframe.\n   Rationale: The test validates the timeout mechanism in isolation but doesn't verify that `spawn_background_reap_with_timeout` actually uses it. A regression removing the timeout from the real function would go undetected. This is a testability gap, not a correctness bug in the current code.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

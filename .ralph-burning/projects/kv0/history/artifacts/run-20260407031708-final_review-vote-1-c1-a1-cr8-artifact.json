@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260407031708-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T04:48:22.484816646Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments should be accepted. The first identifies a legitimate test-hermeticity and CI-flakiness risk; the second correctly calls out an unrelated generated artifact that should not ship with the feature change.\n\n## Votes\n\n- `fr-8-52abe7e6`: Accept\n  A test that relies on a fixed real-time 1 second sleep is inherently less deterministic than necessary. Background task scheduling, process-group teardown, and host load can all stretch wall-clock completion enough to create sporadic failures. Replacing the fixed sleep with polling plus a bounded timeout, or otherwise adding substantially more slack with clear intent, improves robustness and keeps the test maintainable.\n- `fr-8-b362cf8e`: Accept\n  An updated `result` symlink to a different Nix store path is build-output noise, not part of the feature’s intended behavior. Keeping unrelated generated artifacts out of the final commit makes review clearer and avoids coupling the change to a machine-local build state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 8
+}

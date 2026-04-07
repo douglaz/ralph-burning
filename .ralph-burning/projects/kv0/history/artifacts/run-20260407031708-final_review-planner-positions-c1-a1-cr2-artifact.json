@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-planner-positions-c1-a1-cr2-artifact",
+  "payload_id": "run-20260407031708-final_review-planner-positions-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T03:43:32.507294395Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAmendment fr-2-eb6bf34a correctly identifies that the existing test_background_reap_drops_handle test does not actually exercise the new timeout/warning path at lines 2005-2018. After SIGKILL, try_wait() returns immediately on the first poll in nearly all cases, so the 100ms timeout never fires. The weak-ref assertion passes either way since both paths drop the Arc. The timeout warning branch — the primary new safety feature — has zero deterministic test coverage. A harness that keeps wait() pending past the deadline is needed to properly validate this path.\n\n## Votes\n\n- `fr-2-eb6bf34a`: Accept\n  The analysis is technically sound. ManagedChild::wait() calls try_wait() first (line 494), and after SIGKILL a normal 'sleep 300' process will be reaped on that first poll within microseconds — well before the 100ms timeout. The test's own comment admits it 'exercises the happy path' on most systems. The weak-ref assertion is path-insensitive (both branches drop the Arc), so the test passes without ever triggering the timeout/warning at line 2013. This means the newly added safety path (the tracing::warn! on timeout) has no deterministic coverage. Since this timeout path exists specifically to handle unkillable processes — a real operational concern — it deserves a dedicated test with a mock or harness that forces wait() to block past the deadline, directly asserting the warning fires.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

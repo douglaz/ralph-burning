@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-vote-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407031708-final_review-vote-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T03:59:14.670472557Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed three amendments against the new background reap timeout tests. The portability amendment (fr-3-08099011) identifies a clear defect: both new tests use `process_group(0)` (a Unix-only extension trait) and spawn `cat` without `#[cfg(unix)]` guards, while production code (line 1053) and all adjacent tests (lines 3987, 4004, 4017, 4030) consistently use these guards. This would break non-Unix builds. The first coverage amendment (fr-3-228f4433) raises a valid concern that the test replicates internal logic rather than calling the production function, though the design tradeoff is understandable. The third amendment (fr-3-510c6e8d) is substantively identical to fr-3-228f4433 and would create redundant work.\n\n## Votes\n\n- `fr-3-228f4433`: Accept\n  Valid concern. The test at line 4152 manually replicates the timeout+drop pattern from spawn_background_reap_with_timeout (lines 2009-2013) rather than calling the actual function. If someone modifies the production function — e.g., changes the timeout behavior, removes it, or adds different error handling — this test would still pass unchanged. While the manual replication was intentional (to skip force_kill and simulate an unkillable process), there should be at least one additional test that exercises the real function end-to-end. The amendment's suggestion of an integration test calling the real function with a short timeout and verifying Arc drop within the expected timeframe is practical and achievable. The doc-obligation alternative is a reasonable lightweight option.\n- `fr-3-08099011`: Accept\n  Clear, high-confidence defect. The production code at line 1053 guards `command.process_group(0)` with `#[cfg(unix)]`, and all four adjacent tests (lines 3987, 4004, 4017, 4030) use `#[cfg(unix)]` guards. But the two new tests (`managed_child_wait_respects_timeout` at line 4122 and `background_reap_timeout_drops_handle` at line 4152) both call `.process_group(0)` and spawn `cat` without any platform guard. `process_group` is provided by `std::os::unix::process::CommandExt` and will not compile on Windows. `cat` is also not available on Windows. Adding `#[cfg(unix)]` to both test functions is a trivial, obvious fix consistent with the existing codebase conventions.\n- `fr-3-510c6e8d`: Reject\n  This amendment identifies the exact same issue as fr-3-228f4433: the test at line 4152 doesn't call spawn_background_reap_with_timeout and instead replicates its internal logic. The first amendment already covers this concern more thoroughly, offering multiple concrete alternatives (integration test, doc obligation). Accepting both would create redundant remediation work for the same underlying observation. The concern is valid but already addressed by fr-3-228f4433.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407031708-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T04:02:07.078889164Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nOne amendment identifies a definite cross-platform test regression. The other two overlap, but both correctly flag that the new timeout test does not exercise `spawn_background_reap_with_timeout` itself, so regressions in the production timeout/warning path could slip past the test suite.\n\n## Votes\n\n- `fr-3-228f4433`: Accept\n  The concern is valid. `background_reap_timeout_drops_handle` manually recreates a timeout around `managed.wait()` instead of invoking `spawn_background_reap_with_timeout`, so the test would still pass if the helper lost its timeout wrapper or otherwise regressed internally. That is a real maintainability and coverage gap. The exact test mechanics may need to differ from the amendment's examples, but the underlying issue is technically sound.\n- `fr-3-08099011`: Accept\n  This is a clear portability bug. The added tests unconditionally call `Command::process_group(0)` and spawn `cat`, both of which are Unix-specific, while the module explicitly supports `#[cfg(not(unix))]` paths elsewhere. On non-Unix targets, `process_group` is not available and `cat` is not a reliable portable test binary, so these tests can break `cargo test` outside Unix. They should be gated with `#[cfg(unix)]` or rewritten to use a portable helper.\n- `fr-3-510c6e8d`: Accept\n  This observation is also correct. The test comment claims to cover `spawn_background_reap_with_timeout`, but the body never calls that helper; it spawns a separate closure, omits `force_kill()`, and therefore does not exercise the actual timeout/warning path used in production. That leaves a real regression hole even if the current surrogate test is useful for isolating `wait()` behavior. It overlaps heavily with `fr-3-228f4433`, but on its own technical merits it is still a valid amendment.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

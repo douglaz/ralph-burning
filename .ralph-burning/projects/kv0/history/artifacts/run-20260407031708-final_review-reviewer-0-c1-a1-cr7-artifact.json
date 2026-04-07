@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-reviewer-0-c1-a1-cr7-artifact",
+  "payload_id": "run-20260407031708-final_review-reviewer-0-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T04:33:49.991784357Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is clean and correct. `spawn_background_reap` now wraps both `force_kill()` and `wait()` in a `tokio::time::timeout(30s)` via a well-factored generic helper `spawn_reap_with_timeout`. The timeout covers the entire reap operation (including potential mutex contention in `force_kill`), which is the right design. On timeout expiry, a structured tracing warning is emitted and the task completes, dropping the `Arc<ManagedChild>`. Three tests cover: (1) `wait()` cancellation-safety under timeout, (2) the timeout branch deterministically via `pending::<()>()`, and (3) the happy path with a real process. No correctness or safety bugs found. One minor robustness concern with timing-sensitive test assertions.\n\n## Amendments\n\n1. The `spawn_reap_with_timeout_drops_on_expiry` test relies on wall-clock timing (50ms timeout + 300ms sleep) without using `tokio::time::pause()`. Under heavy CI load, the tokio runtime may not schedule the spawned task promptly, causing the 300ms sleep to elapse before the timeout task even starts, leading to flaky failures. Use `tokio::time::pause()` at the start of the test (or `#[tokio::test(start_paused = true)]`) so that `tokio::time::timeout` and `tokio::time::sleep` advance deterministically via simulated time, eliminating timing-dependent flakiness.\n   Rationale: Timing-dependent tests are a known source of CI flakiness. tokio provides `start_paused` specifically for this pattern — the 50ms timeout and 300ms sleep would resolve instantly in simulated time, making the test both faster and deterministic. The `managed_child_wait_respects_timeout` and `spawn_background_reap_calls_real_function` tests legitimately need real time (they spawn real OS processes), but `spawn_reap_with_timeout_drops_on_expiry` uses only in-process futures and is a perfect candidate for simulated time.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 7
+}

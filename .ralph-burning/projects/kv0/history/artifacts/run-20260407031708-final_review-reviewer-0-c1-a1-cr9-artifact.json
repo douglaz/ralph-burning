@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-reviewer-0-c1-a1-cr9-artifact",
+  "payload_id": "run-20260407031708-final_review-reviewer-0-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T04:52:44.110446581Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is clean and correct. It adds a 30-second bounded timeout to `spawn_background_reap` by wrapping the force_kill+wait future in `tokio::time::timeout`. The key design is sound: `ManagedChild::wait()` uses a polling loop with `try_wait()` + `tokio::time::sleep`, so `tokio::time::timeout` can reliably cancel it at any yield point. The refactoring into `spawn_reap_with_timeout` (generic over any future) is a good separation that enables deterministic testing with `start_paused = true`. Three tests cover: (1) that `wait()` itself is interruptible by timeout, (2) the timeout branch drops captured state via a pending-forever future with `start_paused`, and (3) an integration test of the real `spawn_background_reap_with_timeout` on a real process. The `result` symlink change is a nix build artifact and not a code concern.\n\n## Amendments\n\n1. In `spawn_background_reap_with_timeout` (line 2006-2008), `force_kill()` is called inside the reap future that is wrapped by the timeout. If `force_kill()` itself blocks (e.g., `state.lock().await` is contended), the 30s timeout covers it — which is correct. However, the timeout starts ticking before `force_kill` even runs, meaning a slow `force_kill` eats into the 30s budget for `wait()`. Consider whether the timeout should wrap only `wait()` (after force_kill completes) rather than both operations. In practice force_kill is near-instant (sends SIGKILL), so this is unlikely to matter, but the intent of the bead says 'after force_kill, wait at most 30 seconds' — currently the timeout covers both.\n   Rationale: The bead's acceptance criteria says 'After force_kill, spawn_background_reap waits at most 30 seconds for the child to exit'. The current implementation starts the 30s timer before force_kill runs, not after. While force_kill is typically instant, the semantic mismatch between spec and implementation could matter if force_kill ever blocks (e.g., lock contention).\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 9
+}

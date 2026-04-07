@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260407031708-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T03:28:13.314267652Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the background-reap timeout change and the new unit test. The main Unix implementation is directionally correct, but there is still one unbounded path on non-Unix builds and the added test does not reliably prove the timeout/logging branch.\n\n## Amendments\n\n1. src/adapters/process_backend.rs:471-482 and 2005-2007 still leave `spawn_background_reap` unbounded on the non-Unix path. The new 30s timeout only starts after `child.force_kill().await`, but `force_kill()` uses `tokio::process::Child::kill().await` there, which already waits for the child to exit. If that wait is the thing that hangs, the spawned reap task still never reaches the new timeout.\n   Rationale: The patch fixes the Linux `wait()` hang called out in the bead, but the helper is still capable of blocking forever anywhere the non-Unix branch is compiled. If cross-platform behavior matters, `force_kill` needs a non-blocking kill path or the timeout has to wrap the entire reap sequence.\n2. src/adapters/process_backend.rs:4112-4145 does not deterministically cover the timeout branch it is supposed to test. The test kills a normal `sleep` process and only checks that the `Arc` was dropped; meanwhile `ManagedChild::wait()` does an immediate `try_wait()` before its 10 ms poll sleep (src/adapters/process_backend.rs:487-509). If the SIGKILL has already been observed by that first poll, `tokio::time::timeout(Duration::from_millis(1), child.wait())` returns `Ok(...)`, the warning path is skipped, and the test still passes.\n   Rationale: That leaves the acceptance criterion about covering the timeout path effectively unproven. A deterministic stub or harness that can hold `wait()` pending past the deadline is needed if you want this test to protect the new behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

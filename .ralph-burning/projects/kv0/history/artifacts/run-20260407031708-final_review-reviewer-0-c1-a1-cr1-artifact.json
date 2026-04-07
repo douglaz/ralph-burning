@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260407031708-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T03:22:54.998329870Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation correctly wraps `child.wait()` in a 30-second `tokio::time::timeout` inside `spawn_background_reap`, logging a warning and dropping the handle on expiry. The refactoring into `spawn_background_reap_with_timeout` is clean and the async cancellation of the `wait()` future is safe (Tokio Mutex guards are properly released on drop). One test coverage concern: the new test spawns `sleep` (which is immediately killable by SIGKILL) and uses a 1ms timeout, but because `force_kill()` is awaited *before* the timeout+wait begins, the process is likely already a zombie by the time `wait()` calls `try_wait()` — so the test exercises the happy path (wait completes normally), not the timeout branch. The assertion (`weak.upgrade().is_none()`) passes either way since both paths drop the Arc.\n\n## Amendments\n\n1. The test `background_reap_completes_on_timeout` does not reliably exercise the timeout code path. After `force_kill()` sends SIGKILL, `sleep` is immediately killed. When `wait()` runs its first `try_wait()` (which calls `waitpid(WNOHANG)`), it finds the zombie and returns the exit status — all before the 1ms timeout fires. The test assertion (`weak.upgrade().is_none()`) passes for both the normal-exit and timeout paths, so it doesn't actually prove the timeout branch works. Fix: capture tracing output with a test subscriber (e.g., `tracing_subscriber::fmt::TestWriter` or the `tracing-test` crate) and assert that the warning message \"background reap timed out\" was emitted, confirming the timeout branch was taken. Alternatively, add a comment acknowledging that on fast systems the test may exercise the happy path, and that the timeout branch is validated by construction (wrapping a future in `tokio::time::timeout` is a well-understood pattern).\n   Rationale: Without verifying the log output, the test provides false confidence that the timeout path is covered. If a future refactor broke the timeout logic (e.g., accidentally moving `force_kill` inside the timeout), this test would still pass, failing to catch the regression.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}
