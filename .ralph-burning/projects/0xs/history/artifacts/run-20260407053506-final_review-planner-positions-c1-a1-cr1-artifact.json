@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407053506-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260407053506-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T05:49:59.142149780Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real bugs. fr-1-55ffd426 identifies an identical override-bypass pattern in prompt_review preflight that was already fixed for final_review — the preflight function resolves refiner via generic role target and overwrites the panel's correctly-resolved refiner, silently ignoring prompt_review.refiner_backend config. fr-1-b1f75686 identifies a genuine regression where the new delegation-based final_review preflight collapses member-specific error context into a generic message, breaking the test assertion that expects 'planner' in the error details.\n\n## Votes\n\n- `fr-1-55ffd426`: Accept\n  Verified in source: resolve_prompt_review_panel_for_preflight (engine.rs:352-371) resolves refiner via resolve_role_target(BackendPolicyRole::PromptReviewer, cycle) at line 357, then overwrites panel.refiner at line 369. Meanwhile, resolve_prompt_review_panel (policy.rs:104-126) already correctly checks prompt_review_policy().refiner_backend at line 111 and falls back to the role target only when no dedicated override is configured. The preflight function's independent resolution and overwrite bypasses this logic — if refiner_backend is configured, the preflight silently ignores it. This is the exact same bug pattern that was just fixed for final_review. The fix (delegating entirely to resolve_prompt_review_panel) is straightforward and consistent.\n- `fr-1-b1f75686`: Accept\n  Verified in source: the new final_review preflight (engine.rs:381-385) wraps all errors with a generic 'final-review panel resolution failed' message. The inner resolve_final_review_planner_target (policy.rs:151-163) does NOT add member-specific context — it just calls selection_to_target or resolve_role_target which return generic resolution errors. The test at workflow_engine_test.rs:2060-2064 asserts details.contains('planner'), which will fail with the generic wrapper since 'planner' no longer appears in the error string. This is a real regression in preflight diagnostics. The fix should preserve delegation to avoid the override-bypass bug while also wrapping errors with member-specific context (e.g., 'final-review planner resolution failed').\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

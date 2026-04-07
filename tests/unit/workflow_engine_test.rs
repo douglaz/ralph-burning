@@ -2068,6 +2068,34 @@ async fn preflight_check_validates_final_review_planner_member() {
     }
 }
 
+#[tokio::test]
+async fn preflight_check_honours_dedicated_final_review_planner_over_workflow_planner() {
+    let temp = tempdir().unwrap();
+    setup_workspace(temp.path());
+
+    // Set workflow.planner_backend to an unavailable backend, but override
+    // final_review.planner_backend to "claude" which is available by default.
+    // If the preflight correctly uses the dedicated override, it should succeed.
+    let workspace_toml = workspace_config_path(temp.path());
+    let content = fs::read_to_string(&workspace_toml).unwrap();
+    let patched = format!(
+        "{content}\n[workflow]\nplanner_backend = \"openrouter\"\n\n[final_review]\nplanner_backend = \"claude\"\n"
+    );
+    fs::write(&workspace_toml, patched).unwrap();
+
+    let config = EffectiveConfig::load(temp.path()).unwrap();
+    let resolver = ralph_burning::contexts::agent_execution::service::BackendResolver::new();
+    let plan = engine::resolve_stage_plan(&[StageId::FinalReview], &resolver, None).unwrap();
+
+    let adapter = StubBackendAdapter::default();
+    let result = engine::preflight_check(&adapter, &config, 1, &plan).await;
+    assert!(
+        result.is_ok(),
+        "preflight should succeed when final_review.planner_backend overrides \
+         an unavailable workflow.planner_backend, got: {result:?}"
+    );
+}
+
 // ── Failing-port tests: journal-append and snapshot-write errors ─────────
 
 /// A journal store that delegates to `FsJournalStore` but fails on the Nth

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407053506-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407053506-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T07:19:24.848193375Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 3/25\n\n## Accepted\n\n- `fr-3-05f23d9b`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-05f23d9b`\n\nThe `result` symlink (Nix store path) is included in the diff as a changed file. This is a build artifact that points to a machine-local `/nix/store/...` path and should not be committed. Add `result` to `.gitignore` or exclude it from the commit to avoid polluting the branch with environment-specific state.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

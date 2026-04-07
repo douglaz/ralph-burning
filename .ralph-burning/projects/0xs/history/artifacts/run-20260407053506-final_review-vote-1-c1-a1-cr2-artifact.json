@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407053506-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260407053506-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T06:47:24.004467588Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll three amendments identify real issues: the final-review preflight helper has redundant double-resolution that can drift, the prompt-review helper lost member-specific failure attribution, and the current tests still miss the engine-level override path that the runtime fix depends on.\n\n## Votes\n\n- `fr-2-c0e029c2`: Accept\n  resolve_final_review_panel_for_preflight currently resolves planner and arbiter explicitly, then calls resolve_final_review_panel, which resolves those same members again before the wrapper overwrites them. That is redundant and leaves two resolution paths that must stay behaviorally identical. Today they happen to align, but the overwrite would hide future divergence and make maintenance brittle. The cleanup should preserve planner/arbiter-specific diagnostics while eliminating the duplicate resolution path.\n- `fr-2-cff2c8b7`: Accept\n  The prompt-review preflight wrapper now collapses all resolution failures into the same 'prompt-review panel resolution failed' bucket. A broken prompt_review.refiner_backend and a validator-panel resolution failure both surface through the same generic preflight path, even though they are different misconfigurations. That is a real debuggability regression relative to the final-review helper and should be restored to member-specific attribution.\n- `fr-2-8f5d9eba`: Accept\n  The added backend_policy_test coverage only proves BackendPolicyService::resolve_final_review_panel respects the dedicated planner override. The runtime change under review is in engine preflight, and the existing workflow_engine_test only covers the failure case where workflow.planner_backend is bad. There is still no engine-level regression test showing that preflight succeeds when workflow.planner_backend is invalid but final_review.planner_backend is valid, so the key fix path remains unguarded.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

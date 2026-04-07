@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407053506-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260407053506-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T05:48:23.548829269Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 1 regression. The new preflight helper correctly honors dedicated final-review panel resolution, but it also drops planner-specific failure identity and breaks the existing feature-gated workflow_engine preflight test.\n\n## Amendments\n\n1. src/contexts/workflow_composition/engine.rs:381-385 regresses preflight inspectability by collapsing every final-review resolution error into a generic \"final-review panel resolution failed\" message. That strips the failing member identity for planner/arbiter/reviewer failures; the existing feature-gated assertion at tests/unit/workflow_engine_test.rs:2060-2064 now fails because a planner resolution error no longer mentions \"planner\". Keep the dedicated final_review planner/arbiter resolution path, but preserve member-specific wrapping (or otherwise propagate the exact failing target/config source) so preflight failures still identify which final-review member failed.\n   Rationale: This is a correctness regression in the operator-facing preflight path and leaves the branch with a failing existing test: cargo test --quiet --features test-stub --test unit preflight_check_validates_final_review_planner_member -- --nocapture.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407053506-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260407053506-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T06:39:56.650305496Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nTwo findings: the final-review preflight routing change looks correct, but `src/contexts/workflow_composition/engine.rs` now regresses prompt-review failure attribution, and the added test coverage does not exercise the engine/preflight path that was actually broken.\n\n## Amendments\n\n1. Restore member-specific prompt-review preflight errors in `src/contexts/workflow_composition/engine.rs:352-364`. The new `resolve_prompt_review_panel_for_preflight` wrapper now rewrites every resolution failure to `prompt-review panel resolution failed`, so a broken `prompt_review.refiner_backend` is no longer distinguishable from validator-panel failures. Keep the dedicated-override behavior, but preserve refiner-specific failure attribution the way the final-review helper now does for planner/arbiter.\n   Rationale: This is a user-visible inspectability regression for a required panel member and makes prompt-review misconfiguration harder to debug.\n2. Add an engine-level regression test for the actual final-review fix path. The runtime change is in `src/contexts/workflow_composition/engine.rs:367-395`, but the new coverage in `tests/unit/backend_policy_test.rs:369-390` only exercises `BackendPolicyService::resolve_final_review_panel`, which already resolved the dedicated planner correctly before this patch. Extend `tests/unit/workflow_engine_test.rs` near `2040-2068` with a case where `workflow.planner_backend` is invalid/unavailable and `final_review.planner_backend` is valid, then assert `preflight_check` honors the dedicated final-review planner target.\n   Rationale: Without a test on the preflight path, the exact regression this patch fixes can come back while the new test suite still passes.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

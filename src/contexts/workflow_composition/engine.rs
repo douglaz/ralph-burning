@@ -353,29 +353,38 @@ fn resolve_prompt_review_panel_for_preflight(
     policy: &BackendPolicyService<'_>,
     cycle: u32,
 ) -> AppResult<PromptReviewPanelResolution> {
+    // Resolve each member individually for member-specific error attribution.
+    // resolve_role_target(PromptReviewer) honours prompt_review.refiner_backend
+    // via selection_for_role.
     let refiner = policy
         .resolve_role_target(BackendPolicyRole::PromptReviewer, cycle)
         .map_err(|error| AppError::PreflightFailed {
             stage_id: StageId::PromptReview,
             details: format!("required prompt-review refiner resolution failed: {error}"),
         })?;
-    let mut panel =
+    let validators =
         policy
-            .resolve_prompt_review_panel(cycle)
+            .resolve_prompt_review_validators()
             .map_err(|error| AppError::PreflightFailed {
                 stage_id: StageId::PromptReview,
                 details: format!("prompt-review validator resolution failed: {error}"),
             })?;
-    panel.refiner = refiner;
-    Ok(panel)
+    Ok(PromptReviewPanelResolution {
+        refiner,
+        validators,
+    })
 }
 
 fn resolve_final_review_panel_for_preflight(
     policy: &BackendPolicyService<'_>,
     cycle: u32,
 ) -> AppResult<FinalReviewPanelResolution> {
+    // Resolve each member individually for member-specific error attribution.
+    // resolve_final_review_planner_target honours final_review.planner_backend.
+    // resolve_role_target(Arbiter) honours final_review.arbiter_backend via
+    // selection_for_role.
     let planner = policy
-        .resolve_role_target(BackendPolicyRole::Planner, cycle)
+        .resolve_final_review_planner_target(cycle)
         .map_err(|error| AppError::PreflightFailed {
             stage_id: StageId::FinalReview,
             details: format!("required final-review planner resolution failed: {error}"),
@@ -386,16 +395,18 @@ fn resolve_final_review_panel_for_preflight(
             stage_id: StageId::FinalReview,
             details: format!("required final-review arbiter resolution failed: {error}"),
         })?;
-    let mut panel =
+    let reviewers =
         policy
-            .resolve_final_review_panel(cycle)
+            .resolve_final_review_reviewers()
             .map_err(|error| AppError::PreflightFailed {
                 stage_id: StageId::FinalReview,
                 details: format!("final-review reviewer resolution failed: {error}"),
             })?;
-    panel.planner = planner;
-    panel.arbiter = arbiter;
-    Ok(panel)
+    Ok(FinalReviewPanelResolution {
+        planner,
+        reviewers,
+        arbiter,
+    })
 }
 
 async fn preflight_required_panel_target<A: AgentExecutionPort>(

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407053506-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260407053506-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T06:31:06.721880081Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the changes to engine.rs (prompt-review and final-review preflight panel resolution) and the new fallback test. The core fix is correct: resolve_final_review_panel_for_preflight now uses resolve_final_review_planner_target instead of the generic resolve_role_target(Planner), properly respecting the dedicated final_review.planner_backend override. The prompt_review simplification is also correct since prompt_review_refiner_backend is a clone of prompt_review_policy.refiner_backend (confirmed at config.rs:451). The new fallback test properly covers the case when final_review.planner_backend is unset. One maintainability issue found with redundant double-resolution in the final_review preflight path.\n\n## Amendments\n\n1. In resolve_final_review_panel_for_preflight (engine.rs:367-397), the planner and arbiter are resolved twice: once explicitly with preflight error wrapping, then again inside resolve_final_review_panel (which internally calls resolve_final_review_planner_target and resolves the arbiter via final_review_policy().arbiter_backend). The explicit results are then overwritten onto the panel. Since resolve_final_review_panel already uses the correct dedicated resolution paths, the separate explicit resolution + overwrite is redundant. Simplify to either: (a) delegate entirely to resolve_final_review_panel like the prompt_review case was simplified, or (b) stop calling resolve_final_review_panel and resolve reviewers directly to assemble the panel manually. The current double-resolution pattern is fragile — if someone later changes arbiter resolution logic inside resolve_final_review_panel without updating the preflight wrapper (or vice versa), the overwritten values would silently mask the divergence.\n   Rationale: The prompt_review preflight was correctly simplified to a single delegation, but the final_review preflight preserves the same pattern that was identified as problematic. This asymmetry between the two preflight functions is confusing and creates a maintenance hazard where internal resolve_final_review_panel behavior changes are silently overridden.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}
