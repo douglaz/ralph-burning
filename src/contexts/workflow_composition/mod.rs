@@ -217,25 +217,18 @@ pub fn stage_plan_for_flow(preset: FlowPreset, prompt_review_enabled: bool) -> V
 
 pub fn agent_record_producer(metadata: &InvocationMetadata) -> RecordProducer {
     RecordProducer::Agent {
-        backend_family: metadata.backend_used.family.to_string(),
-        model_id: metadata.model_used.model_id.clone(),
-        // Defensive: service.rs already sets these to None when they match the
-        // resolved target, so the .filter() should be a no-op in practice.
-        // We re-check here to guard against callers that construct metadata
-        // directly (e.g. in tests) without enforcing that invariant.
-        adapter_reported_backend_family: metadata
+        requested_backend_family: metadata.backend_used.family.to_string(),
+        requested_model_id: metadata.model_used.model_id.clone(),
+        actual_backend_family: metadata
             .adapter_reported_backend
             .as_ref()
-            .filter(|backend| backend.family != metadata.backend_used.family)
-            .map(|backend| backend.family.to_string()),
-        adapter_reported_model_id: metadata
+            .map(|backend| backend.family.to_string())
+            .unwrap_or_else(|| metadata.backend_used.family.to_string()),
+        actual_model_id: metadata
             .adapter_reported_model
             .as_ref()
-            .filter(|model| {
-                model.backend_family != metadata.model_used.backend_family
-                    || model.model_id != metadata.model_used.model_id
-            })
-            .map(|model| model.model_id.clone()),
+            .map(|model| model.model_id.clone())
+            .unwrap_or_else(|| metadata.model_used.model_id.clone()),
     }
 }
 
@@ -247,17 +240,21 @@ pub fn require_agent_record_producer<'a>(
 ) -> AppResult<(&'a str, &'a str)> {
     match producer {
         RecordProducer::Agent {
-            backend_family,
-            model_id,
-            adapter_reported_backend_family,
-            adapter_reported_model_id,
+            requested_backend_family,
+            requested_model_id,
+            actual_backend_family,
+            actual_model_id,
         } => Ok((
-            adapter_reported_backend_family
-                .as_deref()
-                .unwrap_or(backend_family.as_str()),
-            adapter_reported_model_id
-                .as_deref()
-                .unwrap_or(model_id.as_str()),
+            if actual_backend_family.is_empty() {
+                requested_backend_family.as_str()
+            } else {
+                actual_backend_family.as_str()
+            },
+            if actual_model_id.is_empty() {
+                requested_model_id.as_str()
+            } else {
+                actual_model_id.as_str()
+            },
         )),
         _ => Err(AppError::InvocationFailed {
             backend: backend.to_owned(),
@@ -296,10 +293,10 @@ mod tests {
         assert_eq!(
             agent_record_producer(&metadata),
             RecordProducer::Agent {
-                backend_family: "claude".to_owned(),
-                model_id: "claude-opus-4-6".to_owned(),
-                adapter_reported_backend_family: None,
-                adapter_reported_model_id: None,
+                requested_backend_family: "claude".to_owned(),
+                requested_model_id: "claude-opus-4-6".to_owned(),
+                actual_backend_family: "claude".to_owned(),
+                actual_model_id: "claude-opus-4-6".to_owned(),
             }
         );
     }
@@ -325,21 +322,21 @@ mod tests {
         assert_eq!(
             agent_record_producer(&metadata),
             RecordProducer::Agent {
-                backend_family: "claude".to_owned(),
-                model_id: "claude-opus-4-6".to_owned(),
-                adapter_reported_backend_family: Some("openrouter".to_owned()),
-                adapter_reported_model_id: Some("openai/gpt-4.1".to_owned()),
+                requested_backend_family: "claude".to_owned(),
+                requested_model_id: "claude-opus-4-6".to_owned(),
+                actual_backend_family: "openrouter".to_owned(),
+                actual_model_id: "openai/gpt-4.1".to_owned(),
             }
         );
     }
 
     #[test]
-    fn require_agent_record_producer_returns_backend_and_model() {
+    fn require_agent_record_producer_returns_actual_backend_and_model() {
         let producer = RecordProducer::Agent {
-            backend_family: "claude".to_owned(),
-            model_id: "claude-opus-4-6".to_owned(),
-            adapter_reported_backend_family: None,
-            adapter_reported_model_id: None,
+            requested_backend_family: "claude".to_owned(),
+            requested_model_id: "claude-opus-4-6".to_owned(),
+            actual_backend_family: "claude".to_owned(),
+            actual_model_id: "claude-opus-4-6".to_owned(),
         };
 
         assert_eq!(
@@ -355,12 +352,12 @@ mod tests {
     }
 
     #[test]
-    fn require_agent_record_producer_prefers_adapter_reported_values() {
+    fn require_agent_record_producer_returns_actual_when_different_from_requested() {
         let producer = RecordProducer::Agent {
-            backend_family: "claude".to_owned(),
-            model_id: "claude-opus-4-6".to_owned(),
-            adapter_reported_backend_family: Some("openrouter".to_owned()),
-            adapter_reported_model_id: Some("openai/gpt-4.1".to_owned()),
+            requested_backend_family: "claude".to_owned(),
+            requested_model_id: "claude-opus-4-6".to_owned(),
+            actual_backend_family: "openrouter".to_owned(),
+            actual_model_id: "openai/gpt-4.1".to_owned(),
         };
 
         assert_eq!(
@@ -372,6 +369,27 @@ mod tests {
             )
             .expect("agent producer"),
             ("openrouter", "openai/gpt-4.1")
+        );
+    }
+
+    #[test]
+    fn require_agent_record_producer_falls_back_to_requested_when_actual_missing() {
+        let producer = RecordProducer::Agent {
+            requested_backend_family: "claude".to_owned(),
+            requested_model_id: "claude-opus-4-6".to_owned(),
+            actual_backend_family: String::new(),
+            actual_model_id: String::new(),
+        };
+
+        assert_eq!(
+            require_agent_record_producer(
+                &producer,
+                "claude",
+                "completion:completer",
+                "completion panel invocations must produce agent metadata",
+            )
+            .expect("agent producer"),
+            ("claude", "claude-opus-4-6")
         );
     }
 

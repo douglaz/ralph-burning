@@ -237,18 +237,8 @@ where
         };
 
         let duration = started.elapsed();
-        let adapter_reported_backend =
-            if backend_matches_target(&envelope.metadata.backend_used, &request.resolved_target) {
-                None
-            } else {
-                Some(envelope.metadata.backend_used.clone())
-            };
-        let adapter_reported_model =
-            if model_matches_target(&envelope.metadata.model_used, &request.resolved_target) {
-                None
-            } else {
-                Some(envelope.metadata.model_used.clone())
-            };
+        let adapter_reported_backend = Some(envelope.metadata.backend_used.clone());
+        let adapter_reported_model = Some(envelope.metadata.model_used.clone());
         envelope.metadata.duration = duration;
         envelope.metadata.attempt_number = request.attempt_number;
         envelope.metadata.adapter_reported_backend = adapter_reported_backend;
@@ -323,15 +313,6 @@ fn parse_backend_family(key: &str, value: &str) -> AppResult<BackendFamily> {
             reason: "expected one of claude, codex, openrouter, stub".to_owned(),
         }),
     }
-}
-
-fn backend_matches_target(reported: &BackendSpec, target: &ResolvedBackendTarget) -> bool {
-    reported.family == target.backend.family
-}
-
-fn model_matches_target(reported: &ModelSpec, target: &ResolvedBackendTarget) -> bool {
-    reported.backend_family == target.model.backend_family
-        && reported.model_id == target.model.model_id
 }
 
 fn extract_raw_output(raw_output_reference: &RawOutputReference) -> AppResult<String> {
@@ -580,7 +561,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn invoke_omits_adapter_reported_values_when_adapter_matches_target() {
+    async fn invoke_always_populates_adapter_reported_values() {
         let temp_dir = tempdir().expect("create temp dir");
         let resolved_target = ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6");
         let request = request_fixture(temp_dir.path().to_path_buf(), resolved_target.clone());
@@ -595,8 +576,23 @@ mod tests {
 
         let envelope = service.invoke(request).await.expect("invoke succeeds");
 
-        assert_eq!(envelope.metadata.adapter_reported_backend, None);
-        assert_eq!(envelope.metadata.adapter_reported_model, None);
+        // adapter_reported fields are always populated, even when matching the target
+        assert_eq!(
+            envelope
+                .metadata
+                .adapter_reported_backend
+                .as_ref()
+                .map(|b| b.family),
+            Some(BackendFamily::Claude)
+        );
+        assert_eq!(
+            envelope
+                .metadata
+                .adapter_reported_model
+                .as_ref()
+                .map(|m| m.model_id.as_str()),
+            Some("claude-opus-4-6")
+        );
         assert_eq!(envelope.metadata.backend_used.family, BackendFamily::Claude);
         assert_eq!(envelope.metadata.model_used.model_id, "claude-opus-4-6");
     }

@@ -1,0 +1,7 @@
+id = "l1i"
+name = "Include both requested and actual backend in artifact producer metadata"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "6666c6b807a41798d0fb9052c30c338016988e6837b179ca5be52dd0b056d058"
+created_at = "2026-04-06T23:01:36.232008265Z"
+status_summary = "created"
