@@ -3329,10 +3329,10 @@ mod tests {
             supporting_final_review_artifacts.iter().all(|record| matches!(
                 &record.producer,
                 Some(RecordProducer::Agent {
-                    backend_family,
-                    model_id,
+                    requested_backend_family,
+                    requested_model_id,
                     ..
-                }) if !backend_family.is_empty() && !model_id.is_empty()
+                }) if !requested_backend_family.is_empty() && !requested_model_id.is_empty()
             )),
             "final-review supporting artifacts must persist agent producer metadata: {supporting_final_review_artifacts:?}"
         );

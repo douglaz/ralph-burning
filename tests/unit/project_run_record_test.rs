@@ -2720,10 +2720,10 @@ fn payload_record_with_record_kind_and_producer_round_trip() {
         payload: serde_json::json!({"vote_complete": true}),
         record_kind: RecordKind::StageSupporting,
         producer: Some(RecordProducer::Agent {
-            backend_family: "claude".to_owned(),
-            model_id: "sonnet".to_owned(),
-            adapter_reported_backend_family: None,
-            adapter_reported_model_id: None,
+            requested_backend_family: "claude".to_owned(),
+            requested_model_id: "sonnet".to_owned(),
+            actual_backend_family: "claude".to_owned(),
+            actual_model_id: "sonnet".to_owned(),
         }),
         completion_round: 2,
     };

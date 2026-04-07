@@ -272,16 +272,18 @@ impl std::fmt::Display for RecordKind {
 
 /// Producer metadata describing who produced a particular record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", from = "RecordProducerWire")]
 pub enum RecordProducer {
     /// Produced by a backend agent invocation.
     Agent {
-        backend_family: String,
-        model_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        adapter_reported_backend_family: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        adapter_reported_model_id: Option<String>,
+        /// The backend family that was requested (resolved target).
+        requested_backend_family: String,
+        /// The model that was requested (resolved target).
+        requested_model_id: String,
+        /// The backend family actually used, as reported by the adapter.
+        actual_backend_family: String,
+        /// The model actually used, as reported by the adapter.
+        actual_model_id: String,
     },
     /// Produced by local validation (e.g., pre-commit checks).
     LocalValidation { command: String },
@@ -289,14 +291,106 @@ pub enum RecordProducer {
     System { component: String },
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RecordProducerWire {
+    Agent {
+        #[serde(alias = "backend_family")]
+        requested_backend_family: String,
+        #[serde(alias = "model_id")]
+        requested_model_id: String,
+        #[serde(default, alias = "adapter_reported_backend_family")]
+        actual_backend_family: String,
+        #[serde(default, alias = "adapter_reported_model_id")]
+        actual_model_id: String,
+    },
+    LocalValidation {
+        command: String,
+    },
+    System {
+        component: String,
+    },
+}
+
+impl From<RecordProducerWire> for RecordProducer {
+    fn from(value: RecordProducerWire) -> Self {
+        match value {
+            RecordProducerWire::Agent {
+                requested_backend_family,
+                requested_model_id,
+                actual_backend_family,
+                actual_model_id,
+            } => Self::Agent {
+                actual_backend_family: Self::actual_or_requested(
+                    actual_backend_family,
+                    &requested_backend_family,
+                ),
+                actual_model_id: Self::actual_or_requested(actual_model_id, &requested_model_id),
+                requested_backend_family,
+                requested_model_id,
+            },
+            RecordProducerWire::LocalValidation { command } => Self::LocalValidation { command },
+            RecordProducerWire::System { component } => Self::System { component },
+        }
+    }
+}
+
+impl RecordProducer {
+    fn actual_or_requested(actual: String, requested: &str) -> String {
+        if actual.is_empty() {
+            requested.to_owned()
+        } else {
+            actual
+        }
+    }
+
+    fn agent_identity<'a>(
+        requested_backend_family: &'a str,
+        requested_model_id: &'a str,
+        actual_backend_family: &'a str,
+        actual_model_id: &'a str,
+    ) -> (&'a str, &'a str) {
+        (
+            if actual_backend_family.is_empty() {
+                requested_backend_family
+            } else {
+                actual_backend_family
+            },
+            if actual_model_id.is_empty() {
+                requested_model_id
+            } else {
+                actual_model_id
+            },
+        )
+    }
+}
+
 impl std::fmt::Display for RecordProducer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Agent {
-                backend_family,
-                model_id,
-                ..
-            } => write!(f, "agent:{backend_family}/{model_id}"),
+                requested_backend_family,
+                requested_model_id,
+                actual_backend_family,
+                actual_model_id,
+            } => {
+                let (actual_backend_family, actual_model_id) = Self::agent_identity(
+                    requested_backend_family,
+                    requested_model_id,
+                    actual_backend_family,
+                    actual_model_id,
+                );
+                write!(f, "agent:{actual_backend_family}/{actual_model_id}")?;
+                if actual_backend_family != requested_backend_family
+                    || actual_model_id != requested_model_id
+                {
+                    write!(
+                        f,
+                        " (requested {requested_backend_family}/{requested_model_id})"
+                    )?;
+                }
+                Ok(())
+            }
             Self::LocalValidation { command } => write!(f, "local:{command}"),
             Self::System { component } => write!(f, "system:{component}"),
         }

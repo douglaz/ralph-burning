@@ -235,15 +235,17 @@ fn record_kind_deserializes_from_snake_case() {
 #[test]
 fn record_producer_serializes_with_tagged_union_format() {
     let agent = RecordProducer::Agent {
-        backend_family: "claude".to_string(),
-        model_id: "model-1".to_string(),
-        adapter_reported_backend_family: None,
-        adapter_reported_model_id: None,
+        requested_backend_family: "claude".to_string(),
+        requested_model_id: "model-1".to_string(),
+        actual_backend_family: "claude".to_string(),
+        actual_model_id: "model-1".to_string(),
     };
     let json = serde_json::to_value(&agent).unwrap();
     assert_eq!(json["type"], "agent");
-    assert_eq!(json["backend_family"], "claude");
-    assert_eq!(json["model_id"], "model-1");
+    assert_eq!(json["requested_backend_family"], "claude");
+    assert_eq!(json["requested_model_id"], "model-1");
+    assert_eq!(json["actual_backend_family"], "claude");
+    assert_eq!(json["actual_model_id"], "model-1");
 
     let system = RecordProducer::System {
         component: "completion_aggregator".to_string(),
@@ -264,10 +266,10 @@ fn record_producer_serializes_with_tagged_union_format() {
 fn record_producer_round_trips() {
     let producers = vec![
         RecordProducer::Agent {
-            backend_family: "claude".to_string(),
-            model_id: "model-1".to_string(),
-            adapter_reported_backend_family: None,
-            adapter_reported_model_id: None,
+            requested_backend_family: "claude".to_string(),
+            requested_model_id: "model-1".to_string(),
+            actual_backend_family: "claude".to_string(),
+            actual_model_id: "model-1".to_string(),
         },
         RecordProducer::System {
             component: "completion_aggregator".to_string(),
@@ -288,56 +290,71 @@ fn record_producer_round_trips() {
 
 #[test]
 fn record_producer_agent_with_adapter_reported_values_round_trips() {
-    let with_reported = RecordProducer::Agent {
-        backend_family: "claude".to_string(),
-        model_id: "claude-opus-4-6".to_string(),
-        adapter_reported_backend_family: Some("openrouter".to_string()),
-        adapter_reported_model_id: Some("openai/gpt-4.1".to_string()),
+    let with_different_actual = RecordProducer::Agent {
+        requested_backend_family: "claude".to_string(),
+        requested_model_id: "claude-opus-4-6".to_string(),
+        actual_backend_family: "openrouter".to_string(),
+        actual_model_id: "openai/gpt-4.1".to_string(),
     };
 
-    // Serialize and verify Some values are present
-    let json = serde_json::to_value(&with_reported).unwrap();
-    assert_eq!(json["adapter_reported_backend_family"], "openrouter");
-    assert_eq!(json["adapter_reported_model_id"], "openai/gpt-4.1");
+    // Serialize and verify actual values are present
+    let json = serde_json::to_value(&with_different_actual).unwrap();
+    assert_eq!(json["actual_backend_family"], "openrouter");
+    assert_eq!(json["actual_model_id"], "openai/gpt-4.1");
+    assert_eq!(json["requested_backend_family"], "claude");
+    assert_eq!(json["requested_model_id"], "claude-opus-4-6");
 
     // Round-trip
-    let json_str = serde_json::to_string(&with_reported).unwrap();
+    let json_str = serde_json::to_string(&with_different_actual).unwrap();
     let restored: RecordProducer = serde_json::from_str(&json_str).unwrap();
-    assert_eq!(with_reported, restored);
+    assert_eq!(with_different_actual, restored);
 }
 
 #[test]
-fn record_producer_agent_none_fields_omitted_from_json() {
-    let without_reported = RecordProducer::Agent {
-        backend_family: "claude".to_string(),
-        model_id: "claude-opus-4-6".to_string(),
-        adapter_reported_backend_family: None,
-        adapter_reported_model_id: None,
+fn record_producer_agent_actual_fields_always_present_in_json() {
+    let producer = RecordProducer::Agent {
+        requested_backend_family: "claude".to_string(),
+        requested_model_id: "claude-opus-4-6".to_string(),
+        actual_backend_family: "claude".to_string(),
+        actual_model_id: "claude-opus-4-6".to_string(),
     };
 
-    let json = serde_json::to_value(&without_reported).unwrap();
-    assert!(
-        json.get("adapter_reported_backend_family").is_none(),
-        "None adapter_reported_backend_family should be omitted via skip_serializing_if"
+    let json = serde_json::to_value(&producer).unwrap();
+    assert_eq!(
+        json["actual_backend_family"], "claude",
+        "actual_backend_family should always be present"
     );
-    assert!(
-        json.get("adapter_reported_model_id").is_none(),
-        "None adapter_reported_model_id should be omitted via skip_serializing_if"
+    assert_eq!(
+        json["actual_model_id"], "claude-opus-4-6",
+        "actual_model_id should always be present"
     );
 }
 
 #[test]
-fn record_producer_agent_deserializes_without_adapter_reported_fields() {
-    // Simulates old JSON that was serialized before the adapter_reported fields existed
+fn record_producer_agent_deserializes_from_old_field_names() {
+    // Simulates old JSON with the legacy field names
     let old_json = r#"{"type":"agent","backend_family":"claude","model_id":"claude-opus-4-6"}"#;
     let restored: RecordProducer = serde_json::from_str(old_json).unwrap();
     assert_eq!(
         restored,
         RecordProducer::Agent {
-            backend_family: "claude".to_string(),
-            model_id: "claude-opus-4-6".to_string(),
-            adapter_reported_backend_family: None,
-            adapter_reported_model_id: None,
+            requested_backend_family: "claude".to_string(),
+            requested_model_id: "claude-opus-4-6".to_string(),
+            actual_backend_family: "claude".to_string(),
+            actual_model_id: "claude-opus-4-6".to_string(),
+        }
+    );
+
+    // Old JSON with adapter_reported fields maps to actual fields
+    let old_json_with_adapter = r#"{"type":"agent","backend_family":"claude","model_id":"claude-opus-4-6","adapter_reported_backend_family":"openrouter","adapter_reported_model_id":"openai/gpt-4.1"}"#;
+    let restored: RecordProducer = serde_json::from_str(old_json_with_adapter).unwrap();
+    assert_eq!(
+        restored,
+        RecordProducer::Agent {
+            requested_backend_family: "claude".to_string(),
+            requested_model_id: "claude-opus-4-6".to_string(),
+            actual_backend_family: "openrouter".to_string(),
+            actual_model_id: "openai/gpt-4.1".to_string(),
         }
     );
 }
@@ -436,14 +453,39 @@ fn record_kind_display_stage_aggregate() {
 // ── RecordProducer Display ───────────────────────────────────────────────────
 
 #[test]
-fn record_producer_display_agent() {
+fn record_producer_display_agent_matching() {
     let producer = RecordProducer::Agent {
-        backend_family: "claude".to_string(),
-        model_id: "model-1".to_string(),
-        adapter_reported_backend_family: None,
-        adapter_reported_model_id: None,
+        requested_backend_family: "claude".to_string(),
+        requested_model_id: "model-1".to_string(),
+        actual_backend_family: "claude".to_string(),
+        actual_model_id: "model-1".to_string(),
     };
     assert_eq!(producer.to_string(), "agent:claude/model-1");
+}
+
+#[test]
+fn record_producer_display_agent_mismatched() {
+    let producer = RecordProducer::Agent {
+        requested_backend_family: "claude".to_string(),
+        requested_model_id: "claude-opus-4-6".to_string(),
+        actual_backend_family: "openrouter".to_string(),
+        actual_model_id: "openai/gpt-4.1".to_string(),
+    };
+    assert_eq!(
+        producer.to_string(),
+        "agent:openrouter/openai/gpt-4.1 (requested claude/claude-opus-4-6)"
+    );
+}
+
+#[test]
+fn record_producer_display_agent_legacy_empty_actual_falls_back_to_requested() {
+    let producer = RecordProducer::Agent {
+        requested_backend_family: "claude".to_string(),
+        requested_model_id: "claude-opus-4-6".to_string(),
+        actual_backend_family: String::new(),
+        actual_model_id: String::new(),
+    };
+    assert_eq!(producer.to_string(), "agent:claude/claude-opus-4-6");
 }
 
 #[test]

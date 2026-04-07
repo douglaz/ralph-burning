@@ -793,10 +793,9 @@ async fn primary_stage_artifacts_persist_agent_producer_metadata() {
             &docs_plan_artifact.producer,
             Some(
                 ralph_burning::contexts::workflow_composition::panel_contracts::RecordProducer::Agent {
-                    backend_family,
-                    model_id,
-                    adapter_reported_backend_family: None,
-                    adapter_reported_model_id: None,
+                    requested_backend_family: backend_family,
+                    requested_model_id: model_id,
+                    ..
                 }
             ) if backend_family == "claude" && model_id == "claude-opus-4-6"
         ),

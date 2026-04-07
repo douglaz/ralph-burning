@@ -85,11 +85,7 @@ impl WorktreeAdapter {
             return Err(Self::git_error(&read_tree_output));
         }
 
-        let add_output = Self::git_in_index(
-            repo_root,
-            index_path,
-            &["add", "-A", "--", "."],
-        )?;
+        let add_output = Self::git_in_index(repo_root, index_path, &["add", "-A", "--", "."])?;
         if !add_output.status.success() {
             return Err(Self::git_error(&add_output));
         }
