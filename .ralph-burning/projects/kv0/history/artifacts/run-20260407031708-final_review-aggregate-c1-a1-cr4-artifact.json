@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407031708-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260407031708-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T04:12:04.147509757Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 4/25\n\n## Accepted\n\n- `fr-4-d1b0da3b`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-d1b0da3b`\n\nThe `result` symlink change (nix store path update) is unrelated to the feature and should not be included in the branch/PR diff. Either revert it or add `result` to `.gitignore`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

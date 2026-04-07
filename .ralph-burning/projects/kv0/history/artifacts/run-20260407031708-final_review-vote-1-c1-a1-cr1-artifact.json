@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260407031708-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T03:30:55.173728555Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll three amendments identify real issues. The two test-focused amendments correctly point out that `background_reap_completes_on_timeout` can pass without ever taking the timeout branch because `ManagedChild::wait()` does an immediate `try_wait()` and a SIGKILLed `sleep` is usually already reapable by then. The non-Unix amendment also identifies a real gap: `force_kill()` uses `tokio::process::Child::kill().await`, so the new timeout does not bound the whole background reap path on that platform.\n\n## Votes\n\n- `fr-1-ea92fa9d`: Accept\n  The core defect is real: this test does not reliably prove the timeout path executed. After `force_kill()` sends SIGKILL, `wait()` immediately calls `try_wait()`, so the child can already be observed as exited before the 1 ms timeout expires. Because the assertion only checks that the `Arc` was dropped, the test passes on both the normal-exit and timeout paths. Capturing and asserting the warning log would be a real way to verify the timeout branch; a comment alone would document the limitation but would not improve coverage.\n- `fr-1-115d7e89`: Accept\n  This is a real robustness hole on non-Unix. The timeout in `spawn_background_reap_with_timeout` starts only after `child.force_kill().await`, but the non-Unix `force_kill()` calls `tokio::process::Child::kill().await`, and Tokio's `kill()` waits for process exit. If that wait is the operation that stalls, the spawned task never reaches the timeout wrapper at all, so the reap path remains effectively unbounded.\n- `fr-1-395731ad`: Accept\n  This amendment correctly describes the same test weakness from a slightly different angle. `ManagedChild::wait()` performs an immediate `try_wait()` before its poll sleep, so once the `sleep` process has already died from SIGKILL, `tokio::time::timeout(Duration::from_millis(1), child.wait())` can return `Ok(...)` immediately. The test still passes because it only observes handle drop, not that the warning/timeout branch actually ran.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

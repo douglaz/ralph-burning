@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407031708-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260407031708-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T03:30:55.188227797Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-ea92fa9d`\n- `fr-1-115d7e89`\n- `fr-1-395731ad`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-ea92fa9d`\n\nThe test `background_reap_completes_on_timeout` does not reliably exercise the timeout code path. After `force_kill()` sends SIGKILL, `sleep` is immediately killed. When `wait()` runs its first `try_wait()` (which calls `waitpid(WNOHANG)`), it finds the zombie and returns the exit status — all before the 1ms timeout fires. The test assertion (`weak.upgrade().is_none()`) passes for both the normal-exit and timeout paths, so it doesn't actually prove the timeout branch works. Fix: capture tracing output with a test subscriber (e.g., `tracing_subscriber::fmt::TestWriter` or the `tracing-test` crate) and assert that the warning message \"background reap timed out\" was emitted, confirming the timeout branch was taken. Alternatively, add a comment acknowledging that on fast systems the test may exercise the happy path, and that the timeout branch is validated by construction (wrapping a future in `tokio::time::timeout` is a well-understood pattern).\n\n### `fr-1-115d7e89`\n\nsrc/adapters/process_backend.rs:471-482 and 2005-2007 still leave `spawn_background_reap` unbounded on the non-Unix path. The new 30s timeout only starts after `child.force_kill().await`, but `force_kill()` uses `tokio::process::Child::kill().await` there, which already waits for the child to exit. If that wait is the thing that hangs, the spawned reap task still never reaches the new timeout.\n\n### `fr-1-395731ad`\n\nsrc/adapters/process_backend.rs:4112-4145 does not deterministically cover the timeout branch it is supposed to test. The test kills a normal `sleep` process and only checks that the `Arc` was dropped; meanwhile `ManagedChild::wait()` does an immediate `try_wait()` before its 10 ms poll sleep (src/adapters/process_backend.rs:487-509). If the SIGKILL has already been observed by that first poll, `tokio::time::timeout(Duration::from_millis(1), child.wait())` returns `Ok(...)`, the warning path is skipped, and the test still passes.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

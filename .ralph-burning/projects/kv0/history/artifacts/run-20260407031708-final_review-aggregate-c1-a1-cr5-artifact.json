@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407031708-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260407031708-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T04:22:18.426230117Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 5/25\n\n## Accepted\n\n- `fr-5-e8c23c5e`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-e8c23c5e`\n\n`src/adapters/process_backend.rs:4146-4181` does not exercise the production timeout branch in `src/adapters/process_backend.rs:2005-2019`. The new `background_reap_timeout_drops_handle` test reimplements a local `timeout(wait())` closure and explicitly skips `force_kill()`, while the only test that actually calls `spawn_background_reap_with_timeout` is the happy-path case at `src/adapters/process_backend.rs:4196-4228`. Add a deterministic test seam that invokes `spawn_background_reap_with_timeout()` itself and proves the warning/timeout path, or refactor the helper so the exact reap future can be driven under test.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

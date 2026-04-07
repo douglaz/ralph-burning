@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-planner-positions-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407031708-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T03:58:24.916598398Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed three amendments against the background reap timeout tests in process_backend.rs. The portability amendment (fr-3-08099011) identifies a clear, actionable bug: two new tests use Unix-only APIs without #[cfg(unix)] guards, breaking non-Unix builds. The other two amendments (fr-3-228f4433 and fr-3-510c6e8d) both raise the same valid concern — the test replicates internal logic rather than calling the production function — but the test design is intentional (skipping force_kill to simulate unkillable processes), and the suggestion to call the real function doesn't account for the difficulty of making force_kill fail deterministically in a unit test. Accepting the portability fix and the stronger of the two coverage amendments.\n\n## Votes\n\n- `fr-3-228f4433`: Accept\n  Valid concern: the test manually replicates the timeout+drop pattern instead of calling spawn_background_reap_with_timeout, so it won't catch regressions in the production function's timeout logic. The amendment's suggestion to add an integration test that calls the real function and verifies Arc drop within the expected timeframe is the most practical option. While the test's manual replication was intentional (to skip force_kill), at minimum a second test that exercises the real function end-to-end should exist. The doc-obligation alternative is also reasonable as a lightweight fix.\n- `fr-3-08099011`: Accept\n  Clear, high-confidence bug. Both tests at lines 4122 and 4152 use Command::process_group(0) (a Unix-only extension trait method) and spawn 'cat' (a Unix utility). The rest of the test module consistently gates Unix-specific tests with #[cfg(unix)] (e.g., lines 3987, 4004, 4017, 4030), so these two tests are missing the guard. This will break compilation on Windows. Simple fix: add #[cfg(unix)] to both test functions.\n- `fr-3-510c6e8d`: Reject\n  This is a duplicate of fr-3-228f4433 — both identify the same issue (test doesn't call spawn_background_reap_with_timeout directly). The first amendment already covers this concern more thoroughly with concrete alternatives (integration test, doc obligation). Accepting both would create redundant work. The underlying observation is correct but is already addressed by accepting fr-3-228f4433.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

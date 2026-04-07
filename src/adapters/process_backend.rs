@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
@@ -29,6 +30,9 @@ const CHILD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_millis(500);
 /// Grace period for confirming process teardown after timeout-triggered kill.
 const TEARDOWN_GRACE_PERIOD: Duration = Duration::from_secs(2);
+/// Maximum time `spawn_background_reap` will wait for a killed child to exit
+/// before giving up and dropping the handle.
+const BACKGROUND_REAP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct PreparedCommand {
     binary: std::path::PathBuf,
@@ -1991,10 +1995,36 @@ pub(crate) fn classify_exit_failure_with_output(
 }
 
 fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {
-    tokio::spawn(async move {
+    spawn_background_reap_with_timeout(invocation_id, child, BACKGROUND_REAP_TIMEOUT);
+}
+
+fn spawn_background_reap_with_timeout(
+    invocation_id: String,
+    child: Arc<ManagedChild>,
+    timeout: Duration,
+) {
+    let reap = async move {
         let _ = child.force_kill().await;
         let _ = child.wait().await;
-        drop(invocation_id);
+    };
+    spawn_reap_with_timeout(invocation_id, reap, timeout);
+}
+
+/// Spawn a background task that runs `reap` under a bounded timeout.
+/// If the timeout expires, a warning is logged and the task completes
+/// (dropping whatever the future was holding).
+fn spawn_reap_with_timeout<F>(invocation_id: String, reap: F, timeout: Duration)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        if tokio::time::timeout(timeout, reap).await.is_err() {
+            tracing::warn!(
+                invocation_id = %invocation_id,
+                timeout_secs = timeout.as_secs(),
+                "background reap timed out waiting for killed process to exit; dropping handle"
+            );
+        }
     });
 }
 
@@ -4090,5 +4120,110 @@ mod tests {
             let extracted = extract_stdout_error(json).unwrap();
             assert!(is_backend_exhausted(&extracted, ""));
         }
+    }
+
+    /// Validates that `tokio::time::timeout` correctly bounds
+    /// `ManagedChild::wait()` when the process is alive and unkilled.
+    /// We keep the process alive by holding its stdin pipe open and
+    /// never sending a kill signal, so `wait()` loops on `try_wait()`
+    /// indefinitely — the timeout is the only way out.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_child_wait_respects_timeout() -> std::io::Result<()> {
+        let child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()?;
+
+        let managed = Arc::new(ManagedChild::new(child));
+
+        let result = tokio::time::timeout(Duration::from_millis(50), managed.wait()).await;
+        assert!(
+            result.is_err(),
+            "wait() should time out when the process is still alive"
+        );
+
+        // Clean up.
+        let _ = managed.force_kill().await;
+        let _ = managed.wait().await;
+        Ok(())
+    }
+
+    /// Deterministic test of the production timeout/warning path in
+    /// `spawn_reap_with_timeout`.  Passes a future that holds an
+    /// `Arc` and never completes (simulating an unkillable process
+    /// stuck in uninterruptible I/O).  Asserts the `Arc` is dropped
+    /// when the timeout fires — proving the production timeout
+    /// branch works end-to-end.
+    #[tokio::test(start_paused = true)]
+    async fn spawn_reap_with_timeout_drops_on_expiry() {
+        // Sentinel: the spawned future holds this Arc; when the
+        // timeout fires, the future is dropped, releasing the Arc.
+        let sentinel = Arc::new(());
+        let weak = Arc::downgrade(&sentinel);
+
+        let held = Arc::clone(&sentinel);
+        drop(sentinel);
+
+        spawn_reap_with_timeout(
+            "test-timeout".to_string(),
+            async move {
+                let _keep = held;
+                // Never completes — simulates an unkillable process.
+                std::future::pending::<()>().await;
+            },
+            Duration::from_millis(50),
+        );
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert!(
+            weak.upgrade().is_none(),
+            "spawn_reap_with_timeout must drop the future (and its captured Arc) on timeout"
+        );
+    }
+
+    /// Integration test that calls the real `spawn_background_reap_with_timeout`
+    /// function and verifies the `Arc<ManagedChild>` is dropped within the
+    /// timeout window.  On Unix, `force_kill` sends SIGKILL (instant signal
+    /// delivery) and `wait()` reaps the zombie on its first `try_wait()`
+    /// poll, exercising the happy (non-timeout) path.  Together with
+    /// `spawn_reap_with_timeout_drops_on_expiry` (which covers the timeout
+    /// branch), these two tests prove both exit paths of the real function.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_background_reap_calls_real_function() -> std::io::Result<()> {
+        let child = Command::new("sleep")
+            .arg("300")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()?;
+
+        let managed = Arc::new(ManagedChild::new(child));
+        let weak = Arc::downgrade(&managed);
+
+        spawn_background_reap_with_timeout(
+            "test-real-fn".to_string(),
+            managed,
+            Duration::from_secs(5),
+        );
+
+        // Poll until the Arc is dropped rather than sleeping a fixed
+        // duration, so the test is robust to CI scheduling jitter.
+        // SIGKILL + reap typically completes in <100ms; the 10s cap
+        // is a generous margin for slow CI hosts.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while weak.upgrade().is_some() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "spawn_background_reap_with_timeout did not drop the Arc<ManagedChild> within 10s"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Ok(())
     }
 }

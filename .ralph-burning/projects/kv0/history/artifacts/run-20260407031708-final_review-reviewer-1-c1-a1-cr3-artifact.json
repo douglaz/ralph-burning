@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407031708-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T03:57:30.149495950Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff against `master`, read `src/adapters/process_backend.rs` end-to-end, and ran `cargo test adapters::process_backend -- --nocapture`. The runtime timeout change looks reasonable on Linux, but I found two issues in the new tests: they introduce an unguarded Unix-only regression, and the timeout-path test does not exercise `spawn_background_reap_with_timeout` itself, leaving the key acceptance path unverified.\n\n## Amendments\n\n1. `src/adapters/process_backend.rs:4124-4129` and `src/adapters/process_backend.rs:4156-4161` add tests that unconditionally call `Command::process_group(0)` and spawn `cat`. Both are Unix-specific, while this module still has explicit `#[cfg(not(unix))]` behavior. On Windows these tests either fail to compile (`process_group`) or fail at runtime (`cat`), so the patch regresses non-Unix `cargo test` builds. Gate these tests with `#[cfg(unix)]` or switch them to a portable helper process.\n   Rationale: This is a real portability regression in the test suite for a module that still carries cross-platform process-management code paths.\n2. `src/adapters/process_backend.rs:4145-4179` says it is testing `spawn_background_reap_with_timeout`, but the test never calls that helper. Instead it spawns a separate closure that skips `force_kill()` entirely, so it does not exercise the production timeout/warning path and can still pass if `spawn_background_reap_with_timeout` regresses. Refactor the test so it runs the production helper (or the exact reap future it uses) and verifies the real timeout branch.\n   Rationale: The acceptance criteria require new coverage for the actual timeout path after `force_kill`; right now that path remains untested, which is a significant robustness gap for this fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

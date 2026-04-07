@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407031708-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260407031708-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T03:44:42.973546466Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 2/25\n\n## Accepted\n\n- `fr-2-eb6bf34a`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-eb6bf34a`\n\nsrc/adapters/process_backend.rs:4153-4177 does not actually cover the new timeout/warning path added at src/adapters/process_backend.rs:2005-2018. The test explicitly allows either the fast reap path or the timeout path, and `ManagedChild::wait()` performs an immediate `try_wait()` before its sleep loop (src/adapters/process_backend.rs:487-509). With a normal `sleep 300` child, SIGKILL is usually observed on that first poll, so the timeout never fires and the assertion still passes. Replace this with a deterministic harness that keeps `wait()` pending past the deadline and assert the warning branch directly.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

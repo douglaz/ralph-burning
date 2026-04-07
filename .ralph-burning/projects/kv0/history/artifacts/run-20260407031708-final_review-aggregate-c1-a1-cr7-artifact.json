@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407031708-final_review-aggregate-c1-a1-cr7-artifact",
+  "payload_id": "run-20260407031708-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T04:39:59.649720065Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 7/25\n\n## Accepted\n\n- `fr-7-aa318c37`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-7-aa318c37`\n\nThe `spawn_reap_with_timeout_drops_on_expiry` test relies on wall-clock timing (50ms timeout + 300ms sleep) without using `tokio::time::pause()`. Under heavy CI load, the tokio runtime may not schedule the spawned task promptly, causing the 300ms sleep to elapse before the timeout task even starts, leading to flaky failures. Use `tokio::time::pause()` at the start of the test (or `#[tokio::test(start_paused = true)]`) so that `tokio::time::timeout` and `tokio::time::sleep` advance deterministically via simulated time, eliminating timing-dependent flakiness.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}

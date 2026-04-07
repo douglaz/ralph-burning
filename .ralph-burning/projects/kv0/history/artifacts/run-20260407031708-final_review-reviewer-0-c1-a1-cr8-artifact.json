@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-reviewer-0-c1-a1-cr8-artifact",
+  "payload_id": "run-20260407031708-final_review-reviewer-0-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T04:43:24.753207178Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is correct and well-structured. `spawn_background_reap` now wraps `force_kill()` + `wait()` in a 30-second `tokio::time::timeout`, logging a warning on expiry. The decomposition into `spawn_reap_with_timeout` (generic, testable) and `spawn_background_reap_with_timeout` (concrete, with real ManagedChild) is clean. Tests cover both the timeout path (deterministic via `start_paused = true` with a never-completing future) and the happy path (real process with SIGKILL). No correctness or safety issues found in the core logic.\n\n## Amendments\n\n1. The `spawn_background_reap_calls_real_function` test sleeps for a real 1 second without `start_paused`, making it non-hermetic. On a heavily-loaded CI host or under resource pressure, the SIGKILL+reap could theoretically take longer (e.g., process group cleanup, slow NFS-backed /proc). Consider either (a) increasing the sleep to 5s with a comment explaining the generous margin, or (b) polling `weak.upgrade().is_none()` in a retry loop with a generous total timeout, so the test is robust to scheduling jitter without being slow in the common case.\n   Rationale: A 1-second real-time assertion is tight for CI environments under load. The test is currently correct but could become a flaky failure in constrained environments, which wastes developer time diagnosing false failures.\n2. The `result` symlink change (Nix store path update) is included in the branch diff but is unrelated to the feature. It should be excluded from the final commit or PR to keep the change focused.\n   Rationale: Including unrelated Nix store path changes in a feature branch muddies the diff and makes review harder. It's likely an artifact of rebuilding locally.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 8
+}

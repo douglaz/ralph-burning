@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407031708-final_review-vote-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260407031708-final_review-vote-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T04:11:21.542749513Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe amendment correctly identifies that the `result` symlink diff is unrelated noise in the feature branch. Verified: `result` is tracked by git despite being listed in `.gitignore` (line 5), because it was tracked before the gitignore entry was added. The diff is purely a nix store path change (a local build artifact). The fix is `git rm --cached result` to untrack it, which will make the existing `.gitignore` entry effective going forward.\n\n## Votes\n\n- `fr-4-d1b0da3b`: Accept\n  Verified that `result` is a nix build artifact symlink currently tracked by git despite being in `.gitignore`. The diff (changing one nix store hash to another) is completely unrelated to the feature. Including it in the PR adds review noise and could confuse reviewers. Running `git rm --cached result` will untrack the file and make the existing `.gitignore` entry effective, cleanly resolving the issue.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}
