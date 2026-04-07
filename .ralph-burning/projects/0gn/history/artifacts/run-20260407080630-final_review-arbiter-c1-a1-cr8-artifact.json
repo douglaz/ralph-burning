@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-arbiter-c1-a1-cr8-artifact",
+  "payload_id": "run-20260407080630-final_review-arbiter-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T11:11:54.292391203Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAccepted amendment fr-8-7b89f60b. The dispute hinged on whether `codex exec` emits NDJSON to stdout by default. Verification of the installed CLI's help text (`codex exec --help`) shows `--json` is explicitly documented as an opt-in flag ('Print events to stdout as JSONL'), proving JSONL is not the default. The command builders never pass this flag. The planner/reviewer-1 argument that parser tests prove default NDJSON emission is a category error: unit tests with synthetic data prove parsing capability, not CLI behavior. The comment's claim is unsupported and the adapter needs to wire up `--json` or another real diagnostic mechanism.\n\n## Rulings\n\n- `fr-8-7b89f60b`: Accept\n  The amendment is correct. The installed `codex exec --help` explicitly documents `--json` as an opt-in flag ('Print events to stdout as JSONL'), proving that JSONL is NOT the default output mode. Neither `codex_new_session_args` (lines 1316-1339) nor `codex_resume_args` (lines 1343-1369) passes `--json`. The comment at lines 869-875 claiming 'Codex already outputs a full NDJSON event stream to stdout which we capture' is therefore factually unsupported. The planner and reviewer 1 cite `extract_codex_usage_from_stdout()` and its tests as evidence that NDJSON is emitted by default, but this reasoning is flawed: the tests at lines 4014-4054 use hardcoded synthetic byte strings, not actual CLI output — they prove the parser can handle NDJSON if present, not that the CLI emits it. Reviewer 2 correctly identified this gap: the CLI's own help text is authoritative on its output behavior, and it clearly indicates `--json` must be explicitly passed to get JSONL events. The adapter should either pass `--json` to Codex or use another verified diagnostic mechanism before treating Codex diagnostics as handled.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 8
+}

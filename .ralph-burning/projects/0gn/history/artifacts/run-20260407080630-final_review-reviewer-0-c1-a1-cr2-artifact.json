@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T08:33:57.336521764Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe changes are well-structured and address the stated goals: runtime log now includes failure_class and error details, raw stderr is captured and included in schema validation error messages, --verbose is conditionally enabled on retries, and stderr in error messages is truncated to prevent log bloat. Tests cover the new behaviors (stderr in JSON parse errors, verbose flag on retry vs first attempt). One inconsistency: hardcoded 200-byte stderr limit in the Claude response parsing paths (lines 154, 201) diverges from the 512-byte STDERR_DETAIL_LIMIT constant used in exit-failure paths.\n\n## Amendments\n\n1. In `src/adapters/process_backend.rs` lines 154 and 201, the stderr tail truncation uses a hardcoded limit of `200` bytes, while the exit-failure code paths at lines 1506 and 1544 use the `STDERR_DETAIL_LIMIT` constant (512 bytes). The schema-validation error paths should use `STDERR_DETAIL_LIMIT` instead of the hardcoded `200` so that stderr truncation is consistent across all failure paths. Currently, envelope/result parse failures show at most 200 bytes of stderr — less than half what transport failures show — which undermines the diagnostic goal of the change.\n   Rationale: The whole point of this change is improving failure diagnostics. Having inconsistent truncation limits between code paths means the most actionable errors (schema validation failures from invalid JSON) get the least stderr context. Using the shared constant eliminates a maintenance hazard and gives operators the same diagnostic quality everywhere.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

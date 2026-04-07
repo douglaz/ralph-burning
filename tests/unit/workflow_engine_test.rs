@@ -3295,6 +3295,77 @@ async fn retry_exhaustion_transitions_run_to_failed_state() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn stage_failed_runtime_log_includes_failure_class_and_error_details() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "runtime-log-diag");
+
+    // Fail implementation once then succeed — the first failure should
+    // produce a stage_failed entry in the runtime log with failure_class
+    // and the propagated error details.
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_transient_failure(StageId::Implementation, 1),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    // The run should succeed (transient failure retried successfully).
+    assert!(result.is_ok(), "{result:?}");
+
+    // Read the runtime log and find stage_failed entries.
+    let runtime_log_path =
+        project_root(base_dir, "runtime-log-diag").join("runtime/logs/run.ndjson");
+    let runtime_logs = fs::read_to_string(&runtime_log_path)
+        .expect("runtime log should exist after a run with failures");
+
+    let stage_failed_lines: Vec<&str> = runtime_logs
+        .lines()
+        .filter(|line| line.contains("stage_failed:"))
+        .collect();
+    assert!(
+        !stage_failed_lines.is_empty(),
+        "runtime log should contain at least one stage_failed entry"
+    );
+
+    let first_failed = stage_failed_lines[0];
+    assert!(
+        first_failed.contains("failure_class="),
+        "stage_failed entry should include failure_class=: {first_failed}"
+    );
+    assert!(
+        first_failed.contains("transport_failure"),
+        "failure_class should be transport_failure for stub transient failures: {first_failed}"
+    );
+    assert!(
+        first_failed.contains("error="),
+        "stage_failed entry should include error=: {first_failed}"
+    );
+    assert!(
+        first_failed.contains("stub adapter configured to fail"),
+        "error should contain the stub adapter's failure detail: {first_failed}"
+    );
+    assert!(
+        first_failed.contains("invocation_id="),
+        "stage_failed entry should include invocation_id=: {first_failed}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn retry_success_on_second_attempt_completes_run() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();

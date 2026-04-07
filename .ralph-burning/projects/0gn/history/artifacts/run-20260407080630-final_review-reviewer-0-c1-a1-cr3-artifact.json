@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T08:51:03.974993199Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all changes in process_backend.rs (228 lines) and engine.rs (6 lines). The implementation is solid: runtime log now includes failure_class and error details; stderr is truncated to 512 bytes via truncate_str_tail to prevent log bloat; --verbose is correctly gated behind attempt_number > 1; internal retry bumps attempt_number; new tests cover all five scenarios and all 590 tests pass. The truncate_str_tail function handles UTF-8 boundaries correctly. No bugs, no safety issues. Two minor items worth noting but not blocking.\n\n## Amendments\n\n1. In engine.rs:5066, the `error` value (AppError Display) is interpolated directly into the runtime log message string without structured field separation. If the error contains an '=' character (possible from stderr content), downstream log parsers using key=value extraction will mis-parse the line. Consider either (a) quoting the error value (e.g., `error={error:?}` to get a quoted Debug representation), or (b) moving failure_class and error into a separate structured RuntimeLogEntry with dedicated fields rather than embedding them in the free-text message.\n   Rationale: The existing fields (stage, cycle, attempt, retry) are simple tokens that never contain '=', so key=value parsing works today. But the newly-added `error=<full error details with stderr_tail>` can contain arbitrary text including '=' signs, which will break naive key=value log parsers. Using Debug formatting ({error:?}) would at minimum quote the value and escape special characters.\n2. The `stdout_error` value from `extract_stdout_error()` is included without truncation in the `detail` string at process_backend.rs:1513 and :1553. While `stderr_tail` is bounded to STDERR_DETAIL_LIMIT (512 bytes), `stdout_error` can be arbitrarily large if the `result` or `errors[]` fields in the JSON envelope are long. Apply `truncate_str` to `stdout_error` as well for consistency, e.g., `truncate_str(&out, STDERR_DETAIL_LIMIT)`.\n   Rationale: The explicit goal of this change is to prevent large payloads from bloating the runtime log. stderr is carefully truncated, but stdout_error passes through unbounded. In practice the error envelope fields are short, but the same defensive bound should apply since this is a backend-controlled string.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

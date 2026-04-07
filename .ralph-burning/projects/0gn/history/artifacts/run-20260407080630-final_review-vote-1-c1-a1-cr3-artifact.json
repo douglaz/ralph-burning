@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407080630-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T09:04:03.072587840Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments identify legitimate robustness issues in backend failure diagnostics or logging. The two stdout_error amendments describe the same real unbounded-data path and are both acceptable on their own merits; the other two call out genuine formatting/diagnostic consistency problems.\n\n## Votes\n\n- `fr-3-40a97b65`: Accept\n  `RuntimeLogEntry` only stores a free-text `message`, and `engine.rs` formats that message as pseudo-structured `key=value` text while interpolating `error` via `Display` with no escaping or field separation. Because `error` originates from backend details and can contain spaces, `=` characters, or other delimiter-like content, the resulting message is not robustly machine-parseable. Quoting the value or promoting these pieces into structured fields would be a sound hardening change.\n- `fr-3-d77c0771`: Accept\n  At `process_backend.rs:1513` and `:1553`, `stdout_error` is appended to the failure detail with no truncation, while stderr is deliberately capped via `STDERR_DETAIL_LIMIT`. `extract_stdout_error()` can concatenate arbitrarily long `result`, `errors[]`, and `subtype` strings from the JSON envelope, so this is a real unbounded-detail bug. Truncating `stdout_error` to the same bound is the correct fix.\n- `fr-3-3b670923`: Accept\n  This is the same underlying defect as `fr-3-d77c0771`, but the amendment correctly traces the impact further: the unbounded `stdout_error` is copied into `InvocationFailed` details and then logged verbatim into `runtime/logs/run.ndjson` by `engine.rs`. That means a single oversized backend error can bloat runtime logs and potentially echo large prompt-derived content. The proposed truncation or artifact-pointer approach is technically sound.\n- `fr-3-e4568ca3`: Accept\n  The cited empty-result and codex-last-message-file failure branches are materially less diagnostic than adjacent failure paths. They omit stderr context and/or raw length metadata that neighboring invalid-JSON branches already include, and `engine.rs` only forwards `error.to_string()` into the runtime log. As a result, these branches produce noticeably weaker `stage_failed` diagnostics. Adding bounded stderr/length context, or at least a failed-artifact reference, is a valid robustness improvement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

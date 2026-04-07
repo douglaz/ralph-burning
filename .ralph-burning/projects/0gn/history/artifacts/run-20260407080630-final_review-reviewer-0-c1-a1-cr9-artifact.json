@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr9-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T11:17:17.958268225Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe changes are well-implemented and achieve all four acceptance criteria. The runtime log now includes failure_class and error message, raw backend output is preserved in error messages via bounded stdout_tail/stderr_tail/result_tail fields, Claude CLI --verbose is gated behind retry attempts (attempt_number > 1), and the Codex investigation is documented with a rationale for not adding a verbose flag. All 7 new unit tests pass. The truncation via STDERR_DETAIL_LIMIT (512 bytes) is a good safety measure against log bloat. The stale-session retry path correctly adds --verbose only when build_command hasn't already added it. No real bugs or safety issues found.\n\n## Amendments\n\n1. In the stale-session retry path (process_backend.rs ~line 1505), the condition `fresh_request.attempt_number <= 1` is checked to decide whether to push --verbose. However, `fresh_request` is a clone of `request` — its `attempt_number` is whatever the caller set, not necessarily related to whether build_command already added --verbose. If the caller ever sets attempt_number=0 (or another unexpected value), the condition could misbehave. Consider checking `!fresh_prepared.args().contains(&\"--verbose\".to_owned())` directly instead, which is the actual invariant being guarded.\n   Rationale: The current code relies on the assumption that attempt_number > 1 is the only condition under which build_command adds --verbose. This coupling between build_command's internal logic and the stale-session retry path is fragile — if build_command's logic changes (e.g., adding --verbose based on a config flag), the deduplication check silently breaks and --verbose gets added twice.\n2. The error message in the 'backend exhausted' path (process_backend.rs ~line 194) truncates `error_text` using `truncate_str` (head truncation) with `STDERR_DETAIL_LIMIT`, but the variable name `STDERR_DETAIL_LIMIT` is misleading since it's being applied to stdout-derived error text, not stderr. Consider renaming the constant to something more general like `ERROR_DETAIL_LIMIT` or `DIAGNOSTIC_DETAIL_LIMIT` to avoid confusion when reading the code.\n   Rationale: Minor maintainability concern — the constant is used in ~21 places for truncating stderr, stdout, result text, and message text. The name 'STDERR_DETAIL_LIMIT' only describes one of those uses, which could mislead future contributors.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 9
+}

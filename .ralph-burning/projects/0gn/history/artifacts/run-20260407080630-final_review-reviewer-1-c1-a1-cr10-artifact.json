@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T11:58:24.580582429Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch against `origin/master`, read the changed engine/process-backend code, checked local CLI help, and spot-checked the new process-backend tests. I found two substantive issues: Claude debug capture is still not enabled even though the CLI exposes a usable debug-file mechanism, and the new preserved `failed.raw` artifacts are not reliably discoverable because `stage_failed` logs omit the invocation identifier/path.\n\n## Amendments\n\n1. `src/adapters/process_backend.rs:821-848` still launches Claude with the same `-p --output-format json ... --json-schema` flags as before, and `src/adapters/process_backend.rs:850-860` now documents that 'neither CLI has a usable verbose/debug flag'. That assumption is wrong for Claude: the installed CLI exposes `--debug`, `--debug-file`, and `--verbose`, and `--debug-file` would let us capture extra diagnostics without changing the JSON payload on stdout. As written, Claude retries still run with no additional CLI diagnostics, so the branch does not actually implement the requested 'enable Claude CLI debug/verbose output when available' behavior.\n   Rationale: This is a direct acceptance-gap in the main user-facing fix: transient Claude failures will still have the same limited diagnostics as before, despite a non-invasive debug-file path being available.\n2. `src/adapters/process_backend.rs:100-132` preserves raw failure output as `runtime/failed/<invocation_id>.failed.raw`, but `src/contexts/workflow_composition/engine.rs:5060-5075` and `src/contexts/project_run_record/journal.rs:213-236` never log the `invocation_id` or failed-raw path. The artifact name also includes completion round via `history_record_base_id` in `src/contexts/workflow_composition/engine.rs:631-649`, so stage/cycle/attempt alone are not enough to identify the right file after a completion-round restart. Please emit the invocation id (or the exact failed artifact path) with `stage_failed`; otherwise the preserved raw output is often not discoverable when operators need it.\n   Rationale: The code now writes useful failure artifacts, but the log/journal metadata is insufficient to map a failure event back to the correct artifact in later completion rounds, which undercuts the whole diagnostic workflow.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 10
+}

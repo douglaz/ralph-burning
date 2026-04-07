@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T08:40:02.288331150Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the implementation diff against `c024cabc` and read the modified `engine.rs` and `process_backend.rs` sections end-to-end. I found three correctness gaps: the runtime log still truncates enriched errors, the non-zero-exit path still omits response-length data, and the internal Claude stale-session retry bypasses the new verbose flag.\n\n## Amendments\n\n1. Stop truncating the `stage_failed` runtime-log error to 500 bytes in `src/contexts/workflow_composition/engine.rs:5059-5075`, or write the full error into a separate runtime-log field. `ProcessBackendAdapter` now keeps up to 512 bytes of stderr detail for failed exits in `src/adapters/process_backend.rs:1501-1555` and `src/adapters/process_backend.rs:1851-1856`, but the engine truncates the entire `AppError` string before writing `run.ndjson`, so the newly added diagnostics are still cut off in the place operators are supposed to read them.\n   Rationale: This defeats the main diagnostic goal of the bead: long stderr tails never survive into `runtime/logs/run.ndjson`, so operators still have to cross-reference other artifacts for the full failure context.\n2. Add raw output sizes to the non-zero-exit error details built in `src/adapters/process_backend.rs:1507-1555`. The new runtime-log message in `src/contexts/workflow_composition/engine.rs:5068-5075` relies entirely on `error.to_string()`, but the ordinary CLI failure path still logs only a stderr/stdout excerpt and omits `stdout_len`/`stderr_len` (or an equivalent raw response length).\n   Rationale: The acceptance criteria require `stage_failed` runtime-log entries to include the raw response length, and that is still missing for the exact transient CLI failures this change is meant to diagnose.\n3. Propagate Claude verbosity to the built-in stale-session retry path. `build_command()` only appends `--verbose` when `request.attempt_number > 1` in `src/adapters/process_backend.rs:794-800`, but the retry-without-resume branch in `src/adapters/process_backend.rs:1422-1435` clones the original request without bumping `attempt_number` before rebuilding the command. A first-attempt resume failure therefore performs its internal retry without any extra CLI diagnostics.\n   Rationale: One of the most important retry flows still runs without verbose Claude output, so the new diagnostics remain missing on that path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

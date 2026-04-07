@@ -150,10 +150,18 @@ impl PreparedCommand {
                     Ok(val) => val,
                     Err(error) => {
                         self.cleanup_failed_invocation(request, &output).await;
+                        let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
+                        let stderr_tail = truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
+                        let stdout_tail = truncate_str_tail(&stdout_text, STDERR_DETAIL_LIMIT);
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
-                            format!("invalid Claude envelope JSON: {error}"),
+                            format!(
+                                "invalid Claude envelope JSON: {error} \
+                                 (stdout_len: {}, stdout_tail: {stdout_tail:?}, \
+                                 stderr_tail: {stderr_tail:?})",
+                                output.stdout.len(),
+                            ),
                         ));
                     }
                 };
@@ -170,12 +178,18 @@ impl PreparedCommand {
                     let error_text = extract_stdout_error(&output.stdout).unwrap_or_default();
                     if is_backend_exhausted(&error_text, "") {
                         self.cleanup_failed_invocation(request, &output).await;
+                        let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
+                        let stderr_tail = truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::BackendExhausted,
                             format!(
-                                "backend exhausted (exit 0 with is_error envelope): {}",
-                                truncate_str(&error_text, 200),
+                                "backend exhausted (exit 0 with is_error envelope): {} \
+                                 (stdout_len: {}, stderr_len: {}, \
+                                 stderr_tail: {stderr_tail:?})",
+                                truncate_str(&error_text, STDERR_DETAIL_LIMIT),
+                                output.stdout.len(),
+                                output.stderr.len(),
                             ),
                         ));
                     }
@@ -191,14 +205,20 @@ impl PreparedCommand {
                         Ok(val) => unwrap_claude_structured_output_transport_payload(val),
                         Err(error) => {
                             self.cleanup_failed_invocation(request, &output).await;
+                            let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
+                            let stderr_tail = truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
+                            let result_tail =
+                                truncate_str_tail(&envelope.result, STDERR_DETAIL_LIMIT);
                             return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
                                 format!(
                                     "invalid Claude result JSON: {error} \
-                                 (contract: {}, result_len: {})",
+                                 (contract: {}, result_len: {}, stdout_len: {}, \
+                                 result_tail: {result_tail:?}, stderr_tail: {stderr_tail:?})",
                                     request.contract.label(),
                                     envelope.result.len(),
+                                    output.stdout.len(),
                                 ),
                             ));
                         }
@@ -216,14 +236,20 @@ impl PreparedCommand {
                         Some(val) => unwrap_claude_structured_output_transport_payload(val),
                         None => {
                             self.cleanup_failed_invocation(request, &output).await;
+                            let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
+                            let stderr_tail = truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
+                            let stdout_tail = truncate_str_tail(&stdout_text, STDERR_DETAIL_LIMIT);
                             return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
                                 format!(
                                     "Claude returned empty result with no structured_output \
-                                     (contract: {}, stdout_len: {}, session_policy: {:?})",
+                                     (contract: {}, stdout_len: {}, stderr_len: {}, \
+                                     session_policy: {:?}, stdout_tail: {stdout_tail:?}, \
+                                     stderr_tail: {stderr_tail:?})",
                                     request.contract.label(),
                                     output.stdout.len(),
+                                    output.stderr.len(),
                                     request.session_policy,
                                 ),
                             ));
@@ -289,10 +315,24 @@ impl PreparedCommand {
                             Ok(value) => value,
                             Err(error) => {
                                 self.cleanup_failed_invocation(request, &output).await;
+                                let stderr_text =
+                                    String::from_utf8_lossy(&output.stderr).into_owned();
+                                let stderr_tail =
+                                    truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
+                                let message_tail =
+                                    truncate_str_tail(&last_message_text, STDERR_DETAIL_LIMIT);
                                 return Err(ProcessBackendAdapter::invocation_failed(
                                     request,
                                     FailureClass::SchemaValidationFailure,
-                                    format!("invalid Codex last-message JSON: {error}"),
+                                    format!(
+                                        "invalid Codex last-message JSON: {error} \
+                                         (message_len: {}, stdout_len: {}, stderr_len: {}, \
+                                         message_tail: {message_tail:?}, \
+                                         stderr_tail: {stderr_tail:?})",
+                                        last_message_text.len(),
+                                        output.stdout.len(),
+                                        output.stderr.len(),
+                                    ),
                                 ));
                             }
                         }
@@ -302,11 +342,23 @@ impl PreparedCommand {
                             Ok(value) => value,
                             Err(stdout_error) => {
                                 self.cleanup_failed_invocation(request, &output).await;
+                                let stderr_text =
+                                    String::from_utf8_lossy(&output.stderr).into_owned();
+                                let stderr_tail =
+                                    truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
+                                let stdout_tail =
+                                    truncate_str_tail(&stdout_text, STDERR_DETAIL_LIMIT);
                                 return Err(ProcessBackendAdapter::invocation_failed(
                                     request,
                                     FailureClass::TransportFailure,
                                     format!(
-                                        "failed to read codex last-message file: {error}; stdout fallback was not valid JSON: {stdout_error}"
+                                        "failed to read codex last-message file: {error}; \
+                                         stdout fallback was not valid JSON: {stdout_error} \
+                                         (stdout_len: {}, stderr_len: {}, \
+                                         stdout_tail: {stdout_tail:?}, \
+                                         stderr_tail: {stderr_tail:?})",
+                                        output.stdout.len(),
+                                        output.stderr.len(),
                                     ),
                                 ));
                             }
@@ -314,10 +366,18 @@ impl PreparedCommand {
                     }
                     Err(error) => {
                         self.cleanup_failed_invocation(request, &output).await;
+                        let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
+                        let stderr_tail = truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::TransportFailure,
-                            format!("failed to read codex last-message file: {error}"),
+                            format!(
+                                "failed to read codex last-message file: {error} \
+                                 (stdout_len: {}, stderr_len: {}, \
+                                 stderr_tail: {stderr_tail:?})",
+                                output.stdout.len(),
+                                output.stderr.len(),
+                            ),
                         ));
                     }
                 };
@@ -788,6 +848,17 @@ impl ProcessBackendAdapter {
                 })
             }
             BackendFamily::Codex => {
+                // Neither CLI has a usable verbose/debug flag for retry
+                // diagnostics: Claude's `--verbose` changes stdout from a
+                // single JSON envelope to a JSON array of event objects,
+                // breaking the response decoder; Codex's `--json` emits JSONL
+                // events to stdout, breaking the single-value fallback path
+                // when `--output-last-message` is missing.  Diagnostic context
+                // on failure comes from stderr (captured and bounded via
+                // STDERR_DETAIL_LIMIT), bounded stdout_tail/stderr_tail in
+                // error messages, and the full raw output preserved in
+                // runtime/failed/<id>.failed.raw.  (Investigated 2026-04-07.)
+
                 // Resolve the binary before writing temp files so that a
                 // missing binary does not leave orphaned schema artifacts.
                 let binary = self.resolve_binary("codex")?;
@@ -1471,18 +1542,37 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                         fresh_prepared
                             .cleanup_failed_invocation(&fresh_request, &fresh_output)
                             .await;
+                        // Truncate stderr to a bounded tail to avoid
+                        // bloating the error message (and thus runtime log)
+                        // with large verbose/prompt-echo payloads.  The full
+                        // output is preserved in runtime/failed/<id>.failed.raw.
+                        let fresh_stderr_tail =
+                            truncate_str_tail(&fresh_stderr, STDERR_DETAIL_LIMIT);
+                        let fresh_stdout_text = String::from_utf8_lossy(&fresh_output.stdout);
+                        let fresh_stdout_tail =
+                            truncate_str_tail(&fresh_stdout_text, STDERR_DETAIL_LIMIT);
                         let detail = match (fresh_stderr.is_empty(), fresh_stdout_error) {
-                            (false, Some(out)) => format!(": {fresh_stderr}; stdout error: {out}"),
-                            (false, None) => format!(": {fresh_stderr}"),
-                            (true, Some(out)) => format!(": {out}"),
+                            (false, Some(out)) => {
+                                let out = truncate_str(&out, STDERR_DETAIL_LIMIT);
+                                format!(": {fresh_stderr_tail}; stdout error: {out}")
+                            }
+                            (false, None) => format!(": {fresh_stderr_tail}"),
+                            (true, Some(out)) => {
+                                let out = truncate_str(&out, STDERR_DETAIL_LIMIT);
+                                format!(": {out}")
+                            }
                             (true, None) => String::new(),
                         };
                         return Err(Self::invocation_failed(
                             &fresh_request,
                             failure_class,
                             format!(
-                                "{} exited with code {code}{detail}",
+                                "{} exited with code {code}{detail} \
+                                 (stdout_len: {}, stderr_len: {}, \
+                                 stdout_tail: {fresh_stdout_tail})",
                                 fresh_prepared.binary().display(),
+                                fresh_output.stdout.len(),
+                                fresh_output.stderr.len(),
                             ),
                         ));
                     }
@@ -1503,18 +1593,34 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 let failure_class =
                     classify_exit_failure_with_output(status, stderr_for_class, stdout_for_class);
                 prepared.cleanup_failed_invocation(&request, &output).await;
+                // Truncate stderr to a bounded tail to avoid bloating
+                // the error message with large verbose/prompt-echo payloads.
+                // Full output is in runtime/failed/<id>.failed.raw.
+                let stderr_tail = truncate_str_tail(&stderr, STDERR_DETAIL_LIMIT);
+                let stdout_text = String::from_utf8_lossy(&output.stdout);
+                let stdout_tail = truncate_str_tail(&stdout_text, STDERR_DETAIL_LIMIT);
                 let detail = match (stderr.is_empty(), stdout_error) {
-                    (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
-                    (false, None) => format!(": {stderr}"),
-                    (true, Some(out)) => format!(": {out}"),
+                    (false, Some(out)) => {
+                        let out = truncate_str(&out, STDERR_DETAIL_LIMIT);
+                        format!(": {stderr_tail}; stdout error: {out}")
+                    }
+                    (false, None) => format!(": {stderr_tail}"),
+                    (true, Some(out)) => {
+                        let out = truncate_str(&out, STDERR_DETAIL_LIMIT);
+                        format!(": {out}")
+                    }
                     (true, None) => String::new(),
                 };
                 Err(Self::invocation_failed(
                     &request,
                     failure_class,
                     format!(
-                        "{} exited with code {code}{detail}",
+                        "{} exited with code {code}{detail} \
+                         (stdout_len: {}, stderr_len: {}, \
+                         stdout_tail: {stdout_tail})",
                         prepared.binary().display(),
+                        output.stdout.len(),
+                        output.stderr.len(),
                     ),
                 ))
             }
@@ -1808,6 +1914,13 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
 /// message lives at the end. Scanning only the tail avoids false
 /// positives from prompt echo content.
 pub(crate) const STDERR_EXHAUSTION_SCAN_LIMIT: usize = 4096;
+
+/// Maximum bytes of stderr tail to include in error detail messages
+/// that propagate into `InvocationFailed` (and thus into the runtime
+/// log).  This prevents large verbose/prompt-echo payloads from
+/// bloating `run.ndjson`.  The full output is always preserved in
+/// `runtime/failed/<invocation_id>.failed.raw`.
+const STDERR_DETAIL_LIMIT: usize = 512;
 
 /// Truncate a string to at most `max_bytes` bytes at a valid UTF-8
 /// character boundary.
@@ -3216,6 +3329,152 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finish_claude_invalid_envelope_includes_stdout_len_and_stderr() {
+        let output = ChildOutput {
+            status: ExitStatus::from_raw(0),
+            stdout: b"this is not json at all".to_vec(),
+            stderr: b"some diagnostic stderr output".to_vec(),
+        };
+
+        let prepared = PreparedCommand {
+            binary: "claude".into(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+            env_overrides: Vec::new(),
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("stdout_len:"),
+            "error should include stdout_len: {err}"
+        );
+        assert!(
+            err.contains("stdout_tail:"),
+            "error should include stdout_tail: {err}"
+        );
+        assert!(
+            err.contains("this is not json at all"),
+            "error should include stdout content: {err}"
+        );
+        assert!(
+            err.contains("stderr_tail:"),
+            "error should include stderr_tail: {err}"
+        );
+        assert!(
+            err.contains("some diagnostic stderr output"),
+            "error should include stderr content: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_claude_invalid_result_json_includes_stdout_len_and_stderr() {
+        let envelope = json!({
+            "result": "not valid json {{{",
+            "session_id": "sess-test-diag",
+            "structured_output": null
+        });
+        let stdout = envelope.to_string();
+        let output = ChildOutput {
+            status: ExitStatus::from_raw(0),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: b"verbose diagnostic info from cli".to_vec(),
+        };
+
+        let prepared = PreparedCommand {
+            binary: "claude".into(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+            env_overrides: Vec::new(),
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("result_len:"),
+            "error should include result_len: {err}"
+        );
+        assert!(
+            err.contains("stdout_len:"),
+            "error should include stdout_len: {err}"
+        );
+        assert!(
+            err.contains("result_tail:"),
+            "error should include result_tail: {err}"
+        );
+        assert!(
+            err.contains("not valid json"),
+            "error should include result content: {err}"
+        );
+        assert!(
+            err.contains("stderr_tail:"),
+            "error should include stderr_tail: {err}"
+        );
+        assert!(
+            err.contains("verbose diagnostic info"),
+            "error should include stderr content: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_claude_is_error_exhausted_includes_diagnostics() {
+        let envelope = json!({
+            "is_error": true,
+            "result": "request failed",
+            "errors": ["quota exceeded"],
+        });
+        let stdout = envelope.to_string();
+        let output = ChildOutput {
+            status: ExitStatus::from_raw(0),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: b"some verbose stderr".to_vec(),
+        };
+
+        let prepared = PreparedCommand {
+            binary: "claude".into(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+            env_overrides: Vec::new(),
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("stdout_len:"),
+            "error should include stdout_len: {err}"
+        );
+        assert!(
+            err.contains("stderr_len:"),
+            "error should include stderr_len: {err}"
+        );
+        assert!(
+            err.contains("stderr_tail:"),
+            "error should include stderr_tail: {err}"
+        );
+        assert!(
+            err.contains("some verbose stderr"),
+            "stderr_tail should contain the actual stderr content: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn finish_claude_structured_output_preferred() {
         // When structured_output is present, it should be used directly
         // regardless of result content.
@@ -3443,6 +3702,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finish_codex_invalid_last_message_includes_output_sizes() {
+        let project_dir = tempdir().unwrap();
+        let runtime_temp = project_dir.path().join("runtime/temp");
+        std::fs::create_dir_all(&runtime_temp).unwrap();
+
+        let schema_path = runtime_temp.join("test-inv-diag.schema.json");
+        let message_path = runtime_temp.join("test-inv-diag.last-message.json");
+        std::fs::write(&schema_path, "{\"type\":\"object\"}").unwrap();
+        std::fs::write(&message_path, "not valid json").unwrap();
+
+        let prepared = PreparedCommand {
+            binary: "codex".into(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Codex {
+                schema_path: schema_path.clone(),
+                message_path: message_path.clone(),
+                session_resuming: false,
+            },
+            env_overrides: Vec::new(),
+        };
+
+        let request = make_codex_test_request(project_dir.path().to_path_buf());
+        let output = ChildOutput {
+            status: ExitStatus::from_raw(0),
+            stdout: b"some stdout".to_vec(),
+            stderr: b"some stderr".to_vec(),
+        };
+
+        let result = prepared.finish(&request, output).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("stdout_len:"),
+            "error should include stdout_len: {err}"
+        );
+        assert!(
+            err.contains("stderr_len:"),
+            "error should include stderr_len: {err}"
+        );
+        assert!(
+            err.contains("message_tail:"),
+            "error should include message_tail: {err}"
+        );
+        assert!(
+            err.contains("stderr_tail:"),
+            "error should include stderr_tail: {err}"
+        );
+        assert!(
+            err.contains("message_len:"),
+            "error should include message_len: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn finish_codex_falls_back_to_stdout_json_when_last_message_is_missing() {
         let project_dir = tempdir().unwrap();
         let runtime_temp = project_dir.path().join("runtime/temp");
@@ -3474,6 +3788,54 @@ mod tests {
         assert!(!schema_path.exists());
         assert!(!message_path.exists());
         assert!(!project_dir.path().join("runtime/failed").exists());
+    }
+
+    #[tokio::test]
+    async fn finish_codex_stdout_fallback_invalid_includes_stdout_tail() {
+        let project_dir = tempdir().unwrap();
+        let runtime_temp = project_dir.path().join("runtime/temp");
+        std::fs::create_dir_all(&runtime_temp).unwrap();
+
+        let schema_path = runtime_temp.join("test-inv-sftail.schema.json");
+        let message_path = runtime_temp.join("test-inv-sftail.last-message.json");
+        std::fs::write(&schema_path, "{\"type\":\"object\"}").unwrap();
+        // Do NOT create message_path so read triggers NotFound → stdout fallback
+
+        let prepared = PreparedCommand {
+            binary: "codex".into(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Codex {
+                schema_path: schema_path.clone(),
+                message_path: message_path.clone(),
+                session_resuming: false,
+            },
+            env_overrides: Vec::new(),
+        };
+
+        let request = make_codex_test_request(project_dir.path().to_path_buf());
+        // stdout is not valid JSON, so the fallback parse also fails
+        let output = ChildOutput {
+            status: ExitStatus::from_raw(0),
+            stdout: b"bad stdout content here".to_vec(),
+            stderr: b"some codex stderr".to_vec(),
+        };
+
+        let result = prepared.finish(&request, output).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("stdout_tail:"),
+            "error should include stdout_tail: {err}"
+        );
+        assert!(
+            err.contains("bad stdout content here"),
+            "stdout_tail should contain the invalid content: {err}"
+        );
+        assert!(
+            err.contains("stderr_tail:"),
+            "error should include stderr_tail: {err}"
+        );
     }
 
     // ── Integration: build_command produces ref-free schemas ─────────────

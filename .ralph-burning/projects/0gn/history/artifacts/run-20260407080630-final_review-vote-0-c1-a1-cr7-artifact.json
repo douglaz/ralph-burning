@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-vote-0-c1-a1-cr7-artifact",
+  "payload_id": "run-20260407080630-final_review-vote-0-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T10:49:16.754899332Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll three amendments identify genuine issues. The log-quoting fix (fr-7-67648fea) addresses a real parse-safety concern in the structured log line. The Codex debug-flag documentation (fr-7-a3756e20) fills a gap left by an explicit bead requirement. The BackendExhausted diagnostics gap (fr-7-4ed3ba22) is clearly demonstrated by comparing adjacent error paths that include stdout_len/stderr_len while this one omits them.\n\n## Votes\n\n- `fr-7-67648fea`: Accept\n  Verified at engine.rs:5068 — error_display is interpolated with bare `error={}` into a key=value log line alongside other `key=value` pairs. Error messages from backend failures routinely contain spaces, equals signs, and colons (e.g. 'backend exhausted (exit 0 with is_error envelope): ...'), which makes downstream parsing unreliable. Using `{error_display:?}` (Debug format) adds surrounding quotes and escapes internal special chars, which is the minimal correct fix. The RuntimeLogEntry struct (model.rs:421-425) only has a `message: String` field with no structured metadata, so option (b) would require a schema change disproportionate to the issue. Agree with planner position.\n- `fr-7-a3756e20`: Accept\n  The Claude path (lines 833-845) has detailed comments explaining why --verbose is added on retries and what happens if removed in future versions. The Codex path (lines 862-917) has no analogous commentary and no retry-specific debug flag. Since the bead requirement explicitly asked to investigate Codex CLI debug flags, documenting the outcome — whether the flag exists or not — is a low-cost, high-value improvement that prevents re-investigation. This is consistent with the principle of preserving investigation outcomes in comments.\n- `fr-7-4ed3ba22`: Accept\n  Comparing the three error paths in the Claude response decoder confirms a clear inconsistency: (1) invalid envelope JSON (lines 155-169) includes stdout_len, stdout_tail, stderr_tail; (2) invalid result JSON (lines 210-221) includes result_len, stdout_len, result_tail, stderr_tail; (3) BackendExhausted from is_error envelope (lines 181-192) includes only a truncated error_text with no stdout_len, stderr_len, or tails. The existing test at line 3338 (finish_claude_invalid_envelope_includes_stdout_len_and_stderr) demonstrates the pattern expected for all error paths but no analogous test exists for the BackendExhausted path. Adding bounded diagnostics and a regression test maintains consistency and fulfills the requirement that runtime logs include raw response length/details for all failure modes.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 7
+}

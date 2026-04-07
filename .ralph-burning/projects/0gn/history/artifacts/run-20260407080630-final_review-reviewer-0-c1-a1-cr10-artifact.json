@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr10-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T11:49:57.308593070Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all changes across process_backend.rs, engine.rs, and workflow_engine_test.rs. The implementation correctly addresses the stated goals: (1) runtime log stage_failed entries now include failure_class and the full error string, (2) raw backend output (stdout/stderr tails and lengths) are included in all failure error messages across both Claude and Codex paths, (3) a well-documented investigation explains why --verbose/--debug flags aren't usable for either CLI. The truncate_str_tail helper is correct (UTF-8 boundary safe). The STDERR_DETAIL_LIMIT constant at 512 bytes provides reasonable bounded diagnostics. All error paths are covered consistently. Tests are thorough and verify the new diagnostic fields. No bugs or safety issues found. One minor observation below.\n\n## Amendments\n\n1. In the non-zero exit code error paths (around lines 1563-1572 and 1608-1618 of process_backend.rs), the `detail` string already contains the stderr_tail content, and then `(stdout_len: ..., stderr_len: ...)` is appended at the end. However, `stdout_tail` is not included in these non-zero exit paths, unlike the zero-exit-code paths which include both stdout_tail and stderr_tail. For consistency and diagnostics completeness, consider also including `stdout_tail` in the non-zero exit code error messages, since stdout may contain partial JSON or other diagnostic output even when the process exits with a non-zero code.\n   Rationale: The zero-exit-code finish() paths consistently include both stdout_tail and stderr_tail in error messages, but the non-zero exit code paths in execute() only include stderr_tail (via the `detail` match) plus stdout_len/stderr_len. If a CLI exits non-zero and stdout contains a partial error envelope or diagnostic output, that content is lost from the error message. This is a minor diagnostic gap, not a bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 10
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260407080630-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T08:27:55.713821982Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFour amendments identify concrete diagnostic or logging defects in the current implementation. One amendment is only a code-comment suggestion and does not warrant a required change.\n\n## Votes\n\n- `fr-1-77ae4890`: Accept\n  `build_command()` adds `--verbose` unconditionally to Claude invocations. Even without relying on the exact stderr volume Claude emits, that is a successful-path behavior change and expands captured stderr on every run, which conflicts with the stated requirement to leave successful invocations unchanged. Gating verbose diagnostics to retries or explicit opt-in is the safer design.\n- `fr-1-d391f9a1`: Accept\n  The engine writes `error.to_string()` directly into the runtime log with no truncation. Because `InvocationFailed` details can now include full stderr text, one failure can generate an oversized log entry. Truncating the runtime-log copy is a sound hardening change and does not prevent richer diagnostics from being preserved in dedicated failure artifacts.\n- `fr-1-74f3c1d2`: Reject\n  This proposes only a comment documenting that Codex currently lacks verbose/debug flags. That does not fix correctness, safety, or robustness, and comments about another tool's missing options are prone to staleness as the CLI evolves. If this needs to be encoded, a capability check or test would be more maintainable than a static comment.\n- `fr-1-26b82784`: Accept\n  The `invalid Claude result JSON` branch includes `contract`, `result_len`, and `stdout_len` but omits any stderr snippet, even though stderr is available there and is the most likely place for verbose diagnostic output. That leaves the main schema-failure path underdiagnosed compared with the adjacent invalid-envelope path. Adding a bounded stderr tail or failed-artifact reference is a real diagnostic improvement.\n- `fr-1-124f50d1`: Accept\n  The adapter currently embeds full child stderr into `InvocationFailed` details, and that error string is then propagated into operator-visible logs. With verbose mode enabled, this creates both log-bloat risk and prompt/context leakage risk. Bounding stderr in the structured error, or replacing it with a pointer to the preserved failed artifact, fixes the problem at the source rather than only at one logging sink.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

@@ -5016,6 +5016,9 @@ where
                     && !matches!(failure_class, FailureClass::Cancellation)
                     && !cancellation_token.is_cancelled();
 
+                let error_display = error.to_string();
+                let failed_invocation_id = history_record_base_id(run_id, stage_id, &cursor, 0);
+
                 *seq += 1;
                 let stage_failed = journal::stage_failed_event(
                     *seq,
@@ -5025,8 +5028,9 @@ where
                     cursor.cycle,
                     cursor.attempt,
                     failure_class,
-                    &error.to_string(),
+                    &error_display,
                     will_retry,
+                    &failed_invocation_id,
                 );
                 let stage_failed_line = journal::serialize_event(&stage_failed)?;
                 if let Err(append_error) =
@@ -5063,11 +5067,15 @@ where
                         level: LogLevel::Warn,
                         source: "engine".to_owned(),
                         message: format!(
-                            "stage_failed: {} cycle={} attempt={} retry={}",
+                            "stage_failed: {} cycle={} attempt={} retry={} failure_class={} \
+                             invocation_id={} error={:?}",
                             stage_id.as_str(),
                             cursor.cycle,
                             cursor.attempt,
-                            will_retry
+                            will_retry,
+                            failure_class.as_str(),
+                            failed_invocation_id,
+                            error_display,
                         ),
                     },
                 );
@@ -8092,6 +8100,7 @@ mod tests {
                     FailureClass::TransportFailure,
                     "transient failure 1",
                     true,
+                    "test-invocation",
                 ),
                 journal::stage_failed_event(
                     6,
@@ -8103,6 +8112,7 @@ mod tests {
                     FailureClass::TransportFailure,
                     "transient failure 2",
                     true,
+                    "test-invocation",
                 ),
                 journal::stage_failed_event(
                     7,
@@ -8114,6 +8124,7 @@ mod tests {
                     FailureClass::TransportFailure,
                     "transient failure 3",
                     true,
+                    "test-invocation",
                 ),
             ];
 
@@ -8192,6 +8203,7 @@ mod tests {
                     FailureClass::TransportFailure,
                     "transient 1",
                     true,
+                    "test-invocation",
                 ),
                 journal::stage_failed_event(
                     6,
@@ -8203,6 +8215,7 @@ mod tests {
                     FailureClass::TransportFailure,
                     "transient 2",
                     true,
+                    "test-invocation",
                 ),
                 journal::stage_failed_event(
                     7,
@@ -8214,6 +8227,7 @@ mod tests {
                     FailureClass::TransportFailure,
                     "transient 3",
                     true,
+                    "test-invocation",
                 ),
                 journal::stage_failed_event(
                     8,
@@ -8225,6 +8239,7 @@ mod tests {
                     FailureClass::TransportFailure,
                     "transient 4",
                     true,
+                    "test-invocation",
                 ),
                 // Terminal failure: will_retry=false (retries exhausted)
                 journal::stage_failed_event(
@@ -8237,6 +8252,7 @@ mod tests {
                     FailureClass::TransportFailure,
                     "retries exhausted",
                     false,
+                    "test-invocation",
                 ),
             ];
 
@@ -8271,6 +8287,7 @@ mod tests {
                     FailureClass::TransportFailure,
                     "fail 1",
                     true,
+                    "test-invocation",
                 ),
                 journal::stage_failed_event(
                     4,
@@ -8282,6 +8299,7 @@ mod tests {
                     FailureClass::TransportFailure,
                     "fail 2",
                     true,
+                    "test-invocation",
                 ),
                 // Planning eventually succeeds at attempt 3
                 journal::stage_completed_event(

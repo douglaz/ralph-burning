@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr8-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T10:57:45.082185155Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe changes are well-structured and achieve the goal of improving failure diagnostics. Error paths in process_backend.rs now consistently include stdout_len, stderr_len, and truncated tail content. The engine.rs runtime log now includes failure_class and error message. Claude CLI gets --verbose on retries. Tests cover the new diagnostic fields and --verbose injection. One minor bug found: duplicate --verbose flag on stale-session retries when attempt_number > 1.\n\n## Amendments\n\n1. In src/adapters/process_backend.rs around line 1493-1504, the stale-session retry path clones the original request (preserving attempt_number), calls build_command (which adds --verbose when attempt_number > 1), then unconditionally push_arg(\"--verbose\") again. When attempt_number > 1, --verbose appears twice in the CLI args. Guard the push_arg with a check: only add --verbose if build_command hasn't already added it (e.g., `if fresh_request.attempt_number <= 1 { fresh_prepared.push_arg(...) }`).\n   Rationale: While most CLIs silently ignore duplicate flags, this is an unintended double-insertion. If a future Claude CLI version treats duplicate --verbose differently (e.g., increases verbosity levels), the behavior would be surprising. The comment already explains the intent of not bumping attempt_number to avoid misrepresenting retry count, but doesn't account for build_command already inserting the flag.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 8
+}

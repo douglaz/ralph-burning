@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T10:47:38.680163519Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 1 correctness gap. Most of the diagnostic improvements look sound and the targeted tests I ran passed, but the zero-exit Claude `BackendExhausted` path still omits raw response length/details from the runtime log because that error string is forwarded verbatim by the engine.\n\n## Amendments\n\n1. At `src/adapters/process_backend.rs:181-191`, the Claude zero-exit `is_error`/`BackendExhausted` path still builds an `InvocationFailed` message without `stdout_len`/`stderr_len` or any bounded raw-output tail. `src/contexts/workflow_composition/engine.rs:5068-5074` only forwards `error_display` into the `stage_failed` runtime-log line, so this class of stage failure still does not satisfy the new requirement that runtime logs include the raw response length/details. Please add the same bounded diagnostics here and cover this path with a regression test.\n   Rationale: Operators will still have an observability hole for a real terminal failure mode: `run.ndjson` shows `failure_class=backend_exhausted`, but not the raw response length or output snippet that the bead explicitly requires.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 7
+}

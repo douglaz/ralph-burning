@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407080630-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260407080630-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T11:32:45.825366492Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 9/25\n\n## Accepted\n\n- `fr-9-261dbf8b`\n- `fr-9-bee17a59`\n\n## Rejected\n\n- `fr-9-12feb066`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-261dbf8b`\n\nIn the stale-session retry path (process_backend.rs ~line 1505), the condition `fresh_request.attempt_number <= 1` is checked to decide whether to push --verbose. However, `fresh_request` is a clone of `request` — its `attempt_number` is whatever the caller set, not necessarily related to whether build_command already added --verbose. If the caller ever sets attempt_number=0 (or another unexpected value), the condition could misbehave. Consider checking `!fresh_prepared.args().contains(&\"--verbose\".to_owned())` directly instead, which is the actual invariant being guarded.\n\n### `fr-9-bee17a59`\n\n`src/adapters/process_backend.rs:849-850` and `src/adapters/process_backend.rs:1505-1508` add `--verbose` to Claude retries, but the decoder still assumes stdout is the normal single-object Claude envelope (`src/adapters/process_backend.rs:153-171`). I verified against the installed Claude CLI that `claude -p --output-format json --verbose ...` emits a JSON array of event objects on stdout, not the usual result envelope. That means retried Claude failures now get turned into `invalid Claude envelope JSON` schema failures, and non-zero exits also lose their real error text because the retry path still relies on `extract_stdout_error()` (`src/adapters/process_backend.rs:1609-1637`, `src/adapters/process_backend.rs:1776-1795`), which only understands the non-verbose envelope shape. In practice this makes retryable Claude failures less diagnosable and can make the stale-session retry path fail deterministically.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260407080630-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T10:02:14.885101220Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll three amendments identify real robustness or regression-coverage gaps in the current implementation. The Claude retry path hard-codes a CLI flag without compatibility fallback, the Codex malformed-last-message diagnostic omits the size of the actual malformed payload, and the workflow engine’s new `stage_failed` runtime-log contract is not directly tested.\n\n## Votes\n\n- `fr-6-a06f523f`: Accept\n  The current Claude retry logic adds `--verbose` unconditionally in both normal retries and stale-session retries, and the resulting invocation error is returned directly if the CLI rejects that flag. That means the retry path can fail solely because of the diagnostic flag, which is a real robustness defect. Adding capability detection or a fallback retry without `--verbose` is a focused, low-risk fix.\n- `fr-6-e965ec60`: Accept\n  In the invalid Codex last-message JSON branch, the malformed input is `last_message_text`, but the emitted details only report `stdout_len` and `stderr_len`. `message_tail` helps, but without the total malformed-message length the diagnostics are still missing key context about truncation and payload size. Emitting `message_len` and asserting it in the regression test materially improves the intended failure reporting.\n- `fr-6-c30b94d1`: Accept\n  The engine now writes a specific `stage_failed` runtime-log message containing `failure_class=` and propagated error text, but existing tests do not verify that payload in `runtime/logs/run.ndjson`. Current coverage only checks unrelated warnings, cancellation side effects, or journal persistence, so this contract can regress silently. A direct regression test for the runtime-log entry is warranted and maintainable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 6
+}

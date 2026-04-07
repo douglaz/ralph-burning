@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T09:32:11.002295193Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the changes in src/adapters/process_backend.rs and src/contexts/workflow_composition/engine.rs, ran the targeted process_backend tests, and checked the local Claude/Codex CLI help output. The raw-output/error-detail improvements are mostly sound, but two gaps remain: one Codex JSON-fallback failure path still does not surface the malformed stdout in the runtime log, and the Claude retry flag appears to use an undocumented verbosity switch instead of the CLI’s documented debug mode.\n\n## Amendments\n\n1. src/adapters/process_backend.rs:333-349 still omits the actual Codex stdout content when `--output-last-message` is missing and the stdout fallback is not valid JSON. This branch only reports `stdout_len` and `stderr_tail`, so the `stage_failed` runtime log still lacks the malformed response body for one of the main Codex JSON-parse failure modes. Add a bounded `stdout_tail` here and cover it with a regression test next to the existing Codex diagnostics tests.\n   Rationale: The bead goal was to make runtime logs actionable without cross-referencing other files. On this path, operators still have to open `runtime/failed/*.failed.raw` to see what Codex actually returned.\n2. src/adapters/process_backend.rs:825-830 assumes Claude retry diagnostics come from `--verbose`, but the installed Claude CLI documents `--debug` / `--debug-file` as the diagnostic switches while `--verbose` is only a config override. Re-check the CLI contract and switch to the documented debug flag, or add an integration test proving that `--verbose` really produces extra failure detail in `-p --output-format json` mode.\n   Rationale: The current test coverage only proves that `--verbose` is appended to the argv. It does not prove that retries actually emit richer diagnostics, so the main acceptance criterion can still fail even though the unit tests pass.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}
