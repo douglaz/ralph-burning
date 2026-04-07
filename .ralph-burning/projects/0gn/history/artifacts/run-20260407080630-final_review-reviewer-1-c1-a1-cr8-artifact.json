@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T11:06:35.517565457Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound two correctness gaps in the new diagnostics work: Claude retries use `--verbose` instead of the CLI’s actual debug path, and the Codex path claims NDJSON diagnostics are already captured even though the command builders never enable `codex exec --json`. The runtime-log enrichment itself looks reasonable.\n\n## Amendments\n\n1. `src/adapters/process_backend.rs:839-850` and `src/adapters/process_backend.rs:1494-1504` add Claude retry diagnostics by appending `--verbose`, but the installed Claude CLI exposes its actual diagnostic channel separately (`--debug` / `--debug-file`). This change only flips normal verbose mode, so transient/schema failures are still likely to miss the richer CLI diagnostics the bead requires. Switch the retry path to the real debug facility and add a regression test for the exact flag/env combination used.\n   Rationale: The acceptance criteria call for actionable Claude failure diagnostics. Using the non-debug verbosity flag does not reliably satisfy that, and the new tests currently lock in the weaker behavior.\n2. `src/adapters/process_backend.rs:868-875` claims Codex already emits a full NDJSON event stream, but the command builders at `src/adapters/process_backend.rs:1316-1339` and `src/adapters/process_backend.rs:1343-1369` never pass `codex exec --json`. As written, Codex is still invoked in its default output mode, so this patch does not actually enable any richer Codex diagnostic stream for transient failures. Wire up the supported JSON/event output mode (or another real debug mechanism) before treating Codex diagnostics as handled.\n   Rationale: This is an internal contradiction in the implementation: the code relies on an NDJSON stream that it never enables. That leaves the Codex half of the bead effectively unimplemented.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 8
+}

@@ -1,0 +1,7 @@
+id = "0gn"
+name = "backend-error-diagnostics"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "2418584a6c6657a76e9c27bddd0db4080416ca88bebad11f2319b5903b561740"
+created_at = "2026-04-07T08:06:29.566116460Z"
+status_summary = "created"

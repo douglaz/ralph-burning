@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T08:59:27.758887528Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the diff against `origin/master`, read the changed `process_backend.rs` and `engine.rs` sections end-to-end, and ran `cargo test --lib process_backend -- --nocapture` (100 tests passed). I found 2 remaining robustness gaps in the new failure-diagnostics paths.\n\n## Amendments\n\n1. `src/adapters/process_backend.rs:1511-1516` and `src/adapters/process_backend.rs:1552-1556` still splice `stdout_error` into the `InvocationFailed` detail without any truncation, and `src/contexts/workflow_composition/engine.rs:5065-5072` now copies that detail verbatim into `runtime/logs/run.ndjson`. `extract_stdout_error()` at `src/adapters/process_backend.rs:1695-1724` can join arbitrary-length `result` / `errors[]` strings, so a single backend error can still bloat the runtime log or leak a large prompt echo even though stderr is capped. Truncate `stdout_error` to the same bound as `stderr_tail`, or replace it with a pointer to the preserved `runtime/failed/*.failed.raw` artifact.\n   Rationale: The new stderr cap does not actually bound the full runtime-log payload; stdout-side error text is still unbounded on non-zero exits.\n2. Two decoder failure paths still miss the new diagnostics entirely: `src/adapters/process_backend.rs:227-239` (`Claude returned empty result with no structured_output`) omits any stderr detail, and `src/adapters/process_backend.rs:334-340` (`failed to read codex last-message file`) omits `stdout_len` / `stderr_len`. Because `src/contexts/workflow_composition/engine.rs:5065-5072` only forwards `error.to_string()`, these branches still produce thin `stage_failed` runtime logs. They should attach the same bounded stderr/raw-length context, or at least the preserved failed-artifact path, that the neighboring invalid-JSON branches now include.\n   Rationale: The change set fixes the headline invalid-JSON cases, but operators still hit under-specified runtime logs on sibling failure modes in the same decoder logic.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

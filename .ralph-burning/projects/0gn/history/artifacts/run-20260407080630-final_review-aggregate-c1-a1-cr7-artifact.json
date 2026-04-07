@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407080630-final_review-aggregate-c1-a1-cr7-artifact",
+  "payload_id": "run-20260407080630-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T10:51:19.154523710Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 7/25\n\n## Accepted\n\n- `fr-7-67648fea`\n- `fr-7-a3756e20`\n- `fr-7-4ed3ba22`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-7-67648fea`\n\nIn src/contexts/workflow_composition/engine.rs around line 5068, the runtime log message embeds error_display with a bare `error={}` format. Since error_display can contain spaces, equals signs, and other characters, downstream log parsers that split on `=` or whitespace will mis-parse the message. Consider either (a) quoting the error value (e.g., `error={error_display:?}` using Debug format), or (b) emitting failure_class and a truncated error summary as separate structured fields in RuntimeLogEntry (if the struct supports it), rather than stuffing everything into a single message string.\n\n### `fr-7-a3756e20`\n\nAdd a comment in src/adapters/process_backend.rs (near the Codex build_command path) documenting the investigation outcome for Codex CLI debug flags. The bead requirement #4 explicitly asked to check whether Codex CLI has --verbose/--debug. If it doesn't have one, document that finding so future maintainers don't re-investigate. If it does, add the flag on retries analogous to the Claude path.\n\n### `fr-7-4ed3ba22`\n\nAt `src/adapters/process_backend.rs:181-191`, the Claude zero-exit `is_error`/`BackendExhausted` path still builds an `InvocationFailed` message without `stdout_len`/`stderr_len` or any bounded raw-output tail. `src/contexts/workflow_composition/engine.rs:5068-5074` only forwards `error_display` into the `stage_failed` runtime-log line, so this class of stage failure still does not satisfy the new requirement that runtime logs include the raw response length/details. Please add the same bounded diagnostics here and cover this path with a regression test.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}

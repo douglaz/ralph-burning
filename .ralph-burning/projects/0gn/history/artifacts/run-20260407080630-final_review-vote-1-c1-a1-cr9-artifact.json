@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260407080630-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T11:32:45.810607089Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccept the Claude `--verbose` retry regression and the smaller invariant-cleanup amendment; reject the constant-rename amendment as cosmetic only.\n\n## Votes\n\n- `fr-9-261dbf8b`: Accept\n  This is a worthwhile robustness improvement. The stale-session retry is trying to avoid double-inserting `--verbose`, and checking the prepared arg list expresses that invariant directly instead of duplicating `build_command`'s current `attempt_number > 1` rule. The current code works today because both sites happen to key off the same field, but the direct args check is less coupled and easier to keep correct if the verbose policy changes.\n- `fr-9-12feb066`: Reject\n  The name is somewhat imprecise, but this is a cosmetic readability issue rather than a correctness, safety, or robustness defect. The constant is already functioning as a general bound on diagnostic snippets across the file, so a rename would be mechanical churn without behavioral benefit.\n- `fr-9-bee17a59`: Accept\n  This is a real correctness bug. The Claude decoder in `finish()` and the `extract_stdout_error()` helper both assume stdout is a single JSON object envelope; neither path handles a JSON array root. If `claude -p --output-format json --verbose` emits an event array on stdout, then verbose retries can fail schema parsing even when the underlying call succeeded, and failed retries lose their structured stdout error details. That makes the retry path less diagnosable and can deterministically break stale-session recovery.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 9
+}

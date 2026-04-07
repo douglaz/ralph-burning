@@ -201,6 +201,7 @@ fn stage_failed_event_builder_serializes_failure_metadata() {
         FailureClass::TransportFailure,
         "temporary network issue",
         true,
+        "run-1-implementation-c1-a2-cr1",
     );
 
     assert_eq!(event.event_type, JournalEventType::StageFailed);
@@ -208,6 +209,10 @@ fn stage_failed_event_builder_serializes_failure_metadata() {
     assert_eq!(event.details["attempt"], 2);
     assert_eq!(event.details["failure_class"], "transport_failure");
     assert_eq!(event.details["will_retry"], true);
+    assert_eq!(
+        event.details["invocation_id"],
+        "run-1-implementation-c1-a2-cr1"
+    );
 }
 
 #[test]

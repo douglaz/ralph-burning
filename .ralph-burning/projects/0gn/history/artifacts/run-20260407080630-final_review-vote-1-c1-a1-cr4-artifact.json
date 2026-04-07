@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260407080630-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T09:20:08.434155382Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccepted 3 of 5 amendments. The duplicate `to_string()` cleanup, Codex `stderr_tail` parity, and adding a breadcrumb/snippet for malformed backend payloads in `run.ndjson` are technically sound improvements. Rejected the session-retry comment request because that comment already exists, and rejected enabling Claude `--verbose` on the first attempt because the current retry-only gating is an explicit, tested trade-off that avoids changing successful invocations.\n\n## Votes\n\n- `fr-4-9d739941`: Accept\n  `engine.rs` does call `error.to_string()` twice for the same failure path: once for the journal event and again for the runtime log. Hoisting a single `error_display` string and reusing it is correct, low risk, and slightly improves both efficiency and consistency of the emitted message. This is a minor issue, but the fix is clean.\n- `fr-4-e72c5a7b`: Accept\n  The Codex schema/transport failure branches currently report only `stdout_len` and `stderr_len`, while the analogous Claude branches include a bounded `stderr_tail`. That asymmetry materially reduces diagnosability for Codex failures, especially when the real parse or CLI error is only present on stderr. Adding a bounded `stderr_tail` is consistent with existing Claude handling and preserves the same safety bound.\n- `fr-4-5b5af769`: Reject\n  The requested documentation is already present. The code beside the internal retry explicitly says the attempt number is bumped so `build_command` enables `--verbose` on that retry and explains the diagnostic intent. Since the comment already documents the surprising behavior the amendment identifies, there is no remaining defect here.\n- `fr-4-c2004316`: Accept\n  Failure output is preserved under `runtime/failed`, but the `stage_failed` runtime log still does not include either a bounded malformed payload snippet or a direct path to the preserved artifact. In the invalid-JSON case, that leaves `run.ndjson` non-actionable on its own because the operator has no direct breadcrumb to the stored raw output. Adding a snippet or at least the failed-artifact path would materially improve operability without changing core behavior.\n- `fr-4-f750ca5a`: Reject\n  Only enabling Claude `--verbose` on retries is an intentional design choice, not a latent correctness bug. The code documents that first-attempt verbose is skipped to avoid changing behavior and inflating stderr on successful runs, and there are tests asserting that policy. The first failed attempt still preserves stderr, lengths, and raw output artifacts; always enabling verbose would trade a real success-path behavior change for incremental diagnostic gain on transient failures.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

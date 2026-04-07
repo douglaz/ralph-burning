@@ -220,6 +220,7 @@ pub fn stage_failed_event(
     failure_class: FailureClass,
     message: &str,
     will_retry: bool,
+    invocation_id: &str,
 ) -> JournalEvent {
     JournalEvent {
         sequence,
@@ -233,6 +234,7 @@ pub fn stage_failed_event(
             "failure_class": failure_class,
             "message": message,
             "will_retry": will_retry,
+            "invocation_id": invocation_id,
         }),
     }
 }

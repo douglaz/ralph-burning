@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T09:48:48.085716538Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all code changes across process_backend.rs and engine.rs. The implementation is solid: error messages now include truncated stdout/stderr tails (bounded by STDERR_DETAIL_LIMIT=512), the engine runtime log includes failure_class and error details, --verbose is enabled for Claude CLI on retries, and full raw output is preserved in runtime/failed/. All 591 tests pass including 6 new tests covering the diagnostic enhancements. Two minor concerns: (1) --verbose is assumed valid for Claude CLI without runtime validation — if Claude CLI ever rejects it, retries will fail harder instead of producing diagnostics; (2) the Codex CLI receives no equivalent verbose/debug flag, which the spec called out for investigation.\n\n## Amendments\n\n1. In build_command (around line 836) and the stale-session retry path (around line 1477-1478), the code unconditionally passes --verbose to Claude CLI on retries. If the installed Claude CLI version does not support --verbose (or changes its behavior), this will cause the retry invocation itself to fail with an unrecognized-flag error, making retries strictly worse. Guard this by first probing the Claude CLI version/capabilities, or catch and log unrecognized-flag errors from the retry so the retry can fall back to running without --verbose.\n   Rationale: The --verbose flag is not validated at runtime. If the Claude CLI binary installed on the operator's machine doesn't support it (older version, custom build, or future CLI change), every retry attempt will hard-fail on the flag itself rather than producing the richer diagnostics intended. Since this only affects retries (already a degraded path), the blast radius is limited but the failure mode is counter-productive — turning a potentially-recoverable retry into a guaranteed failure.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 6
+}

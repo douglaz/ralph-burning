@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T09:58:49.491235063Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the diff against master in src/adapters/process_backend.rs and src/contexts/workflow_composition/engine.rs, checked the local Claude/Codex CLI help output, and ran `cargo test process_backend` successfully. The diagnostics work is mostly sound, but one Codex parse-failure path still omits the actual response length, and the new engine-side runtime-log contract is not covered by a regression test.\n\n## Amendments\n\n1. Include the malformed Codex last-message length in the schema-validation error details. In src/adapters/process_backend.rs:310-333, the `invalid Codex last-message JSON` branch now records `message_tail`, but it still only reports `stdout_len` and `stderr_len`. For this failure mode the raw response is `last_message_text`, not stdout, so the `stage_failed` runtime log still lacks the raw-response length for one of the main Codex parse failures the bead is supposed to diagnose. Extend this path and its regression test at src/adapters/process_backend.rs:3678-3725 to emit `message_len` (or equivalent) alongside `message_tail`.\n   Rationale: Without the last-message size, operators still cannot tell from `run.ndjson` how large the malformed Codex response was; `stdout_len` is unrelated when `--output-last-message` exists.\n2. Add a workflow-engine regression test that reads `runtime/logs/run.ndjson` after a failing stage and asserts the `stage_failed` entry includes `failure_class=` plus the propagated backend error details. The new runtime-log contract lives in src/contexts/workflow_composition/engine.rs:5060-5076, but the existing workflow-engine coverage only checks unrelated runtime-log warnings at tests/unit/workflow_engine_test.rs:540-550 and failure/journal behavior at tests/unit/workflow_engine_test.rs:3165-3180 and tests/unit/workflow_engine_test.rs:3420-3428; it never verifies the new `stage_failed` payload itself.\n   Rationale: This change’s primary acceptance criterion is the enriched `stage_failed` runtime log. Right now that contract can regress silently because no test inspects the emitted log entry.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 6
+}

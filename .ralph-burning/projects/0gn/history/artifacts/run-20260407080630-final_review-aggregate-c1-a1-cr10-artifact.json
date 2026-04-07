@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407080630-final_review-aggregate-c1-a1-cr10-artifact",
+  "payload_id": "run-20260407080630-final_review-aggregate-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T12:04:21.955233032Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 10/25\n\n## Accepted\n\n- `fr-10-d01f144b`\n- `fr-10-e9d6d897`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-10-82a969fa`\n\n## Final Accepted Amendments\n\n### `fr-10-d01f144b`\n\nIn the non-zero exit code error paths (around lines 1563-1572 and 1608-1618 of process_backend.rs), the `detail` string already contains the stderr_tail content, and then `(stdout_len: ..., stderr_len: ...)` is appended at the end. However, `stdout_tail` is not included in these non-zero exit paths, unlike the zero-exit-code paths which include both stdout_tail and stderr_tail. For consistency and diagnostics completeness, consider also including `stdout_tail` in the non-zero exit code error messages, since stdout may contain partial JSON or other diagnostic output even when the process exits with a non-zero code.\n\n### `fr-10-e9d6d897`\n\n`src/adapters/process_backend.rs:100-132` preserves raw failure output as `runtime/failed/<invocation_id>.failed.raw`, but `src/contexts/workflow_composition/engine.rs:5060-5075` and `src/contexts/project_run_record/journal.rs:213-236` never log the `invocation_id` or failed-raw path. The artifact name also includes completion round via `history_record_base_id` in `src/contexts/workflow_composition/engine.rs:631-649`, so stage/cycle/attempt alone are not enough to identify the right file after a completion-round restart. Please emit the invocation id (or the exact failed artifact path) with `stage_failed`; otherwise the preserved raw output is often not discoverable when operators need it.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 10
+}

@@ -1,0 +1,75 @@
+{
+  "active_run": null,
+  "interrupted_run": {
+    "run_id": "run-20260407080630",
+    "stage_cursor": {
+      "stage": "final_review",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 11
+    },
+    "started_at": "2026-04-07T11:48:42.531896041Z",
+    "prompt_hash_at_cycle_start": "2418584a6c6657a76e9c27bddd0db4080416ca88bebad11f2319b5903b561740",
+    "prompt_hash_at_stage_start": "2418584a6c6657a76e9c27bddd0db4080416ca88bebad11f2319b5903b561740",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 10,
+    "stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-04-07T12:10:54.200804789Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  },
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 11,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [],
+    "processed_count": 31
+  },
+  "status_summary": "failed at Final Review: backend invocation failed for contract 'final_review:reviewer' via 'claude': invalid Claude result JSON: expected value at line 1 column 1 (contract: final_review:reviewer, result_len: 76, stdout_len: 994, result_tail: \"Full test suite passed (exit 0), confirming no regressions from the changes.\", stderr_tail: \"\")",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-07T12:10:54.200804789Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
+}

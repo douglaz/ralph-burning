@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407080630-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260407080630-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T09:20:08.449045623Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 5\n**Final Review Restarts:** 4/25\n\n## Accepted\n\n- `fr-4-9d739941`\n- `fr-4-e72c5a7b`\n- `fr-4-c2004316`\n\n## Rejected\n\n- `fr-4-5b5af769`\n- `fr-4-f750ca5a`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-9d739941`\n\nIn engine.rs line 5028 and 5058, error.to_string() is called twice on the same error object (once for the journal event, once for the runtime log). The second call at line 5058 could reuse the string from line 5028 by hoisting the `let error_display = error.to_string();` above the journal event construction and passing `&error_display` to both. This is a minor efficiency issue but worth noting since error messages can be large (they now include stderr tails up to 512 bytes).\n\n### `fr-4-e72c5a7b`\n\nThe Codex failure paths in process_backend.rs (lines 304-315, 322-334, 338-349) include stdout_len and stderr_len but do NOT include stderr_tail content like the Claude paths do. For consistency and to meet the acceptance criterion 'Raw backend output is preserved or logged on failure', the Codex error messages should also include a stderr_tail snippet, especially for the 'invalid Codex last-message JSON' case where the stderr may contain the actual error.\n\n### `fr-4-c2004316`\n\nsrc/adapters/process_backend.rs:152-161, 199-212, 228-240, 305-345 and src/contexts/workflow_composition/engine.rs:5058-5073 still do not put the malformed backend payload itself into `runtime/logs/run.ndjson`. These branches now record `stdout_len`/`stderr_len` (and sometimes a `stderr_tail`), and engine logs that string verbatim, but the actual bad stdout body from the motivating invalid-JSON case is still only available by opening `runtime/failed/<invocation>.failed.raw`. Add a bounded stdout/stderr snippet, or at least the failed-artifact path, to the logged error so `stage_failed` is actionable on its own.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

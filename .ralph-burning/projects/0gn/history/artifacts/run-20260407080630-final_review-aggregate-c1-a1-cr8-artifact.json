@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407080630-final_review-aggregate-c1-a1-cr8-artifact",
+  "payload_id": "run-20260407080630-final_review-aggregate-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T11:11:54.305965845Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 8/25\n\n## Accepted\n\n- `fr-8-6a304b78`\n\n## Rejected\n\n- `fr-8-34d935eb`\n\n## Disputed\n\n- `fr-8-7b89f60b`\n\n## Final Accepted Amendments\n\n### `fr-8-6a304b78`\n\nIn src/adapters/process_backend.rs around line 1493-1504, the stale-session retry path clones the original request (preserving attempt_number), calls build_command (which adds --verbose when attempt_number > 1), then unconditionally push_arg(\"--verbose\") again. When attempt_number > 1, --verbose appears twice in the CLI args. Guard the push_arg with a check: only add --verbose if build_command hasn't already added it (e.g., `if fresh_request.attempt_number <= 1 { fresh_prepared.push_arg(...) }`).\n\n### `fr-8-7b89f60b`\n\n`src/adapters/process_backend.rs:868-875` claims Codex already emits a full NDJSON event stream, but the command builders at `src/adapters/process_backend.rs:1316-1339` and `src/adapters/process_backend.rs:1343-1369` never pass `codex exec --json`. As written, Codex is still invoked in its default output mode, so this patch does not actually enable any richer Codex diagnostic stream for transient failures. Wire up the supported JSON/event output mode (or another real debug mechanism) before treating Codex diagnostics as handled.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 8
+}

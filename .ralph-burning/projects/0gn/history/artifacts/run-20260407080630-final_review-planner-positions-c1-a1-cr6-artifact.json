@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-planner-positions-c1-a1-cr6-artifact",
+  "payload_id": "run-20260407080630-final_review-planner-positions-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T10:00:06.002575867Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll three amendments identify genuine gaps in the current implementation. The --verbose retry flag lacks a fallback if unsupported, the Codex last-message error path omits the raw message length from diagnostics, and the new stage_failed runtime-log contract has no direct test coverage for its payload format. Each fix is focused, low-risk, and improves robustness or maintainability.\n\n## Votes\n\n- `fr-6-a06f523f`: Accept\n  The code at lines 836-838 and 1477-1479 unconditionally pushes --verbose to the Claude CLI on retries with no error handling for unrecognized flags. If a CLI version drops or renames this flag, the retry invocation itself fails, making the retry mechanism strictly worse than not retrying. The proposed fix (catch unrecognized-flag errors and fall back to running without --verbose) is low-cost and defensive. While the probability of Claude CLI removing --verbose is low, the consequence (retry becomes a guaranteed failure) is high enough to warrant the guard.\n- `fr-6-e965ec60`: Accept\n  In the invalid Codex last-message JSON branch (lines 310-333), the error reports stdout_len and stderr_len, but the actual raw response for this failure mode is last_message_text, not stdout. The message_tail field shows a truncated snippet, but the total length of the malformed message is absent. For diagnosing Codex parse failures — which is the stated purpose of this bead — knowing whether the raw response was 50 bytes or 50KB is essential context. Adding message_len alongside the existing fields is a small, focused fix. The regression test at lines 3678-3725 should also assert this new field.\n- `fr-6-c30b94d1`: Accept\n  The runtime-log contract at engine.rs:5060-5076 writes structured stage_failed entries with failure_class= and error= fields, but no test directly verifies this payload. Existing tests at workflow_engine_test.rs:540-550 check unrelated checkpoint warnings, tests at 3165-3180 use stage_failed only as a cancellation trigger (checking presence, not payload content), and tests at 3420-3428 verify journal events, not runtime logs. A dedicated regression test that reads run.ndjson and asserts the stage_failed entry contains failure_class= and propagated error details would close a real coverage gap for a newly introduced contract.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 6
+}

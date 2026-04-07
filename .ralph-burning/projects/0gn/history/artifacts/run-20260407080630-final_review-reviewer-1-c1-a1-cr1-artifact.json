@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T08:22:52.727939458Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the HEAD changes against origin/master, inspected the modified `process_backend` and `engine` paths, and ran `cargo test --lib` plus the targeted `cargo test process_backend --lib` suite. I found two substantive issues: the `invalid Claude result JSON` path still drops the new verbose stderr from the runtime log, and non-zero-exit failures now serialize full stderr into `run.ndjson`, which is an unbounded logging/safety regression.\n\n## Amendments\n\n1. src/adapters/process_backend.rs:190-209 and src/contexts/workflow_composition/engine.rs:5058-5073 still leave the main Claude schema-failure path underdiagnosed. When the Claude envelope parses but `envelope.result` is not valid JSON, the new error only records `result_len`/`stdout_len`; it does not include any `stderr` snippet. Because Claude is now always launched with `--verbose` in src/adapters/process_backend.rs:777-789, the extra diagnostic detail is likely to be emitted on stderr, but that information never reaches the `stage_failed` runtime log for the motivating `invalid Claude result JSON` failure. Include a bounded stderr tail (or the preserved failed-artifact path) in this branch as well.\n   Rationale: The bead’s example failure is exactly `invalid Claude result JSON`. As patched, operators still need to open `runtime/failed/*.failed.raw` to see the verbose CLI diagnostic, so the runtime log is still not self-sufficient for that failure mode.\n2. src/adapters/process_backend.rs:1491-1503 and 1523-1535 now build `InvocationFailed` details from the full child stderr, and src/contexts/workflow_composition/engine.rs:5058-5073 writes `error.to_string()` verbatim into `runtime/logs/run.ndjson`. With Claude `--verbose` enabled at src/adapters/process_backend.rs:777-789, a failed invocation can dump very large stderr payloads into the runtime log. The nearby comments at src/adapters/process_backend.rs:1479-1482 and 1517-1519 already acknowledge that stderr may contain echoed prompt content. This is a robustness/safety regression: a single failure can bloat `run.ndjson` and leak prompt/context into the operator log. Log only a bounded tail or a pointer to `runtime/failed/<invocation>.failed.raw` instead of the full stderr body.\n   Rationale: The change was supposed to improve diagnostics, but the current implementation duplicates unbounded backend output into the runtime log. That makes failures noisier and less safe without adding information beyond the preserved failed-artifact file.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

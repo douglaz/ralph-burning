@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T11:27:17.573330416Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff in `src/adapters/process_backend.rs`, `src/contexts/workflow_composition/engine.rs`, and the added tests. Found one functional regression: enabling Claude `--verbose` on retries changes stdout to a shape the current parser does not handle, so retry diagnostics/failures break.\n\n## Amendments\n\n1. `src/adapters/process_backend.rs:849-850` and `src/adapters/process_backend.rs:1505-1508` add `--verbose` to Claude retries, but the decoder still assumes stdout is the normal single-object Claude envelope (`src/adapters/process_backend.rs:153-171`). I verified against the installed Claude CLI that `claude -p --output-format json --verbose ...` emits a JSON array of event objects on stdout, not the usual result envelope. That means retried Claude failures now get turned into `invalid Claude envelope JSON` schema failures, and non-zero exits also lose their real error text because the retry path still relies on `extract_stdout_error()` (`src/adapters/process_backend.rs:1609-1637`, `src/adapters/process_backend.rs:1776-1795`), which only understands the non-verbose envelope shape. In practice this makes retryable Claude failures less diagnosable and can make the stale-session retry path fail deterministically.\n   Rationale: This is a correctness regression on every Claude retry path, and it undercuts the main goal of improving failure diagnostics.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 9
+}

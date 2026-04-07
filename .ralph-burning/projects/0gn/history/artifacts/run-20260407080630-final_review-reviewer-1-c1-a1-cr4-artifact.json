@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260407080630-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T09:13:56.143924382Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the diff against `master`, read the modified `process_backend.rs` and `engine.rs` sections end-to-end, and ran `cargo test --lib --quiet` successfully. I found two substantive gaps: the runtime log still omits the actual malformed backend payload, and Claude verbose diagnostics are still disabled on the first failed attempt.\n\n## Amendments\n\n1. src/adapters/process_backend.rs:152-161, 199-212, 228-240, 305-345 and src/contexts/workflow_composition/engine.rs:5058-5073 still do not put the malformed backend payload itself into `runtime/logs/run.ndjson`. These branches now record `stdout_len`/`stderr_len` (and sometimes a `stderr_tail`), and engine logs that string verbatim, but the actual bad stdout body from the motivating invalid-JSON case is still only available by opening `runtime/failed/<invocation>.failed.raw`. Add a bounded stdout/stderr snippet, or at least the failed-artifact path, to the logged error so `stage_failed` is actionable on its own.\n   Rationale: The bead goal says the runtime log should include the raw backend output on failure. As written, the original 'invalid JSON on stdout' failure is still opaque in `run.ndjson`, so operators still have to cross-reference another artifact to see what the backend actually returned.\n2. src/adapters/process_backend.rs:803-809 only enables Claude `--verbose` when `request.attempt_number > 1`. That leaves the first failed attempt running without extra CLI diagnostics, so the common transient pattern 'attempt 1 fails, retry succeeds' still never captures the rate-limit/auth/timeout detail that motivated this change. Enable verbose on the initial Claude invocation too, or gate it behind config rather than retry count alone.\n   Rationale: This patch improves repeated failures, but it does not make one-off/transient first-attempt failures diagnosable. Those are exactly the failures the project prompt called out.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

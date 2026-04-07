@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407080630-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260407080630-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T11:10:33.641861148Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the three amendments against the current `process_backend.rs` behavior and the installed CLI surfaces. `fr-8-6a304b78` is a real logic bug: the stale-session Claude retry can append `--verbose` twice. `fr-8-34d935eb` identifies a possible improvement, but it does not establish that the current `--verbose` retry diagnostics are incorrect or unsafe. `fr-8-7b89f60b` is also a real defect: the Codex builders do not pass `--json`, and the installed `codex exec --help` explicitly describes `--json` as the switch that emits JSONL events to stdout, so the code cannot rely on a default NDJSON stream as claimed.\n\n## Votes\n\n- `fr-8-6a304b78`: Accept\n  `build_command()` already appends `--verbose` for Claude when `request.attempt_number > 1`. The stale-session retry path clones the original request, preserving `attempt_number`, rebuilds the command, and then unconditionally calls `fresh_prepared.push_arg(\"--verbose\")` again for Claude. That produces duplicate `--verbose` flags on retry attempts beyond the first. The duplication is probably benign at runtime, but it is still a concrete command-construction bug and the proposed guard is the right minimal fix.\n- `fr-8-34d935eb`: Reject\n  The amendment shows that Claude exposes richer debug flags (`--debug` / `--debug-file`), but it does not show that the current retry behavior is incorrect. The existing code uses a documented `--verbose` flag, captures stderr, and preserves full failed output artifacts; that is a coherent diagnostic strategy. Switching to debug mode may be a reasonable enhancement, but this amendment does not demonstrate a correctness, safety, or robustness defect in the current implementation.\n- `fr-8-7b89f60b`: Accept\n  The command builders for Codex do not pass `--json` in either the new-session or resume path. The installed `codex exec --help` explicitly documents `--json` as the option that 'Print[s] events to stdout as JSONL', which directly undermines the claim that Codex already emits a full NDJSON event stream by default. The existing parser and unit tests only prove that the adapter can parse NDJSON if stdout happens to contain it; they do not prove the real CLI is invoked in that mode. Treating Codex diagnostics as already handled is therefore unsound until the adapter enables a real JSON/event output mode or another verified diagnostic mechanism, with regression coverage.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 8
+}
