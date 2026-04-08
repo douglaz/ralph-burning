@@ -453,7 +453,7 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
 
     // Record the linked task/project ID in the milestone controller
     // so the controller tracks which project owns this bead.
-    milestone_controller::sync_controller_task_claimed(
+    if let Err(link_error) = milestone_controller::sync_controller_task_claimed(
         &FsMilestoneControllerStore,
         &current_dir,
         &milestone_id,
@@ -461,7 +461,34 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         record.id.as_str(),
         "bead claimed in br and Ralph project created",
         now,
-    )?;
+    ) {
+        // Bead is claimed in br and the project exists, but we cannot
+        // record the link in the controller. Transition to needs_operator
+        // so the dangling pair gets attention.
+        let reason = format!(
+            "controller failed to record task link for bead '{}' / project '{}': {link_error}",
+            bead.id, record.id
+        );
+        if let Err(controller_error) = milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            &current_dir,
+            &milestone_id,
+            milestone_controller::ControllerTransitionRequest::new(
+                MilestoneControllerState::NeedsOperator,
+                &reason,
+            )
+            .with_bead(&bead.id),
+            now,
+        ) {
+            tracing::warn!(
+                bead_id = %bead.id,
+                project_id = %record.id,
+                %controller_error,
+                "failed to transition controller to needs_operator after task-link failure"
+            );
+        }
+        return Err(link_error);
+    }
 
     set_active_project_after_create(&current_dir, &record.id)?;
     let detail = load_project_detail(&current_dir, &record.id)?;
@@ -818,21 +845,35 @@ async fn claim_bead_in_br(
         Err(update_error) => {
             // Check if the bead is already in_progress AND our controller
             // owns it (same active_bead_id). Only then is this a safe
-            // idempotent retry of our own prior claim.
-            if let Ok(bead) = load_bead_detail(base_dir, bead_id).await {
-                if bead.status == BeadStatus::InProgress {
-                    if is_our_active_bead(base_dir, milestone_id, bead_id) {
-                        return Ok(());
+            // idempotent retry of our own prior claim. We do NOT return
+            // early — we fall through to sync_flush so a prior claim
+            // whose sync failed still gets flushed on retry.
+            match load_bead_detail(base_dir, bead_id).await {
+                Ok(bead) if bead.status == BeadStatus::InProgress => {
+                    if !is_our_active_bead(base_dir, milestone_id, bead_id) {
+                        return Err(AppError::Io(std::io::Error::other(format!(
+                            "bead '{bead_id}' is already in_progress (claimed by another process); \
+                             refusing to create a duplicate task"
+                        ))));
                     }
+                    // Own prior claim — fall through to sync_flush below.
+                }
+                Ok(_) => {
                     return Err(AppError::Io(std::io::Error::other(format!(
-                        "bead '{bead_id}' is already in_progress (claimed by another process); \
-                         refusing to create a duplicate task"
+                        "failed to claim bead '{bead_id}' via br update --status=in_progress: {update_error}"
+                    ))));
+                }
+                Err(show_error) => {
+                    tracing::debug!(
+                        %bead_id,
+                        %show_error,
+                        "fallback `br show` failed while checking bead status after update error"
+                    );
+                    return Err(AppError::Io(std::io::Error::other(format!(
+                        "failed to claim bead '{bead_id}' via br update --status=in_progress: {update_error}"
                     ))));
                 }
             }
-            return Err(AppError::Io(std::io::Error::other(format!(
-                "failed to claim bead '{bead_id}' via br update --status=in_progress: {update_error}"
-            ))));
         }
     }
     br.sync_flush().await.map_err(|error| {
@@ -3641,7 +3682,8 @@ esac
         }
 
         /// Install a fake `br` that fails on `update` but returns
-        /// `in_progress` on `show` (idempotent retry scenario).
+        /// `in_progress` on `show` and succeeds on `sync`
+        /// (idempotent retry scenario — own-claim falls through to sync_flush).
         fn install_fake_br_claim_idempotent(base_dir: &std::path::Path, bead_id: &str) {
             let fake_bin = base_dir.join("fake-bin");
             std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
@@ -3651,6 +3693,10 @@ case "$1" in
   update)
     echo "already in_progress" >&2
     exit 1
+    ;;
+  sync)
+    echo "Synced"
+    exit 0
     ;;
   show)
     cat <<'BEAD_JSON'
