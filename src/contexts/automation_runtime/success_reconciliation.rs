@@ -41,7 +41,9 @@ pub struct ReconciliationOutcome {
     pub was_already_closed: bool,
     /// Next-step hint from bv, if available.
     pub next_step_hint: Option<NextBeadResponse>,
-    /// Non-fatal warning raised while advancing to the next bead.
+    /// Operator-visible issue raised while advancing to the next bead.
+    /// When present, reconciliation either moved the controller into a safe
+    /// state or returned an error if even that fallback persistence failed.
     pub next_step_selection_warning: Option<String>,
     /// Timestamp of the reconciliation.
     pub reconciled_at: DateTime<Utc>,
@@ -252,12 +254,19 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
             };
 
             if let Err(error) = selection_result {
-                let warning = format!("next-bead selection after reconciliation failed: {error}");
+                let warning = persist_selection_failure_after_reconciliation(
+                    base_dir,
+                    &milestone_id,
+                    bead_id,
+                    task_id,
+                    error.to_string(),
+                    now,
+                )?;
                 tracing::warn!(
                     bead_id = bead_id,
                     task_id = task_id,
-                    error = %warning,
-                    "post-reconciliation selection failed after bead close+sync (non-fatal)"
+                    warning = %warning,
+                    "post-reconciliation selection failed after bead close+sync"
                 );
                 next_step_selection_warning = Some(warning);
             }
@@ -272,6 +281,36 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         next_step_selection_warning,
         reconciled_at: now,
     })
+}
+
+fn persist_selection_failure_after_reconciliation(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    task_id: &str,
+    details: String,
+    now: DateTime<Utc>,
+) -> Result<String, ReconciliationError> {
+    let warning = format!("next-bead selection after reconciliation failed: {details}");
+    milestone_controller::sync_controller_state(
+        &FsMilestoneControllerStore,
+        base_dir,
+        milestone_id,
+        milestone_controller::ControllerTransitionRequest::new(
+            milestone_controller::MilestoneControllerState::NeedsOperator,
+            warning.clone(),
+        ),
+        now,
+    )
+    .map_err(|error| ReconciliationError::MilestoneUpdateFailed {
+        bead_id: bead_id.to_owned(),
+        task_id: task_id.to_owned(),
+        details: format!(
+            "{warning}; additionally failed to persist needs_operator controller state: {error}"
+        ),
+    })?;
+
+    Ok(warning)
 }
 
 /// Close a bead idempotently. If the bead is already closed, returns
@@ -589,6 +628,7 @@ mod tests {
     use crate::adapters::br_process::{BrOutput, ProcessRunner};
     use crate::adapters::bv_process::{BvError, BvOutput, BvProcessRunner};
     use crate::contexts::milestone_record::service::MilestoneSnapshotPort;
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -672,6 +712,39 @@ mod tests {
                 .unwrap()
                 .pop()
                 .unwrap_or_else(|| panic!("MockBvRunner: no more responses"))
+        }
+    }
+
+    struct DeletingBvRunner {
+        responses: Mutex<Vec<Result<BvOutput, BvError>>>,
+        path_to_remove: PathBuf,
+    }
+
+    impl DeletingBvRunner {
+        fn new(path_to_remove: PathBuf, responses: Vec<Result<BvOutput, BvError>>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+                path_to_remove,
+            }
+        }
+    }
+
+    impl BvProcessRunner for DeletingBvRunner {
+        async fn run(
+            &self,
+            _args: Vec<String>,
+            _timeout: Duration,
+            _working_dir: Option<&Path>,
+        ) -> Result<BvOutput, BvError> {
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or_else(|| panic!("DeletingBvRunner: no more responses"));
+            std::fs::remove_dir_all(&self.path_to_remove)
+                .expect("DeletingBvRunner should remove the milestone root");
+            response
         }
     }
 
@@ -1622,7 +1695,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_success_nonfinal_selection_failure_is_non_fatal(
+    async fn reconcile_success_nonfinal_selection_failure_moves_controller_to_needs_operator(
     ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::adapters::fs::{
             FileSystem, FsMilestoneControllerStore, FsMilestonePlanStore, FsMilestoneStore,
@@ -1781,8 +1854,173 @@ mod tests {
                 .expect("controller should exist");
         assert_eq!(
             controller.state,
-            milestone_controller::MilestoneControllerState::Selecting
+            milestone_controller::MilestoneControllerState::NeedsOperator
         );
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| {
+                reason.contains("next-bead selection after reconciliation failed")
+                    && reason.contains("plan.json")
+            }));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_success_selection_failure_returns_error_when_safe_state_persistence_fails(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::{FileSystem, FsMilestonePlanStore, FsMilestoneStore};
+        use crate::contexts::milestone_record::bundle::{
+            AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+        };
+        use crate::contexts::milestone_record::service::{
+            create_milestone, persist_plan, CreateMilestoneInput,
+        };
+        use chrono::Utc;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
+
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+
+        let now = Utc::now();
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "ms-selection-warning-fallback".to_owned(),
+                name: "Selection warning fallback milestone".to_owned(),
+                description:
+                    "Selection fallback persistence should fail loudly when the controller root disappears."
+                        .to_owned(),
+            },
+            now,
+        )?;
+
+        let bundle = MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: "ms-selection-warning-fallback".to_owned(),
+                name: "Selection warning fallback milestone".to_owned(),
+            },
+            executive_summary:
+                "If the milestone root disappears after reconciliation, surface the selection failure."
+                    .to_owned(),
+            goals: vec!["Close the current bead".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Both beads are represented in the plan".to_owned(),
+                covered_by: vec!["bead-current".to_owned(), "bead-next".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Core".to_owned(),
+                description: None,
+                beads: vec![
+                    BeadProposal {
+                        bead_id: Some("bead-current".to_owned()),
+                        explicit_id: Some(true),
+                        title: "Current bead".to_owned(),
+                        description: None,
+                        bead_type: Some("task".to_owned()),
+                        priority: Some(1),
+                        labels: vec![],
+                        depends_on: vec![],
+                        acceptance_criteria: vec!["AC-1".to_owned()],
+                        flow_override: None,
+                    },
+                    BeadProposal {
+                        bead_id: Some("bead-next".to_owned()),
+                        explicit_id: Some(true),
+                        title: "Next bead".to_owned(),
+                        description: None,
+                        bead_type: Some("task".to_owned()),
+                        priority: Some(1),
+                        labels: vec![],
+                        depends_on: vec![],
+                        acceptance_criteria: vec!["AC-1".to_owned()],
+                        flow_override: None,
+                    },
+                ],
+            }],
+            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            agents_guidance: None,
+        };
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &bundle,
+            now + chrono::Duration::milliseconds(1),
+        )?;
+
+        let started_at = now + chrono::Duration::seconds(1);
+        milestone_service::record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-current",
+            "proj-warning",
+            "run-warning",
+            "plan-v1",
+            started_at,
+        )?;
+
+        let show_open = r#"{"id":"bead-current","title":"Current bead","status":"open","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![MockBrRunner::success(show_open)]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner =
+            MockBrRunner::new(vec![MockBrRunner::success(""), MockBrRunner::success("")]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let next_hint = r#"{"id":"bead-next","title":"Next bead","score":0.8,"reasons":["ready"],"action":"start"}"#;
+        let milestone_root = FileSystem::milestone_root(base, &record.id);
+        let bv = BvAdapter::with_runner(DeletingBvRunner::new(
+            milestone_root,
+            vec![MockBvRunner::success(next_hint)],
+        ));
+
+        let outcome = reconcile_success(
+            &br_mutation,
+            &br_read,
+            Some(&bv),
+            base,
+            "bead-current",
+            "task-warning-456",
+            "proj-warning",
+            "ms-selection-warning-fallback",
+            "run-warning",
+            Some("plan-v1"),
+            started_at,
+            now + chrono::Duration::seconds(10),
+        )
+        .await;
+
+        match outcome {
+            Err(ReconciliationError::MilestoneUpdateFailed {
+                bead_id,
+                task_id,
+                details,
+            }) => {
+                assert_eq!(bead_id, "bead-current");
+                assert_eq!(task_id, "task-warning-456");
+                assert!(details.contains("next-bead selection after reconciliation failed"));
+                assert!(details.contains("failed to persist needs_operator controller state"));
+            }
+            other => panic!("expected milestone update failure, got {other:?}"),
+        }
 
         Ok(())
     }
