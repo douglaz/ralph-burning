@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr22-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T00:57:11.220409292Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the diff against master, read the reconciliation/daemon/PR implementation files, and ran the targeted reconcile_success unit tests. I found two correctness issues, both in post-completion retry handling.\n\n## Amendments\n\n1. Reconciliation-only retries are claimed without branch resume at src/contexts/automation_runtime/task_service.rs:152-182, but the daemon still reruns PR completion at src/contexts/automation_runtime/daemon_loop.rs:887-898 and src/contexts/automation_runtime/daemon_loop.rs:1548-1561 after completed runs short-circuit at src/contexts/automation_runtime/daemon_loop.rs:3203-3213. That PR path pushes/checks the task branch and will close-or-skip the PR when the worktree is not ahead at src/contexts/automation_runtime/pr_runtime.rs:102-116. On a reconciliation_* retry, this can mutate or fail PR state even though the retry was supposed to do only local bead close/sync/milestone bookkeeping.\n   Rationale: The new retry split explicitly says reconciliation-only retries do not need the preserved branch, but current control flow still executes branch-dependent PR logic on a fresh default-branch worktree.\n2. When workflow_run_id is missing, the new fallback binds the task to the latest RunStarted event in persist_workflow_run_id() at src/contexts/automation_runtime/daemon_loop.rs:1644-1669 and again in try_reconcile_success() at src/contexts/automation_runtime/daemon_loop.rs:1757-1787. The code already documents that this may be wrong if the project was rerun between failure and retry, but it still proceeds to close the bead, sync, and update milestone state against that guessed run. For older tasks or after a transient task-write failure, a manual rerun can therefore attach completion to the wrong run/timestamps instead of surfacing a reconciliation_metadata_error.\n   Rationale: Ambiguous task-to-run binding is a data-correctness problem; guessing here can corrupt milestone lineage and journal state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 22
+}

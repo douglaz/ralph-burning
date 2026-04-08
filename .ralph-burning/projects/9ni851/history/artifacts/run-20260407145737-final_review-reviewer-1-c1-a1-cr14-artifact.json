@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T21:09:45.025472110Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 1 correctness issue in the success-reconciliation retry path: resumed runs derive the wrong `started_at` for milestone completion replays, which breaks idempotent recovery after a partial post-run failure.\n\n## Amendments\n\n1. Fix resumed-run replays in the daemon reconciliation path. `try_reconcile_success` currently rewrites `started_at` to the latest `RunResumed` timestamp (`src/contexts/automation_runtime/daemon_loop.rs:1685-1697`) and then passes that value straight into `record_bead_completion` (`src/contexts/automation_runtime/success_reconciliation.rs:282-296`). But milestone lineage keeps the original bead-start timestamp when the same run resumes (`src/adapters/fs.rs:4054-4079`), and terminal replays reject any `started_at` mismatch (`src/adapters/fs.rs:3832-3855`). As a result, if a resumed run crashes or partially fails after the terminal lineage row has been written but before the daemon finishes reconciliation, every retry will hit an \"already finalized\" error instead of repairing the partial state. Use the durable bead-start timestamp from milestone state, or fall back to the same terminal-repair flow that `src/cli/run.rs:347-369` already uses for exact-attempt replays.\n   Rationale: This breaks the required idempotent crash-recovery path for any bead run that was paused/resumed before completion, which makes the happy-path reconciliation handler non-robust in a real retry scenario.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 14
+}

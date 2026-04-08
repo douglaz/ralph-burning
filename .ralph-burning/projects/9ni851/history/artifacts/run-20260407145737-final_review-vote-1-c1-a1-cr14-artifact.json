@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T21:12:30.830481905Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nThe amendment identifies a real correctness bug in resumed-run reconciliation. The daemon path currently substitutes the latest `RunResumed` timestamp for the attempt `started_at`, but the durable lineage identity for the same run continues to use the original bead-start timestamp. When a terminal lineage row already exists and reconciliation retries, that mismatch causes the normal finalize path to reject the replay instead of repairing partial state. Using the durable original attempt timestamp, or routing exact-attempt retries through the existing terminal-repair flow, is the correct and maintainable fix.\n\n## Votes\n\n- `fr-14-378913cf`: Accept\n  The code paths line up with the amendment. `try_reconcile_success` derives `started_at` from the latest `RunResumed` event, and `record_bead_completion` forwards that value into the normal lineage finalize path. In the filesystem lineage store, terminal updates reject mismatched `started_at` unless terminal repair is explicitly enabled. Separately, the running-attempt lookup for the same `run_id` preserves the original attempt identity rather than rebasing it to the resume timestamp, so resumed runs can legitimately have a durable terminal row keyed by the original start time. That makes the failure mode real: after a partial success write, daemon retries can get stuck on an `already finalized` error instead of repairing snapshot/journal state. Reusing the durable bead-start timestamp or falling back to the CLI's exact-attempt repair path fixes the root cause without weakening lineage invariants.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 14
+}

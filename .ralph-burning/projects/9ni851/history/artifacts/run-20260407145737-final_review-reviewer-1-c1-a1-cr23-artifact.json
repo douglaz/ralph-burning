@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr23-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T01:24:55.233547375Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the current diff and the reconciliation implementation in `src/contexts/automation_runtime/daemon_loop.rs` and `src/contexts/automation_runtime/success_reconciliation.rs`. Targeted reconciliation tests pass, but I found two real correctness issues in the new retry/run-binding logic around `workflow_run_id`.\n\n## Amendments\n\n1. Fix the retry safety guard in `src/contexts/automation_runtime/daemon_loop.rs:1785-1807`. `retry_task` increments `attempt_count` from 0 to 1 on the first retry (`src/contexts/automation_runtime/task_service.rs:509-514`), but this code only fails closed when `attempt_count > 1`. As written, the first reconciliation retry still falls back to the latest `RunStarted` entry and can bind to a different manual rerun, which would close/sync the bead and rewrite milestone lineage for the wrong run.\n   Rationale: This is an off-by-one bug in the new protection path, and it leaves the most common retry case unsafe.\n2. Remove or harden the eager `workflow_run_id` persistence on post-completion retries in `src/contexts/automation_runtime/daemon_loop.rs:701-712`, `src/contexts/automation_runtime/daemon_loop.rs:1490-1495`, and `src/contexts/automation_runtime/daemon_loop.rs:1658-1689`. Both retry paths prefill `workflow_run_id` from the latest `RunStarted` before reconciliation, but that heuristic is exactly what the new `try_reconcile_success` guard is trying to avoid. If another run was started on the project after the original reconciliation failure but before the task retry, this code stores the newer run ID and the later reconciliation path treats it as authoritative.\n   Rationale: That guessed binding can silently attach bead close/sync and milestone completion to the wrong run, which is worse than failing the task for operator intervention.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 23
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T15:52:21.381999912Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the success reconciliation handler implementation across success_reconciliation.rs (new, 734 lines), daemon_loop.rs integration (2 call sites), model.rs and service.rs schema additions, and fs.rs adapter change. The core reconcile_success function is well-structured with robust idempotency handling (pre-check, post-failure re-check, unconditional sync). Error handling correctly distinguishes br failures (→ needs-operator) from bv hint failures (→ best-effort). Tests cover unit-level functions and a comprehensive e2e path through milestone state. Two correctness concerns identified.\n\n## Amendments\n\n1. In daemon_loop.rs, both call sites invoke `mark_completed` BEFORE `try_reconcile_success` (lines 911-914 and 1441-1444). If the daemon crashes in this window, the task is permanently marked completed and will never be reprocessed, so reconciliation never runs: the bead stays open in br, sync never happens, the milestone is not updated, and no operator notification occurs. Either (a) reconciliation should run before mark_completed, or (b) a startup recovery sweep should detect completed tasks whose beads are still open and retry reconciliation, or (c) the reconciliation outcome should be persisted as a flag that a separate recovery path checks.\n   Rationale: This violates the acceptance criterion 'Close operation is idempotent on re-run' at the daemon level. While reconcile_success itself is idempotent, the daemon has no path to call it again after a crash between mark_completed and try_reconcile_success. The crash window is small but the consequence (permanently orphaned bead) is high.\n2. In service.rs, `merge_completion_journal_details` (lines 1048-1078) does not merge the newly added `task_id` field from `CompletionJournalDetails`. If `task_id` is ever populated (the schema field exists at model.rs:493), the merge function will silently drop it during journal event deduplication. Add `if merged.task_id.is_none() { merged.task_id = requested.task_id.clone(); }` to match the pattern used for `run_id`, `plan_hash`, and `outcome_detail`.\n   Rationale: The field was added to CompletionJournalDetails but the merge function was not updated. This is a latent bug that will surface when task_id is eventually wired through render_completion_journal_details. Fixing it now prevents a future silent data loss during idempotent journal replays.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-arbiter-c1-a1-cr8-artifact",
+  "payload_id": "run-20260407145737-final_review-arbiter-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T18:48:53.797753005Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe sole disputed amendment fr-8-55c3e00a is accepted. While its description of the failure mode (infinite retry loop) is inaccurate — the actual consequence is task stranding in an unreachable state — the underlying defect it identifies is real and confirmed by all parties. The mark_failed error path unconditionally releases the lease without durably updating task status, leaving non-terminal tasks permanently orphaned. The amendment is directionally correct in flagging this gap in error recovery, even though the companion amendment fr-8-11232530 (accepted by consensus) provides the more precise diagnosis and better-targeted fix.\n\n## Rulings\n\n- `fr-8-55c3e00a`: Accept\n  The amendment correctly identifies a real defect: when mark_failed errors, the lease is unconditionally released while the task's durable status is never updated, leaving the task in a non-terminal state with no recovery path. The description's claim of an 'infinite retry loop' is inaccurate — as both reviewers and the planner confirm, Phase 3 only scans Pending tasks and Phase 0 only handles label_dirty tasks, so the actual consequence is task stranding rather than infinite retries. However, this misdiagnosis of the symptom does not negate the validity of the underlying defect. The code path is correctly identified (line 939, lines 947-951), and the core observation — that this error handling path lacks a durable recovery mechanism — is confirmed by all three evaluators. Reviewer 2's rejection is based on the inaccurate failure mode description and misaligned mitigations, which is a fair criticism of precision, but the amendment's value lies in flagging the defective error path rather than in its specific remediation proposal. Accepting with the understanding that the actual fix should target task stranding (e.g., preserving the lease as fr-8-11232530 suggests) rather than preventing reprocessing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 8
+}

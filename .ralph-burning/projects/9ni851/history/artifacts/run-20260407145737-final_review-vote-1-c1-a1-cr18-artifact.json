@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr18-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T23:09:38.641082801Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll three amendments identify real correctness issues caused by over-broad success classification during reconciliation and retry handling. Each proposed fix tightens state handling in a way that is safer and more consistent with the surrounding code and existing invariants.\n\n## Votes\n\n- `fr-18-6dedc27c`: Accept\n  `capture_next_step_hint` currently uses `e.raw_output()`, and `BvError::raw_output()` returns stdout for both `BvParseError` and `BvExitError`. That means a non-zero `bv` exit can be misclassified as the benign message-only case if its stdout happens to parse as `{\"message\":...}`. Because `NoRecommendation` deletes stale hints while `BvFailed` preserves them, this can incorrectly erase a valid persisted hint after a real bv failure. Restricting the message-only check to `BvParseError` matches the intended semantics: parse failure after a successful exit is recoverable, non-zero exit is not.\n- `fr-18-ba0587a2`: Accept\n  Both daemon task-processing paths currently infer `is_reconciliation_retry` solely from `run_snapshot.status == Completed`, and `dispatch_in_worktree_with_service` returns `Ok(())` for any completed snapshot. That is too broad. The task service explicitly treats aborted retries differently from failed retries: aborted retries have no `failure_class` and are supposed to start fresh. A task aborted during completion-PR handling can therefore be retried into the completed-run fast path and reuse the old run instead of rerunning the workflow. Gating this path to actual reconciliation failures, such as `failure_class` values prefixed with `reconciliation_`, is necessary to preserve the existing retry contract.\n- `fr-18-d52804bb`: Accept\n  `try_reconcile_success` already fails closed for missing `RunStarted`, but for missing `RunCompleted` it fabricates `Utc::now()`. That is inconsistent with the CLI sync path, which treats a completed snapshot without a durable `RunCompleted` event as corruption. The workflow engine writes the completed snapshot before appending `RunCompleted`, so a missing terminal event represents incomplete durable metadata, not a trustworthy completion time. Using wall-clock time hides that bad state and can distort milestone ordering. Returning a reconciliation metadata error is the safer and more coherent behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 18
+}

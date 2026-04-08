@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407145737-final_review-aggregate-c1-a1-cr16-artifact",
+  "payload_id": "run-20260407145737-final_review-aggregate-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T22:03:12.990640835Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 16/25\n\n## Accepted\n\n- `fr-16-c308d06c`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-16-c308d06c`\n\nHandle the successful `bv --robot-next` \"no actionable items available\" response in `src/contexts/automation_runtime/success_reconciliation.rs:167-181` and `src/contexts/automation_runtime/success_reconciliation.rs:361-370` (the current parser shape is `src/adapters/bv_process.rs:345-353`). Right now `capture_next_step_hint` only accepts `NextBeadResponse { id, title, ... }`; when `bv` succeeds with the message-only JSON it falls into `BvFailed`, and `reconcile_success` deliberately leaves any existing `next_step_hint.json` untouched. After the final actionable bead closes, that preserves a stale hint that can still point at an already-completed bead. Treat the message-only success payload as an explicit \"no next hint\" result and clear/remove any persisted hint in that case; add a regression test for `{\"message\":\"No actionable items available\"}`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 16
+}

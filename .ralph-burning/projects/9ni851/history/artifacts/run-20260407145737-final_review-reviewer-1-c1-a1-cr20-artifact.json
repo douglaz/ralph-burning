@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T00:00:33.201394288Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the success-reconciliation changes across `success_reconciliation.rs`, `daemon_loop.rs`, `task_service.rs`, and the milestone/fs updates. I found 2 correctness issues: post-completion retries currently lose the preserved branch on PR-related retries, and BR close/sync failures do not transition the milestone/controller into its operator-intervention state.\n\n## Amendments\n\n1. Fix post-completion retries so they still resume the preserved task branch when PR/branch state is needed. `src/contexts/automation_runtime/task_service.rs:152-173` turns every Completed-snapshot retry into `needs_remote_resume = false`, including `pr_runtime_failed`. But the previous worktree is disposed on failure (`src/contexts/automation_runtime/daemon_loop.rs:942-948`, `src/contexts/automation_runtime/daemon_loop.rs:3058-3077`), and `LeaseService::acquire` then recreates a fresh worktree from the default branch when resume is disabled (`src/contexts/automation_runtime/lease_service.rs:163-216`, `src/adapters/worktree.rs:510-521`). On retry, `handle_completion_pr` operates on that fresh checkout (`src/contexts/automation_runtime/pr_runtime.rs:102-117`), which can incorrectly see \"no diff\", close/skip the PR, or hit non-fast-forward push failures even though the completed branch existed before. Restrict the no-resume path to reconciliation-only retries, or otherwise resume the remote branch for PR-runtime/aborted completion retries.\n   Rationale: Current retry classification loses the completed branch contents for PR-related post-completion retries, so the daemon can make the wrong PR decision after a task already finished successfully.\n2. Drive the milestone/controller into the operator-intervention state when `br close`/`br sync` fails. The new code explicitly chooses not to set milestone status to `Failed` (`src/contexts/automation_runtime/daemon_loop.rs:1715-1723`), even though `MilestoneStatus::Failed` is the existing \"requires operator intervention\" state (`src/contexts/milestone_record/model.rs:63-65`). Instead, `try_reconcile_success` maps BR failures to a daemon-task failure only (`src/contexts/automation_runtime/daemon_loop.rs:1896-1901`), and the caller just marks the task failed (`src/contexts/automation_runtime/daemon_loop.rs:955-1006`). That leaves the milestone snapshot/controller in `running` rather than the requested needs-operator state, so any UI/automation that watches milestone state will not see the unrecoverable reconciliation failure.\n   Rationale: This misses an explicit acceptance criterion and leaves the durable controller state inconsistent with the task failure state after a BR reconciliation error.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 20
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T20:46:08.230652831Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nThe amendment identifies a real recovery bug: reconciliation-only retries still take the normal pre-dispatch rebase path, so a later rebase conflict can prevent the daemon from ever reaching the completed-run reconciliation bypass.\n\n## Votes\n\n- `fr-13-fe6f0a4c`: Accept\n  `retry_task` moves a reconciliation-failed task back to `Pending`, `claim_task` resumes the preserved failed-task branch, and both daemon processors call `rebase_task_worktree` before they read the persisted run snapshot. If that rebase now conflicts, `fail_claimed_task_preserve_worktree` marks the task failed again and the processor returns early, so the `RunStatus::Completed` branch in `dispatch_in_worktree_with_service` is never reached and `try_reconcile_success` never reruns. That makes transient `br`/milestone reconciliation failures permanently unrecoverable once the default branch advances, which is a real correctness bug and also contradicts the intended retry semantics documented in `try_reconcile_success`. A dedicated completed-run retry path that checks the persisted snapshot before rebase and skips directly to the post-run reconciliation flow is the correct fix, and a regression test for retry-after-reconciliation-failure is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 13
+}

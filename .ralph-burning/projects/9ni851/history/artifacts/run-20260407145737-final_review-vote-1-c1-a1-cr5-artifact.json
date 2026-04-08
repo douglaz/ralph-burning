@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T17:35:43.117938374Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccepted the two amendments about swallowed reconciliation failures and the amendment about discarded next-step hints. Rejected the task_id parsing amendment because the current producer emits only the exact `task_id=<value>` format.\n\n## Votes\n\n- `fr-5-21cf9bf2`: Accept\n  `try_reconcile_success` calls `mark_milestone_failed` for `BrCloseFailed`/`BrSyncFailed` but then still returns `true`, and both callers immediately mark the daemon task completed afterward. `retry_task` only permits retries from `Failed` or `Aborted`, so there is no built-in automated recovery once reconciliation leaves the bead open or unsynced. The exact remedy may need care, because returning `false` would currently rerun the whole task rather than just reconciliation, but the amendment correctly identifies a real recovery-gap defect.\n- `fr-5-16a0f459`: Reject\n  The current codebase only produces this field via `format!(\"task_id={task_id}\")` in success reconciliation, and the parser is intentionally matching that exact sentinel format. I did not find any producer that appends additional key/value pairs to the same string, so the proposed failure mode is speculative under current behavior rather than an actual correctness bug.\n- `fr-5-36b7bb45`: Accept\n  This is the same underlying issue as `fr-5-21cf9bf2`, with more complete traceability. `BrCloseFailed` and `BrSyncFailed` are converted into milestone failure, but the surrounding success paths still call `mark_completed`, and completed tasks cannot be retried by `task_service`. That leaves reconciliation failures swallowed at the task layer even though the bead graph may still be incorrect, which is a real robustness problem.\n- `fr-5-fcb464d8`: Accept\n  `reconcile_success` captures `next_step_hint` into `ReconciliationOutcome`, but `try_reconcile_success` immediately reduces that outcome to a `bool` and only prints the hint. There is no journal, snapshot, or other durable store for it, and no later controller logic reads it back. Given that the code pays the cost to compute the hint and models it explicitly, discarding it after stdout logging leaves the feature functionally incomplete and weakens maintainability unless ephemeral logging was the intended contract and is documented as such.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-arbiter-c1-a1-cr17-artifact",
+  "payload_id": "run-20260407145737-final_review-arbiter-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T22:32:22.300239277Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected amendment fr-17-dde66e40 (RunResumed fallback). While the amendment correctly identifies that try_reconcile_success only searches for RunStarted events, its proposed remedies (comment or RunResumed fallback) are insufficient. The real danger is not a missing RunStarted but a stale one — reopened projects retain the original RunStarted while adding a newer RunResumed, so fallback-on-missing never triggers. The correct fix is fr-17-2f3210bd (persisting run_id on DaemonTask), which all parties accepted and which renders this amendment's changes moot.\n\n## Rulings\n\n- `fr-17-dde66e40`: Reject\n  Reviewer 1's rejection argument is decisive. The amendment proposes two options: (a) add a comment documenting the append-only invariant, or (b) add RunResumed as a fallback when RunStarted is not found. Neither option addresses the actual correctness problem. As Reviewer 1 correctly identifies, when a project is reopened, the original RunStarted event remains in the journal (it's append-only), so the fallback-on-missing-RunStarted logic would never trigger — the code would still pick the original (wrong) RunStarted rather than the newer RunResumed. Adding a comment documenting an invariant that doesn't actually guarantee correctness in the reopen scenario is misleading. Furthermore, all parties unanimously accepted fr-17-2f3210bd, which is the proper fix: persisting the workflow run_id on DaemonTask eliminates journal scanning entirely. Once that fix lands, any comment or fallback added by this amendment becomes dead code or a stale comment on removed logic. Accepting this amendment would either (1) add insufficient hardening that gives false confidence, or (2) add code/comments immediately superseded by the correct fix in fr-17-2f3210bd. Reject to avoid wasted effort and misleading documentation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 17
+}

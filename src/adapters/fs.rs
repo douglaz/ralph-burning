@@ -2829,6 +2829,9 @@ impl CompletionJournalDetails {
         ) || FsTaskRunLineageStore::option_conflicts(
             existing.outcome_detail.as_deref(),
             requested.outcome_detail.as_deref(),
+        ) || FsTaskRunLineageStore::option_conflicts(
+            existing.task_id.as_deref(),
+            requested.task_id.as_deref(),
         ) {
             return None;
         }
@@ -2843,6 +2846,9 @@ impl CompletionJournalDetails {
         if merged.outcome_detail.is_none() {
             merged.outcome_detail = requested.outcome_detail.clone();
         }
+        if merged.task_id.is_none() {
+            merged.task_id = requested.task_id.clone();
+        }
         Some(merged)
     }
 
@@ -2854,6 +2860,7 @@ impl CompletionJournalDetails {
             self.started_at,
             &self.outcome,
             self.outcome_detail.as_deref(),
+            self.task_id.as_deref(),
         )
     }
 }
@@ -3280,6 +3287,12 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
     }
 }
 
+/// Extract a `task_id` value from an `outcome_detail` string of the form
+/// `"task_id=<value>"`, returning the `<value>` portion if it matches.
+fn extract_task_id_from_outcome_detail(detail: &str) -> Option<&str> {
+    detail.strip_prefix("task_id=")
+}
+
 pub struct FsTaskRunLineageStore;
 
 impl FsTaskRunLineageStore {
@@ -3407,6 +3420,15 @@ impl FsTaskRunLineageStore {
                 changed = true;
             }
         }
+        // Extract structured task_id from outcome_detail when present.
+        if entry.task_id.is_none() {
+            if let Some(ref detail) = entry.outcome_detail {
+                if let Some(tid) = extract_task_id_from_outcome_detail(detail) {
+                    entry.task_id = Some(tid.to_owned());
+                    changed = true;
+                }
+            }
+        }
         if overwrite_finished_at {
             if entry.finished_at != Some(finished_at) {
                 entry.finished_at = Some(finished_at);
@@ -3471,6 +3493,15 @@ impl FsTaskRunLineageStore {
         if entry.finished_at != Some(finished_at) {
             entry.finished_at = Some(finished_at);
             changed = true;
+        }
+        // Extract structured task_id from outcome_detail when present.
+        if entry.task_id.is_none() {
+            if let Some(ref detail) = entry.outcome_detail {
+                if let Some(tid) = extract_task_id_from_outcome_detail(detail) {
+                    entry.task_id = Some(tid.to_owned());
+                    changed = true;
+                }
+            }
         }
 
         Ok(changed)
@@ -3887,6 +3918,15 @@ impl FsTaskRunLineageStore {
                 entry.outcome = outcome;
                 entry.outcome_detail = outcome_detail;
                 entry.finished_at = Some(finished_at);
+                // Extract structured task_id from the outcome_detail
+                // "task_id=<value>" format set by success reconciliation.
+                if entry.task_id.is_none() {
+                    if let Some(ref detail) = entry.outcome_detail {
+                        if let Some(tid) = extract_task_id_from_outcome_detail(detail) {
+                            entry.task_id = Some(tid.to_owned());
+                        }
+                    }
+                }
                 should_write = true;
             }
 
@@ -4065,6 +4105,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             outcome_detail: None,
             started_at,
             finished_at: None,
+            task_id: None,
         };
         entries.push(entry.clone());
         Self::write_task_runs(&path, &entries)?;
@@ -4702,6 +4743,7 @@ mod tests {
             ts,
             "succeeded",
             Some("All checks passed"),
+            None,
         );
         let parsed = CompletionJournalDetails::parse(&rendered)
             .expect("CompletionJournalDetails must parse model-rendered JSON");
@@ -4776,7 +4818,7 @@ mod tests {
         // --- CompletionJournalDetails ---
         let ts = Utc.with_ymd_and_hms(2026, 3, 30, 12, 0, 0).unwrap();
         let existing_json =
-            render_completion_journal_details("proj-2", None, None, ts, "succeeded", None);
+            render_completion_journal_details("proj-2", None, None, ts, "succeeded", None, None);
         let requested_json = render_completion_journal_details(
             "proj-2",
             Some("run-99"),
@@ -4784,6 +4826,7 @@ mod tests {
             ts,
             "succeeded",
             Some("All checks passed"),
+            None,
         );
 
         let existing = CompletionJournalDetails::parse(&existing_json)
@@ -4827,6 +4870,7 @@ mod tests {
                     started_at,
                     "failed",
                     Some("stale failure"),
+                    None,
                 ));
         let exact_event =
             MilestoneJournalEvent::new(MilestoneEventType::BeadCompleted, repaired_timestamp)
@@ -4837,6 +4881,7 @@ mod tests {
                     Some("plan-1"),
                     started_at,
                     "succeeded",
+                    None,
                     None,
                 ));
         let journal_path = FsMilestoneJournalStore::journal_path(temp.path(), &milestone_id);
@@ -4885,6 +4930,7 @@ mod tests {
                 started_at,
                 "succeeded",
                 None,
+                None,
             ));
         let requested = MilestoneJournalEvent::new(
             MilestoneEventType::BeadFailed,
@@ -4898,6 +4944,7 @@ mod tests {
             started_at,
             "failed",
             Some("different outcome"),
+            None,
         ));
         let journal_path = FsMilestoneJournalStore::journal_path(temp.path(), &milestone_id);
         FsMilestoneJournalStore::write_journal(&journal_path, &[existing.clone()])

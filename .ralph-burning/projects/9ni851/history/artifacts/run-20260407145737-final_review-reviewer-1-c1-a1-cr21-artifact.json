@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr21-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T00:27:18.147832208Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFocused reconciliation tests pass, but I found 2 correctness gaps in the new daemon success-reconciliation path: stale pre-dispatch `workflow_run_id` binding on retries, and missing resumed-run/stale-terminal lineage repair logic that the CLI path already has.\n\n## Amendments\n\n1. src/contexts/automation_runtime/daemon_loop.rs:701-708, 789-823, 881, 1450-1470, 1496-1510, 1535-1539, 1624-1664: `persist_workflow_run_id` eagerly stores the latest historical `RunStarted` before dispatch, then `mark_active` re-reads that value into `active_task`, and the post-dispatch call returns immediately on the `workflow_run_id.is_some()` guard. If the project journal already contains another run for the same project when the task is retried, `try_reconcile_success` will bind to that stale run id instead of the run that just completed.\n   Rationale: This breaks the core correctness/idempotency guarantee of the reconciliation path: bead close/sync and milestone completion can be attributed to the wrong run after a retry.\n2. src/contexts/automation_runtime/success_reconciliation.rs:292-347 and src/contexts/automation_runtime/daemon_loop.rs:1790-1821 only switch to `repair_task_run_with_disposition` when the existing terminal lineage row matches the same `started_at`, and the daemon derives `started_at` from collapsed lineage / `RunStarted` only. That omits the existing CLI repair logic for resumed runs and stale same-`run_id` terminal rows; `FsTaskRunLineageStore::finalize_task_run_internal` still rejects the non-repair path when `entry.started_at != started_at` (src/adapters/fs.rs:3832-3859). The CLI path already handles this via `same_named_terminal_attempt_exists` and `effective_attempt_started_at` (src/cli/run.rs:215-240, 347-369, 435-449).\n   Rationale: A successful resumed run can still end in `reconciliation_milestone_update_failed` even though the durable journal contains enough information to repair the lineage, leaving the bead already closed but the task stuck failed until manual intervention.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 21
+}

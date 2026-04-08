@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407145737-final_review-aggregate-c1-a1-cr15-artifact",
+  "payload_id": "run-20260407145737-final_review-aggregate-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T21:40:59.375457152Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 15/25\n\n## Accepted\n\n- `fr-15-629e3ee2`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-15-629e3ee2`\n\nFix exact-attempt replay handling in the success-reconciliation path. `src/contexts/automation_runtime/success_reconciliation.rs:278-294` currently encodes the daemon `task_id` into `outcome_detail` (`\"task_id=...\"`) and then always calls `record_bead_completion`. That is not idempotent when the exact run was already finalized with any different success detail: terminal replays reject mismatched `outcome_detail` values in `src/adapters/fs.rs:3862-3896`, and journal repair rejects the same mismatch in `src/contexts/milestone_record/service.rs:1048-1083`. I reproduced this locally with an existing succeeded row whose detail was `\"first bead completed\"`; the replay fails with `task run ... is already finalized with outcome=succeeded`, leaving the bead already closed/synced but the daemon task permanently failing on every retry. Route exact-attempt replays through `repair_task_run_with_disposition` the way `src/cli/run.rs:347-369` already does, or add an explicit task-id parameter to the completion API so legacy success details can be preserved while backfilling linkage.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 15
+}

@@ -1,0 +1,75 @@
+{
+  "active_run": null,
+  "interrupted_run": {
+    "run_id": "run-20260407145737",
+    "stage_cursor": {
+      "stage": "final_review",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 25
+    },
+    "started_at": "2026-04-07T14:57:37.989526009Z",
+    "prompt_hash_at_cycle_start": "2ec0d63b8ffa5f455d88a22becbe236e3fdfd933cbdb94488270596444cc21dd",
+    "prompt_hash_at_stage_start": "2ec0d63b8ffa5f455d88a22becbe236e3fdfd933cbdb94488270596444cc21dd",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 24,
+    "stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-04-08T01:56:58.824462016Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  },
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 25,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [],
+    "processed_count": 71
+  },
+  "status_summary": "failed at Final Review: backend invocation failed for contract 'final_review:reviewer' via 'codex': codex exited with code 1: conciliation.rs:202:        reconciled_at: now,\n\nexec\n/run/current-system/sw/bin/bash -lc 'cargo test --lib --quiet' in /home/master/p/ralphs/ralph-burning\n succeeded in 1596ms:\n...............................................................................\ntest result: ok. 604 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.52s\n\n\nERROR: Selected model is at capacity. Please try a different model.\nERROR: Selected model is at capacity. Please try a different model.\ntokens used\n531,362\n (stdout_len: 0, stderr_len: 580987, stdout_tail: )",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-08T01:56:58.824462016Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407145737-final_review-aggregate-c1-a1-cr11-artifact",
+  "payload_id": "run-20260407145737-final_review-aggregate-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T20:03:22.802333020Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 11/25\n\n## Accepted\n\n- `fr-11-e422b81c`\n- `fr-11-42175af6`\n\n## Rejected\n\n- `fr-11-0b00ea0f`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-11-e422b81c`\n\nIn `persist_next_step_hint` (success_reconciliation.rs:335-371), the function assumes the milestone directory already exists when writing the hint file. If the directory doesn't exist (e.g., a race condition where milestone state was cleaned up), `std::fs::write` at line 346 will fail silently (logged at debug level). Consider adding a `create_dir_all` before the write, or document that the function's best-effort contract intentionally does not create directories.\n\n### `fr-11-42175af6`\n\n`src/contexts/automation_runtime/daemon_loop.rs:1611-1628` and `src/contexts/automation_runtime/daemon_loop.rs:1779-1814` move the milestone to `MilestoneStatus::Failed` for reconciliation errors, but `Failed` is terminal (`src/contexts/milestone_record/model.rs:80-103`). Every subsequent run start/resume goes back through `sync_milestone_bead_start` (`src/contexts/workflow_composition/engine.rs:1055-1057`, `src/contexts/workflow_composition/engine.rs:1750-1756`), and `record_bead_start` rejects terminal milestones (`src/contexts/milestone_record/service.rs:1896-1902`). In practice, a transient `br`/milestone-store outage now wedges the bead permanently: the daemon task can be retried, but the retry will fail before work restarts because the milestone can no longer accept a bead start. This needs a non-terminal needs-operator state, or an explicit reopen path before retrying.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 11
+}

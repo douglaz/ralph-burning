@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr14-artifact",
+  "payload_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T21:11:01.698694246Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nVerified the amendment against the actual code. The daemon's try_reconcile_success rewrites started_at to the RunResumed timestamp (daemon_loop.rs:1685-1697), passes it into record_bead_completion (success_reconciliation.rs:282-296), which calls update_task_run with allow_terminal_repair=false (fs.rs:4143). When the lineage entry was already terminally written with the original bead-start timestamp, the started_at mismatch at fs.rs:3836 triggers a rejection (fs.rs:3851-3859) instead of repairing. The CLI path (run.rs:347-369) correctly handles this via repair_task_run_with_disposition which uses allow_terminal_repair=true. The bug is real and the fix direction is sound.\n\n## Votes\n\n- `fr-14-378913cf`: Accept\n  Verified all code references. The bug is real: (1) daemon_loop.rs:1685-1697 rewrites started_at to the latest RunResumed timestamp, (2) this mismatched started_at is passed through record_bead_completion → update_task_run_with_disposition → lineage_store.update_task_run → finalize_task_run_internal with allow_terminal_repair=false, (3) at fs.rs:3836 the started_at mismatch against the existing terminal entry causes rejection at fs.rs:3851-3859 since terminal repair is not allowed. The CLI path at run.rs:347-369 already handles this correctly by detecting terminal attempts and using repair_task_run_with_disposition which passes allow_terminal_repair=true. The proposed fix — using the durable bead-start timestamp from milestone state or falling back to the terminal-repair flow — directly addresses the root cause and aligns the daemon path with the already-working CLI path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 14
+}

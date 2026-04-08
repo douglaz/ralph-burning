@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T16:31:49.581556581Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the success reconciliation implementation across 4 source files (success_reconciliation.rs, daemon_loop.rs, fs.rs, model.rs/service.rs). The core reconciliation logic is well-structured: idempotent bead close, unconditional sync for crash safety, milestone state updates, and next-step hint capture. The ordering change (reconcile before mark_completed) correctly ensures crash-safe reprocessing. All 9 tests pass including a comprehensive end-to-end test. Found one correctness bug in the journal event repair/merge path that silently drops the new task_id linkage data.\n\n## Amendments\n\n1. In `src/adapters/fs.rs`, `CompletionJournalDetails::render()` (line 2857) passes `None` for the `task_id` parameter instead of `self.task_id.as_deref()`. This means any completion journal event that goes through the merge or repair code paths (lines 2951, 2996, 3017) will silently lose its `task_id` linkage. The fix is to change `None` to `self.task_id.as_deref()` on line 2857.\n   Rationale: This is a data-loss bug in a code path exercised during idempotent re-runs (exactly the scenario the bead spec requires). When a completion event is repaired or merged — e.g., during crash recovery — the re-rendered event will drop the task_id, breaking the task-to-bead linkage tracking that this feature adds. The model's own `completion_journal_details()` at model.rs:436 correctly passes `self.task_id.as_deref()`, so this is an inconsistency between the two render paths.\n2. In `src/adapters/fs.rs`, `CompletionJournalDetails::merge()` (lines 2816-2846) does not merge the `task_id` field. It should add a block like `if merged.task_id.is_none() { merged.task_id = requested.task_id.clone(); }` after the existing `outcome_detail` merge, and should also check for conflicts on `task_id` alongside the other optional fields.\n   Rationale: The merge function fills in missing `run_id`, `plan_hash`, and `outcome_detail` from the requested event, but omits `task_id`. If an existing journal event lacks `task_id` (e.g., written before this feature) and a re-run produces a requested event with `task_id`, the linkage data from the requested event is silently discarded during the merge.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

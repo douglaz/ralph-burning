@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T00:10:27.699664172Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the 4 amendments against the current implementation. Three address real correctness or observability gaps; one would break the intended retry path by misusing a terminal milestone state.\n\n## Votes\n\n- `fr-20-4dbb691b`: Accept\n  This is a real regression-test gap. `capture_next_step_hint` now treats message-only JSON as `NoRecommendation` only for `BvParseError`, while `BvExitError` must remain `BvFailed`. The existing tests cover `BvNotFound` and the exit-0 parse-error path, but not the critical negative case where non-zero exit stdout happens to contain `{\"message\":...}`. Without that test, the bug this branch fixed could regress unnoticed.\n- `fr-20-5288a2c8`: Accept\n  `persist_workflow_run_id` currently binds `workflow_run_id` from the latest `RunStarted` journal event with no audit trail. If that fallback picks the wrong run during retry or recovery, `try_reconcile_success` will later trust the persisted value and skip its own missing-run-id warning path. Adding a warning on the write path is a low-risk observability improvement that makes suspect bindings diagnosable instead of silent.\n- `fr-20-7e9c36ff`: Accept\n  This is a real post-completion retry bug. `claim_task` disables remote resume for completed-run retries, but the failed attempt has already released the lease and removed the worktree, so the retry gets a fresh checkout from the default branch. `handle_completion_pr` then operates against that fresh checkout, which can mis-detect no-diff, skip/close PR work incorrectly, or fail pushing due to a non-fast-forward against the preserved remote branch. Reconciliation-only retries can skip resume, but PR-runtime and similar post-completion retries still need the preserved branch state.\n- `fr-20-2d8245e6`: Reject\n  Setting the milestone to `Failed` here would create a recovery bug, not fix one. `MilestoneStatus::Failed` is terminal, `record_bead_start` rejects further execution from a terminal milestone, and lineage reconciliation does not automatically reopen a failed milestone for remaining beads after a later successful retry. The current design intentionally fails only the daemon task so operators can `retry_task` and re-run idempotent reconciliation (`br close`, `br sync`, milestone completion recording) against the still-live milestone. If operator visibility is insufficient, that should be addressed with a non-terminal signal, not by forcing a terminal milestone state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 20
+}

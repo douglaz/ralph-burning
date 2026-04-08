@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T17:22:29.380444994Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe success reconciliation implementation is well-structured and meets all acceptance criteria. Close is idempotent (status check + retry-after-failure check), sync runs after close unconditionally (crash-safe), milestone progress/journal/lineage updates work correctly, next-step hints are best-effort, and the task-to-bead linkage is recorded. The reordering of reconciliation before mark_completed improves crash safety. All 599 library tests pass. The task_id field addition to CompletionJournalDetails is backward-compatible via serde(default). The multi-repo working_dir anchoring for br/bv adapters is correct. No critical bugs found.\n\n## Amendments\n\n1. In `try_reconcile_success` (daemon_loop.rs:1678-1688), when `BrCloseFailed` or `BrSyncFailed` occurs, `mark_milestone_failed` is called but the function still returns `true`, causing the task to be marked `completed`. Per the spec 'If br close fails, leave the bead open and transition the controller to a needs_operator state', the milestone transitions correctly, but the bead remains permanently un-closeable because no retry mechanism exists once the task is completed. Consider returning `false` (marking the task failed) for `BrCloseFailed`/`BrSyncFailed` so the task can be retried, or document that operator intervention is the only path to close the orphaned bead.\n   Rationale: A task marked completed after a br close failure creates an orphaned open bead with no automated recovery path. Marking the task failed would allow the existing retry machinery to attempt reconciliation again, consistent with how metadata errors are already handled (return false → mark_failed).\n2. The `extract_task_id_from_outcome_detail` function in fs.rs:3290 uses `strip_prefix(\"task_id=\")` which returns the entire remainder of the string after the prefix. If `outcome_detail` ever contains additional key=value pairs (e.g., `\"task_id=abc;reason=done\"`), the extracted task_id would include the trailing data. Consider parsing only up to the first delimiter character, or validating the extracted value format.\n   Rationale: While the current code only produces exact `task_id=<value>` strings, the extraction function is called in three separate locations in fs.rs (lines 3420, 3494, 3918) and the format is only implicitly coupled. A future change to outcome_detail format would silently corrupt the task_id field without any error.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}

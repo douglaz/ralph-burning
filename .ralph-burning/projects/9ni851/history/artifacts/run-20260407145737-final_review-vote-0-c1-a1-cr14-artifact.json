@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-0-c1-a1-cr14-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-0-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T21:11:39.300331097Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nIndependently verified every code reference in the amendment. The bug is confirmed: daemon_loop.rs:1685-1697 rewrites started_at to the RunResumed timestamp, success_reconciliation.rs:282-296 passes it into record_bead_completion, which calls update_task_run (fs.rs:4115-4145) with allow_terminal_repair=false (line 4143). When the lineage entry was already terminally written with the original bead-start timestamp, the started_at mismatch at fs.rs:3836 triggers rejection at fs.rs:3851-3859. The CLI path (run.rs:347-369) correctly detects this and uses repair_task_run_with_disposition. The proposed fix aligns the daemon path with the working CLI path.\n\n## Votes\n\n- `fr-14-378913cf`: Accept\n  Verified all six code references independently. (1) daemon_loop.rs:1685-1697 rewrites started_at to the latest RunResumed timestamp. (2) success_reconciliation.rs:282-296 passes this rewritten started_at into record_bead_completion. (3) This flows through to FsTaskRunLineageStore::update_task_run (fs.rs:4115-4145) which hardcodes allow_terminal_repair=false at line 4143. (4) fs.rs:3836 compares entry.started_at != started_at, and when the terminal lineage row was written with the original bead-start timestamp (preserved via fs.rs:4054-4079), the mismatch triggers the error path at fs.rs:3851-3859. (5) The CLI path at run.rs:347-369 already handles this correctly by detecting terminal attempts and routing through repair_task_run_with_disposition which passes allow_terminal_repair=true. The bug is real and creates an unrecoverable state for resumed daemon runs that crash after terminal lineage is written. The fix direction — using the durable bead-start timestamp or falling back to the terminal-repair flow — is sound and well-precedented by the existing CLI implementation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 14
+}

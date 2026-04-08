@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr12-artifact",
+  "payload_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T20:23:40.353825463Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nVerified the amendment's claim by tracing the full code path. When a run completes successfully (engine.rs:5530 sets RunStatus::Completed), reconciliation happens post-dispatch (daemon_loop.rs:1494-1522). If reconciliation fails, the task is marked Failed and its lease released. However, retry_task (task_service.rs:453-482) only moves the task back to Pending — it does not reset the run snapshot. On the next dispatch cycle, read_run_snapshot (daemon_loop.rs:2373-2375) returns RunStatus::Completed, and dispatch_in_worktree immediately rejects it at line 3007-3010 with TaskStateTransitionInvalid. This creates a permanent fail/retry/fail loop where reconciliation can never be re-attempted through the normal retry path. The amendment correctly identifies a real, actionable bug.\n\n## Votes\n\n- `fr-12-4b0289eb`: Accept\n  Verified through code tracing: (1) successful run sets RunStatus::Completed in the snapshot (engine.rs:5530), (2) reconciliation failure marks the daemon task as Failed (daemon_loop.rs:1499-1520), (3) retry_task only transitions task status to Pending without touching the run snapshot (task_service.rs:476), (4) next dispatch reads RunStatus::Completed and rejects with TaskStateTransitionInvalid (daemon_loop.rs:3007-3010). This is a real dead-end: any transient reconciliation error (br sync network failure, milestone store I/O error) produces a permanent fail→retry→fail loop with no automated recovery. The comments at lines 1608-1616 and 1755-1762 explicitly promise that retry_task will 're-dispatch reconciliation against the still-Running milestone', but the run snapshot — which gates dispatch — is already Completed and never gets reset. The fix requires either a dedicated reconciliation-only retry path that bypasses the run status check, or resetting the run status so a retry can re-enter the dispatch function and reach reconciliation code.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 12
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T17:29:02.002884754Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the reconciliation diff against `origin/master`, read the new daemon-loop, reconciliation, milestone, and fs changes end-to-end, and ran `cargo test success_reconciliation --lib` (9 tests passed). I found 2 correctness gaps: reconciliation failures are still swallowed as completed tasks, and next-step hints are captured but never made available to later selection.\n\n## Amendments\n\n1. `src/contexts/automation_runtime/daemon_loop.rs:1678-1688` converts `BrCloseFailed` and `BrSyncFailed` into a milestone failure but still returns `true`, and both success paths immediately mark the daemon task completed afterward (`src/contexts/automation_runtime/daemon_loop.rs:943-959` and `src/contexts/automation_runtime/daemon_loop.rs:1491-1494`). Retries are only allowed for failed or aborted tasks (`src/contexts/automation_runtime/task_service.rs:453-459`), so a `br close`/`br sync` failure can leave the bead open or unsynced with no automated recovery path while the task is reported as completed. These reconciliation errors need to keep the task non-completed, or otherwise enqueue a real retry, instead of being swallowed.\n   Rationale: This violates the requirement that `br close` failures transition the controller to a needs-operator state rather than silently succeeding, and it can misreport a failed reconciliation as a completed task.\n2. `src/contexts/automation_runtime/success_reconciliation.rs:160-172` captures the `bv --robot-next` result in `ReconciliationOutcome`, but `try_reconcile_success` collapses that outcome to a `bool` (`src/contexts/automation_runtime/daemon_loop.rs:1529`) and the only handling of `outcome.next_step_hint` is a `println!` (`src/contexts/automation_runtime/daemon_loop.rs:1671-1676`). Nothing persists the hint or returns it to later selection logic, so the controller has no durable next-step hint to consult after reconciliation finishes.\n   Rationale: The goal says next-step hints should be captured so later bead selection can use them as input. Logging them and then dropping them does not satisfy that contract.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}

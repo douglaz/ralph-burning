@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T17:00:44.408557841Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments have technical merit. Three identify real reconciliation-state bugs where the daemon can finalize a task while milestone or bead state is left inconsistent and unrecoverable; the remaining amendment is a sound maintainability cleanup that reduces duplicated parsing logic.\n\n## Votes\n\n- `fr-4-65bb49f9`: Accept\n  `try_reconcile_success` handles `BrCloseFailed` and `BrSyncFailed` by calling `mark_milestone_failed`, but `MilestoneUpdateFailed` only emits stderr output. In `reconcile_success`, bead close and `br sync --flush-only` happen before `update_milestone_state`, so this failure mode can leave BR state finalized while the milestone snapshot/journal/lineage stays stale. That asymmetry creates an operator-invisible inconsistency and should be treated as a real failure unless there is an explicit documented reason not to.\n- `fr-4-c9cdabec`: Accept\n  The `detail.strip_prefix(\"task_id=\")` parsing logic is duplicated in three places in `src/adapters/fs.rs` and all three implement the same convention produced by success reconciliation. A shared helper would reduce copy-paste drift and make future format changes safer. This is a small but valid maintainability improvement with negligible risk.\n- `fr-4-ab24bb0b`: Accept\n  This is a real defect, not just a logging asymmetry. Both success call sites invoke `try_reconcile_success(...).await` and then immediately call `mark_completed`, while `MilestoneUpdateFailed` is swallowed with only stderr logging. Because reconciliation closes and syncs the bead before milestone writes, a milestone write failure can leave the bead closed, the daemon task completed, and milestone state stale with no retry path. The system should either surface the failure through the same operator-visible path as BR failures or avoid terminal completion so reconciliation can be retried.\n- `fr-4-36b52c46`: Accept\n  The early returns for invalid `project_id` or unreadable project record happen before any reconciliation work or operator-visible failure transition, and the callers still mark the daemon task completed afterward. For milestone-backed work, that means no bead close, no sync, and no milestone update, yet the task becomes terminal and unrecoverable. That is a correctness bug; these metadata failures need to block terminal completion or move the task into a repairable failed/quarantined state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

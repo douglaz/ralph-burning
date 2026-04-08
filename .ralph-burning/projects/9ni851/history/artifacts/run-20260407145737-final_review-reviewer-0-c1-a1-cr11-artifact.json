@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr11-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T19:47:06.997123416Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe success reconciliation handler is well-designed and covers all acceptance criteria. The implementation correctly handles idempotency (double-close detection via br show), sync ordering (always after close), milestone updates, next-step hints with atomic write, and proper error propagation to needs-operator state. Tests are comprehensive with 10 tests including an end-to-end test. All tests pass. No bugs or safety issues found in the new code. Clippy errors are pre-existing on master, not introduced by this PR.\n\n## Amendments\n\n1. In `persist_next_step_hint` (success_reconciliation.rs:335-371), the function assumes the milestone directory already exists when writing the hint file. If the directory doesn't exist (e.g., a race condition where milestone state was cleaned up), `std::fs::write` at line 346 will fail silently (logged at debug level). Consider adding a `create_dir_all` before the write, or document that the function's best-effort contract intentionally does not create directories.\n   Rationale: While the function is explicitly best-effort and non-blocking, the failure mode is silent enough that an operator troubleshooting missing hints would have difficulty tracing it. A one-line `create_dir_all` or a more specific debug message ('directory does not exist') would improve debuggability without changing the contract.\n2. The `extract_task_id_from_outcome_detail` function (fs.rs:3292-3294) uses a simple `strip_prefix(\"task_id=\")` which only works when the entire `outcome_detail` string is exactly `task_id=<value>`. If future code sets `outcome_detail` to a multi-field format like `task_id=abc reason=xyz`, the extracted task_id would be `abc reason=xyz`. Consider adding a note or assertion that this function is tightly coupled to the `format!(\"task_id={task_id}\")` pattern in `update_milestone_state`.\n   Rationale: This is a fragile coupling between the format string in success_reconciliation.rs:280 and the parser in fs.rs:3292. The code works today but the coupling is implicit — a future developer could change the outcome_detail format without updating the extraction logic. A code comment or a shared constant would make this explicit.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 11
+}

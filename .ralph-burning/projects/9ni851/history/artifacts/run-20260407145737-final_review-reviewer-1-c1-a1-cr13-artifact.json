@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T20:40:29.614776280Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 1 correctness issue: retries after reconciliation failures still go through the normal pre-dispatch rebase path, so a completed run can become unrecoverable if the preserved branch no longer rebases cleanly before reconciliation is retried.\n\n## Amendments\n\n1. Fix the reconciliation retry path in `src/contexts/automation_runtime/daemon_loop.rs`. The new `RunStatus::Completed => Ok(())` branch at `src/contexts/automation_runtime/daemon_loop.rs:3007-3017` only bypasses dispatch; both task processors still rebase the worktree before dispatch (`src/contexts/automation_runtime/daemon_loop.rs:681-687` and `src/contexts/automation_runtime/daemon_loop.rs:1408-1414`). After `try_reconcile_success` marks a task failed for reconciliation errors (`src/contexts/automation_runtime/daemon_loop.rs:913-964` and `src/contexts/automation_runtime/daemon_loop.rs:1496-1521`), `retry_task` moves it back to `Pending` (`src/contexts/automation_runtime/task_service.rs:453-482`), so the retry still rebases the already-completed branch before it can re-enter reconciliation. If the default branch advanced or the preserved branch conflicts, the task fails again with a rebase error and the original transient `br`/milestone failure remains unrecoverable. Add a dedicated post-run retry path that skips rebase/run setup when the persisted run snapshot is already `Completed`, and add a regression test for retry-after-reconciliation-failure.\n   Rationale: The current change removes one blocker, but recovery is still not robust: reconciliation-only retries can still fail before reconciliation runs, so the happy-path repair flow is not actually idempotent or operator-recoverable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 13
+}

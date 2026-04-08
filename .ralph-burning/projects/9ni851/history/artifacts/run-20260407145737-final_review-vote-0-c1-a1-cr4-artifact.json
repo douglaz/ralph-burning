@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T16:59:45.579389012Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll four amendments identify real, verified defects. Amendments fr-4-65bb49f9 and fr-4-ab24bb0b target the same MilestoneUpdateFailed asymmetry (the latter adding the critical observation that callers unconditionally mark_completed, making the inconsistency irrecoverable). Amendment fr-4-36b52c46 identifies a distinct but equally serious bug where pre-reconciliation metadata failures silently fall through to task completion. Amendment fr-4-c9cdabec is a valid deduplication of triple-copy parsing logic.\n\n## Votes\n\n- `fr-4-65bb49f9`: Accept\n  Verified: BrCloseFailed and BrSyncFailed both call mark_milestone_failed, but MilestoneUpdateFailed only logs to stderr. Since close_bead_idempotent and sync_after_close execute before update_milestone_state in reconcile_success, a MilestoneUpdateFailed means the bead is already closed and synced in br while the milestone remains Active/InProgress with stale journal and lineage. This is a genuine state inconsistency with no operator signal. Adding mark_milestone_failed (or at least documenting the intentional asymmetry) is warranted.\n- `fr-4-c9cdabec`: Accept\n  Confirmed three identical instances of detail.strip_prefix(\"task_id=\") in fs.rs at lines 3420, 3494, and 3919, all parsing the same format produced by success_reconciliation.rs. Extracting a shared helper is low-risk, reduces copy-paste divergence surface, and ensures any future format evolution stays consistent across all three sites.\n- `fr-4-ab24bb0b`: Accept\n  This amendment adds critical context beyond fr-4-65bb49f9: try_reconcile_success returns () (no return value), and both call sites at lines ~913 and ~1444 unconditionally call mark_completed afterward. When MilestoneUpdateFailed occurs, the bead is closed in br, the task reaches terminal completed state, but milestone progress/journal/lineage are stale — and there is no retry path since the task is already completed. The recommendation to either trigger operator-visible failure handling or keep the task non-terminal is sound, as the current behavior creates an irrecoverable inconsistency.\n- `fr-4-36b52c46`: Accept\n  Verified: try_reconcile_success returns () and has early-return paths for invalid project_id and unreadable project records that are indistinguishable from successful reconciliation to the caller. Both call sites unconditionally proceed to mark_completed, meaning a milestone-backed task with bad metadata reaches terminal state with zero reconciliation work performed — no bead close, no sync, no milestone update, no journal entry — and no retry path. This is a genuine bug: early-return paths must either fail the task visibly or keep it non-terminal.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

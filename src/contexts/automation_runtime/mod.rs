@@ -12,6 +12,7 @@ pub mod pr_review;
 pub mod pr_runtime;
 pub mod repo_registry;
 pub mod routing;
+pub mod success_reconciliation;
 pub mod task_service;
 pub mod watcher;
 

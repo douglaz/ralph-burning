@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr24-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T01:52:11.834522354Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the cited reconciliation and hint-persistence paths against the source. Two amendments are accurate maintainability/documentation improvements, and one identifies a real correctness defect in retry reconciliation when `workflow_run_id` is missing and the code guesses the latest journal run.\n\n## Votes\n\n- `fr-24-82cbdc4c`: Accept\n  `try_reconcile_success` still has the inner `let task = &self.store.read_task(...)` binding in scope when `is_reconciliation_only_retry` is computed later in the `Ok(())` branch, so the code is intentionally reading the pre-claim snapshot where `failure_class` was not yet cleared. That means there is no current behavior bug here. However, the correctness depends on subtle shadowing between the function parameter and the later local binding, and a small refactor could silently break that invariant. A clarifying comment is justified as a maintainability improvement.\n- `fr-24-73414d93`: Accept\n  The implementation uses a standard temp-file then rename pattern, which is sufficient to prevent readers from observing partially written JSON. But without an `fsync` on the parent directory, rename durability across crash/power loss is not guaranteed on all Linux filesystems. Because this hint file is explicitly best-effort and non-blocking, that limitation is acceptable in code, but the current comment overstates the guarantee unless it is scoped to atomic visibility rather than crash durability. Documenting that distinction is technically correct and worthwhile.\n- `fr-24-4391c252`: Accept\n  This is a real safety issue. On retries where `task.workflow_run_id` is absent, `try_reconcile_success` falls back to the latest `RunStarted` event. That state is reachable today because `persist_workflow_run_id` is best-effort and non-blocking. If a different manual rerun of the same project occurred between the original failed attempt and the retry, the fallback can bind reconciliation to the newer run and then consume that run's `RunCompleted` timestamp and run ID for milestone finalization. That can silently close/sync the wrong bead attempt and corrupt lineage. In this path the code should fail closed or escalate to operator action rather than guess.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 24
+}

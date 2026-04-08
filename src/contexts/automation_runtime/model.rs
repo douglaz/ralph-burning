@@ -85,6 +85,12 @@ pub struct DaemonTask {
     /// Linked requirements run ID (set during requirements_draft or requirements_quick dispatch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirements_run_id: Option<String>,
+    /// Workflow run ID persisted after dispatch completes so that
+    /// `try_reconcile_success` can identify the correct run without
+    /// re-reading the journal (which may have been appended to by a
+    /// manual re-run between failure and retry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_run_id: Option<String>,
     /// GitHub repo slug (e.g. "owner/repo") for multi-repo daemon tasks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_slug: Option<String>,

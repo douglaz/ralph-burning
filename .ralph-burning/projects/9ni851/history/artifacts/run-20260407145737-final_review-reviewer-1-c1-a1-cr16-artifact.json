@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T22:01:18.480129235Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 1 correctness issue: the new next-step hint capture path mishandles `bv`'s successful no-work response, so stale `next_step_hint.json` state can survive after the last bead is completed. The rest of the reviewed reconciliation flow looked consistent with the intended close/sync/update ordering.\n\n## Amendments\n\n1. Handle the successful `bv --robot-next` \"no actionable items available\" response in `src/contexts/automation_runtime/success_reconciliation.rs:167-181` and `src/contexts/automation_runtime/success_reconciliation.rs:361-370` (the current parser shape is `src/adapters/bv_process.rs:345-353`). Right now `capture_next_step_hint` only accepts `NextBeadResponse { id, title, ... }`; when `bv` succeeds with the message-only JSON it falls into `BvFailed`, and `reconcile_success` deliberately leaves any existing `next_step_hint.json` untouched. After the final actionable bead closes, that preserves a stale hint that can still point at an already-completed bead. Treat the message-only success payload as an explicit \"no next hint\" result and clear/remove any persisted hint in that case; add a regression test for `{\"message\":\"No actionable items available\"}`.\n   Rationale: I reproduced `bv --robot-next` in a workspace with no actionable issues: it exits 0 and returns JSON with `\"message\":\"No actionable items available\"` instead of `id`/`title`. The current implementation misclassifies that as a transient failure and retains stale state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 16
+}

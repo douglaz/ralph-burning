@@ -7,7 +7,7 @@ use serde_json::json;
 
 use crate::adapters::fs::{
     FileSystem, FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
-    FsMilestoneStore,
+    FsMilestoneStore, FsTaskRunLineageStore,
 };
 use crate::adapters::github::GithubPort;
 use crate::contexts::agent_execution::model::{
@@ -678,55 +678,83 @@ where
             return Err(e);
         }
 
-        if let Err(error) = self.rebase_task_worktree(
-            store_dir,
-            repo_root,
-            &claimed_task,
-            &lease,
-            &effective_config,
-        ) {
-            // Sync label: Failed → rb:failed. On failure, mark label_dirty and
-            // quarantine this repo — no further mutations in this cycle.
-            let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
-            if let Some(ref ft) = failed_task {
-                if let Err(e) = github_intake::sync_label_for_task(github, ft).await {
-                    let _ = DaemonTaskService::mark_label_dirty(
-                        self.store,
-                        store_dir,
-                        &claimed_task.task_id,
-                    );
-                    eprintln!(
-                        "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
-                        claimed_task.task_id
-                    );
-                    return Err(e);
-                }
-            }
-            println!("failed task {}: {}", claimed_task.task_id, error);
-            return Ok(());
-        }
+        // On post-completion retries the run is already Completed and no
+        // new code will execute. Skip rebase and ensure_project to avoid
+        // unnecessary merge conflicts that would block reconciliation or
+        // PR recovery. Gated on: (1) the pre-claim task had ANY failure
+        // class (ruling out aborted retries — whose failure_class is None —
+        // and fresh dispatches), AND (2) the run snapshot is Completed.
+        // This covers reconciliation_* failures, pr_runtime_failed, and
+        // any future post-completion failure class.
+        // read_run_snapshot returns Err on first-run (no snapshot yet),
+        // which is fine — we fall through to the normal path.
+        let is_post_completion_retry = task.failure_class.is_some()
+            && crate::shared::domain::ProjectId::new(claimed_task.project_id.clone())
+                .ok()
+                .and_then(|pid| {
+                    self.run_snapshot_read
+                        .read_run_snapshot(repo_root, &pid)
+                        .ok()
+                })
+                .is_some_and(|snap| snap.status == RunStatus::Completed);
 
-        if let Err(error) = self.ensure_project(repo_root, &claimed_task) {
-            self.handle_post_claim_failure(store_dir, repo_root, &claimed_task, &lease, &error)?;
-            // Sync label: Failed → rb:failed. On failure, mark label_dirty and
-            // quarantine this repo — no further mutations in this cycle.
-            let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
-            if let Some(ref ft) = failed_task {
-                if let Err(e) = github_intake::sync_label_for_task(github, ft).await {
-                    let _ = DaemonTaskService::mark_label_dirty(
-                        self.store,
-                        store_dir,
-                        &claimed_task.task_id,
-                    );
-                    eprintln!(
-                        "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
-                        claimed_task.task_id
-                    );
-                    return Err(e);
+        if !is_post_completion_retry {
+            if let Err(error) = self.rebase_task_worktree(
+                store_dir,
+                repo_root,
+                &claimed_task,
+                &lease,
+                &effective_config,
+            ) {
+                // Sync label: Failed → rb:failed. On failure, mark label_dirty and
+                // quarantine this repo — no further mutations in this cycle.
+                let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
+                if let Some(ref ft) = failed_task {
+                    if let Err(e) = github_intake::sync_label_for_task(github, ft).await {
+                        let _ = DaemonTaskService::mark_label_dirty(
+                            self.store,
+                            store_dir,
+                            &claimed_task.task_id,
+                        );
+                        eprintln!(
+                            "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
+                            claimed_task.task_id
+                        );
+                        return Err(e);
+                    }
                 }
+                println!("failed task {}: {}", claimed_task.task_id, error);
+                return Ok(());
             }
-            println!("failed task {}: {}", claimed_task.task_id, error);
-            return Ok(());
+
+            if let Err(error) = self.ensure_project(repo_root, &claimed_task) {
+                self.handle_post_claim_failure(
+                    store_dir,
+                    repo_root,
+                    &claimed_task,
+                    &lease,
+                    &error,
+                )?;
+                // Sync label: Failed → rb:failed. On failure, mark label_dirty and
+                // quarantine this repo — no further mutations in this cycle.
+                let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
+                if let Some(ref ft) = failed_task {
+                    if let Err(e) = github_intake::sync_label_for_task(github, ft).await {
+                        let _ = DaemonTaskService::mark_label_dirty(
+                            self.store,
+                            store_dir,
+                            &claimed_task.task_id,
+                        );
+                        eprintln!(
+                            "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
+                            claimed_task.task_id
+                        );
+                        return Err(e);
+                    }
+                }
+                println!("failed task {}: {}", claimed_task.task_id, error);
+                return Ok(());
+            }
         }
         let task_on_disk = self.store.read_task(store_dir, &claimed_task.task_id)?;
         if task_on_disk.status == TaskStatus::Aborted {
@@ -837,76 +865,168 @@ where
 
         match outcome {
             Ok(()) => {
-                match self
-                    .handle_completion_pr_with_cancellation(
-                        store_dir,
-                        repo_root,
-                        &active_task,
-                        &lease,
-                        &effective_config,
-                        shutdown.clone(),
-                        task_cancel,
-                        github,
-                    )
-                    .await
-                {
-                    Ok(Some(_)) => {}
-                    Ok(None) => {
-                        let aborted_task = self.store.read_task(store_dir, &active_task.task_id)?;
-                        if let Err(e) =
-                            github_intake::sync_label_for_task(github, &aborted_task).await
-                        {
-                            let _ = DaemonTaskService::mark_label_dirty(
-                                self.store,
-                                store_dir,
-                                &active_task.task_id,
-                            );
-                            eprintln!(
+                // Persist the workflow run_id on the task after dispatch
+                // so reconciliation retries use the correct run rather
+                // than re-reading the journal (which may have been
+                // appended to by a manual re-run). Skip for
+                // post-completion retries: no new RunStarted was written
+                // (dispatch was a no-op for Completed), so the journal's
+                // latest RunStarted may belong to a newer manual re-run.
+                // Storing that would permanently bind the wrong run_id.
+                // Tasks that already have workflow_run_id from the
+                // original dispatch are unaffected (persist returns early).
+                if !is_post_completion_retry {
+                    self.persist_workflow_run_id(store_dir, repo_root, &active_task);
+                }
+
+                // Reconciliation-only retries (reconciliation_*) skip the PR
+                // handler: the PR was already created/merged on the original
+                // dispatch, and the retry only needs local bead close/sync/
+                // milestone bookkeeping. Re-running the PR handler on a
+                // reconciliation retry is unnecessary and can mutate or fail
+                // PR state (e.g. close-or-skip when the worktree is not
+                // ahead because no branch was resumed).
+                //
+                // NOTE: `task` here is the pre-claim snapshot (line ~647),
+                // which shadows the outer `task` parameter. `claim_task`
+                // calls `clear_failure()` on the claimed copy, so reading
+                // `failure_class` from the post-claim `active_task` would
+                // always be None. The pre-claim binding retains the original
+                // failure_class needed for this gate.
+                let is_reconciliation_only_retry = is_post_completion_retry
+                    && task
+                        .failure_class
+                        .as_deref()
+                        .is_some_and(|fc| fc.starts_with("reconciliation_"));
+
+                if !is_reconciliation_only_retry {
+                    match self
+                        .handle_completion_pr_with_cancellation(
+                            store_dir,
+                            repo_root,
+                            &active_task,
+                            &lease,
+                            &effective_config,
+                            shutdown.clone(),
+                            task_cancel,
+                            github,
+                        )
+                        .await
+                    {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            let aborted_task =
+                                self.store.read_task(store_dir, &active_task.task_id)?;
+                            if let Err(e) =
+                                github_intake::sync_label_for_task(github, &aborted_task).await
+                            {
+                                let _ = DaemonTaskService::mark_label_dirty(
+                                    self.store,
+                                    store_dir,
+                                    &active_task.task_id,
+                                );
+                                eprintln!(
                                 "daemon: label sync failed for aborted task '{}', quarantining repo: {e}",
                                 active_task.task_id
                             );
-                            return Err(e);
+                                return Err(e);
+                            }
+                            let _ = self.release_task_lease(
+                                store_dir,
+                                repo_root,
+                                &active_task.task_id,
+                                &lease,
+                            );
+                            return Ok(());
                         }
-                        let _ = self.release_task_lease(
-                            store_dir,
-                            repo_root,
-                            &active_task.task_id,
-                            &lease,
-                        );
-                        return Ok(());
-                    }
-                    Err(error) => {
-                        let failed_task = DaemonTaskService::mark_failed(
-                            self.store,
-                            store_dir,
-                            &active_task.task_id,
-                            "pr_runtime_failed",
-                            &error.to_string(),
-                        )?;
-                        if let Err(e) =
-                            github_intake::sync_label_for_task(github, &failed_task).await
-                        {
-                            let _ = DaemonTaskService::mark_label_dirty(
+                        Err(error) => {
+                            let failed_task = DaemonTaskService::mark_failed(
                                 self.store,
                                 store_dir,
                                 &active_task.task_id,
-                            );
-                            eprintln!(
+                                "pr_runtime_failed",
+                                &error.to_string(),
+                            )?;
+                            if let Err(e) =
+                                github_intake::sync_label_for_task(github, &failed_task).await
+                            {
+                                let _ = DaemonTaskService::mark_label_dirty(
+                                    self.store,
+                                    store_dir,
+                                    &active_task.task_id,
+                                );
+                                eprintln!(
                                 "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
                                 active_task.task_id
                             );
-                            return Err(e);
+                                return Err(e);
+                            }
+                            self.try_push_failed_task_branch(repo_root, &lease);
+                            let _ = self.release_task_lease(
+                                store_dir,
+                                repo_root,
+                                &active_task.task_id,
+                                &lease,
+                            );
+                            println!("failed task {}: {}", active_task.task_id, error);
+                            return Ok(());
                         }
-                        self.try_push_failed_task_branch(repo_root, &lease);
-                        let _ = self.release_task_lease(
-                            store_dir,
-                            repo_root,
-                            &active_task.task_id,
-                            &lease,
-                        );
-                        println!("failed task {}: {}", active_task.task_id, error);
-                        return Ok(());
                     }
+                } // end if !is_reconciliation_only_retry
+                  // Reconcile bead BEFORE marking completed so a crash between
+                  // reconciliation and mark_completed causes reprocessing on restart.
+                if let Err((failure_class, failure_message)) =
+                    self.try_reconcile_success(repo_root, &active_task).await
+                {
+                    match DaemonTaskService::mark_failed(
+                        self.store,
+                        store_dir,
+                        &active_task.task_id,
+                        &failure_class,
+                        &failure_message,
+                    ) {
+                        Ok(failed_task) => {
+                            if let Err(e) =
+                                github_intake::sync_label_for_task(github, &failed_task).await
+                            {
+                                let _ = DaemonTaskService::mark_label_dirty(
+                                    self.store,
+                                    store_dir,
+                                    &active_task.task_id,
+                                );
+                                eprintln!(
+                                    "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
+                                    active_task.task_id
+                                );
+                                return Err(e);
+                            }
+                        }
+                        Err(e) => {
+                            // mark_failed failed: the task's Failed state was NOT
+                            // durably written. Do NOT release the lease — the task
+                            // is still Active/Claimed. Releasing it would strand the
+                            // task with no lease and no scanner (Phase 3 only scans
+                            // Pending; Phase 0 only scans label_dirty). Retaining the
+                            // lease lets `daemon reconcile` detect it as stale and
+                            // mark_failed with class reconciliation_timeout.
+                            //
+                            // If the failure is persistent (corrupt store), operator
+                            // intervention is required: run `daemon reconcile` or
+                            // manually repair the task store file.
+                            eprintln!(
+                                "daemon: CRITICAL: mark_failed itself failed for task '{}', \
+                                 retaining lease for stale-lease recovery: {e}",
+                                active_task.task_id
+                            );
+                            self.try_push_failed_task_branch(repo_root, &lease);
+                            return Ok(());
+                        }
+                    }
+                    self.try_push_failed_task_branch(repo_root, &lease);
+                    let _ =
+                        self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                    println!("failed task {}: {failure_class}", active_task.task_id);
+                    return Ok(());
                 }
                 let completed_task =
                     DaemonTaskService::mark_completed(self.store, store_dir, &active_task.task_id)?;
@@ -1350,21 +1470,41 @@ where
 
         println!("claimed task {}", claimed_task.task_id);
 
-        if let Err(error) = self.rebase_task_worktree(
-            base_dir,
-            repo_root,
-            &claimed_task,
-            &lease,
-            &effective_config,
-        ) {
-            println!("failed task {}: {}", claimed_task.task_id, error);
-            return Ok(());
-        }
+        // On post-completion retries the run is already Completed and no
+        // new code will execute. Skip rebase and ensure_project to avoid
+        // unnecessary merge conflicts that would block reconciliation or
+        // PR recovery. Gated on: (1) the pre-claim task had ANY failure
+        // class (ruling out aborted retries — whose failure_class is None —
+        // and fresh dispatches), AND (2) the run snapshot is Completed.
+        // This covers reconciliation_* failures, pr_runtime_failed, and
+        // any future post-completion failure class.
+        let is_post_completion_retry = task.failure_class.is_some()
+            && crate::shared::domain::ProjectId::new(claimed_task.project_id.clone())
+                .ok()
+                .and_then(|pid| {
+                    self.run_snapshot_read
+                        .read_run_snapshot(base_dir, &pid)
+                        .ok()
+                })
+                .is_some_and(|snap| snap.status == RunStatus::Completed);
 
-        if let Err(error) = self.ensure_project(base_dir, &claimed_task) {
-            self.handle_post_claim_failure(base_dir, repo_root, &claimed_task, &lease, &error)?;
-            println!("failed task {}: {}", claimed_task.task_id, error);
-            return Ok(());
+        if !is_post_completion_retry {
+            if let Err(error) = self.rebase_task_worktree(
+                base_dir,
+                repo_root,
+                &claimed_task,
+                &lease,
+                &effective_config,
+            ) {
+                println!("failed task {}: {}", claimed_task.task_id, error);
+                return Ok(());
+            }
+
+            if let Err(error) = self.ensure_project(base_dir, &claimed_task) {
+                self.handle_post_claim_failure(base_dir, repo_root, &claimed_task, &lease, &error)?;
+                println!("failed task {}: {}", claimed_task.task_id, error);
+                return Ok(());
+            }
         }
         let task_on_disk = self.store.read_task(base_dir, &claimed_task.task_id)?;
         if task_on_disk.status == TaskStatus::Aborted {
@@ -1411,7 +1551,24 @@ where
 
         match outcome {
             Ok(()) => {
-                if task.repo_slug.is_some() {
+                // Persist workflow run_id after dispatch — skip for
+                // post-completion retries (see multi-repo path comment).
+                if !is_post_completion_retry {
+                    self.persist_workflow_run_id(base_dir, base_dir, &active_task);
+                }
+
+                // Skip PR handler for reconciliation-only retries — see
+                // multi-repo path comment for rationale.
+                //
+                // NOTE: `task` is the pre-claim snapshot (line ~1445);
+                // `claim_task` clears failure_class on the claimed copy.
+                let is_reconciliation_only_retry = is_post_completion_retry
+                    && task
+                        .failure_class
+                        .as_deref()
+                        .is_some_and(|fc| fc.starts_with("reconciliation_"));
+
+                if !is_reconciliation_only_retry && task.repo_slug.is_some() {
                     let noop_gh = crate::adapters::github::InMemoryGithubClient::new();
                     if self
                         .handle_completion_pr_with_cancellation(
@@ -1436,6 +1593,35 @@ where
                         return Ok(());
                     }
                 }
+                // Reconcile bead BEFORE marking completed so a crash between
+                // reconciliation and mark_completed causes reprocessing on restart.
+                if let Err((failure_class, failure_message)) =
+                    self.try_reconcile_success(base_dir, &active_task).await
+                {
+                    if let Err(e) = DaemonTaskService::mark_failed(
+                        self.store,
+                        base_dir,
+                        &active_task.task_id,
+                        &failure_class,
+                        &failure_message,
+                    ) {
+                        // Same as multi-repo: retain the lease for stale-lease
+                        // recovery via `daemon reconcile`. See multi-repo handler
+                        // comment for full rationale.
+                        eprintln!(
+                            "daemon: CRITICAL: mark_failed itself failed for task '{}', \
+                             retaining lease for stale-lease recovery: {e}",
+                            active_task.task_id
+                        );
+                        self.try_push_failed_task_branch(repo_root, &lease);
+                        return Ok(());
+                    }
+                    self.try_push_failed_task_branch(repo_root, &lease);
+                    let _ =
+                        self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
+                    println!("failed task {}: {failure_class}", active_task.task_id);
+                    return Ok(());
+                }
                 let _ =
                     DaemonTaskService::mark_completed(self.store, base_dir, &active_task.task_id)?;
                 let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
@@ -1459,6 +1645,367 @@ where
             }
         }
 
+        Ok(())
+    }
+
+    /// Best-effort: persist the workflow run_id extracted from the journal
+    /// onto the task so that reconciliation retries can identify the correct
+    /// run without re-reading the journal. `store_dir` is the daemon store
+    /// root; `project_dir` is where journal files live.
+    fn persist_workflow_run_id(&self, store_dir: &Path, project_dir: &Path, task: &DaemonTask) {
+        // Skip if already set (reconciliation retry of a task that
+        // previously had its run_id persisted).
+        if task.workflow_run_id.is_some() {
+            return;
+        }
+        let Ok(project_id) = crate::shared::domain::ProjectId::new(&task.project_id) else {
+            return;
+        };
+        let Ok(events) = self.journal_store.read_journal(project_dir, &project_id) else {
+            return;
+        };
+        let run_id = events
+            .iter()
+            .rev()
+            .find(|e| {
+                e.event_type
+                    == crate::contexts::project_run_record::model::JournalEventType::RunStarted
+            })
+            .and_then(|e| e.details.get("run_id").and_then(serde_json::Value::as_str));
+        if let Some(run_id) = run_id {
+            // The task had no workflow_run_id — we're binding it to the latest
+            // RunStarted event. If another run was started on this project
+            // between the original dispatch and this call, this may bind the
+            // wrong run_id. Log so operators can correlate suspect bindings.
+            tracing::debug!(
+                task_id = %task.task_id,
+                run_id,
+                "persist_workflow_run_id: binding run_id from latest RunStarted journal event",
+            );
+            if let Err(e) =
+                DaemonTaskService::set_workflow_run_id(self.store, store_dir, &task.task_id, run_id)
+            {
+                eprintln!(
+                    "daemon: failed to persist workflow_run_id on task '{}' (non-blocking): {e}",
+                    task.task_id
+                );
+            }
+        }
+    }
+
+    /// Attempt success reconciliation for a completed milestone task.
+    ///
+    /// Closes the bead in `br`, syncs, updates milestone state, and captures
+    /// next-step hints. Best-effort: failures are logged and transition the
+    /// milestone to Failed (needs-operator) rather than blocking task completion.
+    ///
+    /// `project_dir` is the workspace root where project records, milestone
+    /// files, and the `.beads/` graph live. In single-repo mode this is
+    /// `base_dir`; in multi-repo mode it is `repo_root`.
+    ///
+    /// Returns `Ok(())` if callers should proceed with `mark_completed`.
+    /// Returns `Err((failure_class, message))` if the task should be marked
+    /// failed instead — covers metadata errors (invalid project_id, unreadable
+    /// project record) and br close/sync failures.
+    async fn try_reconcile_success(
+        &self,
+        project_dir: &Path,
+        task: &DaemonTask,
+    ) -> Result<(), (String, String)> {
+        use crate::adapters::br_process::{BrAdapter, BrMutationAdapter, OsProcessRunner};
+        use crate::adapters::bv_process::{BvAdapter, OsBvProcessRunner};
+        use crate::contexts::automation_runtime::success_reconciliation::{
+            reconcile_success, ReconciliationError,
+        };
+        use crate::contexts::project_run_record::model::JournalEventType;
+        use crate::shared::domain::ProjectId;
+
+        let project_id = match ProjectId::new(&task.project_id) {
+            Ok(id) => id,
+            Err(_) => {
+                return Err((
+                    "reconciliation_metadata_error".to_owned(),
+                    "invalid project_id during success reconciliation".to_owned(),
+                ));
+            }
+        };
+
+        let project_record = match self
+            .project_store
+            .read_project_record(project_dir, &project_id)
+        {
+            Ok(record) => record,
+            Err(e) => {
+                eprintln!(
+                    "daemon: could not read project record for reconciliation (task={}): {e}",
+                    task.task_id
+                );
+                return Err((
+                    "reconciliation_metadata_error".to_owned(),
+                    format!("could not read project record during success reconciliation: {e}"),
+                ));
+            }
+        };
+
+        let task_source = match project_record.task_source.as_ref() {
+            Some(ts) => ts,
+            None => return Ok(()), // Not a milestone task, nothing to reconcile.
+        };
+
+        // NOTE: We intentionally do NOT transition the milestone to Failed on
+        // reconciliation errors. MilestoneStatus::Failed is terminal — once set,
+        // record_bead_start rejects all future bead starts, permanently wedging
+        // the milestone with no automated recovery path. Instead, we leave the
+        // milestone Running and return Err so the *task* is marked Failed. The
+        // operator can then retry_task, which re-dispatches reconciliation against
+        // the still-Running milestone. All reconciliation steps are idempotent:
+        // br close checks bead status, sync is unconditional, and
+        // record_bead_completion handles replays.
+
+        // Extract run_id and started_at. Prefer the durable workflow_run_id
+        // persisted on the task (set after dispatch completes) over scanning
+        // the journal for the latest RunStarted event. The journal-based
+        // fallback is kept for backwards compatibility with tasks dispatched
+        // before workflow_run_id was introduced.
+        let journal_events = match self.journal_store.read_journal(project_dir, &project_id) {
+            Ok(events) => events,
+            Err(e) => {
+                return Err((
+                    "reconciliation_metadata_error".to_owned(),
+                    format!("could not read journal: {e}"),
+                ));
+            }
+        };
+
+        let run_id_from_task = task.workflow_run_id.as_deref();
+        if run_id_from_task.is_none() {
+            if task.attempt_count > 0 {
+                // Fail-closed: on retries without a durable task→run
+                // binding, the journal's latest RunStarted may belong to a
+                // different manual re-run started between the original
+                // failure and this retry. Guessing the wrong run would
+                // close/sync the bead and rewrite milestone lineage for the
+                // wrong attempt. Surface a needs-operator condition instead;
+                // the operator can re-dispatch with a correct run binding.
+                return Err((
+                    "reconciliation_no_run_binding".to_owned(),
+                    format!(
+                        "task '{}' has no workflow_run_id on retry \
+                         (attempt_count={}); cannot safely determine which \
+                         run to reconcile — operator intervention required",
+                        task.task_id, task.attempt_count,
+                    ),
+                ));
+            }
+            // First dispatch (attempt_count == 0): the journal's RunStarted
+            // was written by this dispatch and is correct.
+            // persist_workflow_run_id should have set the binding, but the
+            // write may have failed transiently. Falling back to the latest
+            // RunStarted is safe because no retry window exists for a manual
+            // re-run to have overwritten it.
+            eprintln!(
+                "daemon: try_reconcile_success for task '{}' has no workflow_run_id — \
+                 falling back to latest RunStarted journal event (first dispatch, safe)",
+                task.task_id,
+            );
+        }
+        let run_started = journal_events.iter().rev().find(|event| {
+            if event.event_type != JournalEventType::RunStarted {
+                return false;
+            }
+            match run_id_from_task {
+                // When workflow_run_id is set, match the specific RunStarted
+                // event rather than blindly taking the latest one.
+                Some(target) => {
+                    event
+                        .details
+                        .get("run_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(target)
+                }
+                None => true,
+            }
+        });
+
+        let (run_id, started_at) = match run_started {
+            Some(event) => {
+                let run_id = event
+                    .details
+                    .get("run_id")
+                    .and_then(serde_json::Value::as_str);
+                match run_id {
+                    Some(id) => {
+                        // Use the durable bead-start timestamp from milestone
+                        // lineage rather than journal events. The lineage entry
+                        // was created by record_bead_start with the authoritative
+                        // started_at. For resumed runs, journal RunResumed has a
+                        // different timestamp, but the lineage entry retains the
+                        // original bead-start value — and finalize_task_run_internal
+                        // rejects started_at mismatches on terminal replays.
+                        //
+                        // Fallback chain (mirrors cli/run.rs effective_attempt_started_at):
+                        // 1. Lineage entry started_at (authoritative)
+                        // 2. RunResumed event timestamp (for resumed runs without lineage)
+                        // 3. RunStarted event timestamp (original start)
+                        let lineage_started_at = {
+                            use crate::contexts::milestone_record::model::MilestoneId;
+                            MilestoneId::new(&task_source.milestone_id)
+                                .ok()
+                                .and_then(|mid| {
+                                    milestone_service::find_runs_for_bead(
+                                        &FsTaskRunLineageStore,
+                                        project_dir,
+                                        &mid,
+                                        &task_source.bead_id,
+                                    )
+                                    .ok()
+                                })
+                                .and_then(|entries| {
+                                    entries
+                                        .iter()
+                                        .rev()
+                                        .find(|e| e.run_id.as_deref() == Some(id))
+                                        .map(|e| e.started_at)
+                                })
+                        };
+                        // When lineage is missing, apply the same
+                        // effective_attempt_started_at logic as cli/run.rs:
+                        // prefer the latest RunResumed timestamp over the
+                        // RunStarted timestamp so resumed-run reconciliation
+                        // uses the correct started_at for lineage matching.
+                        let effective_started_at = || {
+                            journal_events
+                                .iter()
+                                .rev()
+                                .find(|ev| {
+                                    ev.event_type == JournalEventType::RunResumed
+                                        && ev
+                                            .details
+                                            .get("run_id")
+                                            .and_then(serde_json::Value::as_str)
+                                            == Some(id)
+                                })
+                                .map(|ev| ev.timestamp)
+                                .unwrap_or(event.timestamp)
+                        };
+                        let started_at = lineage_started_at.unwrap_or_else(effective_started_at);
+                        (id.to_owned(), started_at)
+                    }
+                    None => {
+                        return Err((
+                            "reconciliation_metadata_error".to_owned(),
+                            "RunStarted event missing run_id".to_owned(),
+                        ));
+                    }
+                }
+            }
+            None => {
+                return Err((
+                    "reconciliation_metadata_error".to_owned(),
+                    "no RunStarted event found in journal".to_owned(),
+                ));
+            }
+        };
+
+        // Use the authoritative RunCompleted journal event timestamp rather
+        // than wall-clock time. Reconciliation may run after extra PR/cleanup
+        // work, so Utc::now() would record a late, misordered completion time.
+        // A missing RunCompleted event is a hard error — fabricating a
+        // timestamp would silently corrupt the milestone record.
+        let now = match journal_events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.event_type == JournalEventType::RunCompleted
+                    && event
+                        .details
+                        .get("run_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(&run_id)
+            })
+            .map(|event| event.timestamp)
+        {
+            Some(ts) => ts,
+            None => {
+                return Err((
+                    "reconciliation_metadata_error".to_owned(),
+                    format!("no RunCompleted journal event for run_id={run_id}"),
+                ));
+            }
+        };
+        // Anchor br/bv adapters to project_dir so commands target the
+        // correct repo's .beads/ graph (matters in multi-repo mode).
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::<OsProcessRunner>::new().with_working_dir(project_dir.to_path_buf()),
+        );
+        let br_read =
+            BrAdapter::<OsProcessRunner>::new().with_working_dir(project_dir.to_path_buf());
+        let bv = BvAdapter::<OsBvProcessRunner>::new().with_working_dir(project_dir.to_path_buf());
+
+        match reconcile_success(
+            &br_mutation,
+            &br_read,
+            Some(&bv),
+            project_dir,
+            &task_source.bead_id,
+            &task.task_id,
+            project_id.as_str(),
+            &task_source.milestone_id,
+            &run_id,
+            task_source.plan_hash.as_deref(),
+            started_at,
+            now,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                if outcome.was_already_closed {
+                    println!(
+                        "reconciliation: bead {} already closed (idempotent)",
+                        outcome.bead_id
+                    );
+                } else {
+                    println!("reconciliation: closed bead {}", outcome.bead_id);
+                }
+                if let Some(hint) = &outcome.next_step_hint {
+                    println!(
+                        "reconciliation: next-step hint: {} (score={:.2})",
+                        hint.id, hint.score
+                    );
+                }
+            }
+            Err(
+                e @ (ReconciliationError::BrCloseFailed { .. }
+                | ReconciliationError::BrSyncFailed { .. }),
+            ) => {
+                return Err(("reconciliation_br_failed".to_owned(), e.to_string()));
+            }
+            Err(ReconciliationError::MilestoneUpdateFailed {
+                bead_id,
+                task_id,
+                details,
+            }) => {
+                // The critical bead mutation (close + sync) already succeeded,
+                // but milestone state (snapshot progress, journal completion
+                // entry, task-to-bead lineage) was NOT durably written.
+                //
+                // We must NOT swallow this error: completed tasks are terminal
+                // and retry_task only accepts Failed/Aborted states. If we
+                // proceed to mark_completed, the milestone state is permanently
+                // lost with no automated recovery path. Instead, fail the task
+                // so the operator can investigate and retry after fixing the
+                // underlying milestone store issue. On retry, close_bead will
+                // be idempotent (already closed) and record_bead_completion
+                // handles replays (idempotent lineage upsert).
+                return Err((
+                    "reconciliation_milestone_update_failed".to_owned(),
+                    format!(
+                        "milestone update failed for bead={bead_id} task={task_id} \
+                         after successful br close+sync: {details}"
+                    ),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -2694,11 +3241,18 @@ where
             from: "run_running".to_owned(),
             to: "daemon_dispatch".to_owned(),
         }),
-        RunStatus::Completed => Err(AppError::TaskStateTransitionInvalid {
-            task_id: project_id.to_string(),
-            from: "run_completed".to_owned(),
-            to: "daemon_dispatch".to_owned(),
-        }),
+        RunStatus::Completed => {
+            // The run already completed — nothing to dispatch. This happens
+            // when a task is retried after a reconciliation-only failure
+            // (e.g., reconciliation_br_failed, reconciliation_metadata_error,
+            // reconciliation_milestone_update_failed). The run succeeded but
+            // post-run bookkeeping (bead close, sync, milestone update) failed.
+            // Returning Ok(()) lets the caller fall through to the success
+            // path where try_reconcile_success runs again. All reconciliation
+            // steps are idempotent: br close checks bead status, sync is
+            // unconditional, and record_bead_completion handles replays.
+            Ok(())
+        }
     }
 }
 
@@ -2957,6 +3511,7 @@ mod tests {
             dispatch_mode: DispatchMode::RequirementsDraft,
             source_revision: None,
             requirements_run_id: Some(run_id.to_owned()),
+            workflow_run_id: None,
             repo_slug: None,
             issue_number: None,
             pr_url: None,
@@ -3397,6 +3952,55 @@ mod tests {
             .expect("read completed task");
         assert_eq!(failed.status, TaskStatus::Completed);
         assert_eq!(failed.failure_class, None);
+    }
+
+    /// Regression test: dispatch_in_worktree_with_service must return Ok(())
+    /// for RunStatus::Completed so that reconciliation-only retries fall
+    /// through to try_reconcile_success. Before round 13, this returned
+    /// TaskStateTransitionInvalid, creating a permanent fail/retry/fail loop.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_completed_run_returns_ok_for_reconciliation_retry() {
+        use crate::contexts::agent_execution::model::CancellationToken;
+        use crate::contexts::project_run_record::model::RunStatus;
+        use crate::contexts::workspace_governance::initialize_workspace;
+
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let effective_config =
+            crate::contexts::workspace_governance::config::EffectiveConfig::load(base)
+                .expect("load config");
+        let project_id = ProjectId::new("test-project".to_owned()).expect("project id");
+
+        let result = super::dispatch_in_worktree_with_service(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base,
+            &project_id,
+            FlowPreset::Standard,
+            RunStatus::Completed,
+            &effective_config,
+            base,
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "RunStatus::Completed must return Ok(()) for reconciliation retries, got: {result:?}"
+        );
     }
 }
 
