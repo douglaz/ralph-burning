@@ -2,29 +2,96 @@
   "active_run": {
     "run_id": "run-20260408144314",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-08T14:43:14.866196922Z",
     "prompt_hash_at_cycle_start": "1e90139df0ccc9ae84ad052cb68e3839dfe2bf3f2c81b04d81608f2b49bcd2a8",
     "prompt_hash_at_stage_start": "1e90139df0ccc9ae84ad052cb68e3839dfe2bf3f2c81b04d81608f2b49bcd2a8",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-1397bf9d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Add a test for `br ready` failure (e.g., br binary not found or timeout during the ready query). The code at lines 505-518 of `src/cli/run.rs` correctly transitions to `NeedsOperator` when `request_ready_milestone_beads` returns `Err`, but no test exercises this path. All four existing tests cover bv failure or successful br queries, leaving the br-failure → NeedsOperator branch untested.",
+        "created_at": "2026-04-08T15:10:02.231422875Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "9b346b943cfdf6d4fd573662b6a42d69aa2e1822f4dc286a5b13f1cf5b31bd06"
+      },
+      {
+        "amendment_id": "fr-1-661460da",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Remove the unnecessary `async` qualifier from `transition_controller_for_selection_outcome` (line 448 of `src/cli/run.rs`). The function contains no `.await` calls — it only calls the synchronous `sync_controller_state`. Making it `async` forces every caller to `.await` a future that resolves immediately, adding unnecessary overhead.",
+        "created_at": "2026-04-08T15:10:02.231443314Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "e275d9da211529bf51481ff337264fd8cee4daeec6053ec826ab98893ce5ecd9"
+      },
+      {
+        "amendment_id": "fr-1-7714406a",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Wire the new selector into a real controller path before approving this bead. `select_next_milestone_bead` is implemented at `src/cli/run.rs:470`, but there are no production call sites; the only references are the new unit tests at `src/cli/run.rs:1873`, `src/cli/run.rs:1921`, `src/cli/run.rs:1961`, and `src/cli/run.rs:1994`. At the same time, successful reconciliation still moves the controller back to `Selecting` at `src/cli/run.rs:1030`, while the start/resume paths continue to only prepare already bead-linked projects at `src/cli/run.rs:1244` and `src/cli/run.rs:1363`. As shipped, the controller never actually asks `bv` for the next bead in production and will stall in `selecting` after a completed bead.",
+        "created_at": "2026-04-08T15:10:02.231475454Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "f4bd6fa6121fbb2d171e0040553c7eaad2c8230d1f9df7e3b6e7a28475e811bf"
+      },
+      {
+        "amendment_id": "fr-1-769c4884",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Tighten `br_show_error_is_missing` so only real 'bead not found' exits are treated as missing. The current check at `src/cli/run.rs:313` treats any `BrExitError` containing `unknown` in stdout/stderr as a missing bead, and `request_bead_detail` then converts that into `Ok(None)` at `src/cli/run.rs:366`. That will misclassify real tool failures such as `unknown flag` or `unknown subcommand` as a blocked/missing bead instead of sending the controller to `needs_operator`, which violates the selection policy for `br` failures.",
+        "created_at": "2026-04-08T15:10:02.231499750Z",
+        "batch_sequence": 4,
+        "source": "workflow_stage",
+        "dedup_key": "1dde21ccddfe56c6067d8bc7cd5f1e5f2ac7349ffaed8b8e742f70437f8febb9"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-08T14:55:07.809785712Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
 }

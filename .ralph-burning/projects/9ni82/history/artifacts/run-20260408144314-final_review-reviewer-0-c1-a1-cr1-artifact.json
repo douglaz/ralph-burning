@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T15:00:20.557898134Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe bead selection logic in `select_next_milestone_bead` is well-implemented. State transitions (Selecting → Claimed/Blocked/NeedsOperator) are all valid per the transition matrix. The canonicalization/matching logic for milestone bead refs is correct. Error handling correctly routes tool failures to NeedsOperator and logical mismatches to Blocked. All 757 tests pass, including the 4 new selection tests that cover the specified acceptance criteria (single-ready, conflicting-recommendation, no-ready, bv-failure). The `DependencyKind` custom deserializer, `BrShowResponse` untagged enum, and `BvMessageOnlyResponse` fallback parsing are all correct. No security issues or data corruption risks found.\n\n## Amendments\n\n1. Add a test for `br ready` failure (e.g., br binary not found or timeout during the ready query). The code at lines 505-518 of `src/cli/run.rs` correctly transitions to `NeedsOperator` when `request_ready_milestone_beads` returns `Err`, but no test exercises this path. All four existing tests cover bv failure or successful br queries, leaving the br-failure → NeedsOperator branch untested.\n   Rationale: The acceptance criteria require coverage of tool failure paths. The bv-failure path is tested (`select_next_milestone_bead_moves_to_needs_operator_on_bv_failure`) but the analogous br-failure path is not, creating an asymmetric gap in test coverage for a critical error-handling branch.\n2. Remove the unnecessary `async` qualifier from `transition_controller_for_selection_outcome` (line 448 of `src/cli/run.rs`). The function contains no `.await` calls — it only calls the synchronous `sync_controller_state`. Making it `async` forces every caller to `.await` a future that resolves immediately, adding unnecessary overhead.\n   Rationale: While not a correctness bug, unnecessary async functions create avoidable future state machine allocations and can mislead readers into thinking the function performs I/O. This is called on every selection outcome (4+ call sites within `select_next_milestone_bead`).\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T15:06:00.225880166Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 2 correctness issues: the new selecting-state helper is not wired into any production controller flow, and `br show` error classification is broad enough to turn real tool failures into false 'missing bead' results.\n\n## Amendments\n\n1. Wire the new selector into a real controller path before approving this bead. `select_next_milestone_bead` is implemented at `src/cli/run.rs:470`, but there are no production call sites; the only references are the new unit tests at `src/cli/run.rs:1873`, `src/cli/run.rs:1921`, `src/cli/run.rs:1961`, and `src/cli/run.rs:1994`. At the same time, successful reconciliation still moves the controller back to `Selecting` at `src/cli/run.rs:1030`, while the start/resume paths continue to only prepare already bead-linked projects at `src/cli/run.rs:1244` and `src/cli/run.rs:1363`. As shipped, the controller never actually asks `bv` for the next bead in production and will stall in `selecting` after a completed bead.\n   Rationale: This is the main acceptance gap: the selection logic exists only as a helper plus unit tests, so the controller cannot perform the required bv/br-driven next-bead selection end to end.\n2. Tighten `br_show_error_is_missing` so only real 'bead not found' exits are treated as missing. The current check at `src/cli/run.rs:313` treats any `BrExitError` containing `unknown` in stdout/stderr as a missing bead, and `request_bead_detail` then converts that into `Ok(None)` at `src/cli/run.rs:366`. That will misclassify real tool failures such as `unknown flag` or `unknown subcommand` as a blocked/missing bead instead of sending the controller to `needs_operator`, which violates the selection policy for `br` failures.\n   Rationale: A genuine CLI/runtime failure can currently be hidden as a benign missing-bead case, causing the controller to take the wrong safe-state path and obscuring operator actionability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}
