@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T15:25:53.737240593Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe bead selection implementation is solid. Core logic correctly: transitions to Selecting state, queries bv for recommendation, validates against br readiness, and routes to Claimed/Blocked/NeedsOperator appropriately. State transitions are consistent with the allowed transition graph. Tests cover the main paths (single-ready claim, blocked recommendation, no-ready, bv failure, br failure, br show failure, idempotent replay). All 757 tests pass. Two minor gaps identified but neither is a correctness bug in production paths.\n\n## Amendments\n\n1. Add a test for the code path at run.rs:540-555 where bv recommends a bead that is not part of the milestone plan. This path transitions to Blocked with a reason containing 'not part of milestone', but no test exercises it. A test should create a milestone with known beads, have bv recommend a bead ID outside that set, and assert the controller lands in Blocked with the expected reason message.\n   Rationale: This is an untested branch in the core selection logic. While the code looks correct by inspection, the acceptance criteria call for 'mismatches or empty-ready situations leave milestone state in a safe blocked or needs-operator path' — an out-of-plan recommendation is exactly such a mismatch and should have explicit test coverage.\n2. In the NoRecommendation path (run.rs:588-613), when bv reports no actionable bead but br shows ready milestone beads, the controller goes to Blocked. Consider whether this should be NeedsOperator instead, since the discrepancy suggests bv may be misconfigured or out of sync. If the current Blocked behavior is intentional, add a code comment explaining why Blocked is preferred over NeedsOperator for this case, and add a test covering this specific sub-path (bv returns no recommendation, br returns non-empty ready list).\n   Rationale: The Blocked vs NeedsOperator distinction matters for automation recovery. If an operator needs to investigate why bv disagrees with br, NeedsOperator is the explicit signal for human intervention. If Blocked is correct (e.g., the system should auto-retry later), that reasoning should be documented. Currently neither a comment nor a test captures this decision.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

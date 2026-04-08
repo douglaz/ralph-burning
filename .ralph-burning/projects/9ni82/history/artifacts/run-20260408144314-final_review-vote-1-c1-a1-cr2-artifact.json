@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260408144314-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T15:40:30.430556429Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments identify real defects or coverage gaps in the milestone-selection flow. Two expose untested controller branches, one flags a genuine daemon integration hole that leaves reconciled milestones parked in `selecting`, and one fixes loss of the bv recommendation audit trail when `br ready` fails after bv succeeds.\n\n## Votes\n\n- `fr-2-2753335a`: Accept\n  `src/cli/run.rs:540-555` has a distinct blocked branch for a bv recommendation outside the milestone plan, and the existing tests do not exercise it. That is a meaningful gap because this branch enforces a core safety check against claiming out-of-plan work.\n- `fr-2-6b8d6c51`: Accept\n  `src/cli/run.rs:588-613` has an untested sub-path where bv reports no recommendation while `br ready` still finds milestone beads. Whether the correct state is `Blocked` or `NeedsOperator`, the current choice needs an explicit rationale because those states have different recovery behavior, and the branch should be covered by a deterministic test.\n- `fr-2-345ae2fe`: Accept\n  The new selector is wired through the CLI post-run helpers, but the automation-runtime success path still moves non-final milestones back to `Selecting` in `success_reconciliation.rs` and only logs the hint in `daemon_loop.rs`. With no daemon-side call into the selector, daemon-driven execution can stall after a successful bead instead of continuing milestone selection.\n- `fr-2-b3293367`: Accept\n  In `src/cli/run.rs:492-517`, a successful bv recommendation exists only in memory until `br ready` completes. If `br ready` errors, the controller transitions to `needs_operator` without preserving which bead bv recommended, which weakens operator diagnostics and contradicts the stated selection policy to record the recommendation before claiming anything.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}
