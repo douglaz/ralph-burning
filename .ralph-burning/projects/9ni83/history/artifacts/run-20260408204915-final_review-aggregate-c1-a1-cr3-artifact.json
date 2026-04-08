@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260408204915-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260408204915-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T22:27:48.900417101Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 3/25\n\n## Accepted\n\n- `fr-3-ffaa74f7`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-3-3d3a1ecd`\n\n## Final Accepted Amendments\n\n### `fr-3-3d3a1ecd`\n\nIn `is_our_active_bead` (src/cli/project.rs:892-900), the check `ctrl.state == MilestoneControllerState::Claimed` is too strict for idempotent retries. After a `sync_flush` failure, `handle_create_from_bead` transitions the controller to `NeedsOperator` (line 390-406). On retry, the bead is locally `in_progress` (br update succeeded earlier) but the controller is now in `NeedsOperator` with the same `active_bead_id`. Since `is_our_active_bead` only accepts `Claimed`, it returns `false`, causing the retry to fail with 'claimed by another process' instead of being idempotent. Fix: also accept `NeedsOperator` state in the `is_our_active_bead` check, e.g. `matches!(ctrl.state, MilestoneControllerState::Claimed | MilestoneControllerState::NeedsOperator)`.\n\n### `fr-3-ffaa74f7`\n\n`claim_bead_in_br` misclassifies another operator's claim as an idempotent retry. In `src/cli/project.rs:831-859` and `src/cli/project.rs:892-899`, the fallback treats `br update <bead> --status=in_progress` failing with the bead already `in_progress` as success whenever the controller is already `claimed` for that bead. But `select_next_milestone_bead` writes that `claimed` controller state before any `br update` happens (`src/cli/run.rs:589-599`), so this check does not prove we previously claimed the bead in `br`; it only proves we selected it locally. If another operator claims the bead after selection but before our update, this branch will still proceed to create a Ralph project instead of moving to `needs_operator`. Remove this fallback or replace it with stronger post-claim evidence, and add a test for the \"selection already marked claimed, but another process won the race\" case.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408204915-final_review-arbiter-c1-a1-cr3-artifact",
+  "payload_id": "run-20260408204915-final_review-arbiter-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T22:27:48.887730281Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAccepted fr-3-3d3a1ecd. The sync_flush retry bug is real, impactful, and confirmed by all parties. While Reviewer 2 correctly identifies that NeedsOperator can arise from non-sync failure modes where br ownership is unproven, the unsafe edge case (transient br error + competing operator claiming between retries) is narrow relative to the common sync_flush failure path and the post-claim failure paths where the bead is genuinely ours. The proposed fix produces a net improvement in retry correctness across the dominant failure modes.\n\n## Rulings\n\n- `fr-3-3d3a1ecd`: Accept\n  The bug is real and confirmed by all parties: after sync_flush failure, the controller transitions to NeedsOperator (line 390-398), and on retry is_our_active_bead rejects it because it only accepts Claimed (line 897), breaking idempotent retries. Reviewer 2's concern that NeedsOperator is used for multiple failure modes is valid — specifically, br update failure (not just sync_flush) also produces NeedsOperator with active_bead_id. However, examining the three NeedsOperator+with_bead transitions in handle_create_from_bead: (1) br claim failure — could be sync_flush (bead IS ours) or br update failure (bead may not be ours), (2) project creation failure after successful claim — bead IS ours, (3) task-link failure after successful claim — bead IS ours. In 3 of 4 sub-cases, the bead is genuinely ours. The unsafe path (transient br error → NeedsOperator → retry → another operator claims between attempts) requires a narrow conjunction of events significantly rarer than the sync_flush failure this fixes. The net correctness improvement is positive, and run.rs already uses a similar NeedsOperator-inclusive pattern at line 776-779 for task ownership checks. Accept with the note that a follow-up could add stronger br-ownership evidence if the edge case proves problematic in practice.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

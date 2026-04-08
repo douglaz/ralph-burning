@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260408204915",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-08T20:49:15.170218817Z",
     "prompt_hash_at_cycle_start": "845570bb44e1d1b102e43f699c286f20716bce676d6023b05c9e93672821661c",
     "prompt_hash_at_stage_start": "845570bb44e1d1b102e43f699c286f20716bce676d6023b05c9e93672821661c",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-3d3a1ecd",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "In `is_our_active_bead` (src/cli/project.rs:892-900), the check `ctrl.state == MilestoneControllerState::Claimed` is too strict for idempotent retries. After a `sync_flush` failure, `handle_create_from_bead` transitions the controller to `NeedsOperator` (line 390-406). On retry, the bead is locally `in_progress` (br update succeeded earlier) but the controller is now in `NeedsOperator` with the same `active_bead_id`. Since `is_our_active_bead` only accepts `Claimed`, it returns `false`, causing the retry to fail with 'claimed by another process' instead of being idempotent. Fix: also accept `NeedsOperator` state in the `is_our_active_bead` check, e.g. `matches!(ctrl.state, MilestoneControllerState::Claimed | MilestoneControllerState::NeedsOperator)`.",
+        "created_at": "2026-04-08T22:27:48.900406531Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "894a0015e9132a197bc8a1f70ddef157c79465712944c3a28f171e5ea62ba9ca"
+      },
+      {
+        "amendment_id": "fr-3-ffaa74f7",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "`claim_bead_in_br` misclassifies another operator's claim as an idempotent retry. In `src/cli/project.rs:831-859` and `src/cli/project.rs:892-899`, the fallback treats `br update <bead> --status=in_progress` failing with the bead already `in_progress` as success whenever the controller is already `claimed` for that bead. But `select_next_milestone_bead` writes that `claimed` controller state before any `br update` happens (`src/cli/run.rs:589-599`), so this check does not prove we previously claimed the bead in `br`; it only proves we selected it locally. If another operator claims the bead after selection but before our update, this branch will still proceed to create a Ralph project instead of moving to `needs_operator`. Remove this fallback or replace it with stronger post-claim evidence, and add a test for the \"selection already marked claimed, but another process won the race\" case.",
+        "created_at": "2026-04-08T22:27:48.900412171Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "d9d701246020a29696b30739c6c353f41ade1c2b33e98ccdebb2a26863df6a63"
+      }
+    ],
     "processed_count": 9
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-08T21:52:04.190053794Z",
+    "resolved_at": "2026-04-08T22:11:03.182422557Z",
     "final_review_reviewers": [
       {
         "backend_family": "claude",
