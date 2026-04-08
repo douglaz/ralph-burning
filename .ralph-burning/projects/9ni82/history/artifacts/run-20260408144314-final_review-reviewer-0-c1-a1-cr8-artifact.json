@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr8-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T18:09:48.488823221Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the bead selection implementation (9ni.8.2) across 3 files: src/cli/run.rs (~660 new lines), src/contexts/automation_runtime/success_reconciliation.rs (~150 new lines), and src/contexts/milestone_record/controller.rs (~120 new lines). The implementation adds: (1) a selection flow that queries bv --robot-next for a recommendation, validates it against br ready state and milestone plan membership, and transitions the controller to Claimed/Blocked/NeedsOperator accordingly; (2) same-state sync support in the controller so Selecting can be re-entered with updated reasons; (3) post-reconciliation selection continuation in the daemon path; (4) hint file persistence for operator inspection. All 650 tests pass, including 18+ new tests covering single-ready, conflicting-recommendation, no-ready, tool failure, replay idempotency, and cascading failure scenarios. The state machine transitions are sound, error handling is comprehensive with graceful degradation, and the DependencyKind filtering logic is correct. No bugs or safety issues found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 8
+}

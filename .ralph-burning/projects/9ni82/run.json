@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260408144314",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 8
+      "completion_round": 9
     },
     "started_at": "2026-04-08T17:40:20.686438681Z",
     "prompt_hash_at_cycle_start": "1e90139df0ccc9ae84ad052cb68e3839dfe2bf3f2c81b04d81608f2b49bcd2a8",
     "prompt_hash_at_stage_start": "1e90139df0ccc9ae84ad052cb68e3839dfe2bf3f2c81b04d81608f2b49bcd2a8",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 7
+    "final_review_restart_count": 8
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 8,
+  "completion_rounds": 9,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-8-56c3418f",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 8,
+        "body": "Preserve non-final reconciliation replay idempotency after automatic next-bead selection. `reconcile_success` still begins every replay by forcing the old bead/task back through `sync_controller_task_reconciling` (`src/contexts/automation_runtime/success_reconciliation.rs:159-171`), but the new post-reconciliation selection path can already have advanced the controller to the next bead (`src/contexts/automation_runtime/success_reconciliation.rs:239-253`). Once that happens, `sync_controller_task_reconciling` rejects the replay because `validate_active_context_alignment` treats the controller's new active bead/task as a hard mismatch (`src/contexts/milestone_record/controller.rs:471-489`, `src/contexts/milestone_record/controller.rs:1339-1348`). That regresses the reconciler's crash-safe replay behavior for any non-final milestone whose first reconciliation successfully selected the next bead. Add the same kind of exact-attempt/current-context guard the CLI sync path uses, and cover a replay-after-nonfinal-selection test.",
+        "created_at": "2026-04-08T18:26:56.887561885Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "37681adf4acb5e85279512c4d443c93d61d327c88272529e1971cf239c593b2b"
+      },
+      {
+        "amendment_id": "fr-8-9e260de9",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 8,
+        "body": "Normalize the bead ID that gets persisted into the controller when selection succeeds. The new selector intentionally supports mixed qualified/unqualified IDs via `canonicalize_milestone_bead_ref`, `milestone_planned_refs_contain`, and `milestone_bead_refs_match` (`src/cli/run.rs:272-296`, `src/cli/run.rs:584-585`), but on success it still writes the raw `br ready` string into `active_bead_id` (`src/cli/run.rs:588-594`). Downstream controller code still compares bead IDs with plain string equality when adopting a project or deciding whether a terminal sync applies (`src/contexts/milestone_record/controller.rs:1339-1348`, `src/cli/run.rs:780-781`, `src/cli/run.rs:1016-1021`). If `br ready` reports `bead-2` and the bead-linked project uses `ms-alpha.bead-2`, the controller will later reject the real project as a mismatched bead or skip its terminal sync. Canonicalize the stored claimed bead ID, or canonicalize all downstream comparisons, and add a regression that carries a mixed-form selected bead through claim/start/sync.",
+        "created_at": "2026-04-08T18:26:56.887609074Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "7b23b75b5a8484910d284a81169472e15e8f6d36f85717fa36f4fa6fac158fce"
+      }
+    ],
     "processed_count": 18
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 9 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-08T17:40:20.713043009Z",
+    "resolved_at": "2026-04-08T18:04:37.873267880Z",
     "final_review_reviewers": [
       {
         "backend_family": "claude",
