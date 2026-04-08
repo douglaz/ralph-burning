@@ -817,7 +817,26 @@ async fn continue_selecting_milestone_bead_if_needed<R: ProcessRunner, V: BvProc
     }
 
     let selection_at = std::cmp::max(now, controller.last_transition_at);
-    select_next_milestone_bead(base_dir, &milestone_id, br, bv, selection_at).await?;
+    if let Err(error) =
+        select_next_milestone_bead(base_dir, &milestone_id, br, bv, selection_at).await
+    {
+        let reason = format!("post-sync bead selection failed: {error}");
+        tracing::warn!(
+            milestone_id = milestone_id.as_str(),
+            %error,
+            "persisting needs_operator after selection failure on CLI sync path"
+        );
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+            milestone_controller::ControllerTransitionRequest::new(
+                MilestoneControllerState::NeedsOperator,
+                reason,
+            ),
+            selection_at,
+        )?;
+    }
     Ok(())
 }
 
@@ -3011,6 +3030,124 @@ mod tests {
         assert_eq!(first_br.calls().len(), 1);
         assert_eq!(replay_bv.calls().len(), 1);
         assert_eq!(replay_br.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_terminal_milestone_task_and_continue_selection_persists_needs_operator_on_plan_failure(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/bead-run/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"bead-run","flow":"docs_change"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-1","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:30:00Z","event_type":"run_completed","details":{"run_id":"run-1","completion_rounds":0,"max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let milestone = create_milestone_with_plan(base_dir, started_at);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "bead-run",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )
+        .expect("record bead start");
+
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: started_at,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: "ms-alpha".to_owned(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+        let final_snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: None,
+            status: RunStatus::Completed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "completed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        // Corrupt plan.json after milestone sync transitions controller to selecting.
+        // The sync itself reads the snapshot, not the plan, so it succeeds, but the
+        // follow-up selection will fail when it tries to load planned bead membership.
+        let plan_path = base_dir.join(".ralph-burning/milestones/ms-alpha/plan.json");
+        std::fs::write(&plan_path, "NOT VALID JSON").expect("corrupt plan");
+
+        // Empty mock adapters — selection should fail before reaching bv/br.
+        let br = MockBrAdapter::from_responses([] as [MockBrResponse; 0]);
+        let bv = MockBvAdapter::from_responses([] as [MockBvResponse; 0]);
+
+        let result = sync_terminal_milestone_task_and_continue_selection(
+            base_dir,
+            &project_id,
+            &project_record,
+            &final_snapshot,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            started_at,
+        )
+        .await;
+
+        // The function should succeed (not propagate the selection error).
+        assert!(
+            result.is_ok(),
+            "sync should succeed despite selection failure: {result:?}"
+        );
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator,
+            "controller should land in needs_operator, not stay stuck in selecting"
+        );
+        assert!(
+            controller
+                .last_transition_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("post-sync bead selection failed"),
+            "reason should mention selection failure: {:?}",
+            controller.last_transition_reason
+        );
+        // bv/br should never be called since the plan couldn't even be loaded.
+        assert_eq!(bv.calls().len(), 0);
+        assert_eq!(br.calls().len(), 0);
     }
 
     #[test]
