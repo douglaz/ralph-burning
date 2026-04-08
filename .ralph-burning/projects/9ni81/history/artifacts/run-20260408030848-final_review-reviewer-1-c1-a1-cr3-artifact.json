@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260408030848-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T04:48:02.032325713Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the controller, CLI, filesystem, and success-reconciliation changes end-to-end and ran targeted tests (`cargo test milestone_record::controller --lib`, `cargo test sync_terminal_milestone_task --lib`, `cargo test reconcile_success_end_to_end_updates_milestone --lib`). I found two correctness gaps in resume validation: ready-bead detection fails for explicit bead IDs, and global completion/divergence detection relies on stale milestone snapshots instead of the live bead graph.\n\n## Amendments\n\n1. `src/cli/run.rs:269-273` assumes every bead in a milestone starts with `<milestone_id>.` when it filters `br ready --json`. That is false for valid milestones with explicit bead IDs, including the new fixture that uses `bead-e2e` (`src/contexts/automation_runtime/success_reconciliation.rs:1062-1083`). Because `resume_controller()` relies on `has_ready_beads()` in the `selecting` and `blocked` states (`src/contexts/milestone_record/controller.rs:791-804` and `src/contexts/milestone_record/controller.rs:894-906`), those milestones will never be seen as having ready work after a restart and can get stranded in `blocked` or transition incorrectly. Scope readiness by the milestone’s planned bead set, not by a string-prefix heuristic.\n   Rationale: Explicit bead IDs are already supported in this repo, so the current readiness filter breaks resume for a real class of milestones.\n2. `src/cli/run.rs:276-290` implements `all_beads_closed()` purely from the persisted milestone snapshot, but `resume_transition_request()` uses that value to decide `idle`, `selecting`, `blocked`, and `completed` recovery behavior (`src/contexts/milestone_record/controller.rs:781-805` and `src/contexts/milestone_record/controller.rs:910-917`). That means resume never validates global milestone completion against the live `.beads` graph: reopening a bead after the controller reached `completed`, or externally closing the last open bead without updating `status.json`, is invisible here. In those cases the controller can keep a stale state instead of moving to `needs_operator`/`completed` as required by the prompt. Resume validation needs to query current bead openness from `br`, not only cached milestone progress.\n   Rationale: The acceptance criteria explicitly require detecting stale persisted state against current `.beads`; snapshot-only completion checks miss those external graph edits.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

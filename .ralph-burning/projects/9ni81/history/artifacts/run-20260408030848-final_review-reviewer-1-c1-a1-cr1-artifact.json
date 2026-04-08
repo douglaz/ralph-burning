@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260408030848-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T03:34:59.169428902Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the `master...HEAD` diff, with `src/contexts/milestone_record/controller.rs` and the new filesystem store read end-to-end. I found two correctness issues: the resume repair path cannot actually persist `needs_operator` from an invalid snapshot, and transition validation does not enforce bead/task continuity across active states.\n\n## Amendments\n\n1. Fix the invalid-state resume path in `src/contexts/milestone_record/controller.rs:352-357`, `src/contexts/milestone_record/controller.rs:411-412`, and `src/contexts/milestone_record/controller.rs:465-474`. `resume_transition_request()` correctly classifies semantic validation failures as a `needs_operator` transition, but `resume_controller()` routes that request through `transition_from_current_locked()`, which immediately re-runs `current.validate_semantics()` and aborts before the recovery transition is journaled or persisted. A stale controller such as `running` without `active_task_id` still returns `CorruptRecord` instead of moving to `needs_operator`.\n   Rationale: This breaks the bead’s required resume semantics for stale/divergent persisted state and can leave the controller unrecoverable after restart.\n2. Tighten transition validation in `src/contexts/milestone_record/controller.rs:437-455` and `src/contexts/milestone_record/controller.rs:685-724` so in-flight transitions preserve the active bead/task identity unless the state machine is explicitly clearing it. Right now only the target state’s shape is checked, so `claimed`/`running`/`reconciling` can silently swap to a different bead or task; for example, `running(bead-a, task-1)` can transition to `reconciling(bead-b, task-2)` and be accepted as legal.\n   Rationale: The controller is supposed to validate legal transitions and provide durable audit/recovery data. Allowing identifier rebinding during an active execution can misattribute task outcomes and corrupt crash recovery.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

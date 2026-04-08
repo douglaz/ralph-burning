@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-final_review-reviewer-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260408030848-final_review-reviewer-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T05:19:01.771379985Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the milestone controller state machine implementation. The core state machine design is sound: transition validation is comprehensive, journal-based crash recovery works correctly, schema version checking is defensive, and trailing NDJSON line tolerance handles crash mid-write. The sync functions (sync_controller_task_claimed, sync_controller_task_running, sync_controller_task_reconciling) are properly idempotent for same-state calls and correctly enforce active context alignment. Resume logic properly detects stale state and transitions to NeedsOperator. All 20 new tests pass. Two minor issues found.\n\n## Amendments\n\n1. In `src/cli/run.rs` sync_terminal_milestone_task_with_options, the `RunStatus::Paused` arm at line 440 (`RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => return Ok(false)`) is dead code because Paused is now handled by the early return at lines 412-423. Remove `RunStatus::Paused` from the later match arm so the exhaustiveness checker will flag if a new status is added, and so readers don't have to reason about two Paused handlers.\n   Rationale: Dead code hides the actual Paused handling path and could mislead future maintainers into thinking the controller sync on pause is not happening. The compiler's exhaustiveness checking becomes less useful when dead arms mask real control flow.\n2. In both `src/cli/run.rs` (line 667-673) and `src/contexts/automation_runtime/success_reconciliation.rs` (line 392-398), the `transition_controller` call that moves from Reconciling to Selecting/Completed creates a ControllerTransitionRequest without bead_id or task_id. The resulting journal event loses the identity of the bead that was just reconciled. Consider including the bead_id and task_id in the request (the state_clears_active_context logic will still clear them from the controller record, but the journal event would retain the audit trail).\n   Rationale: The journal is intended for crash recovery and audit. A Reconciling→Selecting event with no bead/task context forces the reader to look backward in the journal to understand what was reconciled. Including the identifiers in the transition event makes each event self-describing and simplifies debugging without changing controller state behavior (the transition_context_error_details function returns None immediately for context-clearing target states, so the identifiers would be accepted).\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

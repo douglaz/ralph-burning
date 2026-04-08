@@ -23,6 +23,9 @@ use crate::contexts::automation_runtime::repo_registry::{
     parse_repo_slug, RepoRegistration, RepoRegistryPort,
 };
 use crate::contexts::automation_runtime::DaemonStorePort;
+use crate::contexts::milestone_record::controller::{
+    MilestoneControllerPort, MilestoneControllerRecord, MilestoneControllerTransitionEvent,
+};
 use crate::contexts::milestone_record::model::{
     collapse_task_run_attempts, find_matching_running_task_run, matching_finalized_task_runs,
     render_completion_journal_details, render_start_journal_details, CompletionJournalDetails,
@@ -2389,6 +2392,8 @@ impl RepoRegistryPort for FsRepoRegistryStore {
 //   ├─ milestone.toml        (immutable record)
 //   ├─ status.json           (mutable snapshot)
 //   ├─ journal.ndjson        (event log)
+//   ├─ controller.json       (controller state machine snapshot)
+//   ├─ controller-journal.ndjson (controller transition log)
 //   ├─ plan.json             (machine-readable plan)
 //   ├─ plan.md               (human-readable plan)
 //   └─ task-runs.ndjson      (bead → project lineage)
@@ -2397,6 +2402,8 @@ const MILESTONES_DIR: &str = "milestones";
 const MILESTONE_CONFIG_FILE: &str = "milestone.toml";
 const MILESTONE_STATUS_FILE: &str = "status.json";
 const MILESTONE_JOURNAL_FILE: &str = "journal.ndjson";
+const MILESTONE_CONTROLLER_FILE: &str = "controller.json";
+const MILESTONE_CONTROLLER_JOURNAL_FILE: &str = "controller-journal.ndjson";
 const MILESTONE_PLAN_JSON_FILE: &str = "plan.json";
 const MILESTONE_PLAN_MD_FILE: &str = "plan.md";
 const MILESTONE_PLAN_SHAPE_FILE: &str = "plan.shape.json";
@@ -2760,6 +2767,184 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
         let _lock = AdvisoryFileLock::acquire(&lock_path)?;
         let _marker = CurrentThreadMilestoneMutationLockGuard::acquire(&lock_path);
         Self::recover_pending_state_commit(base_dir, milestone_id)?;
+        operation()
+    }
+}
+
+pub struct FsMilestoneControllerStore;
+
+impl FsMilestoneControllerStore {
+    fn controller_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_CONTROLLER_FILE)
+    }
+
+    fn controller_journal_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_CONTROLLER_JOURNAL_FILE)
+    }
+
+    fn ensure_milestone_root_exists(base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<()> {
+        let root = FileSystem::milestone_root(base_dir, milestone_id);
+        if root.is_dir() {
+            return Ok(());
+        }
+
+        Err(AppError::CorruptRecord {
+            file: format!("milestones/{}/{}", milestone_id, MILESTONE_CONTROLLER_FILE),
+            details: "milestone directory does not exist".to_owned(),
+        })
+    }
+
+    fn read_controller_from_path(
+        path: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<Option<MilestoneControllerRecord>> {
+        let raw = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+
+        let controller: MilestoneControllerRecord =
+            serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+                file: format!("milestones/{}/{}", milestone_id, MILESTONE_CONTROLLER_FILE),
+                details: error.to_string(),
+            })?;
+        if controller.schema_version
+            != crate::contexts::milestone_record::controller::MILESTONE_CONTROLLER_SCHEMA_VERSION
+        {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/{}", milestone_id, MILESTONE_CONTROLLER_FILE),
+                details: format!(
+                    "unsupported controller schema_version {} (expected {})",
+                    controller.schema_version,
+                    crate::contexts::milestone_record::controller::MILESTONE_CONTROLLER_SCHEMA_VERSION
+                ),
+            });
+        }
+        if controller.milestone_id != *milestone_id {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/{}", milestone_id, MILESTONE_CONTROLLER_FILE),
+                details: format!(
+                    "controller milestone_id '{}' does not match milestone path '{}'",
+                    controller.milestone_id, milestone_id
+                ),
+            });
+        }
+        Ok(Some(controller))
+    }
+
+    fn read_controller_journal_from_path(
+        path: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<Vec<MilestoneControllerTransitionEvent>> {
+        let raw = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+
+        let entries: Vec<_> = raw
+            .lines()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                let trimmed = line.trim();
+                (!trimmed.is_empty()).then_some((index, trimmed))
+            })
+            .collect();
+
+        let mut events = Vec::with_capacity(entries.len());
+        for (position, (index, trimmed)) in entries.iter().enumerate() {
+            let event: MilestoneControllerTransitionEvent = match serde_json::from_str(trimmed) {
+                Ok(event) => event,
+                Err(error) if position + 1 == entries.len() => {
+                    tracing::warn!(
+                        milestone_id = %milestone_id,
+                        file = MILESTONE_CONTROLLER_JOURNAL_FILE,
+                        line_number = *index + 1,
+                        error = %error,
+                        "discarding malformed trailing controller journal line"
+                    );
+                    break;
+                }
+                Err(error) => {
+                    return Err(AppError::CorruptRecord {
+                        file: format!(
+                            "milestones/{}/{}",
+                            milestone_id, MILESTONE_CONTROLLER_JOURNAL_FILE
+                        ),
+                        details: format!("line {}: {}", index + 1, error),
+                    });
+                }
+            };
+            events.push(event);
+        }
+        Ok(events)
+    }
+}
+
+impl MilestoneControllerPort for FsMilestoneControllerStore {
+    fn read_controller(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<Option<MilestoneControllerRecord>> {
+        Self::ensure_milestone_root_exists(base_dir, milestone_id)?;
+        Self::read_controller_from_path(
+            &Self::controller_path(base_dir, milestone_id),
+            milestone_id,
+        )
+    }
+
+    fn write_controller(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        controller: &MilestoneControllerRecord,
+    ) -> AppResult<()> {
+        Self::ensure_milestone_root_exists(base_dir, milestone_id)?;
+        let raw = serde_json::to_string_pretty(controller)?;
+        FileSystem::write_atomic(&Self::controller_path(base_dir, milestone_id), &raw)
+    }
+
+    fn read_transition_journal(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<Vec<MilestoneControllerTransitionEvent>> {
+        Self::ensure_milestone_root_exists(base_dir, milestone_id)?;
+        Self::read_controller_journal_from_path(
+            &Self::controller_journal_path(base_dir, milestone_id),
+            milestone_id,
+        )
+    }
+
+    fn append_transition_event(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        event: &MilestoneControllerTransitionEvent,
+    ) -> AppResult<()> {
+        Self::ensure_milestone_root_exists(base_dir, milestone_id)?;
+        FileSystem::append_line(
+            &Self::controller_journal_path(base_dir, milestone_id),
+            &event.to_ndjson_line().map_err(AppError::SerdeJson)?,
+        )
+    }
+
+    fn with_controller_lock<T, F>(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        operation: F,
+    ) -> AppResult<T>
+    where
+        F: FnOnce() -> AppResult<T>,
+    {
+        Self::ensure_milestone_root_exists(base_dir, milestone_id)?;
+        let lock_path = FsMilestoneSnapshotStore::mutation_lock_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&lock_path)?;
+        let _marker = CurrentThreadMilestoneMutationLockGuard::acquire(&lock_path);
+        FsMilestoneSnapshotStore::recover_pending_state_commit(base_dir, milestone_id)?;
         operation()
     }
 }
@@ -5035,6 +5220,82 @@ mod tests {
         assert!(
             !milestone_root.join(MILESTONE_STATE_COMMIT_FILE).exists(),
             "plain reads should finalize the pending state commit"
+        );
+    }
+
+    #[test]
+    fn milestone_controller_lock_recovers_pending_state_commit() {
+        use crate::contexts::milestone_record::controller::load_controller;
+        use crate::contexts::milestone_record::model::{
+            MilestoneId, MilestoneSnapshot, MilestoneStatus,
+        };
+        use chrono::{Duration, TimeZone, Utc};
+
+        let temp = tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("pending-controller-lock").expect("milestone id");
+        let milestone_root = FileSystem::milestone_root(temp.path(), &milestone_id);
+        std::fs::create_dir_all(&milestone_root).expect("create milestone root");
+
+        let current_snapshot =
+            MilestoneSnapshot::initial(Utc.with_ymd_and_hms(2026, 4, 5, 1, 0, 0).unwrap());
+        std::fs::write(
+            milestone_root.join(MILESTONE_STATUS_FILE),
+            serde_json::to_string_pretty(&current_snapshot).expect("serialize current snapshot"),
+        )
+        .expect("write current snapshot");
+
+        let current_event = MilestoneJournalEvent::new(
+            MilestoneEventType::PlanDrafted,
+            Utc.with_ymd_and_hms(2026, 4, 5, 1, 0, 0).unwrap(),
+        );
+        FsMilestoneJournalStore::write_journal(
+            &milestone_root.join(MILESTONE_JOURNAL_FILE),
+            &[current_event.clone()],
+        )
+        .expect("write current journal");
+
+        let mut next_snapshot = current_snapshot.clone();
+        next_snapshot.status = MilestoneStatus::Ready;
+        next_snapshot.plan_hash = Some("plan-v1".to_owned());
+        next_snapshot.plan_version = 1;
+        next_snapshot.updated_at += Duration::seconds(5);
+        let next_event = MilestoneJournalEvent::lifecycle_transition(
+            next_snapshot.updated_at,
+            MilestoneStatus::Planning,
+            MilestoneStatus::Ready,
+            "system",
+            "plan finalized and beads exported",
+            serde_json::Map::new(),
+        );
+        let pending = PendingMilestoneStateCommit {
+            recovery_action: PendingMilestoneStateCommitRecoveryAction::Publish,
+            previous_snapshot: current_snapshot.clone(),
+            previous_journal: vec![current_event],
+            next_snapshot: next_snapshot.clone(),
+            next_journal: vec![next_event.clone()],
+        };
+        std::fs::write(
+            milestone_root.join(MILESTONE_STATE_COMMIT_FILE),
+            serde_json::to_string_pretty(&pending).expect("serialize pending state"),
+        )
+        .expect("write pending state commit");
+
+        let controller = load_controller(&FsMilestoneControllerStore, temp.path(), &milestone_id)
+            .expect("controller load should succeed");
+        assert!(controller.is_none(), "controller should remain absent");
+
+        let snapshot = FsMilestoneSnapshotStore
+            .read_snapshot(temp.path(), &milestone_id)
+            .expect("recover and read durable snapshot");
+        assert_eq!(snapshot, next_snapshot);
+
+        let journal = FsMilestoneJournalStore
+            .read_journal(temp.path(), &milestone_id)
+            .expect("recover and read durable journal");
+        assert_eq!(journal, vec![next_event]);
+        assert!(
+            !milestone_root.join(MILESTONE_STATE_COMMIT_FILE).exists(),
+            "controller lock should finalize the pending state commit"
         );
     }
 

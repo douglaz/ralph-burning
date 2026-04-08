@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::adapters::fs::{
-    FileSystem, FsArtifactStore, FsMilestoneJournalStore, FsMilestoneSnapshotStore, FsProjectStore,
-    FsRollbackPointStore, FsTaskRunLineageStore,
+    FileSystem, FsArtifactStore, FsMilestoneControllerStore, FsMilestoneJournalStore,
+    FsMilestoneSnapshotStore, FsProjectStore, FsRollbackPointStore, FsTaskRunLineageStore,
 };
 use crate::adapters::process_backend::processed_contract_schema_value;
 use crate::adapters::worktree::WorktreeAdapter;
@@ -25,6 +25,7 @@ use crate::contexts::agent_execution::service::{
 };
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
+use crate::contexts::milestone_record::controller as milestone_controller;
 use crate::contexts::milestone_record::model::MilestoneId;
 use crate::contexts::milestone_record::service as milestone_service;
 use crate::contexts::project_run_record::journal;
@@ -579,7 +580,19 @@ fn sync_milestone_bead_start(
         run_id.as_str(),
         &plan_hash,
         started_at,
-    )
+    )?;
+
+    milestone_controller::sync_controller_task_running(
+        &FsMilestoneControllerStore,
+        base_dir,
+        &milestone_id,
+        &task_source.bead_id,
+        project_id.as_str(),
+        "workflow execution is running for the bead-linked project",
+        started_at,
+    )?;
+
+    Ok(())
 }
 
 pub(crate) fn milestone_lineage_plan_hash(
@@ -7821,11 +7834,15 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::adapters::fs::{
-        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
+        FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+        FsMilestoneSnapshotStore, FsMilestoneStore,
     };
     use crate::contexts::agent_execution::policy::ResolvedPanelMember;
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+    };
+    use crate::contexts::milestone_record::controller::{
+        self as milestone_controller, MilestoneControllerState,
     };
     use crate::contexts::milestone_record::service::{
         create_milestone, persist_plan, CreateMilestoneInput,
@@ -7841,7 +7858,7 @@ mod tests {
 
     use super::{
         build_final_review_snapshot, drift_still_satisfies_requirements,
-        milestone_lineage_plan_hash, resolution_has_drifted,
+        milestone_lineage_plan_hash, resolution_has_drifted, sync_milestone_bead_start,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -8038,6 +8055,81 @@ mod tests {
         .expect("derive plan hash");
 
         assert_eq!(plan_hash, "bead:ms-alpha:ms-alpha.bead-2");
+    }
+
+    #[test]
+    fn sync_milestone_bead_start_transitions_controller_to_running() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+        initialize_workspace(base_dir, now).expect("initialize workspace");
+
+        let milestone = create_milestone(
+            &FsMilestoneStore,
+            base_dir,
+            CreateMilestoneInput {
+                id: "ms-alpha".to_owned(),
+                name: "Alpha".to_owned(),
+                description: "Test milestone".to_owned(),
+            },
+            now,
+        )
+        .expect("create milestone");
+        persist_plan(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base_dir,
+            &milestone.id,
+            &sample_milestone_bundle("ms-alpha"),
+            now,
+        )
+        .expect("persist plan");
+
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::Standard,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: now,
+            status_summary: ProjectStatusSummary::Created,
+            task_source: Some(TaskSource {
+                milestone_id: milestone.id.to_string(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: None,
+                plan_version: None,
+            }),
+        };
+
+        sync_milestone_bead_start(
+            &project_record,
+            base_dir,
+            &project_id,
+            &crate::shared::domain::RunId::new("run-1").expect("run id"),
+            now,
+        )
+        .expect("sync bead start");
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+        assert_eq!(controller.state, MilestoneControllerState::Running);
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("ms-alpha.bead-2")
+        );
+        assert_eq!(
+            controller.active_task_id.as_deref(),
+            Some(project_id.as_str())
+        );
     }
 
     // ── derive_resume_state unit tests ─────────────────────────────────

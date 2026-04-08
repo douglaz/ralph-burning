@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260408030848-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-08T05:11:04.078332449Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nReplaced the milestone controller resume readiness prefix heuristic with milestone-plan membership matching. The new bundle helper derives planned bead refs from `plan.json`, preserves explicit short bead IDs like `bead-e2e` alongside their canonical milestone-qualified form, and `ProjectMilestoneControllerRuntime::has_ready_beads()` now checks `br ready --json` results against that planned set so explicit-bead milestones no longer get stranded in `selecting` or `blocked` after restart.\n\n## Steps\n\n1. [Completed] Added `planned_bead_membership_refs()` in the milestone bundle layer to derive canonical planned bead refs and preserve explicit short-ID aliases needed for runtime membership checks.\n2. [Completed] Updated `ProjectMilestoneControllerRuntime::has_ready_beads()` to load the milestone plan and scope `br ready --json` results by planned bead membership instead of `<milestone_id>.` string-prefix matching.\n3. [Completed] Added regression coverage for explicit short-ID membership refs in the bundle layer and for controller readiness detection against a fake `br ready --json` response containing `bead-e2e`.\n4. [Completed] Formatted the Rust changes and ran the relevant library, unit, and CLI test suites to verify the remediation.\n\n## Validation Evidence\n\n- Ran `cargo fmt --all`.\n- Ran `cargo test planned_bead_membership_refs_include_explicit_short_ids --lib` and the new bundle regression test passed.\n- Ran `cargo test milestone_controller_ready_check_matches_explicit_planned_bead_ids --lib` and the new runtime regression test passed.\n- Ran `cargo test --lib` and all 625 library tests passed.\n- Ran `cargo test --test unit` and all 757 unit integration tests passed.\n- Ran `cargo test --test cli` and all 166 CLI tests passed.\n\n## Outstanding Risks\n\n- `cargo test --test run_attach_tmux` was not re-run for this amendment, so tmux-specific integration coverage still relies on the prior stage run rather than a fresh post-fix execution.\n- The worktree still contains unrelated/generated changes in `.ralph-burning/projects/9ni81/journal.ndjson` and `.ralph-burning/projects/9ni81/run.json` that were not touched by this fix.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

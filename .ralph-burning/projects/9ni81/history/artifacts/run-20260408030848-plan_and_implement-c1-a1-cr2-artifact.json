@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260408030848-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-08T03:48:54.214803185Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nHardened the milestone controller recovery path by allowing semantically invalid persisted controller snapshots to transition into `needs_operator` during resume, tightened transition/journal validation so in-flight `claimed`/`running`/`reconciling` states cannot silently swap active bead or task identity until a clearing state is entered, and made the filesystem journal reader discard only a malformed trailing controller-journal line with a warning while still rejecting earlier corruption. Added regression tests for invalid-state resume recovery, identity-preserving transitions/journal validation, and trailing-vs-nontrailing malformed journal handling.\n\n## Steps\n\n1. [Completed] Updated controller transition application to permit recovery transitions into `needs_operator` from semantically invalid persisted controller snapshots during resume instead of failing before journaling the recovery.\n2. [Completed] Refactored controller state/transition validation to enforce active bead/task continuity across in-flight transitions and journal replay unless the destination state explicitly clears controller context.\n3. [Completed] Changed the filesystem controller journal reader to tolerate a malformed final NDJSON line by warning and discarding it, while preserving hard failures for malformed earlier lines.\n4. [Completed] Added regression coverage for invalid-state resume, in-flight identity swap rejection, journal replay continuity checks, and trailing versus non-final malformed controller journal parsing.\n\n## Validation Evidence\n\n- Ran `cargo fmt`.\n- Ran `cargo test controller::tests --lib` and all 12 controller tests passed.\n- Ran `cargo test --lib` and all 616 library tests passed.\n- Ran `cargo test --test unit` and all 757 unit integration tests passed.\n\n## Outstanding Risks\n\n- The controller state machine is still a reusable module and store layer; milestone execution CLI/runtime wiring remains follow-on work outside this amendment.\n- The worktree still contains unrelated/generated changes in `.ralph-burning/projects/9ni81/journal.ndjson` and `.ralph-burning/projects/9ni81/run.json` that were not touched by this fix.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

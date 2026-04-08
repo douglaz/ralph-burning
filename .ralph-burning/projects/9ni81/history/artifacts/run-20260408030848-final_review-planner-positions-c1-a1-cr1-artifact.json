@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260408030848-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T03:38:26.357744073Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll four amendments identify real, verified defects. The journal reader crash-sensitivity (fr-1-59f47374), the double-validation bug blocking recovery transitions (fr-1-937c41bf), the missing test for stale state detection (fr-1-9f67b47b), and the identity-swap gap in transition validation (fr-1-666d8c32) were all confirmed by reading the source code at the cited locations.\n\n## Votes\n\n- `fr-1-59f47374`: Accept\n  Confirmed: append_line writes separator and data non-atomically (lines 648-650), and read_controller_journal_from_path propagates deserialization errors on every line via ? (line 2843). A crash mid-write leaves a truncated final line that permanently blocks all controller operations. Tolerating a malformed final line while rejecting earlier corruption is the standard WAL pattern and directly addresses a real durability gap.\n- `fr-1-9f67b47b`: Accept\n  Confirmed: no existing test exercises resume_controller when the persisted state has a semantic validation failure (e.g., Running with missing active_task_id). The code path at lines 465-474 generates a NeedsOperator transition for this case, but it is untested. This is a core acceptance criteria for stale state detection and deserves explicit test coverage.\n- `fr-1-937c41bf`: Accept\n  Confirmed bug: resume_transition_request (line 465) detects semantic failure and returns a NeedsOperator transition request. resume_controller (line 357) passes this to transition_from_current_locked, which calls current.validate_semantics() again at line 411 on the same invalid state. This second validation fails with CorruptRecord before the recovery transition is ever journaled or persisted. The recovery path is dead code — a stale Running state without active_task_id returns CorruptRecord instead of transitioning to NeedsOperator.\n- `fr-1-666d8c32`: Accept\n  Confirmed: validate_state_context (lines 685-724) only checks that required IDs are present/absent for each state type, never comparing IDs across transitions. The journal validator (lines 654-679) checks from_state/to_state chain consistency and timestamps but not identity continuity. A transition from running(bead-a, task-1) to reconciling(bead-b, task-2) passes all validation because reconciling has both IDs present. This silent identity swap is a correctness defect in the state machine.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}
