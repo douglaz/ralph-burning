@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408204915-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260408204915-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T22:07:01.445028658Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nThree amendments are technically sound: one fixes a real sync-recovery bug, one addresses missing recovery after controller-link failure, and one improves observability. The duplicate-project amendment should be rejected because the cited retry path does not create a second auto-generated project; bead-backed project IDs are deterministic and duplicate-ID checks already stop that.\n\n## Votes\n\n- `fr-2-c0e0b581`: Accept\n  `claim_bead_in_br` uses `load_bead_detail` only as a fallback probe after `br update` fails, and any error from that probe is currently discarded. That makes the idempotent-retry path unnecessarily opaque when `br show` itself is broken or malformed. Emitting the probe failure at `debug`/`trace` level is low risk and materially improves diagnosability without changing control flow.\n- `fr-2-7c8db4fb`: Reject\n  The described duplicate-creation mechanism is incorrect. `create_project_from_bead_context` does not generate a fresh project ID on each retry; it derives a deterministic default from `milestone_id` and `bead_id`, and project creation already rejects duplicate IDs. After a successful first creation, a retry hits duplicate-project protection rather than creating a second auto-generated project. There is still a separate recovery gap when controller linkage fails, but this amendment’s specific bug claim is not supported by the code.\n- `fr-2-405b8bde`: Accept\n  The early `return Ok(())` in the idempotent-own-claim branch skips `br.sync_flush()`. If a prior attempt successfully ran `br update` but failed during flush, and the controller still identifies this bead as ours, a retry will report success without retrying the flush. That leaves `.beads` stale and can keep `bv` triage inconsistent. Preserving the idempotent detection but continuing into `sync_flush()` is the correct recovery behavior.\n- `fr-2-6d39965e`: Accept\n  `sync_controller_task_claimed` runs after both the bead claim and project creation have already succeeded, yet any error there currently aborts with no compensating action. That can leave a claimed bead plus live project with no durable controller linkage or operator escalation. At minimum, the code should attempt a `needs_operator` transition that records the stranded bead/task context; rolling back the freshly created project may also be appropriate if it can be done safely. The amendment’s duplicate-project wording is overstated because project IDs are deterministic, but the recovery hole it identifies is real.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

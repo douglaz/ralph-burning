@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408204915-final_review-arbiter-c1-a1-cr2-artifact",
+  "payload_id": "run-20260408204915-final_review-arbiter-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T22:08:02.351953579Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected amendment fr-2-7c8db4fb. The claimed duplicate-project-on-retry bug does not exist: project IDs are deterministic (derived from milestone_id + bead_id at service.rs:1253-1262) and duplicate IDs are explicitly rejected at service.rs:1282-1287. Reviewer 2's dissent was correct on the facts. The real recovery gap (missing needs_operator transition after controller linkage failure) is already covered by the accepted amendment fr-2-6d39965e.\n\n## Rulings\n\n- `fr-2-7c8db4fb`: Reject\n  The amendment's core claim — that a retry creates a duplicate project — is factually incorrect. The code at service.rs:1253-1262 shows that `default_project_id_for_bead` derives a deterministic ID from `milestone_id` and `bead_id` (format: `task-{milestone}-{bead_segment}`), not a fresh random one. Furthermore, `create_project_with_initial_details` at service.rs:1282-1287 explicitly checks `store.project_exists()` and returns `AppError::DuplicateProject` if the ID already exists. On retry after `sync_controller_task_claimed` fails: (1) `claim_bead_in_br` succeeds idempotently, (2) `create_project_from_bead_context` generates the same deterministic ID and hits the duplicate check, returning an error — no second project is created. Reviewer 2 correctly identified this. There is a separate recovery gap (the `DuplicateProject` error on retry is not handled gracefully, and the controller linkage failure lacks `needs_operator` recovery), but those issues are addressed by amendment fr-2-6d39965e, not this one. This amendment's specific mechanism is not supported by the code.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

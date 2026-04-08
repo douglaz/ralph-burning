@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260408204915",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
     "started_at": "2026-04-08T20:49:15.170218817Z",
     "prompt_hash_at_cycle_start": "845570bb44e1d1b102e43f699c286f20716bce676d6023b05c9e93672821661c",
     "prompt_hash_at_stage_start": "845570bb44e1d1b102e43f699c286f20716bce676d6023b05c9e93672821661c",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-c0e0b581",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "In `claim_bead_in_br` (src/cli/project.rs:822-832), when `update_bead_status` fails and `load_bead_detail` also fails, the code falls through to the generic error at line 833 which wraps `update_error`. However, `load_bead_detail` can fail for various reasons (network, br binary unavailable, JSON parse error). The `update_error` is reported but the `load_bead_detail` failure is silently swallowed. Consider logging the `load_bead_detail` error at debug/trace level so operators can diagnose why the fallback check failed, especially in scenarios where `br show` itself is broken.",
+        "created_at": "2026-04-08T22:08:02.366519907Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "a6e3cf1d6cf6bdce412196805b4f3b8d6e7fbd72f741e382e9c900669e6bb090"
+      },
+      {
+        "amendment_id": "fr-2-405b8bde",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "In `src/cli/project.rs` at lines 822-825, do not `return Ok(())` from the \"already in_progress and this is our own prior claim\" branch. That branch currently exits before the `br.sync_flush()` call at lines 838-844, so a retry after `br update` succeeded but `br sync --flush-only` did not will report success without ever flushing the claim into the `.beads` export that `bv` reads. Keep the idempotent-own-claim detection, but continue into `sync_flush()` so the bead actually disappears from ready triage on recovery.",
+        "created_at": "2026-04-08T22:08:02.366524045Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "05b875fb613680778fbf7a3021cce1758c9f1778f8acadac466759554d249274"
+      },
+      {
+        "amendment_id": "fr-2-6d39965e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "In `src/cli/project.rs` at lines 413-464, handle failures from `milestone_controller::sync_controller_task_claimed` the same way project-creation failures are handled at lines 425-450. Right now the code creates the Ralph project and leaves the bead claimed in `br`, then immediately returns on any controller-write/alignment error without transitioning the controller to `needs_operator` or rolling back the new project. That leaves an orphan claimed bead/project pair and allows duplicate project creation on retry. Wrap the controller-link step in explicit recovery logic (at minimum transition to `needs_operator`; ideally also avoid leaving the newly created project live if the link cannot be recorded).",
+        "created_at": "2026-04-08T22:08:02.366528283Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "8aa2e67ea81c0db50a43ed87a55671a44c76b3d087ec927d49ab766f302ea7d9"
+      }
+    ],
     "processed_count": 6
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-08T21:29:19.604345659Z",
+    "resolved_at": "2026-04-08T21:52:04.190053794Z",
     "final_review_reviewers": [
       {
         "backend_family": "claude",

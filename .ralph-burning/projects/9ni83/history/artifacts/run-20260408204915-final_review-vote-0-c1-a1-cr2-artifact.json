@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408204915-final_review-vote-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260408204915-final_review-vote-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T22:03:18.122273596Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll four amendments identify genuine defects or observability gaps in the bead-claiming flow in src/cli/project.rs. Three target real correctness/recovery bugs (duplicate projects on retry, skipped sync_flush on idempotent path, missing error recovery for controller linkage), and one addresses a diagnosability gap. I agree with the planner positions and accept all four.\n\n## Votes\n\n- `fr-2-c0e0b581`: Accept\n  Verified at line 822: when `load_bead_detail` returns Err, the error is discarded and the code falls through to line 833, which only wraps `update_error`. If `br show` itself is broken (binary missing, corrupt JSON), operators have no way to tell why the idempotent-retry detection failed. A debug/trace log for the `load_bead_detail` error is zero-risk and directly aids troubleshooting.\n- `fr-2-7c8db4fb`: Accept\n  Verified the failure path: at line 456, `sync_controller_task_claimed` propagates via `?` with no recovery. On retry: (1) `claim_bead_in_br` at line 387 succeeds idempotently (line 824-825 detects our own prior claim and returns Ok), (2) `create_project_from_bead_context` at line 413 generates a fresh `project_id` (when not user-specified via `args.project_id`) and creates a second project for the same bead. This is a concrete duplicate-project bug. Checking for an existing project with the same bead_id before creation is the correct fix to make the operation idempotent.\n- `fr-2-405b8bde`: Accept\n  Confirmed: at line 825, `return Ok(())` exits `claim_bead_in_br` before `sync_flush()` at lines 838-844. If the original call succeeded at `br update` (status set to in_progress locally) but failed at `br sync --flush-only` (remote push), a retry detects the idempotent case and returns success without flushing. The bead remains locally claimed but never exported to `.beads`, so `bv` continues to show it as ready. The fix — removing the early return and falling through to `sync_flush()` — is correct and preserves idempotent detection while ensuring the flush always happens.\n- `fr-2-6d39965e`: Accept\n  Clear asymmetry in error handling: project creation failure at lines 425-450 properly transitions the controller to `needs_operator`, but controller linkage failure at lines 456-464 just propagates via `?` with no recovery. After this failure, the bead is claimed in br and a Ralph project exists, but the controller has no record of the association. This leaves an orphan state and is also the prerequisite for the duplicate-project bug in fr-2-7c8db4fb. At minimum, the controller should transition to `needs_operator` on linkage failure, matching the established pattern at lines 425-450.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}
