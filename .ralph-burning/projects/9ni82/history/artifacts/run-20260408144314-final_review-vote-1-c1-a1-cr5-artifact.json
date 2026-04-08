@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260408144314-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T16:53:02.067227193Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments identify real operational-quality issues. The first corrects a persisted controller reason that is factually wrong in the pre-fetched recommendation path, which matters for debugging and auditability. The second correctly flags stderr-only logging in a path that can run under the daemon; those non-fatal persistence failures should go through the tracing pipeline so they are observable in structured logs, with exact severity chosen to fit local conventions.\n\n## Votes\n\n- `fr-5-10a320bc`: Accept\n  `select_next_milestone_bead_from_recommendation` receives `recommendation: Option<NextBeadResponse>` and never calls `bv`; the actual `bv` fetch happens in the separate `select_next_milestone_bead` function. Reusing the reason string 'requesting the next bead recommendation from bv before any claim' in the pre-fetched path makes the persisted `Selecting` transition misleading. Because `last_transition_reason` is stored on the controller record and used for operator debugging, this is a real observability defect. Fixing the text is low-risk and improves correctness.\n- `fr-5-cb55c3b1`: Accept\n  The persistence helpers in `src/cli/run.rs` currently report all failures with `eprintln!`, even though this selection flow is also exercised from daemon-driven reconciliation and the process initializes tracing globally. In that context, stderr may be missed or separated from the structured logs operators already inspect. Routing these best-effort persistence failures through `tracing` is the correct direction for consistency and operability. The precise level can follow project conventions, but the amendment’s core point that stderr-only logging is the wrong mechanism here is valid.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}

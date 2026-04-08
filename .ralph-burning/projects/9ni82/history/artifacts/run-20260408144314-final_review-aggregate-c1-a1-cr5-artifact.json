@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260408144314-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260408144314-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T16:53:02.081070666Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 5/25\n\n## Accepted\n\n- `fr-5-10a320bc`\n- `fr-5-cb55c3b1`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-10a320bc`\n\nIn `select_next_milestone_bead_from_recommendation` (src/cli/run.rs:676-679), the controller transition reason says 'requesting the next bead recommendation from bv before any claim' even though this function receives a pre-fetched recommendation and never calls bv. The `Selecting` state reason should reflect reality, e.g. 'validating a pre-fetched bv recommendation against br readiness before any claim'. This matters because operators inspect controller state reasons for debugging.\n\n### `fr-5-cb55c3b1`\n\nIn `persist_next_step_recommendation` (src/cli/run.rs:354-385), all error paths use `eprintln!` for logging. In a daemon context, stderr may not be monitored. Consider using `tracing::warn!` (already used elsewhere in the codebase, e.g. success_reconciliation.rs:267) for consistency, so these failures appear in structured logs alongside the tracing infrastructure the daemon already uses.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}
