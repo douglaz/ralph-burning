@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-vote-0-c1-a1-cr9-artifact",
+  "payload_id": "run-20260408144314-final_review-vote-0-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T18:55:32.283554378Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nIndependently verified the bead ID canonicalization mismatch bug through end-to-end code tracing. The selection path (run.rs:590) canonicalizes bead IDs via canonicalize_milestone_bead_ref, storing the qualified form (e.g., 'ms-alpha.bead-2') in controller.active_bead_id. However, project creation (project.rs:361) stores the raw bead.id from br show (e.g., 'bead-2') into task_source.bead_id. The execution path (run.rs:1022) then passes task_source.bead_id to sync_controller_task_claimed, which calls validate_active_context_alignment (controller.rs:1340) doing a raw string comparison. The mismatch ('ms-alpha.bead-2' != 'bead-2') triggers the 'controller is already tracking active bead ... and cannot adopt ...' error. Every test fixture uses pre-qualified IDs (e.g., 'ms-alpha.bead-2') so the bug is masked. The milestone_bead_refs_match helper already exists and is normalization-aware — it should be used in the alignment check.\n\n## Votes\n\n- `fr-9-3f12f18c`: Accept\n  Confirmed real bug via independent code tracing across four files. The selection path (run.rs:590) canonicalizes to qualified form 'ms-id.bead-x' in controller state; project creation (project.rs:361) stores raw bead.id from br show into TaskSource; the execution path (run.rs:1022) passes this raw ID to validate_active_context_alignment (controller.rs:1340), which does a plain != comparison. When br returns short IDs, the comparison 'ms-id.bead-x' != 'bead-x' always fails. All 20+ test fixtures use pre-qualified IDs like 'ms-alpha.bead-2', masking the mismatch entirely. The existing milestone_bead_refs_match helper (run.rs:294-297) already does normalization-aware comparison and should be used in the alignment check — this is the more robust fix since it makes all ID comparisons consistent rather than removing canonicalization at one site and hoping no other path depends on qualified IDs.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 9
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-planner-positions-c1-a1-cr9-artifact",
+  "payload_id": "run-20260408144314-final_review-planner-positions-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T18:54:24.014213253Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nInvestigated the bead ID canonicalization mismatch thoroughly. The amendment identifies a real bug: the selection path (run.rs:588-596) canonicalizes bead IDs to the qualified form (e.g., 'ms-alpha.bead-2'), but the execution path (run.rs:1018-1022) passes the raw bead ID from task_source.bead_id (populated from br show, e.g., 'bead-2') to validate_active_context_alignment (controller.rs:1339-1348), which does a raw string comparison. This mismatch causes the 'controller is already tracking active bead ... and cannot adopt ...' error. All tests currently mask this because they use pre-qualified bead IDs in TaskSource fixtures.\n\n## Votes\n\n- `fr-9-3f12f18c`: Accept\n  Confirmed real bug through code tracing. The selection path (run.rs:590) stores the canonicalized form 'ms-id.bead-x' as active_bead_id in the controller. The execution path (run.rs:1022) passes task_source.bead_id — which comes from bead.id via br show (project.rs:361), the raw unqualified form 'bead-x' — to sync_controller_task_claimed → validate_active_context_alignment (controller.rs:1339-1340), which does current_bead_id != bead_id as a raw string comparison. When br returns unqualified IDs, this comparison fails: 'ms-id.bead-x' != 'bead-x'. Tests mask the bug because all TaskSource fixtures use pre-qualified IDs (e.g., 'ms-alpha.bead-2'). The fix should either (a) stop canonicalizing at selection time, or (b) use milestone_bead_refs_match in the alignment check — option (b) is more robust since it makes the comparison normalization-aware everywhere.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 9
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260408144314-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-08T16:40:15.435007281Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `src/contexts/automation_runtime/success_reconciliation.rs` so non-final post-reconciliation selection setup failures no longer leave the milestone controller parked in `selecting`. The reconciliation path now persists a `needs_operator` transition with the selection failure reason, and only escalates as `MilestoneUpdateFailed` when even that fallback controller write cannot be durably recorded. Added regression coverage for corrupted `plan.json` recovery and for the fatal fallback-persistence failure case.\n\n## Steps\n\n1. [Completed] Added a post-reconciliation selection-failure helper that converts unexpected selector setup errors into a persisted `needs_operator` controller transition with an operator-visible reason.\n2. [Completed] Updated reconciliation regression tests so corrupted-plan selection failures now assert the controller lands in `needs_operator`, and added coverage for the case where fallback safe-state persistence also fails.\n3. [Completed] Formatted the updated Rust code and ran targeted plus full library test coverage to verify the amended reconciliation behavior.\n\n## Validation Evidence\n\n- `cargo test --lib reconcile_success_nonfinal_ -- --nocapture` passed (2 tests).\n- `cargo test --lib reconcile_success_selection_failure_returns_error_when_safe_state_persistence_fails -- --nocapture` passed.\n- `cargo test --lib reconcile_success_ -- --nocapture` passed (8 tests).\n- `cargo test --lib` passed (644 tests).\n\n## Outstanding Risks\n\n- If the milestone directory disappears or becomes unwritable between reconciliation and the fallback `needs_operator` transition, `reconcile_success` still returns `MilestoneUpdateFailed` because no durable safe controller state can be persisted; recovery remains operator-driven.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}

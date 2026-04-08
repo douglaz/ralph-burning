@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260408144314-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-08T15:49:01.549857589Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the remaining selecting-state amendments across `src/cli/run.rs` and `src/contexts/automation_runtime/success_reconciliation.rs`. The selector now persists the raw `bv --robot-next` recommendation before `br ready` validation, carries the recommended bead id into `needs_operator` reasons when `br ready` fails, keeps the `bv`-no-recommendation/`br ready` disagreement on an explicitly documented safe `blocked` path, and adds deterministic coverage for the out-of-plan, disagreement, and persisted-audit-data cases. I also wired non-final success reconciliation into the shared selector so daemon-driven milestone execution no longer stalls in `selecting` after reconciliation, and added an integration test proving reconciliation advances directly to the next claimed bead.\n\n## Steps\n\n1. [Completed] Persist `bv` recommendations before `br` readiness validation, clear stale persisted hints on explicit no-recommendation responses, and include the recommended bead id in `needs_operator` reasons when `br ready` fails.\n2. [Completed] Document why the `bv` no-recommendation plus non-empty `br ready` case remains `blocked`, and add deterministic selector tests for out-of-plan recommendations, ready-list disagreements, and recommendation persistence.\n3. [Completed] Extend non-final success reconciliation to invoke the shared selector after milestone state is updated, so daemon-driven reconciliation advances from `selecting` into `claimed`, `blocked`, or `needs_operator`, with integration coverage for the claimed-next-bead path.\n\n## Validation Evidence\n\n- `cargo test --lib select_next_milestone_bead_ -- --nocapture` passed (8 tests).\n- `cargo test --lib reconcile_success_ -- --nocapture` passed (6 tests).\n- `cargo test --lib sync_terminal_milestone_task_ -- --nocapture` passed (16 tests).\n- `cargo test --lib` passed (640 tests).\n\n## Outstanding Risks\n\n- Automation-runtime reconciliation still issues `bv --robot-next` twice on non-final milestones: once for best-effort hint capture and once for validated selection. If the queue changes between those calls, the logged hint can differ from the controller's final outcome.\n- Callers that invoke `reconcile_success` without a configured `bv` adapter still leave non-final milestones in `selecting`; the new automatic continuation is wired for the daemon/runtime path, which passes `bv`.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

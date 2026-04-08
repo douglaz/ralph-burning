@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-plan_and_implement-c1-a1-cr8-artifact",
+  "payload_id": "run-20260408144314-plan_and_implement-c1-a1-cr8",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-08T18:04:37.762797176Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `src/cli/run.rs:continue_selecting_milestone_bead_if_needed` so that when `select_next_milestone_bead` fails on the CLI sync path (`run start`, `run resume`, `run sync-milestone`), the error is caught and persisted as a `needs_operator` controller transition with an operator-visible reason, instead of propagating as an `AppError` that leaves the controller durably stuck in `selecting`. Added a deterministic regression test that corrupts `plan.json` to trigger a selection failure and verifies the controller lands in `needs_operator`.\n\n## Steps\n\n1. [Completed] Changed `continue_selecting_milestone_bead_if_needed` to catch `select_next_milestone_bead` errors instead of propagating them with `?`, persist a `needs_operator` controller transition with a structured `tracing::warn!` log and operator-visible reason, and return `Ok(())` so the completed bead's sync result is not retroactively failed.\n2. [Completed] Added deterministic regression test `sync_terminal_milestone_task_and_continue_selection_persists_needs_operator_on_plan_failure` that corrupts `plan.json` after milestone setup, triggers selection through the full sync path, and asserts the controller lands in `needs_operator` with the expected reason rather than returning an error.\n3. [Completed] Formatted the code with `cargo fmt --all` and ran the full library test suite to verify no regressions.\n\n## Validation Evidence\n\n- `cargo test --lib sync_terminal_milestone_task_and_continue_selection_persists_needs_operator_on_plan_failure -- --nocapture` passed.\n- `cargo test --lib select_next_milestone_bead_ -- --nocapture` passed (11 tests).\n- `cargo test --lib sync_terminal_milestone_task_ -- --nocapture` passed (18 tests).\n- `cargo fmt --all -- --check` passed.\n- `cargo test --lib` passed (650 tests).\n\n## Outstanding Risks\n\n- If the fallback `needs_operator` controller persistence itself fails (e.g., milestone directory is unwritable), the error still propagates to the caller. This is the same behavior as the daemon reconciliation path in `persist_selection_failure_after_reconciliation`, and recovery remains operator-driven.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 8
+}

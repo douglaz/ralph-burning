@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260408144314-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T16:34:48.756692826Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nThe amendment identifies a real durability and operability gap in post-reconciliation next-bead selection. The current flow can leave a milestone durably recorded as `selecting` even when the selection step failed and no usable selection outcome was persisted.\n\n## Votes\n\n- `fr-4-d830c63e`: Accept\n  For non-final milestones, `update_milestone_state` moves the controller to `Selecting` before the follow-up `select_next_milestone_bead*()` call runs. If that later call fails on setup or persistence paths such as loading `plan.json`, re-entering selection, or writing the final controller outcome, `reconcile_success` only records `next_step_selection_warning` and returns success. The daemon then only prints that warning, so there is no durable controller transition or persisted reason explaining the failure. That leaves the milestone looking healthy in `Selecting` even though automatic advancement already failed, which is exactly the kind of silent stuck state the controller is supposed to avoid. Since the controller state machine already allows `Selecting -> NeedsOperator` and `Selecting -> Blocked`, the amendment is technically sound: these failures should be surfaced through a durable non-healthy state with the error reason persisted instead of being downgraded to transient logging.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

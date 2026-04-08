@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-planner-positions-c1-a1-cr6-artifact",
+  "payload_id": "run-20260408144314-final_review-planner-positions-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T17:13:11.120964373Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real, verified issues. Amendment fr-6-de2f845b correctly identifies that same-state sync_controller_state calls silently drop audit reasons because the checkpoint path ignores the request's reason field. Amendment fr-6-556abb70 correctly identifies a bead ID normalization inconsistency in has_ready_beads() that can cause false-negative ready checks on restart, with confirmed control-flow impact on Selecting/Blocked state transitions.\n\n## Votes\n\n- `fr-6-de2f845b`: Accept\n  Verified: sync_controller_state at controller.rs:620-623 routes same-state requests to checkpoint_existing_controller_locked(), which updates only updated_at and never records the new reason. The selection functions at run.rs:694-703 and 730-739 pass distinct, operationally meaningful reasons ('validating a pre-fetched bv recommendation...' and 'requesting the next bead recommendation...'), but these are silently dropped when the controller is already in Selecting state — which is the normal case on production reconciliation paths. This is a real observability defect: operators lose visibility into which selection step the system is performing. The fix proposal (either transition through a distinct state or add a same-state reason-update path) is sound and proportionate.\n- `fr-6-556abb70`: Accept\n  Verified: has_ready_beads() at run.rs:944 uses raw planned_refs.contains(bead.id.as_str()) while the rest of the selection code uses milestone_planned_refs_contain() with three-way lookup (raw, canonicalized, and short-form). The planned_refs set only includes short forms for explicit_id beads (bundle.rs:494-520), so if br ready returns short-form IDs for non-explicit beads, the contains() call fails. resume_controller at controller.rs:815-824 and 967-975 directly uses has_ready_beads() to decide whether to keep Selecting controllers active or unblock Blocked controllers — a false negative here causes incorrect state transitions. The fix (reuse milestone_planned_refs_contain/canonicalization and add a mixed-ID restart test) directly addresses the inconsistency with minimal risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 6
+}

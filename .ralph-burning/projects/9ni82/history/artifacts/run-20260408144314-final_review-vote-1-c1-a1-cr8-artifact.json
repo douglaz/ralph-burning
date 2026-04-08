@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260408144314-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T18:26:56.873422109Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments identify real controller-state consistency bugs: one breaks crash-safe replay after non-final reconciliation advances to the next bead, and the other stores mixed-form bead IDs in a way downstream equality checks mis-handle.\n\n## Votes\n\n- `fr-8-56c3418f`: Accept\n  `reconcile_success` always re-enters `sync_controller_task_reconciling` with the completed bead/task at the start of a replay, but a successful non-final first pass can already advance the controller to the next bead through post-reconciliation selection. `sync_controller_task_reconciling` calls `validate_active_context_alignment` before it considers state, so once `active_bead_id` has moved to the next bead the replay becomes a hard mismatch and aborts. That is a real regression in idempotent success reconciliation. A replay guard equivalent to the CLI terminal-sync path, plus a non-final replay regression test, is warranted.\n- `fr-8-9e260de9`: Accept\n  The selector deliberately matches qualified and unqualified bead refs during validation, but on success it persists the raw `br ready` bead id into `active_bead_id`. Downstream code still uses plain string equality for controller/task alignment and replay decisions. If the controller stores `bead-2` while project/task paths use `ms-alpha.bead-2`, the controller can reject the real project as a mismatched bead or incorrectly skip required terminal controller sync on replay. Canonicalizing the stored id, or canonicalizing those downstream comparisons, with an end-to-end mixed-form regression test, is the correct fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 8
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T18:52:02.601343915Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the milestone-selection and reconciliation changes and found 1 correctness issue: canonicalizing selected bead IDs is inconsistent with downstream exact-match controller checks, which can break explicit-ID bead execution after selection.\n\n## Amendments\n\n1. Stop canonicalizing the claimed bead ID unless the rest of the controller/runtime normalizes IDs the same way. The selection path now rewrites a ready bead like `bead-x` to `ms-id.bead-x` before storing it in controller state (`src/cli/run.rs:272-279`, `src/cli/run.rs:588-596`), but later execution paths still compare bead IDs as raw strings (`src/cli/run.rs:768-785`, `src/cli/run.rs:1018-1023`, `src/contexts/milestone_record/controller.rs:1339-1348`). For milestones that use explicit short bead IDs, selecting the next bead can therefore leave the controller tracking `ms-id.bead-x` while the project/task source still carries `bead-x`; the next start/resume/sync then fails with “controller is already tracking active bead ... and cannot adopt ...”. Either preserve the original `br` bead ID here or switch the downstream alignment checks to the same normalized/bead-match comparison.\n   Rationale: This is a real execution blocker for explicit-ID beads: the controller can successfully select and claim a bead that later code can no longer start or reconcile because of exact-string ID mismatches.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 9
+}

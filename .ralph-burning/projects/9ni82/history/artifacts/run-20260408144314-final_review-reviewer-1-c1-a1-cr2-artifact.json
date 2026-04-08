@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T15:33:37.597352224Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound two correctness gaps: the new selecting logic is still not wired into the daemon/runtime reconciliation path that already transitions controllers to `selecting`, and a successful bv recommendation is not recorded before `br ready` failures move the controller to `needs_operator`.\n\n## Amendments\n\n1. Wire the new selector into the automation-runtime reconciliation path, not just the CLI post-run helpers. `reconcile_success` still returns non-final milestones to `Selecting` at `src/contexts/automation_runtime/success_reconciliation.rs:384-400`, and the daemon's success path only logs the hint afterward at `src/contexts/automation_runtime/daemon_loop.rs:1945-1975`. The new selector is invoked only from the CLI wrappers in `src/cli/run.rs:1405-1418`, `src/cli/run.rs:1542-1555`, and `src/cli/run.rs:1585-1596`, so daemon-driven milestone execution will still stall in `selecting` instead of performing the bv/br validation flow.\n   Rationale: The bead's acceptance target is the controller's selecting-state behavior. As merged, only the manual CLI sync/start/resume path exercises it; the existing production reconciliation path that already sets `Selecting` never calls the selector.\n2. Persist the bv recommendation before the `br ready` validation step. In `src/cli/run.rs:492-517`, a successful `bv --robot-next` result is kept only in memory; if `br ready` then times out or fails, the controller moves to `needs_operator` with a reason that no longer mentions which bead bv recommended. That violates the stated selection policy to record the recommendation before claiming and leaves operators without the key audit datum for the failed selection attempt.\n   Rationale: When validation fails after bv succeeded, the current state/history cannot tell the operator what candidate was being checked, making recovery and debugging materially harder and missing an explicit contract requirement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

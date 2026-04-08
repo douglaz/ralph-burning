@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T16:23:18.816373403Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the bead selection implementation across src/cli/run.rs and src/contexts/automation_runtime/success_reconciliation.rs. The implementation correctly follows the state machine design: transitions to Selecting, queries bv --robot-next, validates against br ready/show, and routes to Claimed (valid+ready), Blocked (mismatch/no-ready), or NeedsOperator (tool failure). All 643 tests pass including 13 new deterministic tests covering single-ready, conflicting-recommendation, no-ready, tool-failure, reconciliation-continues-selection, and replay-idempotency scenarios. No new clippy warnings introduced (count unchanged at 20 pre-existing). The selection-failure-is-non-fatal path in reconciliation is properly handled as a warning rather than blocking the bead close+sync outcome. The controller_requires_terminal_task_sync guard correctly prevents replay syncs from overwriting a controller that has already advanced to selecting the next bead. The LIFO mock ordering in reconciliation tests is verified correct against MockBrRunner::pop() behavior.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

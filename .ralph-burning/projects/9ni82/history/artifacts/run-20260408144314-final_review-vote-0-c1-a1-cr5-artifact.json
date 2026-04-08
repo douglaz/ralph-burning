@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-vote-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260408144314-final_review-vote-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T16:51:28.592794085Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments are verified against the source code and represent genuine, low-risk improvements. Amendment fr-5-10a320bc fixes a factually incorrect state transition reason — the function signature at line 663 clearly shows `recommendation: Option<NextBeadResponse>` is passed in, yet the reason string at line 678 claims it's 'requesting the next bead recommendation from bv'. Amendment fr-5-cb55c3b1 addresses an inconsistency where all 5 `eprintln!` calls in `persist_next_step_recommendation` and `delete_persisted_next_step_recommendation` are the only `eprintln!`-based error logging in this module, while the rest of the codebase (12+ files) consistently uses `tracing::warn!`.\n\n## Votes\n\n- `fr-5-10a320bc`: Accept\n  Confirmed: `select_next_milestone_bead_from_recommendation` (line 663) accepts `recommendation: Option<NextBeadResponse>` as a parameter — the bv call has already happened upstream. The state reason at line 678 ('requesting the next bead recommendation from bv before any claim') is misleading since this function never contacts bv; it validates and acts on an already-fetched recommendation. Controller state reasons are inspected during debugging/incident triage, so an inaccurate reason can waste operator time. The fix is a single string change with zero behavioral impact.\n- `fr-5-cb55c3b1`: Accept\n  Confirmed: all 5 `eprintln!` calls in run.rs (lines 361, 372, 378, 383, 394) are concentrated in `persist_next_step_recommendation` and `delete_persisted_next_step_recommendation`. The broader codebase uses `tracing::warn!` across at least 7 source files (success_reconciliation.rs, fs.rs, engine.rs, process_backend.rs, final_review.rs, completion.rs, br_process.rs). These are operational failures (directory creation, serialization, file I/O) that should be routed through structured logging, not stderr which may be discarded in daemon contexts. The fix is mechanical — replace `eprintln!` with `tracing::warn!` — and aligns with the established logging pattern.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260408144314-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-08T14:55:07.716711205Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented milestone-controller selecting logic in `src/cli/run.rs`. The new helper moves the controller into `selecting`, requests `bv --robot-next`, filters `br ready --json` against milestone-scoped plan membership, inspects mismatched recommendations with `br show`, and then transitions safely to `claimed`, `blocked`, or `needs_operator` without claiming the wrong bead. Added deterministic mock-backed tests for single-ready, conflicting recommendation, no-ready, and bv failure paths.\n\n## Steps\n\n1. [Completed] Refactored milestone plan membership loading into a shared helper so both resume checks and selection logic use the same milestone-scoped bead reference set.\n2. [Completed] Implemented async selecting-state logic that records a `bv --robot-next` recommendation, validates it against milestone-filtered `br ready`, and inspects non-ready recommendations with `br show` before transitioning controller state.\n3. [Completed] Mapped safe controller outcomes so valid recommendations enter `claimed` with the selected bead id, readiness mismatches and empty-ready cases enter `blocked` with explicit reasons, and tool failures enter `needs_operator`.\n4. [Completed] Added deterministic unit tests covering single-ready success, conflicting recommendation, no-ready response, and bv failure behavior.\n\n## Validation Evidence\n\n- `cargo test --lib select_next_milestone_bead_ -- --nocapture` passed (4 tests: single-ready, conflict, no-ready, bv failure).\n- `cargo test --lib milestone_controller_ready_check_matches_explicit_planned_bead_ids -- --nocapture` passed.\n- `cargo test --lib prepare_milestone_controller_for_execution_initializes_claimed_state -- --nocapture` passed.\n\n## Outstanding Risks\n\n- The new selection helper is implemented and tested, but it is not yet wired into a higher-level end-to-end controller loop; follow-on work in bead `ralph-burning-9ni.8.3` still needs to consume it.\n- Conflict handling is intentionally conservative: when `bv` and `br` disagree, the controller blocks instead of auto-picking another ready bead. That is safe, but it may require operator intervention more often until the later claiming/orchestration flow is integrated.\n- Blocked-reason detail depends on `br show` dependency status metadata. If `br` omits blocker statuses for a recommendation, the controller falls back to a generic not-ready reason instead of a precise blocker list.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

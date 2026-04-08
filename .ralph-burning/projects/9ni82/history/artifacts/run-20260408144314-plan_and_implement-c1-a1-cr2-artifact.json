@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260408144314-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-08T15:20:29.202600775Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the selecting-state amendments in `src/cli/run.rs`. The controller now continues from completed-bead reconciliation into real selection flow on the production `run start`, `run resume`, and `run sync-milestone` paths, using `bv --robot-next` plus `br ready` validation before moving to `claimed`, `blocked`, or `needs_operator`. I also removed the unnecessary `async` from `transition_controller_for_selection_outcome`, tightened `br show` missing-bead detection so `unknown flag`/`unknown subcommand` failures no longer masquerade as missing beads, added replay-safe controller guarding for post-selection sync replays, and expanded deterministic coverage for `br ready` failure, hardened `br show` failure handling, and the end-to-end post-reconciliation selection path.\n\n## Steps\n\n1. [Completed] Removed the unnecessary async wrapper from `transition_controller_for_selection_outcome` and updated the selecting-state call sites to use the synchronous transition helper directly.\n2. [Completed] Hardened `br show` error classification so only bead/issue-not-found exits are treated as missing, while malformed CLI failures continue to `needs_operator`.\n3. [Completed] Wired selecting into the real completed-run controller path by adding async post-sync selection helpers and invoking them from `run start`, `run resume`, and `run sync-milestone`, with replay-safe controller reconciliation guards to avoid clobbering a later selected bead.\n4. [Completed] Added deterministic tests for `br ready` failure, non-missing `br show` failure, and post-reconciliation selection/replay behavior, then re-ran the relevant controller and library test coverage.\n\n## Validation Evidence\n\n- `cargo test --lib select_next_milestone_bead_ -- --nocapture` passed (6 tests).\n- `cargo test --lib sync_terminal_milestone_task_ -- --nocapture` passed (16 tests).\n- `cargo test --lib milestone_controller_ready_check_matches_explicit_planned_bead_ids -- --nocapture` passed.\n- `cargo test --lib prepare_milestone_controller_for_execution_initializes_claimed_state -- --nocapture` passed.\n- `cargo test --lib` passed (637 tests).\n\n## Outstanding Risks\n\n- `br show` missing-bead detection is now intentionally conservative: if `br` reports a missing bead with wording that does not mention `bead`/`issue` plus `not found`, the controller will route to `needs_operator` instead of assuming the bead is missing.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

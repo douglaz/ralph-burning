@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T15:52:25.232805674Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe bead selection implementation is correct, well-tested, and handles all the specified scenarios (single-ready, conflicting recommendation, no-ready, tool failures). The controller state machine transitions are sound with proper validation gates. Two minor issues found: (1) an orphaned .tmp file on rename failure in `persist_next_step_recommendation`, and (2) a layering inversion where `success_reconciliation.rs` (context layer) imports from `cli::run` (CLI layer). Both are non-blocking.\n\n## Amendments\n\n1. In `src/cli/run.rs:persist_next_step_recommendation` (line 381-383), when `std::fs::rename` fails the `.tmp` file is left behind. The counterpart in `success_reconciliation.rs:persist_next_step_hint` (line 530) cleans up with `let _ = std::fs::remove_file(&tmp_path);`. Add the same cleanup to the `run.rs` version for consistency and to avoid accumulating orphaned temp files.\n   Rationale: Orphaned `.tmp` files are harmless individually but accumulate over time on rename failures (e.g., cross-filesystem moves). The existing counterpart in `success_reconciliation.rs` already handles this correctly, so this is a straightforward consistency fix.\n2. In `success_reconciliation.rs` (lines 227-241), `select_next_milestone_bead` failures are mapped to `ReconciliationError::MilestoneUpdateFailed` which the daemon (`daemon_loop.rs:1983-2007`) treats as a task failure requiring operator intervention. But by this point the bead is already closed and synced (steps 1-2 completed). A selection failure for the *next* bead should not retroactively fail the *current* bead's reconciliation outcome. Consider wrapping the `select_next_milestone_bead` call in a best-effort handler (log + continue) similar to hint capture, or introduce a distinct error variant so the daemon can complete the current task while flagging the selection failure separately.\n   Rationale: The daemon error handler's comment (lines 1988-1999) explains that `MilestoneUpdateFailed` must not be swallowed because the milestone state was not durably written. But a selection failure after successful close+sync+milestone_update is a qualitatively different situation — the current bead's state IS durable. Failing the task here means the operator must retry an already-succeeded reconciliation just because the next-bead selection had a transient issue, and the retry will redundantly re-call bv/br.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

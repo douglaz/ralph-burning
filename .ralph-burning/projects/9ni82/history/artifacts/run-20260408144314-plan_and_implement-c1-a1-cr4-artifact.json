@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260408144314-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-08T16:15:46.881965830Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the pending selecting-state amendments across `src/cli/run.rs`, `src/contexts/automation_runtime/success_reconciliation.rs`, and `src/contexts/automation_runtime/daemon_loop.rs`. The selector now has a shared validation path that can consume a prefetched `bv --robot-next` result, so daemon reconciliation records and validates the same recommendation instead of querying `bv` twice. Post-reconciliation next-bead selection failures are now treated as non-fatal warnings instead of retroactively failing the completed bead, terminal `run sync-milestone` replays now retry selection from a blocked controller, and `persist_next_step_recommendation` now removes orphaned `.tmp` files after rename failures. I added deterministic regression coverage for the blocked replay path, single-call reconciliation selection, non-fatal selection failure handling, and temp-file cleanup.\n\n## Steps\n\n1. [Completed] Refactored milestone selection in `src/cli/run.rs` to separate recommendation validation from `bv` fetching, added a prefetched-recommendation entrypoint for reconciliation, and cleaned up `next_step_hint.json.tmp` on rename failure.\n2. [Completed] Updated terminal milestone sync continuation logic so completed-project replays can re-run selection from a previously blocked controller instead of dead-ending permanently.\n3. [Completed] Changed success reconciliation to reuse the first captured `bv` recommendation or explicit no-recommendation result, downgrade post-reconciliation selection errors to non-fatal warnings, and surface those warnings in daemon reconciliation output.\n4. [Completed] Added deterministic regression tests for temp-file cleanup, blocked replay reselection, non-final reconciliation using a single `bv` response, and non-fatal next-bead selection failures; then formatted and verified the library test suite.\n\n## Validation Evidence\n\n- `cargo test --lib select_next_milestone_bead_ -- --nocapture` passed (8 tests).\n- `cargo test --lib sync_terminal_milestone_task_and_continue_selection_ -- --nocapture` passed (2 tests).\n- `cargo test --lib reconcile_success_nonfinal_ -- --nocapture` passed (2 tests).\n- `cargo test --lib -- --nocapture` passed (643 tests).\n\n## Outstanding Risks\n\n- Manual `run sync-milestone` replays now retry selection whenever the controller is `blocked`, so a transient `bv` outage during a retry can still move the controller to `needs_operator`; that is intentional, but it remains operator-visible behavior.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

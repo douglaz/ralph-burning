@@ -1,0 +1,72 @@
+{
+  "active_run": {
+    "run_id": "run-20260408144314",
+    "stage_cursor": {
+      "stage": "plan_and_implement",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 10
+    },
+    "started_at": "2026-04-08T17:40:20.686438681Z",
+    "prompt_hash_at_cycle_start": "1e90139df0ccc9ae84ad052cb68e3839dfe2bf3f2c81b04d81608f2b49bcd2a8",
+    "prompt_hash_at_stage_start": "1e90139df0ccc9ae84ad052cb68e3839dfe2bf3f2c81b04d81608f2b49bcd2a8",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 9,
+    "stage_resolution_snapshot": {
+      "stage_id": "plan_and_implement",
+      "resolved_at": "2026-04-08T18:58:26.691703461Z",
+      "primary_target": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 10,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [
+      {
+        "amendment_id": "fr-9-3f12f18c",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "Stop canonicalizing the claimed bead ID unless the rest of the controller/runtime normalizes IDs the same way. The selection path now rewrites a ready bead like `bead-x` to `ms-id.bead-x` before storing it in controller state (`src/cli/run.rs:272-279`, `src/cli/run.rs:588-596`), but later execution paths still compare bead IDs as raw strings (`src/cli/run.rs:768-785`, `src/cli/run.rs:1018-1023`, `src/contexts/milestone_record/controller.rs:1339-1348`). For milestones that use explicit short bead IDs, selecting the next bead can therefore leave the controller tracking `ms-id.bead-x` while the project/task source still carries `bead-x`; the next start/resume/sync then fails with “controller is already tracking active bead ... and cannot adopt ...”. Either preserve the original `br` bead ID here or switch the downstream alignment checks to the same normalized/bead-match comparison.",
+        "created_at": "2026-04-08T18:58:26.561685179Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "bee1abad3d0565ae2e77b02ea3cea9b03ef560a842ab9b06cafabb40158cb18c"
+      }
+    ],
+    "processed_count": 20
+  },
+  "status_summary": "running: Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-08T18:37:36.782675072Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T16:43:29.591013327Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed ~2,600 lines of changes across 3 source files implementing bead selection logic for the milestone controller. The implementation correctly: (1) transitions to Selecting state before querying bv/br, (2) validates bv recommendations against br ready state, (3) routes mismatches to Blocked or NeedsOperator depending on whether the failure was a tool error vs a readiness mismatch, (4) integrates into the reconciliation flow with proper prefetch of bv recommendations to avoid redundant calls, and (5) guards against replay-induced controller state overwrites via controller_requires_terminal_task_sync. All 50 relevant tests pass covering single-ready, conflicting-recommendation, no-ready, tool-failure, and replay-idempotency cases. No correctness bugs or safety issues found.\n\n## Amendments\n\n1. In `select_next_milestone_bead_from_recommendation` (src/cli/run.rs:676-679), the controller transition reason says 'requesting the next bead recommendation from bv before any claim' even though this function receives a pre-fetched recommendation and never calls bv. The `Selecting` state reason should reflect reality, e.g. 'validating a pre-fetched bv recommendation against br readiness before any claim'. This matters because operators inspect controller state reasons for debugging.\n   Rationale: Controller transition reasons are operator-visible diagnostic text. An inaccurate reason saying bv is being queried when it already was could mislead debugging during a stall in selection state.\n2. In `persist_next_step_recommendation` (src/cli/run.rs:354-385), all error paths use `eprintln!` for logging. In a daemon context, stderr may not be monitored. Consider using `tracing::warn!` (already used elsewhere in the codebase, e.g. success_reconciliation.rs:267) for consistency, so these failures appear in structured logs alongside the tracing infrastructure the daemon already uses.\n   Rationale: The daemon loop in daemon_loop.rs uses println for some outputs, but the reconciliation module uses tracing::warn for similar best-effort persistence warnings. The inconsistency means a failed hint persistence in the selection path would be invisible to structured log consumers while a similar failure in reconciliation would not.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}

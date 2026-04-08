@@ -3,13 +3,15 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
 use clap::{Args, Subcommand};
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::adapters::br_models::{BeadDetail, BeadStatus, ReadyBead};
+use crate::adapters::br_models::{BeadDetail, BeadStatus, DependencyKind, ReadyBead};
+use crate::adapters::br_process::{BrAdapter, BrCommand, BrError, ProcessRunner};
+use crate::adapters::bv_process::{BvAdapter, BvCommand, BvProcessRunner, NextBeadResponse};
 use crate::adapters::fs::{
     FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
     FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
@@ -215,30 +217,686 @@ impl ProjectMilestoneControllerRuntime<'_> {
     }
 
     fn planned_bead_membership_refs(&self) -> AppResult<HashSet<String>> {
-        let plan_json = FsMilestonePlanStore.read_plan_json(self.base_dir, self.milestone_id)?;
-        let bundle: MilestoneBundle =
-            serde_json::from_str(&plan_json).map_err(|error| AppError::CorruptRecord {
-                file: format!("milestones/{}/plan.json", self.milestone_id),
-                details: error.to_string(),
-            })?;
-
-        if bundle.identity.id != self.milestone_id.as_str() {
-            return Err(AppError::CorruptRecord {
-                file: format!("milestones/{}/plan.json", self.milestone_id),
-                details: format!(
-                    "bundle identity '{}' does not match milestone '{}'",
-                    bundle.identity.id, self.milestone_id
-                ),
-            });
-        }
-
-        planned_bead_membership_refs(&bundle)
-            .map(|refs| refs.into_iter().collect())
-            .map_err(|errors| AppError::CorruptRecord {
-                file: format!("milestones/{}/plan.json", self.milestone_id),
-                details: errors.join("; "),
-            })
+        load_planned_bead_membership_refs(self.base_dir, self.milestone_id)
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct BvMessageOnlyResponse {
+    #[allow(dead_code)]
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BrShowResponse {
+    Single(BeadDetail),
+    Many(Vec<BeadDetail>),
+}
+
+#[derive(Debug, Clone)]
+enum NextRecommendationOutcome {
+    Recommended(NextBeadResponse),
+    NoRecommendation,
+}
+
+fn load_planned_bead_membership_refs(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<HashSet<String>> {
+    let plan_json = FsMilestonePlanStore.read_plan_json(base_dir, milestone_id)?;
+    let bundle: MilestoneBundle =
+        serde_json::from_str(&plan_json).map_err(|error| AppError::CorruptRecord {
+            file: format!("milestones/{}/plan.json", milestone_id),
+            details: error.to_string(),
+        })?;
+
+    if bundle.identity.id != milestone_id.as_str() {
+        return Err(AppError::CorruptRecord {
+            file: format!("milestones/{}/plan.json", milestone_id),
+            details: format!(
+                "bundle identity '{}' does not match milestone '{}'",
+                bundle.identity.id, milestone_id
+            ),
+        });
+    }
+
+    planned_bead_membership_refs(&bundle)
+        .map(|refs| refs.into_iter().collect())
+        .map_err(|errors| AppError::CorruptRecord {
+            file: format!("milestones/{}/plan.json", milestone_id),
+            details: errors.join("; "),
+        })
+}
+
+fn canonicalize_milestone_bead_ref(milestone_id: &MilestoneId, bead_id: &str) -> String {
+    let trimmed = bead_id.trim();
+    let qualified_prefix = format!("{}.", milestone_id.as_str());
+    if trimmed.starts_with(&qualified_prefix) {
+        trimmed.to_owned()
+    } else {
+        format!("{qualified_prefix}{trimmed}")
+    }
+}
+
+fn milestone_planned_refs_contain(
+    planned_refs: &HashSet<String>,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> bool {
+    planned_refs.contains(bead_id)
+        || planned_refs.contains(&canonicalize_milestone_bead_ref(milestone_id, bead_id))
+        || bead_id
+            .strip_prefix(&format!("{}.", milestone_id.as_str()))
+            .is_some_and(|short_ref| planned_refs.contains(short_ref))
+}
+
+fn milestone_bead_refs_match(milestone_id: &MilestoneId, left: &str, right: &str) -> bool {
+    canonicalize_milestone_bead_ref(milestone_id, left)
+        == canonicalize_milestone_bead_ref(milestone_id, right)
+}
+
+fn summarize_bead_ids(ids: &[String]) -> String {
+    const MAX_IDS: usize = 5;
+
+    if ids.is_empty() {
+        return "none".to_owned();
+    }
+
+    let shown = ids.iter().take(MAX_IDS).cloned().collect::<Vec<_>>();
+    if ids.len() <= MAX_IDS {
+        shown.join(", ")
+    } else {
+        format!("{} (and {} more)", shown.join(", "), ids.len() - MAX_IDS)
+    }
+}
+
+fn br_show_error_is_missing(error: &BrError) -> bool {
+    fn message_describes_missing_bead(message: &str) -> bool {
+        let message = message.to_ascii_lowercase();
+        (message.contains("bead not found") || message.contains("issue not found"))
+            || (message.contains("not found")
+                && (message.contains("bead") || message.contains("issue")))
+    }
+
+    match error {
+        BrError::BrExitError { stderr, stdout, .. } => {
+            message_describes_missing_bead(stderr) || message_describes_missing_bead(stdout)
+        }
+        _ => false,
+    }
+}
+
+async fn request_next_recommendation<V: BvProcessRunner>(
+    bv: &BvAdapter<V>,
+) -> Result<NextRecommendationOutcome, String> {
+    let output = bv
+        .exec_read(&BvCommand::robot_next())
+        .await
+        .map_err(|error| {
+            format!("milestone controller selection could not query bv --robot-next: {error}")
+        })?;
+
+    serde_json::from_str::<NextBeadResponse>(&output.stdout)
+        .map(NextRecommendationOutcome::Recommended)
+        .or_else(|next_error| {
+            serde_json::from_str::<BvMessageOnlyResponse>(&output.stdout)
+                .map(|_| NextRecommendationOutcome::NoRecommendation)
+                .map_err(|_| next_error)
+        })
+        .map_err(|error| {
+            format!(
+                "milestone controller selection could not parse bv --robot-next output: {error}"
+            )
+        })
+}
+
+fn persist_next_step_recommendation(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    recommendation: &NextBeadResponse,
+) {
+    let milestone_dir = FileSystem::milestone_root(base_dir, milestone_id);
+    if let Err(error) = std::fs::create_dir_all(&milestone_dir) {
+        tracing::warn!(
+            error = %error,
+            milestone_id = %milestone_id,
+            path = %milestone_dir.display(),
+            "failed to create milestone directory for next-step recommendation persistence"
+        );
+        return;
+    }
+
+    let hint_path = milestone_dir.join("next_step_hint.json");
+    let tmp_path = milestone_dir.join("next_step_hint.json.tmp");
+    let serialized = match serde_json::to_string_pretty(recommendation) {
+        Ok(serialized) => serialized,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                milestone_id = %milestone_id,
+                bead_id = %recommendation.id,
+                "failed to serialize next-step recommendation"
+            );
+            return;
+        }
+    };
+
+    if let Err(error) = std::fs::write(&tmp_path, serialized) {
+        tracing::warn!(
+            error = %error,
+            milestone_id = %milestone_id,
+            path = %tmp_path.display(),
+            "failed to write next-step recommendation temp file"
+        );
+        return;
+    }
+
+    if let Err(error) = std::fs::rename(&tmp_path, &hint_path) {
+        tracing::warn!(
+            error = %error,
+            milestone_id = %milestone_id,
+            path = %hint_path.display(),
+            "failed to persist next-step recommendation file"
+        );
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+}
+
+fn delete_persisted_next_step_recommendation(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+) {
+    let hint_path = FileSystem::milestone_root(base_dir, milestone_id).join("next_step_hint.json");
+    if hint_path.exists() {
+        if let Err(error) = std::fs::remove_file(&hint_path) {
+            tracing::warn!(
+                error = %error,
+                milestone_id = %milestone_id,
+                path = %hint_path.display(),
+                "failed to remove stale next-step recommendation file"
+            );
+        }
+    }
+}
+
+async fn request_ready_milestone_beads<R: ProcessRunner>(
+    br: &BrAdapter<R>,
+    milestone_id: &MilestoneId,
+    planned_refs: &HashSet<String>,
+) -> Result<Vec<ReadyBead>, String> {
+    let ready: Vec<ReadyBead> = br.exec_json(&BrCommand::ready()).await.map_err(|error| {
+        format!("milestone controller selection could not query br ready: {error}")
+    })?;
+
+    Ok(ready
+        .into_iter()
+        .filter(|bead| milestone_planned_refs_contain(planned_refs, milestone_id, &bead.id))
+        .collect())
+}
+
+async fn request_bead_detail<R: ProcessRunner>(
+    br: &BrAdapter<R>,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> Result<Option<BeadDetail>, String> {
+    let response = match br
+        .exec_json::<BrShowResponse>(&BrCommand::show(bead_id))
+        .await
+    {
+        Ok(response) => response,
+        Err(error) if br_show_error_is_missing(&error) => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "milestone controller selection could not inspect bead '{bead_id}': {error}"
+            ));
+        }
+    };
+
+    let matching = match response {
+        BrShowResponse::Single(detail) => {
+            milestone_bead_refs_match(milestone_id, &detail.id, bead_id).then_some(detail)
+        }
+        BrShowResponse::Many(details) => details
+            .into_iter()
+            .find(|detail| milestone_bead_refs_match(milestone_id, &detail.id, bead_id)),
+    };
+
+    Ok(matching)
+}
+
+fn blocked_reason_for_recommendation_mismatch(
+    milestone_id: &MilestoneId,
+    recommendation: &NextBeadResponse,
+    ready_beads: &[ReadyBead],
+    bead_detail: Option<&BeadDetail>,
+) -> String {
+    let ready_ids = ready_beads
+        .iter()
+        .map(|bead| bead.id.clone())
+        .collect::<Vec<_>>();
+    let ready_summary = if ready_ids.is_empty() {
+        "no milestone beads are ready".to_owned()
+    } else {
+        format!("ready milestone beads: {}", summarize_bead_ids(&ready_ids))
+    };
+
+    let recommendation_id = recommendation.id.as_str();
+
+    let detail_summary = match bead_detail {
+        Some(detail) if detail.status == BeadStatus::InProgress => {
+            format!("br shows it is already {}", detail.status)
+        }
+        Some(detail) if matches!(detail.status, BeadStatus::Closed | BeadStatus::Deferred) => {
+            format!("br shows it is already {}", detail.status)
+        }
+        Some(detail) => {
+            let blockers = detail
+                .dependencies
+                .iter()
+                .filter(|dependency| {
+                    dependency.kind == DependencyKind::Blocks
+                        && dependency.status != Some(BeadStatus::Closed)
+                })
+                .map(|dependency| dependency.id.clone())
+                .collect::<Vec<_>>();
+            if blockers.is_empty() {
+                "br ready did not confirm it as actionable".to_owned()
+            } else {
+                format!(
+                    "br shows it is blocked by {}",
+                    summarize_bead_ids(&blockers)
+                )
+            }
+        }
+        None => "br show could not find the recommended bead".to_owned(),
+    };
+
+    format!(
+        "bv recommended bead '{recommendation_id}', but {detail_summary}; {ready_summary} for milestone '{milestone_id}'"
+    )
+}
+
+fn transition_controller_for_selection_outcome(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    state: MilestoneControllerState,
+    bead_id: Option<&str>,
+    reason: String,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<milestone_controller::MilestoneControllerRecord> {
+    let mut request = milestone_controller::ControllerTransitionRequest::new(state, reason);
+    if let Some(bead_id) = bead_id {
+        request = request.with_bead(bead_id);
+    }
+
+    milestone_controller::sync_controller_state(
+        &FsMilestoneControllerStore,
+        base_dir,
+        milestone_id,
+        request,
+        now,
+    )
+}
+
+async fn complete_next_milestone_bead_selection<R: ProcessRunner>(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    br: &BrAdapter<R>,
+    planned_refs: &HashSet<String>,
+    recommendation: NextRecommendationOutcome,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<milestone_controller::MilestoneControllerRecord> {
+    match &recommendation {
+        NextRecommendationOutcome::Recommended(recommendation) => {
+            // Persist the raw bv recommendation before validation so operators
+            // can inspect the exact candidate even if `br ready` fails later.
+            persist_next_step_recommendation(base_dir, milestone_id, recommendation);
+        }
+        NextRecommendationOutcome::NoRecommendation => {
+            delete_persisted_next_step_recommendation(base_dir, milestone_id);
+        }
+    }
+
+    let ready_beads = match request_ready_milestone_beads(br, milestone_id, planned_refs).await {
+        Ok(ready_beads) => ready_beads,
+        Err(reason) => {
+            let reason = match &recommendation {
+                NextRecommendationOutcome::Recommended(recommendation) => format!(
+                    "{reason}; bv recommended bead '{}' before validation failed",
+                    recommendation.id
+                ),
+                NextRecommendationOutcome::NoRecommendation => reason,
+            };
+            return transition_controller_for_selection_outcome(
+                base_dir,
+                milestone_id,
+                MilestoneControllerState::NeedsOperator,
+                None,
+                reason,
+                now,
+            );
+        }
+    };
+
+    match recommendation {
+        NextRecommendationOutcome::Recommended(recommendation) => {
+            let matching_ready_bead = ready_beads.iter().find(|ready_bead| {
+                milestone_bead_refs_match(milestone_id, &ready_bead.id, &recommendation.id)
+            });
+
+            if let Some(ready_bead) = matching_ready_bead {
+                return transition_controller_for_selection_outcome(
+                    base_dir,
+                    milestone_id,
+                    MilestoneControllerState::Claimed,
+                    Some(&ready_bead.id),
+                    format!(
+                        "bv recommended bead '{}' and br confirmed it is ready to claim",
+                        recommendation.id
+                    ),
+                    now,
+                );
+            }
+
+            let reason = if !milestone_planned_refs_contain(
+                planned_refs,
+                milestone_id,
+                &recommendation.id,
+            ) {
+                let ready_ids = ready_beads
+                    .iter()
+                    .map(|bead| bead.id.clone())
+                    .collect::<Vec<_>>();
+                let ready_summary = if ready_ids.is_empty() {
+                    "no milestone beads are ready".to_owned()
+                } else {
+                    format!("ready milestone beads: {}", summarize_bead_ids(&ready_ids))
+                };
+                format!(
+                    "bv recommended bead '{}', but it is not part of milestone '{}'; {}",
+                    recommendation.id, milestone_id, ready_summary
+                )
+            } else {
+                let bead_detail =
+                    match request_bead_detail(br, milestone_id, &recommendation.id).await {
+                        Ok(bead_detail) => bead_detail,
+                        Err(reason) => {
+                            return transition_controller_for_selection_outcome(
+                                base_dir,
+                                milestone_id,
+                                MilestoneControllerState::NeedsOperator,
+                                None,
+                                reason,
+                                now,
+                            )
+                        }
+                    };
+                blocked_reason_for_recommendation_mismatch(
+                    milestone_id,
+                    &recommendation,
+                    &ready_beads,
+                    bead_detail.as_ref(),
+                )
+            };
+
+            transition_controller_for_selection_outcome(
+                base_dir,
+                milestone_id,
+                MilestoneControllerState::Blocked,
+                None,
+                reason,
+                now,
+            )
+        }
+        NextRecommendationOutcome::NoRecommendation => {
+            let ready_ids = ready_beads
+                .iter()
+                .map(|bead| bead.id.clone())
+                .collect::<Vec<_>>();
+            let reason = if ready_ids.is_empty() {
+                format!(
+                    "bv reported no actionable bead and br confirmed that milestone '{}' has no ready beads",
+                    milestone_id
+                )
+            } else {
+                // Treat this as blocked instead of needs-operator: both tools
+                // executed successfully, no incorrect claim was made, and the
+                // safe response is to stop automatic claiming until the graph
+                // or recommendation data converges on a later retry.
+                format!(
+                    "bv reported no actionable bead, but br ready found milestone beads: {}",
+                    summarize_bead_ids(&ready_ids)
+                )
+            };
+
+            transition_controller_for_selection_outcome(
+                base_dir,
+                milestone_id,
+                MilestoneControllerState::Blocked,
+                None,
+                reason,
+                now,
+            )
+        }
+    }
+}
+
+pub(crate) async fn select_next_milestone_bead_from_recommendation<R: ProcessRunner>(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    br: &BrAdapter<R>,
+    recommendation: Option<NextBeadResponse>,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<milestone_controller::MilestoneControllerRecord> {
+    let planned_refs = load_planned_bead_membership_refs(base_dir, milestone_id)?;
+
+    milestone_controller::sync_controller_state(
+        &FsMilestoneControllerStore,
+        base_dir,
+        milestone_id,
+        milestone_controller::ControllerTransitionRequest::new(
+            MilestoneControllerState::Selecting,
+            "validating a pre-fetched bv recommendation against br readiness before any claim",
+        ),
+        now,
+    )?;
+
+    let recommendation = match recommendation {
+        Some(recommendation) => NextRecommendationOutcome::Recommended(recommendation),
+        None => NextRecommendationOutcome::NoRecommendation,
+    };
+
+    complete_next_milestone_bead_selection(
+        base_dir,
+        milestone_id,
+        br,
+        &planned_refs,
+        recommendation,
+        now,
+    )
+    .await
+}
+
+pub(crate) async fn select_next_milestone_bead<R: ProcessRunner, V: BvProcessRunner>(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    br: &BrAdapter<R>,
+    bv: &BvAdapter<V>,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<milestone_controller::MilestoneControllerRecord> {
+    let planned_refs = load_planned_bead_membership_refs(base_dir, milestone_id)?;
+
+    milestone_controller::sync_controller_state(
+        &FsMilestoneControllerStore,
+        base_dir,
+        milestone_id,
+        milestone_controller::ControllerTransitionRequest::new(
+            MilestoneControllerState::Selecting,
+            "requesting the next bead recommendation from bv before any claim",
+        ),
+        now,
+    )?;
+
+    let recommendation = match request_next_recommendation(bv).await {
+        Ok(recommendation) => recommendation,
+        Err(reason) => {
+            return transition_controller_for_selection_outcome(
+                base_dir,
+                milestone_id,
+                MilestoneControllerState::NeedsOperator,
+                None,
+                reason,
+                now,
+            )
+        }
+    };
+
+    complete_next_milestone_bead_selection(
+        base_dir,
+        milestone_id,
+        br,
+        &planned_refs,
+        recommendation,
+        now,
+    )
+    .await
+}
+
+fn controller_requires_terminal_task_sync(
+    controller: &milestone_controller::MilestoneControllerRecord,
+    bead_id: &str,
+    task_id: &str,
+) -> bool {
+    match controller.state {
+        MilestoneControllerState::Idle => true,
+        MilestoneControllerState::Selecting
+        | MilestoneControllerState::Blocked
+        | MilestoneControllerState::Completed => false,
+        MilestoneControllerState::Claimed
+        | MilestoneControllerState::Running
+        | MilestoneControllerState::Reconciling
+        | MilestoneControllerState::NeedsOperator => {
+            controller.active_bead_id.as_deref() == Some(bead_id)
+                && controller.active_task_id.as_deref() == Some(task_id)
+        }
+    }
+}
+
+async fn continue_selecting_milestone_bead_if_needed<R: ProcessRunner, V: BvProcessRunner>(
+    base_dir: &std::path::Path,
+    project_record: &ProjectRecord,
+    final_snapshot: &RunSnapshot,
+    br: &BrAdapter<R>,
+    bv: &BvAdapter<V>,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<()> {
+    if final_snapshot.status != RunStatus::Completed {
+        return Ok(());
+    }
+
+    let Some(task_source) = project_record.task_source.as_ref() else {
+        return Ok(());
+    };
+
+    let milestone_id = MilestoneId::new(&task_source.milestone_id)?;
+    let Some(controller) = milestone_controller::load_controller(
+        &FsMilestoneControllerStore,
+        base_dir,
+        &milestone_id,
+    )?
+    else {
+        return Ok(());
+    };
+
+    if !matches!(
+        controller.state,
+        MilestoneControllerState::Selecting | MilestoneControllerState::Blocked
+    ) {
+        return Ok(());
+    }
+
+    let selection_at = std::cmp::max(now, controller.last_transition_at);
+    if let Err(error) =
+        select_next_milestone_bead(base_dir, &milestone_id, br, bv, selection_at).await
+    {
+        let reason = format!("post-sync bead selection failed: {error}");
+        tracing::warn!(
+            milestone_id = milestone_id.as_str(),
+            %error,
+            "persisting needs_operator after selection failure on CLI sync path"
+        );
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+            milestone_controller::ControllerTransitionRequest::new(
+                MilestoneControllerState::NeedsOperator,
+                reason,
+            ),
+            selection_at,
+        )?;
+    }
+    Ok(())
+}
+
+async fn sync_terminal_milestone_task_and_continue_selection_with_options<
+    R: ProcessRunner,
+    V: BvProcessRunner,
+>(
+    base_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    project_record: &ProjectRecord,
+    final_snapshot: &RunSnapshot,
+    allow_missing_lineage_repair: bool,
+    br: &BrAdapter<R>,
+    bv: &BvAdapter<V>,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<bool> {
+    let synced = sync_terminal_milestone_task_with_options(
+        base_dir,
+        project_id,
+        project_record,
+        final_snapshot,
+        allow_missing_lineage_repair,
+    )?;
+    if synced {
+        continue_selecting_milestone_bead_if_needed(
+            base_dir,
+            project_record,
+            final_snapshot,
+            br,
+            bv,
+            now,
+        )
+        .await?;
+    }
+    Ok(synced)
+}
+
+async fn sync_terminal_milestone_task_and_continue_selection<
+    R: ProcessRunner,
+    V: BvProcessRunner,
+>(
+    base_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    project_record: &ProjectRecord,
+    final_snapshot: &RunSnapshot,
+    br: &BrAdapter<R>,
+    bv: &BvAdapter<V>,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<bool> {
+    sync_terminal_milestone_task_and_continue_selection_with_options(
+        base_dir,
+        project_id,
+        project_record,
+        final_snapshot,
+        true,
+        br,
+        bv,
+        now,
+    )
+    .await
 }
 
 impl MilestoneControllerResumePort for ProjectMilestoneControllerRuntime<'_> {
@@ -300,9 +958,9 @@ impl MilestoneControllerResumePort for ProjectMilestoneControllerRuntime<'_> {
         let ready: Vec<ReadyBead> =
             self.query_br_json(&["ready", "--json"], "milestone controller resume")?;
         let planned_refs = self.planned_bead_membership_refs()?;
-        Ok(ready
-            .iter()
-            .any(|bead| planned_refs.contains(bead.id.as_str())))
+        Ok(ready.iter().any(|bead| {
+            milestone_planned_refs_contain(&planned_refs, self.milestone_id, bead.id.as_str())
+        }))
     }
 
     fn all_beads_closed(&self) -> AppResult<bool> {
@@ -582,37 +1240,55 @@ fn sync_terminal_milestone_task_with_options(
         RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => unreachable!(),
     };
 
-    match final_snapshot.status {
-        RunStatus::Completed => {
-            milestone_controller::sync_controller_task_reconciling(
-                &FsMilestoneControllerStore,
-                base_dir,
-                &milestone_id,
-                &task_source.bead_id,
-                project_id.as_str(),
-                "workflow execution completed; reconciling milestone state",
-                finished_at,
-            )?;
-        }
-        RunStatus::Failed => {
-            milestone_controller::sync_controller_task_claimed(
-                &FsMilestoneControllerStore,
-                base_dir,
-                &milestone_id,
-                &task_source.bead_id,
-                project_id.as_str(),
-                "workflow attempt failed; the bead-linked project remains claimed for resume",
-                finished_at,
-            )?;
-        }
-        RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => unreachable!(),
-    }
-
     let exact_attempt_already_terminal = same_named_terminal_attempt_exists
         || matching_lineage_run.iter().any(|entry| {
             lineage_entry_matches_attempt(entry, project_id.as_str(), run_id, started_at)
                 && entry.outcome.is_terminal()
         });
+    let reconcile_controller = if exact_attempt_already_terminal {
+        match milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+        )? {
+            Some(controller) => controller_requires_terminal_task_sync(
+                &controller,
+                &task_source.bead_id,
+                project_id.as_str(),
+            ),
+            None => true,
+        }
+    } else {
+        true
+    };
+
+    if reconcile_controller {
+        match final_snapshot.status {
+            RunStatus::Completed => {
+                milestone_controller::sync_controller_task_reconciling(
+                    &FsMilestoneControllerStore,
+                    base_dir,
+                    &milestone_id,
+                    &task_source.bead_id,
+                    project_id.as_str(),
+                    "workflow execution completed; reconciling milestone state",
+                    finished_at,
+                )?;
+            }
+            RunStatus::Failed => {
+                milestone_controller::sync_controller_task_claimed(
+                    &FsMilestoneControllerStore,
+                    base_dir,
+                    &milestone_id,
+                    &task_source.bead_id,
+                    project_id.as_str(),
+                    "workflow attempt failed; the bead-linked project remains claimed for resume",
+                    finished_at,
+                )?;
+            }
+            RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => unreachable!(),
+        }
+    }
 
     if exact_attempt_already_terminal {
         milestone_service::repair_task_run_with_disposition(
@@ -650,7 +1326,7 @@ fn sync_terminal_milestone_task_with_options(
         )?;
     }
 
-    if final_snapshot.status == RunStatus::Completed {
+    if final_snapshot.status == RunStatus::Completed && reconcile_controller {
         let snapshot =
             milestone_service::load_snapshot(&FsMilestoneSnapshotStore, base_dir, &milestone_id)?;
         let (next_state, reason) = if snapshot.status == MilestoneStatus::Completed {
@@ -898,9 +1574,19 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     .await;
 
     let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
-    let milestone_sync_result =
-        sync_terminal_milestone_task(&current_dir, &project_id, &project_record, &final_snapshot)
-            .map_err(|error| decorate_sync_error(error, false));
+    let br = BrAdapter::new().with_working_dir(current_dir.clone());
+    let bv = BvAdapter::new().with_working_dir(current_dir.clone());
+    let milestone_sync_result = sync_terminal_milestone_task_and_continue_selection(
+        &current_dir,
+        &project_id,
+        &project_record,
+        &final_snapshot,
+        &br,
+        &bv,
+        chrono::Utc::now(),
+    )
+    .await
+    .map_err(|error| decorate_sync_error(error, false));
 
     // Test-only injection seam: delete the writer lock file before close()
     // to exercise close-failure handling at the CLI level.
@@ -1024,13 +1710,19 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             &project_record,
             &final_snapshot,
         )?;
-    let milestone_sync_result = sync_terminal_milestone_task_with_options(
+    let br = BrAdapter::new().with_working_dir(current_dir.clone());
+    let bv = BvAdapter::new().with_working_dir(current_dir.clone());
+    let milestone_sync_result = sync_terminal_milestone_task_and_continue_selection_with_options(
         &current_dir,
         &project_id,
         &project_record,
         &final_snapshot,
         allow_missing_lineage_repair,
+        &br,
+        &bv,
+        chrono::Utc::now(),
     )
+    .await
     .map_err(|error| decorate_sync_error(error, true));
 
     // Explicit guard shutdown before printing success — surfaces cleanup
@@ -1061,8 +1753,18 @@ async fn handle_sync_milestone() -> AppResult<()> {
     let project_record = FsProjectStore.read_project_record(&current_dir, &project_id)?;
     let final_snapshot = FsRunSnapshotStore.read_run_snapshot(&current_dir, &project_id)?;
 
-    let synced =
-        sync_terminal_milestone_task(&current_dir, &project_id, &project_record, &final_snapshot)?;
+    let br = BrAdapter::new().with_working_dir(current_dir.clone());
+    let bv = BvAdapter::new().with_working_dir(current_dir.clone());
+    let synced = sync_terminal_milestone_task_and_continue_selection(
+        &current_dir,
+        &project_id,
+        &project_record,
+        &final_snapshot,
+        &br,
+        &bv,
+        chrono::Utc::now(),
+    )
+    .await?;
     if synced {
         println!("Milestone task state synced for project '{}'.", project_id);
     } else {
@@ -1078,14 +1780,18 @@ async fn handle_sync_milestone() -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        prepare_milestone_controller_for_execution, resume_attempt_has_exact_lineage,
-        sync_terminal_milestone_task, sync_terminal_milestone_task_with_options,
-        MilestoneControllerExecutionOrigin, ProjectMilestoneControllerRuntime,
+        persist_next_step_recommendation, prepare_milestone_controller_for_execution,
+        resume_attempt_has_exact_lineage, select_next_milestone_bead,
+        select_next_milestone_bead_from_recommendation, sync_terminal_milestone_task,
+        sync_terminal_milestone_task_and_continue_selection,
+        sync_terminal_milestone_task_with_options, MilestoneControllerExecutionOrigin,
+        ProjectMilestoneControllerRuntime,
     };
     use chrono::Utc;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    use crate::adapters::bv_process::NextBeadResponse;
     use crate::adapters::fs::{
         FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
         FsMilestoneSnapshotStore, FsMilestoneStore, FsTaskRunLineageStore,
@@ -1109,6 +1815,8 @@ mod tests {
     };
     use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
     use crate::shared::error::AppError;
+    use crate::test_support::br::{MockBrAdapter, MockBrResponse};
+    use crate::test_support::bv::{MockBvAdapter, MockBvResponse};
     use crate::test_support::env::{lock_path_mutex, PathGuard};
 
     fn sample_bundle(id: &str, name: &str) -> MilestoneBundle {
@@ -1322,6 +2030,65 @@ mod tests {
         milestone
     }
 
+    fn bv_next_json(bead_id: &str, title: &str) -> String {
+        serde_json::json!({
+            "id": bead_id,
+            "title": title,
+            "score": 9.2,
+            "reasons": ["high impact", "ready"],
+            "action": "implement"
+        })
+        .to_string()
+    }
+
+    fn bv_no_recommendation_json() -> String {
+        serde_json::json!({
+            "message": "No actionable items available"
+        })
+        .to_string()
+    }
+
+    fn ready_beads_json(ids: &[&str]) -> String {
+        serde_json::Value::Array(
+            ids.iter()
+                .map(|id| {
+                    serde_json::json!({
+                        "id": id,
+                        "title": format!("Ready {id}"),
+                        "priority": 1,
+                        "bead_type": "task",
+                        "labels": []
+                    })
+                })
+                .collect(),
+        )
+        .to_string()
+    }
+
+    fn bead_detail_json(id: &str, status: &str, blockers: &[&str]) -> String {
+        serde_json::json!({
+            "id": id,
+            "title": format!("Detail {id}"),
+            "status": status,
+            "priority": 1,
+            "bead_type": "task",
+            "labels": [],
+            "dependencies": blockers
+                .iter()
+                .map(|blocker| {
+                    serde_json::json!({
+                        "id": blocker,
+                        "dependency_type": "blocks",
+                        "status": "open"
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "dependents": [],
+            "acceptance_criteria": []
+        })
+        .to_string()
+    }
+
     #[cfg(unix)]
     fn install_fake_br_ready_script(base_dir: &std::path::Path, ready_json: &str) {
         let fake_bin = base_dir.join("fake-bin");
@@ -1414,6 +2181,1012 @@ mod tests {
         };
 
         assert!(runtime.has_ready_beads().expect("query ready beads"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resume_blocked_controller_matches_mixed_form_ready_bead_ids() {
+        let _path_lock = lock_path_mutex();
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone =
+            create_explicit_bead_milestone_with_plan(base_dir, now, "ms-explicit", "bead-e2e");
+        install_fake_br_ready_script(
+            base_dir,
+            r#"[{"id":"ms-explicit.bead-e2e","title":"Explicit bead","priority":2,"bead_type":"task","labels":[]}]"#,
+        );
+        let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+        milestone_controller::initialize_controller_with_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+            milestone_controller::MilestoneControllerState::Blocked,
+            now,
+        )
+        .expect("initialize blocked controller");
+
+        let runtime = ProjectMilestoneControllerRuntime {
+            base_dir,
+            milestone_id: &milestone.id,
+        };
+        let resumed = milestone_controller::resume_controller(
+            &FsMilestoneControllerStore,
+            &runtime,
+            base_dir,
+            &milestone.id,
+            now + chrono::Duration::seconds(1),
+        )
+        .expect("resume controller");
+
+        assert_eq!(
+            resumed.state,
+            milestone_controller::MilestoneControllerState::Selecting
+        );
+        assert!(resumed
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("ready beads")));
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_claims_a_single_ready_recommendation() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-2",
+        ]))]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-alpha.bead-2",
+            "Primary bead",
+        ))]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("ms-alpha.bead-2")
+        );
+        assert_eq!(controller.active_task_id, None);
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("bv recommended bead 'ms-alpha.bead-2'")));
+        assert_eq!(bv.calls()[0].args, vec!["--robot-next"]);
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+        assert_eq!(br.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_preserves_raw_bead_id_from_br_ready() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        // br ready reports the unqualified form "bead-2" instead of "ms-alpha.bead-2".
+        let br =
+            MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&["bead-2"]))]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "bead-2",
+            "Primary bead",
+        ))]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed with unqualified bead ID");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        // The stored bead ID must be the raw form from br ready so downstream
+        // comparisons in sync_controller_task_claimed and
+        // validate_active_context_alignment match the form in task_source.bead_id.
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("bead-2"),
+            "bead ID from br ready should be stored as-is without canonicalization"
+        );
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_from_recommendation_records_prefetched_validation_reason() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-2",
+        ]))]);
+
+        let controller = select_next_milestone_bead_from_recommendation(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            Some(NextBeadResponse {
+                id: "ms-alpha.bead-2".to_owned(),
+                title: "Primary bead".to_owned(),
+                score: 9.2,
+                reasons: vec!["ready".to_owned()],
+                action: "implement".to_owned(),
+            }),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        let journal = crate::contexts::milestone_record::controller::MilestoneControllerPort::read_transition_journal(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("read controller journal");
+        let selecting_event = journal
+            .iter()
+            .find(|event| {
+                event.to_state == milestone_controller::MilestoneControllerState::Selecting
+            })
+            .expect("selecting transition");
+        assert_eq!(
+            selecting_event.reason,
+            "validating a pre-fetched bv recommendation against br readiness before any claim"
+        );
+        assert_eq!(br.calls().len(), 1);
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_records_request_reason_when_already_selecting() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::Selecting,
+                "reconciliation recorded the bead outcome and returned the controller to bead selection",
+            ),
+            now,
+        )
+        .expect("seed selecting controller");
+
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-2",
+        ]))]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-alpha.bead-2",
+            "Primary bead",
+        ))]);
+
+        select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now + chrono::Duration::seconds(1),
+        )
+        .await
+        .expect("selection should succeed");
+
+        let journal = crate::contexts::milestone_record::controller::MilestoneControllerPort::read_transition_journal(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("read controller journal");
+        let selecting_reasons = journal
+            .iter()
+            .filter(|event| {
+                event.to_state == milestone_controller::MilestoneControllerState::Selecting
+            })
+            .map(|event| event.reason.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selecting_reasons,
+            vec![
+                "reconciliation recorded the bead outcome and returned the controller to bead selection",
+                "requesting the next bead recommendation from bv before any claim",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_from_recommendation_records_prefetched_reason_when_already_selecting(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::Selecting,
+                "reconciliation recorded the bead outcome and returned the controller to bead selection",
+            ),
+            now,
+        )
+        .expect("seed selecting controller");
+
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-2",
+        ]))]);
+
+        select_next_milestone_bead_from_recommendation(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            Some(NextBeadResponse {
+                id: "ms-alpha.bead-2".to_owned(),
+                title: "Primary bead".to_owned(),
+                score: 9.2,
+                reasons: vec!["ready".to_owned()],
+                action: "implement".to_owned(),
+            }),
+            now + chrono::Duration::seconds(1),
+        )
+        .await
+        .expect("selection should succeed");
+
+        let journal = crate::contexts::milestone_record::controller::MilestoneControllerPort::read_transition_journal(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("read controller journal");
+        let selecting_reasons = journal
+            .iter()
+            .filter(|event| {
+                event.to_state == milestone_controller::MilestoneControllerState::Selecting
+            })
+            .map(|event| event.reason.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selecting_reasons,
+            vec![
+                "reconciliation recorded the bead outcome and returned the controller to bead selection",
+                "validating a pre-fetched bv recommendation against br readiness before any claim",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_blocks_when_bv_recommendation_is_not_ready() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::from_responses([
+            MockBrResponse::success(ready_beads_json(&["ms-alpha.bead-2"])),
+            MockBrResponse::success(bead_detail_json(
+                "ms-alpha.bead-3",
+                "open",
+                &["ms-alpha.bead-2"],
+            )),
+        ]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-alpha.bead-3",
+            "Follow-up bead",
+        ))]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Blocked
+        );
+        assert_eq!(controller.active_bead_id, None);
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| {
+                reason.contains("ms-alpha.bead-3") && reason.contains("blocked by ms-alpha.bead-2")
+            }));
+        assert_eq!(br.calls().len(), 2);
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+        assert_eq!(
+            br.calls()[1].args,
+            vec!["show", "ms-alpha.bead-3", "--json"]
+        );
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_blocks_when_bv_recommendation_is_outside_the_milestone_plan(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-2",
+        ]))]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-foreign.bead-9",
+            "Foreign bead",
+        ))]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Blocked
+        );
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| {
+                reason.contains("ms-foreign.bead-9")
+                    && reason.contains("not part of milestone 'ms-alpha'")
+                    && reason.contains("ready milestone beads: ms-alpha.bead-2")
+            }));
+        assert_eq!(br.calls().len(), 1);
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_blocks_when_no_ready_beads_exist() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_single_bead_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[]))]);
+        let bv =
+            MockBvAdapter::from_responses([MockBvResponse::success(bv_no_recommendation_json())]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Blocked
+        );
+        assert_eq!(controller.active_bead_id, None);
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("no ready beads")));
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_blocks_when_bv_has_no_recommendation_but_br_ready_is_nonempty(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-2",
+        ]))]);
+        let bv =
+            MockBvAdapter::from_responses([MockBvResponse::success(bv_no_recommendation_json())]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Blocked
+        );
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| {
+                reason.contains("bv reported no actionable bead")
+                    && reason.contains("ms-alpha.bead-2")
+            }));
+        assert_eq!(br.calls().len(), 1);
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_moves_to_needs_operator_on_bv_failure() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_single_bead_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::new();
+        let bv =
+            MockBvAdapter::from_responses([MockBvResponse::timeout("bv --robot-next", 30_000)]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator
+        );
+        assert_eq!(controller.active_bead_id, None);
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("could not query bv --robot-next")));
+        assert!(
+            br.calls().is_empty(),
+            "br should not be queried after bv failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_moves_to_needs_operator_on_br_ready_failure() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_single_bead_milestone_with_plan(base_dir, now);
+        let br =
+            MockBrAdapter::from_responses([MockBrResponse::timeout("br ready --json", 30_000)]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-alpha.bead-2",
+            "Primary bead",
+        ))]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator
+        );
+        assert_eq!(controller.active_bead_id, None);
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| {
+                reason.contains("could not query br ready") && reason.contains("ms-alpha.bead-2")
+            }));
+        assert_eq!(bv.calls()[0].args, vec!["--robot-next"]);
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+        assert_eq!(br.calls().len(), 1);
+
+        let hint_path = crate::adapters::fs::FileSystem::milestone_root(base_dir, &milestone.id)
+            .join("next_step_hint.json");
+        assert!(
+            hint_path.exists(),
+            "recommendation should be persisted before br ready"
+        );
+        let hint_json = std::fs::read_to_string(&hint_path).expect("read persisted hint");
+        let persisted_hint: NextBeadResponse =
+            serde_json::from_str(&hint_json).expect("parse persisted hint");
+        assert_eq!(persisted_hint.id, "ms-alpha.bead-2");
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_moves_to_needs_operator_when_br_show_is_not_missing() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::from_responses([
+            MockBrResponse::success(ready_beads_json(&["ms-alpha.bead-2"])),
+            MockBrResponse::exit_failure(2, "unknown flag: --json"),
+        ]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-alpha.bead-3",
+            "Follow-up bead",
+        ))]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator
+        );
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| {
+                reason.contains("could not inspect bead 'ms-alpha.bead-3'")
+                    && reason.contains("unknown flag")
+            }));
+        assert_eq!(br.calls().len(), 2);
+        assert_eq!(
+            br.calls()[1].args,
+            vec!["show", "ms-alpha.bead-3", "--json"]
+        );
+    }
+
+    #[test]
+    fn persist_next_step_recommendation_cleans_up_tmp_file_on_rename_failure() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_single_bead_milestone_with_plan(base_dir, now);
+        let milestone_dir =
+            crate::adapters::fs::FileSystem::milestone_root(base_dir, &milestone.id);
+        let hint_path = milestone_dir.join("next_step_hint.json");
+        std::fs::create_dir_all(&hint_path).expect("create conflicting hint directory");
+
+        persist_next_step_recommendation(
+            base_dir,
+            &milestone.id,
+            &NextBeadResponse {
+                id: "ms-alpha.bead-2".to_owned(),
+                title: "Primary bead".to_owned(),
+                score: 9.2,
+                reasons: vec!["ready".to_owned()],
+                action: "implement".to_owned(),
+            },
+        );
+
+        assert!(
+            !milestone_dir.join("next_step_hint.json.tmp").exists(),
+            "temp recommendation file should be removed after rename failure"
+        );
+        assert!(
+            hint_path.is_dir(),
+            "the conflicting directory should remain"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_terminal_milestone_task_and_continue_selection_claims_next_bead_once() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/bead-run/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"bead-run","flow":"docs_change"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-1","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:30:00Z","event_type":"run_completed","details":{"run_id":"run-1","completion_rounds":0,"max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let milestone = create_milestone_with_plan(base_dir, started_at);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "bead-run",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )
+        .expect("record bead start");
+
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: started_at,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: "ms-alpha".to_owned(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+        let final_snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: None,
+            status: RunStatus::Completed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "completed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-3",
+        ]))]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-alpha.bead-3",
+            "Follow-up bead",
+        ))]);
+
+        let first = sync_terminal_milestone_task_and_continue_selection(
+            base_dir,
+            &project_id,
+            &project_record,
+            &final_snapshot,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            started_at,
+        )
+        .await
+        .expect("first sync should succeed");
+        assert!(first);
+
+        let replay = sync_terminal_milestone_task_and_continue_selection(
+            base_dir,
+            &project_id,
+            &project_record,
+            &final_snapshot,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            started_at,
+        )
+        .await
+        .expect("replay sync should succeed");
+        assert!(replay);
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("ms-alpha.bead-3")
+        );
+        assert_eq!(controller.active_task_id, None);
+        assert_eq!(bv.calls().len(), 1);
+        assert_eq!(br.calls().len(), 1);
+        assert_eq!(bv.calls()[0].args, vec!["--robot-next"]);
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+    }
+
+    #[tokio::test]
+    async fn sync_terminal_milestone_task_and_continue_selection_retries_blocked_controller_on_replay(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/bead-run/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"bead-run","flow":"docs_change"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-1","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:30:00Z","event_type":"run_completed","details":{"run_id":"run-1","completion_rounds":0,"max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let milestone = create_milestone_with_plan(base_dir, started_at);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "bead-run",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )
+        .expect("record bead start");
+
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: started_at,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: "ms-alpha".to_owned(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+        let final_snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: None,
+            status: RunStatus::Completed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "completed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let first_br =
+            MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[]))]);
+        let first_bv =
+            MockBvAdapter::from_responses([MockBvResponse::success(bv_no_recommendation_json())]);
+
+        let first = sync_terminal_milestone_task_and_continue_selection(
+            base_dir,
+            &project_id,
+            &project_record,
+            &final_snapshot,
+            &first_br.as_br_adapter(),
+            &first_bv.as_bv_adapter(),
+            started_at,
+        )
+        .await
+        .expect("first sync should succeed");
+        assert!(first);
+
+        let blocked = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("load blocked controller")
+        .expect("controller exists");
+        assert_eq!(
+            blocked.state,
+            milestone_controller::MilestoneControllerState::Blocked
+        );
+
+        let replay_br =
+            MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+                "ms-alpha.bead-3",
+            ]))]);
+        let replay_bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-alpha.bead-3",
+            "Follow-up bead",
+        ))]);
+
+        let replay = sync_terminal_milestone_task_and_continue_selection(
+            base_dir,
+            &project_id,
+            &project_record,
+            &final_snapshot,
+            &replay_br.as_br_adapter(),
+            &replay_bv.as_bv_adapter(),
+            started_at,
+        )
+        .await
+        .expect("replay sync should succeed");
+        assert!(replay);
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("ms-alpha.bead-3")
+        );
+        assert_eq!(controller.active_task_id, None);
+        assert_eq!(first_bv.calls().len(), 1);
+        assert_eq!(first_br.calls().len(), 1);
+        assert_eq!(replay_bv.calls().len(), 1);
+        assert_eq!(replay_br.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_terminal_milestone_task_and_continue_selection_persists_needs_operator_on_plan_failure(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/bead-run/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"bead-run","flow":"docs_change"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-1","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:30:00Z","event_type":"run_completed","details":{"run_id":"run-1","completion_rounds":0,"max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let milestone = create_milestone_with_plan(base_dir, started_at);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "bead-run",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )
+        .expect("record bead start");
+
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: started_at,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: "ms-alpha".to_owned(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+        let final_snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: None,
+            status: RunStatus::Completed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "completed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        // Corrupt plan.json after milestone sync transitions controller to selecting.
+        // The sync itself reads the snapshot, not the plan, so it succeeds, but the
+        // follow-up selection will fail when it tries to load planned bead membership.
+        let plan_path = base_dir.join(".ralph-burning/milestones/ms-alpha/plan.json");
+        std::fs::write(&plan_path, "NOT VALID JSON").expect("corrupt plan");
+
+        // Empty mock adapters — selection should fail before reaching bv/br.
+        let br = MockBrAdapter::from_responses([] as [MockBrResponse; 0]);
+        let bv = MockBvAdapter::from_responses([] as [MockBvResponse; 0]);
+
+        let result = sync_terminal_milestone_task_and_continue_selection(
+            base_dir,
+            &project_id,
+            &project_record,
+            &final_snapshot,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            started_at,
+        )
+        .await;
+
+        // The function should succeed (not propagate the selection error).
+        assert!(
+            result.is_ok(),
+            "sync should succeed despite selection failure: {result:?}"
+        );
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator,
+            "controller should land in needs_operator, not stay stuck in selecting"
+        );
+        assert!(
+            controller
+                .last_transition_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("post-sync bead selection failed"),
+            "reason should mention selection failure: {:?}",
+            controller.last_transition_reason
+        );
+        // bv/br should never be called since the plan couldn't even be loaded.
+        assert_eq!(bv.calls().len(), 0);
+        assert_eq!(br.calls().len(), 0);
     }
 
     #[test]

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-vote-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260408144314-final_review-vote-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T16:33:16.755845637Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the success reconciliation flow, controller state machine, and daemon loop handling. The amendment identifies a genuine safety gap: after the controller transitions to Selecting (line 428-445), a failure in select_next_milestone_bead*() (lines 254-262) is swallowed as a transient warning with no durable state change. The controller sits in Selecting with no selected bead and no persisted error. The state machine already supports Selecting → NeedsOperator and Selecting → Blocked (controller.rs lines 37-39), making the fix straightforward. The daemon loop (line 1976-1978) only prints the warning to stdout, confirming there is no fallback durability path.\n\n## Votes\n\n- `fr-4-d830c63e`: Accept\n  The defect is real and verified in code. After sync_controller_state moves the controller to Selecting (lines 428-445), a failure in select_next_milestone_bead*() (lines 254-262) is caught and stored in next_step_selection_warning, but no durable state transition records the failure. The daemon loop (line 1976-1978) only prints it to stdout — fully ephemeral. This leaves the milestone in Selecting with no selected bead, no persisted error, and no operator-visible indication of the problem. A corrupted plan.json, br read failure, or bv timeout would all silently stall the milestone. The state machine already supports Selecting → NeedsOperator and Selecting → Blocked transitions (controller.rs lines 37-39), so the fix requires only a second sync_controller_state call in the error branch to transition to NeedsOperator with the failure reason. This is a clear violation of the safe-state contract the reconciliation handler should uphold.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

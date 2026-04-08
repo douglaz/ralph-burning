@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr9-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T18:44:15.914988861Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed two changes: (1) bead ID canonicalization in selection (run.rs:589-590) ensures controller always stores qualified-form bead IDs, and (2) replay guard in success_reconciliation.rs (lines 164-178, 256, 492-518) prevents crashes when reconciliation replays after the controller has already advanced to the next bead. Both changes are correct, well-tested (new tests at run.rs:2279-2314 and success_reconciliation.rs:2418-2637), and all 652 lib tests pass. The replay guard correctly detects advancement by comparing active_bead_id against the reconciling bead_id, and skips controller state transitions plus next-bead selection on replay. The bead ID format consistency is maintained because task_source.bead_id (used in production reconciliation) originates from the same controller active_bead_id that was canonicalized. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 9
+}

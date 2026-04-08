@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-planner-positions-c1-a1-cr4-artifact",
+  "payload_id": "run-20260408144314-final_review-planner-positions-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T16:32:32.435631133Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe amendment identifies a real safety gap in the success reconciliation flow. After transitioning the controller to `Selecting` (line 428-445), a failure in `select_next_milestone_bead*()` (lines 254-262) is swallowed as a warning. The `MilestoneControllerState` enum already has `NeedsOperator` and `Blocked` variants, and transitions from `Selecting` to both are valid in the state machine. The current behavior leaves the milestone in an apparently healthy `Selecting` state with no durable failure record, undermining the controller's contract for surfacing issues to operators.\n\n## Votes\n\n- `fr-4-d830c63e`: Accept\n  The amendment identifies a genuine defect: when `select_next_milestone_bead*()` fails after the controller has already been moved to `Selecting`, the error is only logged transiently and stored in `next_step_selection_warning` (which the daemon merely prints to stdout). No durable state transition records the failure. The controller sits in `Selecting` with no selected bead and no operator-visible error. The state machine already supports `Selecting → NeedsOperator` and `Selecting → Blocked` transitions (controller.rs lines 37-39), so the fix is straightforward: on selection failure, perform a second `sync_controller_state` call to transition to `NeedsOperator` (or `Blocked`) with the error reason persisted. This is not a theoretical concern — a corrupted plan.json, a br read failure, or a bv adapter timeout would all trigger this path, leaving the milestone silently stuck. The amendment correctly calls out that this violates the safe-state contract the reconciliation handler is supposed to uphold.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

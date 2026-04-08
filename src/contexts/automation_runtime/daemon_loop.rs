@@ -1973,6 +1973,9 @@ where
                         hint.id, hint.score
                     );
                 }
+                if let Some(warning) = &outcome.next_step_selection_warning {
+                    println!("reconciliation: next-step selection warning: {warning}");
+                }
             }
             Err(
                 e @ (ReconciliationError::BrCloseFailed { .. }
