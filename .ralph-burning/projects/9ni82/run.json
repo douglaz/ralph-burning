@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260408144314",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 4
@@ -23,55 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-3-891dc694",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "In `src/cli/run.rs:persist_next_step_recommendation` (line 381-383), when `std::fs::rename` fails the `.tmp` file is left behind. The counterpart in `success_reconciliation.rs:persist_next_step_hint` (line 530) cleans up with `let _ = std::fs::remove_file(&tmp_path);`. Add the same cleanup to the `run.rs` version for consistency and to avoid accumulating orphaned temp files.",
-        "created_at": "2026-04-08T16:05:40.418820806Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "4f1f6e6a3ae88f918bb38442844f70fd84877a7e5fe8e4371c28bb5ed9f7c434"
-      },
-      {
-        "amendment_id": "fr-3-a55ce4c4",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "In `success_reconciliation.rs` (lines 227-241), `select_next_milestone_bead` failures are mapped to `ReconciliationError::MilestoneUpdateFailed` which the daemon (`daemon_loop.rs:1983-2007`) treats as a task failure requiring operator intervention. But by this point the bead is already closed and synced (steps 1-2 completed). A selection failure for the *next* bead should not retroactively fail the *current* bead's reconciliation outcome. Consider wrapping the `select_next_milestone_bead` call in a best-effort handler (log + continue) similar to hint capture, or introduce a distinct error variant so the daemon can complete the current task while flagging the selection failure separately.",
-        "created_at": "2026-04-08T16:05:40.418857044Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "9c09980de04ec7eb6b0f9504dd02024626d372297ca3e0f8e0ef49b6448c1e0c"
-      },
-      {
-        "amendment_id": "fr-3-c9d924f3",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "Allow `run sync-milestone` / terminal-sync replays to re-enter selection from a blocked controller. Right now `controller_requires_terminal_task_sync` hard-returns `false` for `Blocked` in `src/cli/run.rs:690-694`, and `continue_selecting_milestone_bead_if_needed` only calls the selector when the controller is already `Selecting` in `src/cli/run.rs:731-736`. Combined with the `exact_attempt_already_terminal` gate in `src/cli/run.rs:1145-1156`, a completed bead-backed project that previously landed in `Blocked` can never be re-evaluated by rerunning `run sync-milestone`, even though the controller model explicitly supports `Blocked -> Selecting` when ready work appears in `src/contexts/milestone_record/controller.rs:965-975`. Because completed projects cannot use `run resume`, this makes blocked selection a permanent dead-end. Make terminal sync invoke the blocked-state resume path (or otherwise retry selection from `Blocked`) and add a regression test covering a completed project that becomes ready after initially blocking.",
-        "created_at": "2026-04-08T16:05:40.418900636Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "b03c20be1d7dc1a6f3e49feb568cc2706c46bfb5d7b71f3e9bbcf4691a7fa263"
-      },
-      {
-        "amendment_id": "fr-3-d22f1660",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "Stop querying `bv --robot-next` twice during daemon reconciliation. `reconcile_success` already captures and persists a `NextBeadResponse` in `src/contexts/automation_runtime/success_reconciliation.rs:197-205`, but for non-final milestones it then calls `select_next_milestone_bead` in `src/contexts/automation_runtime/success_reconciliation.rs:227-235`, which performs a second `bv --robot-next` call in `src/cli/run.rs:329-347` and validates/claims based on that second response in `src/cli/run.rs:538-556`. The daemon still reports the first hint in `src/contexts/automation_runtime/daemon_loop.rs:1970-1974`, so the logged/persisted recommendation can differ from the bead actually claimed, and a transient failure on the second bv call can move the controller to `needs_operator` even though the first call already produced a valid recommendation. Thread the first recommendation into the selection validator (or refactor selection to accept a pre-fetched recommendation) so the recommendation that gets recorded is exactly the one that is validated and acted on.",
-        "created_at": "2026-04-08T16:05:40.418945931Z",
-        "batch_sequence": 4,
-        "source": "workflow_stage",
-        "dedup_key": "139a622f93996709adce8f2e3209406e862d24f2abd244147986505948cfbb87"
-      }
-    ],
-    "processed_count": 8
+    "pending": [],
+    "processed_count": 12
   },
-  "status_summary": "running: final review restart round 4 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-08T15:49:01.651755689Z",
