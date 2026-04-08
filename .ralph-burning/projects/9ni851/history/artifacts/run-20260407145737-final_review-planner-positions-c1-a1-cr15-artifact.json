@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr15-artifact",
+  "payload_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T21:38:33.735001707Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nVerified the amendment's claims by tracing the full code path. The success_reconciliation path calls record_bead_completion which flows through update_task_run (allow_terminal_repair=false), while the CLI run path already correctly uses repair_task_run_with_disposition (allow_terminal_repair=true). When a bead was already finalized with a different outcome_detail (e.g., 'first bead completed' vs 'task_id=...'), the non-repair path rejects the mismatch at fs.rs:3888-3896, causing a permanent daemon task failure loop. The bug is real, well-characterized, and the fix follows an established pattern already in the codebase.\n\n## Votes\n\n- `fr-15-629e3ee2`: Accept\n  Verified the bug through code tracing. The success_reconciliation path (line 282) unconditionally calls record_bead_completion, which flows to finalize_task_run_internal with allow_terminal_repair=false. When replaying an already-finalized run whose outcome_detail differs (e.g., existing 'first bead completed' vs new 'task_id=...'), the can_backfill_without_repair check at fs.rs:3862 fails due to detail mismatch, and with allow_terminal_repair=false the code falls to the error at fs.rs:3888-3896. This creates a permanent retry failure loop: the bead is already closed/synced but the daemon task can never successfully reconcile. The CLI run.rs already handles this correctly at lines 347-369 by detecting exact-attempt-already-terminal and routing through repair_task_run_with_disposition (which uses allow_terminal_repair=true). The success reconciliation path should follow the same pattern. This is a real idempotency defect with a clear, well-precedented fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 15
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T18:48:20.122785334Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nTwo real defects are present in these reconciliation paths: releasing a lease after `mark_failed` errors can orphan a non-terminal task, and swallowing `MilestoneUpdateFailed` before `mark_completed` can leave milestone state permanently stale. One amendment misdiagnoses the lease bug as a retry loop, and one proposes a hard-failure retry path that is not actually workable for already-completed runs.\n\n## Votes\n\n- `fr-8-55c3e00a`: Reject\n  This points at the same `mark_failed`/lease-release area as the real bug, but its failure analysis is materially wrong. The daemon only schedules `Pending` tasks in normal cycles, and Phase 0 only revisits `label_dirty` tasks, so releasing the lease here does not create an infinite retry loop; it can instead orphan the task. Because the amendment's impact and mitigation are aimed at preventing reprocessing rather than preserving a recoverable state, I would not accept it as written.\n- `fr-8-b8161fe8`: Accept\n  Valid issue. When `ReconciliationError::MilestoneUpdateFailed` is downgraded to a warning, the caller still executes `mark_completed`, which removes the task from further processing even though `record_bead_completion` did not finish the milestone snapshot/journal/lineage update. There is no automatic repair pass for completed tasks, so some explicit alerting or repair mechanism is needed.\n- `fr-8-87f46a53`: Reject\n  The underlying inconsistency is real, but treating `MilestoneUpdateFailed` as a hard task failure is the wrong recovery model. After a retry, dispatch would see the project run already `Completed` and fail before success reconciliation runs again, so this does not provide a usable path to repair milestone state; it mainly reclassifies successful work as a failed task. A dedicated repair or reconciliation path is the better fix.\n- `fr-8-11232530`: Accept\n  Valid issue. In the reconciliation-failure path, `mark_failed` can error before a failed state is durably recorded, but the code still releases the lease. Normal scheduling only scans `Pending` tasks, and Phase 0 recovery only scans `label_dirty` tasks, so a task can be left in a non-terminal state with no automatic path back into processing. Keeping the lease until failure is durably recorded preserves a recoverable invariant.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 8
+}

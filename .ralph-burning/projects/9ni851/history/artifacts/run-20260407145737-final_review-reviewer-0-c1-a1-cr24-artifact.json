@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr24-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T01:39:44.829863010Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the success reconciliation implementation. The code is well-structured with careful attention to crash safety, idempotency, and error handling. The reconciliation handler correctly follows the specified order (close → sync → milestone update → hints → linkage), and the daemon loop integration properly handles post-completion retries, reconciliation-only retries, and the various failure modes. Tests are comprehensive with unit tests, integration tests, and end-to-end tests covering idempotency, replay tolerance, and edge cases. Found two issues worth flagging.\n\n## Amendments\n\n1. In `try_reconcile_success` (daemon_loop.rs ~line 1889-1893), the `is_reconciliation_only_retry` variable at line ~889-893 uses `task.failure_class` which was read before `claim_task` (line 647). However, `claim_task` calls `clear_failure()` on the task. Since `task` is the pre-claim snapshot while `active_task` is the post-claim copy (with failure cleared), this is actually correct for reading the original failure class. BUT: the same `is_reconciliation_only_retry` variable is computed a second time at lines 889-893 inside the `match outcome` block, using the same `task` variable. Verify that `task` is still in scope and refers to the pre-claim snapshot at that point in the code. The pre-claim `task` binding at line 647 shadows the outer `task` parameter — this is correct. No actual bug, but the reliance on shadowing for correctness is subtle and worth noting in a comment.\n   Rationale: While not a bug, the dual computation of `is_post_completion_retry` (line ~689) and `is_reconciliation_only_retry` (line ~889) both depend on `task.failure_class` from the pre-claim snapshot. This works because of Rust's shadowing semantics, but a future refactor that changes the binding could silently break the retry-skip logic. A clarifying comment would prevent regressions.\n2. In `persist_next_step_hint` (success_reconciliation.rs lines 424-460), the atomic write pattern (write to .tmp, then rename) is correct for POSIX, but on some Linux filesystems the rename is only durable after an `fsync` on the parent directory. Without fsync, a crash after rename could lose the file entry. Since hints are best-effort and non-blocking, this is acceptable — but worth documenting that the atomicity guarantee is against torn reads (truncated JSON), not against crash durability.\n   Rationale: The comment says 'Atomic write: write to temp file, then rename (POSIX atomic)' which is correct for atomicity against concurrent readers, but may mislead future maintainers into thinking it's crash-durable. Since hints are explicitly best-effort this is low severity but the comment should clarify the scope of the guarantee.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 24
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T18:41:21.829814561Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the new success-reconciliation flow and supporting milestone/lineage changes. `cargo test success_reconciliation -- --nocapture` passed, but I found 2 correctness regressions in daemon reconciliation error handling.\n\n## Amendments\n\n1. Treat `ReconciliationError::MilestoneUpdateFailed` as a hard reconciliation failure instead of just logging it. [daemon_loop.rs#L1769](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/daemon_loop.rs#L1769) currently swallows that error even though [success_reconciliation.rs#L148](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/success_reconciliation.rs#L148) has already aborted before milestone progress, milestone journal state, and the task-to-bead linkage were written. Both completion paths then call `mark_completed` at [daemon_loop.rs#L953](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/daemon_loop.rs#L953) and [daemon_loop.rs#L1505](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/daemon_loop.rs#L1505), which makes that partial reconciliation permanent because the task will never re-enter reconciliation.\n   Rationale: This violates the bead's success contract: the bead may be closed in `br`, but milestone progress, completion journaling, and durable task-to-bead linkage can be silently lost with no retry path.\n2. Do not release the lease when `DaemonTaskService::mark_failed` itself returns an error in the reconciliation-failure path. The new handlers at [daemon_loop.rs#L916](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/daemon_loop.rs#L916) and [daemon_loop.rs#L1486](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/daemon_loop.rs#L1486) log the failure and still drop the lease, but `mark_failed` can fail before the failed state is durably written at [task_service.rs#L409](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/task_service.rs#L409). Recovery only revisits `label_dirty` tasks in [daemon_loop.rs#L377](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/daemon_loop.rs#L377), and normal scheduling only scans `Pending` tasks in [daemon_loop.rs#L548](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/daemon_loop.rs#L548) and [daemon_loop.rs#L1029](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/daemon_loop.rs#L1029), so a task can be stranded forever in `Claimed`/`Active` with no lease and no retry path.\n   Rationale: The old `?` behavior was safer because the retained lease let stale-lease or shutdown recovery see the inconsistent task. Releasing it unconditionally can orphan the task permanently.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 8
+}

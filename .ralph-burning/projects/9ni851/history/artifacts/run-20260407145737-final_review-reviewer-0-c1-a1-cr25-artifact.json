@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr25-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr25-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T01:59:47.271970241Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed ~5,500 lines of changes across 11 source files implementing success reconciliation. The core handler (success_reconciliation.rs, ~490 lines) correctly implements all 5 steps: idempotent br close, sync-after-close, milestone state update, best-effort bv hint capture, and task-to-bead linkage via outcome_detail. Daemon integration (daemon_loop.rs, ~450 lines of logic changes) adds post-completion retry gating, reconciliation-only retry fast-paths, workflow_run_id persistence, and proper failure-class routing. Supporting changes add task_id to TaskRunEntry/CompletionJournalDetails with backwards-compatible extraction from outcome_detail format. All 14 unit tests pass including end-to-end milestone update, stale hint deletion, replay idempotency, and the sync-failure-on-replay-is-fatal regression test. The implementation is well-reasoned with careful crash-safety analysis (sync unconditional regardless of was_already_closed), correct error escalation (BrCloseFailed/BrSyncFailed → needs-operator, MilestoneUpdateFailed → task Failed with retry path), and proper BvExitError vs BvParseError distinction for hint lifecycle. No correctness bugs, safety problems, or significant maintainability risks identified.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 25
+}

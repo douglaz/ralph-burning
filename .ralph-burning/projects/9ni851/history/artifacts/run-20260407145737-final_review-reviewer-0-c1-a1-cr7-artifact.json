@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr7-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T18:03:27.044521717Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is well-structured and correct. success_reconciliation.rs cleanly implements all five reconciliation steps with proper idempotency (br show check → close → post-failure re-check). The daemon_loop.rs changes correctly promote try_reconcile_success from fire-and-forget to an error-returning function, and both call sites (multi-repo and single-repo) handle failures by marking the task failed and releasing resources. The fs.rs refactor is a trivial deduplication. Tests pass (9/9), including a comprehensive E2E test. One minor correctness gap and one robustness concern noted below.\n\n## Amendments\n\n1. In try_reconcile_success (daemon_loop.rs ~1703), the MilestoneUpdateFailed arm now calls mark_milestone_failed which does update_status(…, Failed). But this occurs AFTER br close + sync already succeeded (steps 1-2 in reconcile_success). The bead is now permanently closed yet the task is marked failed with no completion record in the milestone. If the operator retries, the bead will be detected as already-closed (idempotent path), but record_bead_completion will attempt to write a duplicate completion event. Add a comment documenting this partial-commit state is intentional and safe on retry, OR restructure so that milestone-update failures after a successful br close are logged as warnings but still allow the task to proceed to mark_completed (since the critical bead mutation did succeed).\n   Rationale: The bead spec says br close failure → needs_operator, but milestone update failure after a successful close is a different scenario. Currently the bead is irrevocably closed while the task is marked failed — a state mismatch. Depending on retry semantics, the re-run of record_bead_completion may produce duplicate journal entries or snapshot inconsistencies.\n2. In the single-repo process_task path (daemon_loop.rs ~1474), mark_failed is called with the ? operator, so if mark_failed itself fails (e.g., disk full, corrupt store), the error propagates and skips try_push_failed_task_branch and release_task_lease. The multi-repo path has the same pattern (line 922) but also skips label sync. Consider catching the mark_failed error so the lease is always released, preventing a stuck lease on store write failure.\n   Rationale: If mark_failed fails and the lease is not released, the task remains leased indefinitely until manual intervention or lease expiry. This is a narrow edge case (store write failure) but could cause the daemon to stall on this task across cycles.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 7
+}

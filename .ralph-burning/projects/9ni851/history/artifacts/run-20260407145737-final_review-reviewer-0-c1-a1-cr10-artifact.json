@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr10-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T19:29:34.116231197Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed success_reconciliation.rs and daemon_loop.rs changes. The implementation is generally well-structured with good error handling improvements (typed failure classes, mark_failed-itself-fails handling, journal-derived timestamps). Found one correctness issue with the sync-tolerance-on-replay logic and one missing test gap.\n\n## Amendments\n\n1. In `success_reconciliation.rs:150-161`, the sync-failure tolerance when `was_already_closed=true` is unsound. The flag only proves the bead was closed before this invocation — not that sync ever completed. Scenario: first attempt closes the bead successfully but sync fails (returns `BrSyncFailed`), daemon marks the task Failed. On retry, `is_bead_already_closed` returns true (bead was closed locally), so `was_already_closed=true`. If sync fails again (same transient issue), the error is swallowed as non-fatal, milestone state is updated, and the task is marked Completed — but the close was never flushed to the remote store. Fix: use a more reliable signal for 'sync already completed' (e.g., check for a successful reconciliation journal entry from a prior run, or a durable marker file written after sync succeeds) rather than relying solely on bead-closed status.\n   Rationale: This is a correctness gap where a transient br outage during the first sync, followed by the same outage on retry, results in a task marked Completed whose bead close was never persisted to the remote store. The comment at line 147 ('The first pass already synced successfully') is an unverified assumption — `was_already_closed` proves close happened, not that sync did.\n2. Add a test for the `was_already_closed=true` + sync-failure path in `success_reconciliation.rs`. Currently there is no test exercising the new `Err(e) if was_already_closed` branch at line 152. A test should verify the behavior when sync fails on replay (bead already closed) vs. when sync fails on first close.\n   Rationale: The new sync-tolerance behavior is a significant change to crash-recovery semantics but has no test coverage. Whether the current behavior is kept or fixed per the amendment above, the branch needs test coverage to document and protect the intended semantics.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 10
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr18-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T22:50:55.206766514Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is well-structured and handles the acceptance criteria correctly. The success reconciliation module (`success_reconciliation.rs`) correctly implements idempotent bead close, ordered sync-after-close, milestone state updates, next-step hint capture, and task-to-bead linkage recording. The daemon_loop integration properly places reconciliation before mark_completed for crash safety, handles reconciliation-only retries by skipping rebase/ensure_project, and dispatches through the existing failure/retry machinery. The `dispatch_in_worktree_with_service` change to return Ok(()) for RunStatus::Completed is sound and tested. The `needs_remote_resume` change in task_service.rs correctly avoids unnecessary remote resume for reconciliation retries. Test coverage includes unit tests for idempotent close, sync failure handling, hint capture (success/failure/message-only), and two end-to-end tests exercising the full reconcile_success flow with real FS stores. One minor robustness concern identified in hint capture error handling.\n\n## Amendments\n\n1. In `success_reconciliation.rs:386-406`, `capture_next_step_hint` checks `e.raw_output()` for all error variants to detect a `BvMessageOnlyResponse`. This includes `BvExitError` (non-zero exit code), not just `BvParseError`. If bv crashes with a non-zero exit and its stdout happens to contain `{\"message\":\"...\"}`, the code would return `NoRecommendation` instead of `BvFailed`, causing `delete_stale_hint` to remove a previously valid hint file. The check should be restricted to `BvParseError` only (where bv exited 0 but returned unexpected JSON), not `BvExitError` (where bv genuinely failed). Fix: match on the specific error variant rather than using the generic `raw_output()` accessor — e.g., only extract raw output when `matches!(e, BvError::BvParseError { .. })`.\n   Rationale: A bv binary that returns an error exit code with JSON stdout (common in CLI tools) would have its failure silently treated as 'no recommendation', deleting a valid hint and degrading the next-bead selection quality. While hints are informational, this misclassification is avoidable and could mask real bv failures during debugging.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 18
+}

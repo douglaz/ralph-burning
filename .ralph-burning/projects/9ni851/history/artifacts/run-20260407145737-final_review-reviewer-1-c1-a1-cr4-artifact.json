@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T16:56:28.677431832Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the diff against master, read the new reconciliation and milestone/task-run changes end-to-end, and ran cargo test success_reconciliation --lib (9 tests passed). I found 2 correctness/robustness issues: milestone-update failures are still swallowed after the bead has been closed/synced, and project metadata read failures still let the daemon mark the task completed without any reconciliation.\n\n## Amendments\n\n1. In src/contexts/automation_runtime/daemon_loop.rs:1635-1636, ReconciliationError::MilestoneUpdateFailed is only logged, but both success call sites immediately mark the daemon task completed afterward (src/contexts/automation_runtime/daemon_loop.rs:913-915 and src/contexts/automation_runtime/daemon_loop.rs:1444-1446). Because reconcile_success closes/syncs the bead before update_milestone_state runs (src/contexts/automation_runtime/success_reconciliation.rs:138-158 and src/contexts/automation_runtime/success_reconciliation.rs:237-280), any snapshot/journal/lineage write failure leaves the bead closed while milestone progress, journal, and linkage stay stale, with no Failed/needs-operator transition and no retry path. MilestoneUpdateFailed should trigger the same operator-visible failure handling as BR failures, or the task should remain non-terminal so reconciliation can be retried.\n   Rationale: As written, a partial success can strand the milestone with stale state while the daemon reports the task as completed.\n2. The new reconciliation path still silently drops pre-reconciliation metadata failures. In src/contexts/automation_runtime/daemon_loop.rs:1489-1505, an invalid project_id or unreadable project record returns from try_reconcile_success before any operator signal is raised, and the callers then mark the task completed anyway (src/contexts/automation_runtime/daemon_loop.rs:913-915 and src/contexts/automation_runtime/daemon_loop.rs:1444-1446). For milestone-backed tasks, that skips bead close, sync, and milestone updates entirely with no retry path. This path should not fall through to mark_completed; it needs to keep the task non-terminal or fail/quarantine it so an operator can repair the missing project metadata.\n   Rationale: A corrupt or missing project record currently turns into silent data loss for milestone reconciliation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

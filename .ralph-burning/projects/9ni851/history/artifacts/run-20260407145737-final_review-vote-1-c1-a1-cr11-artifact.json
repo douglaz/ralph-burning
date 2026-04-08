@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T20:03:22.787346114Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAmendment 1 is a low-severity but real robustness improvement around optional hint persistence, amendment 2 is a documented private-format coupling rather than a current defect, and amendment 3 identifies a real state-machine bug that can permanently wedge milestone retries after transient reconciliation failures.\n\n## Votes\n\n- `fr-11-e422b81c`: Accept\n  `persist_next_step_hint` does assume the milestone directory already exists because it writes directly to a temp file under `milestone_root` instead of using the repo's usual parent-creating atomic write helper. That invariant should normally hold because reconciliation just updated milestone state, so this is low severity, but if the directory is missing the hint is only dropped with a debug log and downstream logic loses the persisted hint. Adding `create_dir_all` or explicitly documenting that invariant is reasonable hardening.\n- `fr-11-0b00ea0f`: Reject\n  This is a hypothetical future-format concern, not a current defect. The helper is private, its doc comment explicitly says it expects `task_id=<value>`, and the current producer in `update_milestone_state` writes exactly that format. If `outcome_detail` is ever expanded, the producer and parser should change together; that tight coupling is already local and documented.\n- `fr-11-42175af6`: Accept\n  This is a real wedge in the state machine. Reconciliation errors transition the milestone to `Failed`, `Failed` is terminal, and every later start/resume path goes back through `record_bead_start`, which rejects terminal milestones after reconciling snapshot state. `retry_task` only resets the daemon task to `Pending`; it does not reopen the milestone, so a transient `br` or milestone-store failure can leave the task retryable in name only unless there is a non-terminal operator-needed state or an explicit reopen path before retry.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 11
+}

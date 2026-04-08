@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T22:31:53.035980961Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccepted the two amendments that identify real retry/reconciliation correctness and robustness defects. Rejected the RunResumed amendment because its proposed comment-or-fallback change does not address the actual bug: reopened projects can produce a new run_id while the original RunStarted still exists, so fallback-on-missing-RunStarted is insufficient.\n\n## Votes\n\n- `fr-17-dde66e40`: Reject\n  There is a real run_id-selection problem around resumed/reopened runs, but this amendment does not fix it. The code path can reopen a completed task's project via PR-review amendments, which puts the task back to Pending and creates a new reopen run carried by RunResumed while the original RunStarted remains in the journal. In that state, adding only a comment or checking RunResumed only when RunStarted is absent still picks the old run_id and reconciles the wrong attempt. The right fix is to stop guessing from journal shape and use a task-specific durable run identifier (as in fr-17-2f3210bd), or otherwise identify the exact attempt from authoritative state.\n- `fr-17-a299d694`: Accept\n  This is a real robustness bug. The reconciliation-only fast path is checked only after claim_task, but claim_task already routes failed retries through LeaseService::acquire, which creates a worktree and may call try_resume_from_remote. For reconciliation failure classes, the remaining work is post-run bookkeeping, not code execution, so these retries should not fail on unrelated worktree, network, or auth problems before try_reconcile_success runs. The retry path needs a lightweight claim/acquire mode that preserves task serialization without requiring worktree creation or remote resume.\n- `fr-17-2f3210bd`: Accept\n  This is a correctness bug. try_reconcile_success reconstructs run_id from the project's journal instead of using the run that actually belongs to the daemon task. That is unsafe because the same task can later reopen the project through staged amendments, producing a distinct reopen run_id represented by RunResumed, while the original RunStarted remains in the journal. Reconciliation can then update lineage/completion state for the wrong attempt. Persisting the workflow run_id on DaemonTask and updating it whenever dispatch starts or resumes gives reconciliation an exact, task-scoped identifier instead of a best-effort guess.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 17
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr23-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T01:19:38.580163577Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the success reconciliation handler implementation. The code is well-structured with clear separation between the reconciliation module (success_reconciliation.rs), daemon_loop integration (try_reconcile_success, persist_workflow_run_id), and supporting model/service changes (task_id field on TaskRunEntry/CompletionJournalDetails, extract_task_id_from_outcome_detail). All acceptance criteria are met: bead close is idempotent via pre/post status checks, sync runs unconditionally after close, milestone progress updates with journal recording, next-step hints are captured best-effort, and br close failures produce clear reconciliation_br_failed errors for operator intervention. Tests are comprehensive with 14 dedicated unit/integration tests covering happy path, idempotency, failure modes, replay tolerance, and stale hint cleanup. The daemon_loop integration correctly handles post-completion retries by skipping rebase/ensure_project and PR handlers for reconciliation-only retries, and the RunStatus::Completed dispatch path now returns Ok(()) to avoid permanent fail/retry loops. The workflow_run_id persistence on DaemonTask is a sound approach to avoid wrong-run binding on retries. No real bugs found.\n\n## Amendments\n\n1. In `try_reconcile_success` (daemon_loop.rs, around the run_id fallback logic near line 794), when `task.workflow_run_id` is None and `task.attempt_count > 1`, the function returns a metadata error. However, `attempt_count` is incremented by `mark_failed` + `retry_task` cycles, but the `persist_workflow_run_id` call happens BEFORE the outcome match. If `persist_workflow_run_id` succeeds, `workflow_run_id` will be Some and this guard never fires. But if `persist_workflow_run_id` silently fails (it only eprints on error and continues), AND the task is on attempt_count > 1, AND the task was dispatched before `workflow_run_id` was introduced, then we get a hard error that blocks reconciliation permanently with no self-healing path. Consider degrading this to a warning and proceeding with the journal fallback when the run has already completed (RunStatus::Completed confirms the journal's latest RunStarted is stable), since the risk of wrong-run binding is lower for completed runs than for in-progress ones.\n   Rationale: The strict fail-closed behavior is correct for the general case but creates a permanent wedge state for legacy tasks migrating from pre-workflow_run_id code. Since this is a transitional concern, documenting the manual resolution path (set workflow_run_id via store edit) or adding a fallback for RunStatus::Completed would improve operability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 23
+}

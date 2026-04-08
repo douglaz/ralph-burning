@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr24-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T01:47:49.485254070Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the reconciliation handler, daemon integration, and supporting lineage/journal changes. The happy-path implementation is mostly solid and the targeted `success_reconciliation` test suite passes, but the missing-`workflow_run_id` retry fallback in `try_reconcile_success` can still bind reconciliation to the wrong run and corrupt milestone state.\n\n## Amendments\n\n1. In `src/contexts/automation_runtime/daemon_loop.rs:1770-1825`, `try_reconcile_success` still falls back to the latest `RunStarted` event whenever `workflow_run_id` is missing. Because `persist_workflow_run_id` is best-effort (`src/contexts/automation_runtime/daemon_loop.rs:1675-1680`), a post-completion retry can legitimately reach this branch. If someone manually reran the same project between the original failure and the retry, this code will bind the daemon task to that newer run, then use its `RunCompleted` timestamp and run ID for reconciliation (`src/contexts/automation_runtime/daemon_loop.rs:1912-1955`). That can close/sync the bead and rewrite milestone lineage for the wrong attempt instead of surfacing a needs-operator condition. The retry path needs a deterministic run binding or a fail-closed operator handoff here; guessing `latest RunStarted` is not safe.\n   Rationale: This is a real data-integrity bug for legacy or partially-persisted tasks: reconciliation can attribute success to an unrelated rerun and mutate milestone state for the wrong run.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 24
+}

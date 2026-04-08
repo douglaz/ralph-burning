@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T19:57:21.408794361Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the success-reconciliation changes and related milestone lineage updates; `cargo test --quiet` passed. One robustness issue found: reconciliation failures currently force milestones into a terminal `Failed` state that blocks the documented retry/replay recovery path.\n\n## Amendments\n\n1. `src/contexts/automation_runtime/daemon_loop.rs:1611-1628` and `src/contexts/automation_runtime/daemon_loop.rs:1779-1814` move the milestone to `MilestoneStatus::Failed` for reconciliation errors, but `Failed` is terminal (`src/contexts/milestone_record/model.rs:80-103`). Every subsequent run start/resume goes back through `sync_milestone_bead_start` (`src/contexts/workflow_composition/engine.rs:1055-1057`, `src/contexts/workflow_composition/engine.rs:1750-1756`), and `record_bead_start` rejects terminal milestones (`src/contexts/milestone_record/service.rs:1896-1902`). In practice, a transient `br`/milestone-store outage now wedges the bead permanently: the daemon task can be retried, but the retry will fail before work restarts because the milestone can no longer accept a bead start. This needs a non-terminal needs-operator state, or an explicit reopen path before retrying.\n   Rationale: Without a recovery path, transient reconciliation failures become permanent milestone failures. That breaks the intended idempotent/operator-retry workflow and can strand completed work behind an unrecoverable controller state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 11
+}

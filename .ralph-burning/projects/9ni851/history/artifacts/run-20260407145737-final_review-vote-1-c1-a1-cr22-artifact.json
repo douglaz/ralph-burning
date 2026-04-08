@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr22-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T01:04:31.450531646Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments are technically valid. One identifies a dead, misleading predicate in success reconciliation; the other three identify real reconciliation-retry correctness issues around re-running PR completion and guessing workflow_run_id from the latest journal start event.\n\n## Votes\n\n- `fr-22-5f02c323`: Accept\n  In success_reconciliation.rs, `same_named_terminal_attempt_exists` already matches `project_id + run_id + terminal`. `exact_attempt_already_terminal` then ORs that with a stricter predicate that adds `started_at`, so the stricter branch can never change the result. That makes the second branch dead code and leaves the variable name misleading, which is a real maintainability defect.\n- `fr-22-08234800`: Accept\n  The success path in daemon_loop calls `handle_completion_pr_with_cancellation` before `try_reconcile_success` even for retries whose only prior failure was `reconciliation_*` on an already-completed run. Replaying PR handling after the run already succeeded is unnecessary, and in this codebase it is not just cosmetic: because reconciliation-only retries skip branch resume, the PR path can hit avoidable failures or side effects. This needs a guard or a clearly documented safety invariant.\n- `fr-22-2b51b7e3`: Accept\n  `task_service.rs` explicitly sets `needs_remote_resume = false` for reconciliation-only retries on completed runs, but daemon_loop still reruns `handle_completion_pr`. In `pr_runtime.rs`, that path may clear a closed PR reference, attempt `push_branch` from a fresh default-branch worktree, or close/skip the PR when the branch is not ahead. That contradicts the intended \"local bookkeeping only\" retry semantics and is a concrete correctness bug.\n- `fr-22-613f6c45`: Accept\n  Both `persist_workflow_run_id()` and `try_reconcile_success()` fall back to the latest `RunStarted` event when `workflow_run_id` is missing, and `persist_workflow_run_id()` durably saves that guess onto the task. If another run was started on the project after the original failure, reconciliation can bind to the wrong run and still close the bead, sync, and update milestone state with incorrect run/timestamp data. The comments already acknowledge this ambiguity, so proceeding instead of failing closed is a real data-integrity risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 22
+}

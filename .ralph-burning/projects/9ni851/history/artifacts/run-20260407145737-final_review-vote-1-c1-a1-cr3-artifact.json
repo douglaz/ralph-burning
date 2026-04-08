@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T16:43:47.369527154Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nThree amendments identify a real `task_id` data-loss bug in the fs milestone journal merge/render/repair flow. The remaining amendment points out an unused structured hint, but the current code explicitly treats that hint as informational and already consumes it via logging, so I do not see a proven correctness defect there.\n\n## Votes\n\n- `fr-3-5e1074c4`: Accept\n  `CompletionJournalDetails::render()` in `src/adapters/fs.rs` hardcodes `None` for `task_id` even though the shared model and renderer support it. Any completion event that is parsed and then re-rendered through the fs repair/merge path will silently lose an existing `task_id`, which is a straightforward data-loss bug.\n- `fr-3-949a31d8`: Accept\n  `CompletionJournalDetails::merge()` merges and conflict-checks `run_id`, `plan_hash`, and `outcome_detail`, but not `task_id`. That means a missing `task_id` from `existing` is never backfilled from `requested`, and conflicting non-`None` task IDs are silently ignored instead of rejected, which is inconsistent with the other optional provenance fields.\n- `fr-3-1b3074a6`: Accept\n  This broader amendment is technically correct. In the fs adapter, `merge()` omits `task_id`, `render()` serializes it as `None`, and the explicit completion-repair path only backfills `run_id`, `plan_hash`, and sometimes `outcome_detail`, so dedupe/repair can strip task-to-bead linkage from completion events.\n- `fr-3-62268f91`: Reject\n  I do not see a correctness bug here. `success_reconciliation.rs` explicitly documents the `bv --robot-next` result as an informational, best-effort hint, and `daemon_loop.rs` does consume it by logging it; without a stated requirement that this hint drive scheduling or be durably persisted, not threading it further is an enhancement opportunity rather than a defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

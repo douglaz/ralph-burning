@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T21:37:23.038598432Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff against `master`, including `src/contexts/automation_runtime/daemon_loop.rs`, `src/contexts/automation_runtime/success_reconciliation.rs`, `src/contexts/milestone_record/{model,service}.rs`, and `src/adapters/fs.rs`. Ran targeted tests (`cargo test success_reconciliation`, plus targeted dispatch/reconciliation test commands). Found 1 correctness issue in the milestone replay/idempotency path; no other concrete safety bugs stood out in the changed code.\n\n## Amendments\n\n1. Fix exact-attempt replay handling in the success-reconciliation path. `src/contexts/automation_runtime/success_reconciliation.rs:278-294` currently encodes the daemon `task_id` into `outcome_detail` (`\"task_id=...\"`) and then always calls `record_bead_completion`. That is not idempotent when the exact run was already finalized with any different success detail: terminal replays reject mismatched `outcome_detail` values in `src/adapters/fs.rs:3862-3896`, and journal repair rejects the same mismatch in `src/contexts/milestone_record/service.rs:1048-1083`. I reproduced this locally with an existing succeeded row whose detail was `\"first bead completed\"`; the replay fails with `task run ... is already finalized with outcome=succeeded`, leaving the bead already closed/synced but the daemon task permanently failing on every retry. Route exact-attempt replays through `repair_task_run_with_disposition` the way `src/cli/run.rs:347-369` already does, or add an explicit task-id parameter to the completion API so legacy success details can be preserved while backfilling linkage.\n   Rationale: This breaks the required crash-safe/idempotent recovery path for any bead run whose terminal row already exists with a non-matching success detail, which can wedge a task after the bead mutation has already been committed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 15
+}

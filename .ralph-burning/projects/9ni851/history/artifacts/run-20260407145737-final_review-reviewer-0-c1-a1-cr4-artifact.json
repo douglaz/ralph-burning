@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T16:50:03.358338742Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is well-structured and correct. The success reconciliation handler properly closes beads idempotently, syncs unconditionally for crash safety, updates milestone state with task-to-bead linkage, and captures next-step hints. The ordering change (reconcile before mark_completed) is correct for crash recovery. All 757 tests pass. Two minor issues found: (1) the task_id extraction from outcome_detail via strip_prefix is fragile if the format ever changes, and (2) MilestoneUpdateFailed errors are only logged but don't transition the milestone to needs_operator state, creating a potential inconsistency.\n\n## Amendments\n\n1. In daemon_loop.rs line 1635-1637, `ReconciliationError::MilestoneUpdateFailed` is handled by only logging to stderr, without calling `mark_milestone_failed`. This means a milestone update failure leaves the milestone in whatever state it was in (potentially Active/InProgress), with no operator signal. The bead is already closed and synced in br at this point, so the br state and milestone state are now inconsistent. Consider calling `mark_milestone_failed` for this error variant as well, or at minimum documenting why this asymmetry is intentional.\n   Rationale: The bead spec says 'br close failure transitions controller to needs_operator state', but a milestone update failure leaves the system in a silently inconsistent state: br thinks the bead is closed, but the milestone snapshot doesn't reflect the completion. On restart, the task is already marked completed so reconciliation won't re-run, and the milestone progress will be permanently stale until manual intervention. This is arguably worse than the br close failure case since there's no signal to the operator.\n2. The task_id extraction logic (`detail.strip_prefix(\"task_id=\")`) is duplicated in three places in fs.rs (lines 3420, 3494, 3919). Extract this into a shared helper function (e.g., `fn extract_task_id_from_detail(detail: &str) -> Option<&str>`) to reduce duplication and ensure the parsing convention stays consistent if it needs to evolve.\n   Rationale: Three identical code blocks parsing the same ad-hoc format is a maintenance risk. If the format changes (e.g., to support multiple key-value pairs), all three sites must be updated in lockstep. A shared helper makes the convention explicit and ensures a single point of change.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

@@ -82,6 +82,7 @@ impl DaemonTaskService {
             dispatch_mode: input.dispatch_mode,
             source_revision: input.source_revision,
             requirements_run_id: None,
+            workflow_run_id: None,
             repo_slug: None,
             issue_number: None,
             pr_url: None,
@@ -144,10 +145,41 @@ impl DaemonTaskService {
         }
 
         hydrate_routing(&mut task, routing_engine, default_flow)?;
-        // Resume from a preserved branch only for failed-task retries.
-        // Aborted retries (no failure_class) start fresh to avoid
-        // resurrecting stale work from a user-cancelled run.
+        // Resume from a preserved branch only for failed-task retries
+        // whose run is NOT already complete. Aborted retries (no
+        // failure_class) start fresh to avoid resurrecting stale work.
+        //
+        // Reconciliation-only retries (reconciliation_*) skip resume:
+        // reconciliation only needs br close/sync/milestone update, none
+        // of which require the worktree branch. Skipping resume avoids
+        // network/auth errors blocking a retry that only needs local
+        // bookkeeping.
+        //
+        // Non-reconciliation post-completion retries (pr_runtime_failed,
+        // etc.) MUST resume the preserved branch: handle_completion_pr
+        // needs the completed branch to push and create the PR. Without
+        // resume, the fresh worktree from the default branch may see
+        // "no diff", close/skip the PR, or hit non-fast-forward failures.
         let is_failed_retry = task.attempt_count > 0 && task.failure_class.is_some();
+        let is_reconciliation_only_retry = is_failed_retry
+            && task
+                .failure_class
+                .as_deref()
+                .is_some_and(|fc| fc.starts_with("reconciliation_"))
+            && ProjectId::new(task.project_id.clone())
+                .ok()
+                .and_then(|pid| {
+                    crate::contexts::project_run_record::RunSnapshotPort::read_run_snapshot(
+                        &crate::adapters::fs::FsRunSnapshotStore,
+                        repo_root,
+                        &pid,
+                    )
+                    .ok()
+                })
+                .is_some_and(|snap| {
+                    snap.status == crate::contexts::project_run_record::model::RunStatus::Completed
+                });
+        let needs_remote_resume = is_failed_retry && !is_reconciliation_only_retry;
         // Save failure provenance before clearing so we can restore it if
         // the claim rolls back to Pending (e.g. LeaseAcquired journal failure).
         let saved_failure_class = task.failure_class.clone();
@@ -164,7 +196,7 @@ impl DaemonTaskService {
             lease_ttl_seconds,
             worktree_path_override,
             branch_name_override,
-            is_failed_retry,
+            needs_remote_resume,
         ) {
             Ok(lease) => lease,
             Err(AppError::ProjectWriterLockHeld { .. }) => {
@@ -597,6 +629,21 @@ impl DaemonTaskService {
         Ok(())
     }
 
+    /// Persist the workflow run ID on a task so that reconciliation retries
+    /// can identify the correct run without re-reading the journal.
+    pub fn set_workflow_run_id(
+        store: &dyn DaemonStorePort,
+        base_dir: &Path,
+        task_id: &str,
+        run_id: &str,
+    ) -> AppResult<()> {
+        let mut task = store.read_task(base_dir, task_id)?;
+        task.workflow_run_id = Some(run_id.to_owned());
+        task.updated_at = Utc::now();
+        store.write_task(base_dir, &task)?;
+        Ok(())
+    }
+
     /// Clear the label_dirty flag after a successful label re-sync.
     pub fn clear_label_dirty(
         store: &dyn DaemonStorePort,
@@ -690,6 +737,7 @@ impl DaemonTaskService {
             dispatch_mode,
             source_revision: Some(source_revision),
             requirements_run_id: None,
+            workflow_run_id: None,
             repo_slug: github_meta.map(|m| m.repo_slug.clone()),
             issue_number: github_meta.map(|m| m.issue_number),
             pr_url: github_meta.and_then(|m| m.pr_url.clone()),

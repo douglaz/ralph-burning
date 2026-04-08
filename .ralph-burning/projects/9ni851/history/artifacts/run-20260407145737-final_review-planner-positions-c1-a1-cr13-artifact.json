@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr13-artifact",
+  "payload_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T20:43:02.721349978Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe amendment identifies a real bug in the reconciliation retry path. When a task fails during post-run reconciliation (br close, sync, milestone update) and is retried via retry_task, the retry unconditionally goes through rebase_task_worktree (lines 681-687 / 1408-1414) BEFORE reading the run snapshot. If the default branch has advanced and the rebase conflicts, fail_claimed_task_preserve_worktree (line 2690) marks the task Failed again with rebase_conflict, and the function returns early — the RunStatus::Completed bypass at line 3007 is never reached. The reconciliation is never retried, making a transient br/milestone failure permanent. The rebase is unnecessary for reconciliation-only retries since reconciliation steps (bead close, sync, milestone update) are metadata operations that don't depend on the worktree being rebased. The proposed fix — a dedicated post-run retry path that skips rebase when the persisted run snapshot is Completed — is the correct approach.\n\n## Votes\n\n- `fr-13-fe6f0a4c`: Accept\n  The analysis is correct and identifies a real bug. Tracing the code: (1) retry_task moves Failed→Pending, (2) claim_task resumes the preserved branch, (3) rebase_task_worktree is called unconditionally, (4) if rebase fails (due to default branch advancing), fail_claimed_task_preserve_worktree at line 2690 marks the task Failed with rebase_conflict and returns Err, (5) the caller at lines 681-687/1408-1414 catches the error and returns early, (6) the RunStatus::Completed branch at line 3007 is never reached, (7) try_reconcile_success is never retried. This means any transient reconciliation failure (br close, sync, milestone update) becomes permanent if the default branch advances before the retry — a realistic scenario in repos with concurrent tasks. The rebase is unnecessary for reconciliation-only retries since these are metadata operations independent of worktree state. Adding a dedicated path that checks the persisted run snapshot before rebase and skips directly to reconciliation when the run is already Completed is the correct fix. A regression test for retry-after-reconciliation-failure is also warranted to prevent future regressions.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 13
+}

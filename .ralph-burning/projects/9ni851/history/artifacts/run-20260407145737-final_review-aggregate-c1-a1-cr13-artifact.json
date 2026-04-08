@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407145737-final_review-aggregate-c1-a1-cr13-artifact",
+  "payload_id": "run-20260407145737-final_review-aggregate-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T20:46:08.245779573Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 13/25\n\n## Accepted\n\n- `fr-13-fe6f0a4c`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-13-fe6f0a4c`\n\nFix the reconciliation retry path in `src/contexts/automation_runtime/daemon_loop.rs`. The new `RunStatus::Completed => Ok(())` branch at `src/contexts/automation_runtime/daemon_loop.rs:3007-3017` only bypasses dispatch; both task processors still rebase the worktree before dispatch (`src/contexts/automation_runtime/daemon_loop.rs:681-687` and `src/contexts/automation_runtime/daemon_loop.rs:1408-1414`). After `try_reconcile_success` marks a task failed for reconciliation errors (`src/contexts/automation_runtime/daemon_loop.rs:913-964` and `src/contexts/automation_runtime/daemon_loop.rs:1496-1521`), `retry_task` moves it back to `Pending` (`src/contexts/automation_runtime/task_service.rs:453-482`), so the retry still rebases the already-completed branch before it can re-enter reconciliation. If the default branch advanced or the preserved branch conflicts, the task fails again with a rebase error and the original transient `br`/milestone failure remains unrecoverable. Add a dedicated post-run retry path that skips rebase/run setup when the persisted run snapshot is already `Completed`, and add a regression test for retry-after-reconciliation-failure.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 13
+}

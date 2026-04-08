@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T18:12:58.904210402Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the reconciliation diff against `origin/master`, read the daemon-loop, success-reconciliation, milestone, and fs changes, and ran `cargo test success_reconciliation -- --nocapture` successfully. I found two correctness issues: the new daemon path records completion with reconciliation wall-clock time instead of the durable terminal run timestamp, and the milestone failed/needs-operator transition is still only best-effort.\n\n## Amendments\n\n1. `src/contexts/automation_runtime/daemon_loop.rs:1600-1676` reconstructs only `run_id` and `started_at`, then uses `Utc::now()` as the completion time at `src/contexts/automation_runtime/daemon_loop.rs:1654` and passes that through to `record_bead_completion` in `src/contexts/automation_runtime/success_reconciliation.rs:147-158` and `src/contexts/automation_runtime/success_reconciliation.rs:267-280`. In both completion paths, reconciliation can run after extra PR/cleanup work (`src/contexts/automation_runtime/daemon_loop.rs:840-914` and `src/contexts/automation_runtime/daemon_loop.rs:1444-1472`), so the milestone journal/linkage timestamp can drift arbitrarily from the actual durable `run_completed` event. The existing milestone terminal-sync path already treats the terminal journal event timestamp as authoritative (`src/cli/run.rs:317-345`); this handler should do the same or it will record late/misordered completion events and inaccurate success timestamps.\n   Rationale: The bead-completion journal entry and task-to-bead linkage are supposed to describe when the run actually completed, not when reconciliation happened to execute after optional PR handling or other slow work.\n2. `src/contexts/automation_runtime/daemon_loop.rs:1575-1597` still makes the required needs-operator transition best-effort only: an invalid milestone ID is silently skipped by `if let Ok(milestone_id) = ...`, and an `update_status(..., Failed, ...)` failure is only logged. The caller then propagates only the original reconciliation error (`src/contexts/automation_runtime/daemon_loop.rs:1696-1708`), so the daemon task becomes failed while the milestone can remain `running`/`paused` instead of entering the controller’s failed/needs-operator state. This failure to transition the milestone should be surfaced as its own hard error instead of being reduced to a log line.\n   Rationale: The prompt explicitly requires close/sync failures to transition the controller to needs_operator. Logging the failed status write is not enough if the milestone snapshot never actually leaves its prior state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 7
+}

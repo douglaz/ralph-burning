@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr21-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T00:16:59.570160351Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed 3 changed source files (daemon_loop.rs, success_reconciliation.rs, task_service.rs) implementing hardened success reconciliation: (1) `is_post_completion_retry` broadening from reconciliation-only to any post-completion failure class, (2) eager `persist_workflow_run_id` at claim time to close crash window, (3) BvError pattern match fix distinguishing BvParseError from BvExitError for message-only responses, (4) RunCompleted timestamp fallback upgraded from wall-clock to hard error, (5) reconciliation-only resume skip now gated on confirmed RunStatus::Completed snapshot. All 14 success_reconciliation tests pass. Changes are well-reasoned, idempotency guarantees are maintained, and error paths correctly transition to needs-operator state. No correctness bugs or safety issues found.\n\n## Amendments\n\n1. In `persist_workflow_run_id` (daemon_loop.rs:1649), the `eprintln!` warning fires unconditionally on every successful binding — including the normal happy path for legacy tasks being retried for the first time. Consider gating this on a debug/trace level or adding a distinguishing flag so operators don't need to triage a warning that's expected behavior during the migration from pre-workflow_run_id tasks.\n   Rationale: The current log message says 'may be wrong if project was re-run between failure and retry' which implies something suspicious happened. In practice, this fires on every legacy task's first retry as expected behavior, creating operator alert fatigue. A log that cries wolf erodes trust in the signal. This is a minor maintainability issue, not a bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 21
+}

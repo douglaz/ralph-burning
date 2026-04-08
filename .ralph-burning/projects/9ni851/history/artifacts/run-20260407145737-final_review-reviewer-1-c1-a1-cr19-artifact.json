@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr19-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T23:25:23.543288135Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 2 recovery/correctness issues in the success-reconciliation flow: completed-run retries are still over-gated to `reconciliation_*` failures, and the new `workflow_run_id` binding is persisted too late to be crash-safe. `cargo test --quiet` passed.\n\n## Amendments\n\n1. src/contexts/automation_runtime/task_service.rs:152-162 and src/contexts/automation_runtime/daemon_loop.rs:681-703 / 913-918 only special-case `reconciliation_*` failures when the run snapshot is already `Completed`. A task that finished the run but failed later in `handle_completion_pr_with_cancellation` is marked `pr_runtime_failed`, so its retry still does remote-resume, rebase, and `ensure_project` even though no code will execute. Any unrelated git/auth/rebase failure can block the retry before it reaches PR recovery or success reconciliation, leaving a completed run stranded behind bookkeeping-only failure. Completed-run retries need a broader post-completion retry path, not a `reconciliation_*`-only check.\n   Rationale: `pr_runtime_failed` is emitted after a successful run today, so this is an active recovery path. Retrying that task should not depend on fresh git state.\n2. src/contexts/automation_runtime/daemon_loop.rs:867-873 persists `workflow_run_id` only after `dispatch_in_worktree` has already returned success, while src/contexts/automation_runtime/daemon_loop.rs:1730-1746 falls back to the latest `RunStarted` event whenever that field is missing. A crash in that window leaves no durable task->run binding; if another run is started in the same project before retry, `try_reconcile_success` can reconcile the wrong run (or fail against the wrong `RunCompleted`), which violates the crash-safe idempotency requirement for this bead.\n   Rationale: The new `workflow_run_id` field is meant to remove journal-tail ambiguity, but the current write point still leaves a recovery hole after a crash.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 19
+}

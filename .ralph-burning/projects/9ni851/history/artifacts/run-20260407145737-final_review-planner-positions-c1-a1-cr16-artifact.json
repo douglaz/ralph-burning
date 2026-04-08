@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr16-artifact",
+  "payload_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T22:01:57.842306939Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAmendment fr-16-c308d06c identifies a real bug: when `bv --robot-next` returns a successful message-only JSON like `{\"message\":\"No actionable items available\"}`, the current code tries to deserialize it as `NextBeadResponse` (which requires `id` and `title` fields), fails with a `BvParseError`, and falls into the `BvFailed` arm. This causes stale `next_step_hint.json` files to persist, potentially pointing at already-completed beads. The fix is correct in principle: distinguish a successful 'no more work' response from an actual failure, and clear the persisted hint accordingly.\n\n## Votes\n\n- `fr-16-c308d06c`: Accept\n  This is a genuine bug. The code path is clear: `exec_json::<NextBeadResponse>` attempts to parse `{\"message\":\"No actionable items available\"}` into a struct requiring `id` and `title`, which fails with `BvParseError`, landing in the `BvFailed` arm of `capture_next_step_hint` (line 365-371). The `BvFailed` arm deliberately preserves existing hints (lines 177-181), which is correct for transient errors but wrong for a successful 'no items' response. After the final actionable bead closes, this leaves a stale `next_step_hint.json` pointing at an already-completed bead. The fix is straightforward: add a new `HintCaptureOutcome` variant (e.g., `NoActionableItems`) or parse the message-only JSON before attempting `NextBeadResponse` deserialization, then clear/remove the persisted hint file when the response indicates no actionable items. The request to add a regression test is also appropriate. This is not a theoretical issue — it will manifest every time the last actionable bead in a milestone completes.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 16
+}

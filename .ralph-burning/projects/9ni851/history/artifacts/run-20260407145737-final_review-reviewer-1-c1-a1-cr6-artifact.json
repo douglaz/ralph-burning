@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T17:53:39.546352995Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the reconciliation diff against `origin/master`, read the daemon-loop, success-reconciliation, milestone, and fs changes, and ran `cargo test success_reconciliation -- --nocapture` (9 tests passed). I found two correctness issues in the daemon’s failure handling around success reconciliation.\n\n## Amendments\n\n1. `src/contexts/automation_runtime/daemon_loop.rs:1599-1643` and `src/contexts/automation_runtime/daemon_loop.rs:1695-1697` convert several reconciliation failures into `Ok(())` after a best-effort milestone failure update. Both callers treat `Ok(())` as success and immediately mark the daemon task completed (`src/contexts/automation_runtime/daemon_loop.rs:914-942` and `src/contexts/automation_runtime/daemon_loop.rs:1471-1488`). If the project journal is unreadable or missing run metadata, the bead is never closed or synced; if `record_bead_completion` fails, the milestone progress/journal/linkage write is missing. In both cases the task becomes terminal `completed`, so there is no retry path even though reconciliation did not actually succeed. These branches should return an error (or otherwise keep the task retryable) instead of falling through as success.\n   Rationale: This violates the happy-path contract: a task can be reported completed while the bead stays open or the milestone completion write never lands.\n2. `src/contexts/automation_runtime/daemon_loop.rs:1575-1592` ignores the result of `milestone_service::update_status(... MilestoneStatus::Failed ...)` with `let _ =`, including the `BrCloseFailed`/`BrSyncFailed` path at `src/contexts/automation_runtime/daemon_loop.rs:1688-1693`. If the status update itself fails (snapshot corruption, I/O failure, invalid transition), the controller never actually reaches the required needs-operator state even though the reconciliation error is surfaced elsewhere. The failed-status write needs to be checked and propagated/logged as its own hard failure instead of being silently discarded.\n   Rationale: The prompt explicitly requires close/sync failures to move the controller into needs_operator; the current code only attempts that transition on a best-effort basis.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 6
+}

@@ -374,6 +374,9 @@ pub struct TaskRunEntry {
     /// When this task run finished (if complete).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<DateTime<Utc>>,
+    /// Daemon task ID that triggered this run (for task-to-bead linkage).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }
 
 impl TaskRunEntry {
@@ -408,6 +411,9 @@ impl TaskRunEntry {
             (Some(current), Some(other)) if other < current => merged.finished_at = Some(other),
             _ => {}
         }
+        if merged.task_id.is_none() {
+            merged.task_id = secondary.task_id.clone();
+        }
         merged
     }
 
@@ -427,6 +433,7 @@ impl TaskRunEntry {
             self.started_at,
             self.outcome,
             self.outcome_detail.as_deref(),
+            self.task_id.as_deref(),
         )
     }
 }
@@ -482,6 +489,9 @@ pub struct CompletionJournalDetails {
     pub outcome: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome_detail: Option<String>,
+    /// Daemon task ID for task-to-bead linkage tracking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }
 
 pub fn render_completion_journal_details(
@@ -491,6 +501,7 @@ pub fn render_completion_journal_details(
     started_at: DateTime<Utc>,
     outcome: impl fmt::Display,
     outcome_detail: Option<&str>,
+    task_id: Option<&str>,
 ) -> String {
     serde_json::to_string(&CompletionJournalDetails {
         project_id: project_id.to_owned(),
@@ -499,6 +510,7 @@ pub fn render_completion_journal_details(
         started_at,
         outcome: outcome.to_string(),
         outcome_detail: outcome_detail.map(str::to_owned),
+        task_id: task_id.map(str::to_owned),
     })
     .expect("completion journal details serialization should not fail")
 }
@@ -938,6 +950,7 @@ mod tests {
                 outcome_detail: None,
                 started_at,
                 finished_at: None,
+                task_id: None,
             },
             TaskRunEntry {
                 milestone_id: "ms-1".to_owned(),
@@ -950,6 +963,7 @@ mod tests {
                 outcome_detail: Some("done".to_owned()),
                 started_at,
                 finished_at: Some(started_at),
+                task_id: None,
             },
         ]);
 
@@ -978,6 +992,7 @@ mod tests {
                 outcome_detail: None,
                 started_at,
                 finished_at: None,
+                task_id: None,
             },
             TaskRunEntry {
                 milestone_id: "ms-1".to_owned(),
@@ -990,6 +1005,7 @@ mod tests {
                 outcome_detail: None,
                 started_at,
                 finished_at: Some(finished_at),
+                task_id: None,
             },
             TaskRunEntry {
                 milestone_id: "ms-1".to_owned(),
@@ -1002,6 +1018,7 @@ mod tests {
                 outcome_detail: Some("replayed".to_owned()),
                 started_at,
                 finished_at: Some(finished_at),
+                task_id: None,
             },
         ]);
 
@@ -1026,6 +1043,7 @@ mod tests {
             outcome_detail: None,
             started_at,
             finished_at: None,
+            task_id: None,
         };
         let second = TaskRunEntry {
             run_id: Some("run-2".to_owned()),
@@ -1052,6 +1070,7 @@ mod tests {
                 outcome_detail: Some("first attempt failed".to_owned()),
                 started_at,
                 finished_at: Some(started_at + chrono::Duration::seconds(5)),
+                task_id: None,
             },
             TaskRunEntry {
                 milestone_id: "ms-1".to_owned(),
@@ -1064,6 +1083,7 @@ mod tests {
                 outcome_detail: Some("retry passed".to_owned()),
                 started_at: started_at + chrono::Duration::seconds(10),
                 finished_at: Some(started_at + chrono::Duration::seconds(20)),
+                task_id: None,
             },
             TaskRunEntry {
                 milestone_id: "ms-1".to_owned(),
@@ -1076,6 +1096,7 @@ mod tests {
                 outcome_detail: None,
                 started_at: started_at + chrono::Duration::seconds(30),
                 finished_at: None,
+                task_id: None,
             },
         ];
 
@@ -1110,6 +1131,7 @@ mod tests {
                 outcome_detail: Some("first attempt failed".to_owned()),
                 started_at,
                 finished_at: Some(started_at + chrono::Duration::seconds(1)),
+                task_id: None,
             },
             TaskRunEntry {
                 milestone_id: "ms-1".to_owned(),
@@ -1122,6 +1144,7 @@ mod tests {
                 outcome_detail: None,
                 started_at,
                 finished_at: None,
+                task_id: None,
             },
         ];
 
@@ -1152,6 +1175,7 @@ mod tests {
                 outcome_detail: Some("done".to_owned()),
                 started_at,
                 finished_at: Some(started_at + chrono::Duration::seconds(1)),
+                task_id: None,
             }],
             "bead-1",
             "project-1",
@@ -1178,6 +1202,7 @@ mod tests {
                 outcome_detail: None,
                 started_at,
                 finished_at: None,
+                task_id: None,
             },
             TaskRunEntry {
                 milestone_id: "ms-1".to_owned(),
@@ -1190,6 +1215,7 @@ mod tests {
                 outcome_detail: Some("first retry".to_owned()),
                 started_at,
                 finished_at: Some(started_at + chrono::Duration::seconds(1)),
+                task_id: None,
             },
             TaskRunEntry {
                 milestone_id: "ms-1".to_owned(),
@@ -1202,6 +1228,7 @@ mod tests {
                 outcome_detail: None,
                 started_at,
                 finished_at: None,
+                task_id: None,
             },
             TaskRunEntry {
                 milestone_id: "ms-1".to_owned(),
@@ -1214,6 +1241,7 @@ mod tests {
                 outcome_detail: Some("second retry".to_owned()),
                 started_at,
                 finished_at: Some(started_at + chrono::Duration::seconds(2)),
+                task_id: None,
             },
         ]);
 
@@ -1234,6 +1262,7 @@ mod tests {
             started_at,
             TaskRunOutcome::Succeeded,
             Some("detail payload"),
+            None,
         );
 
         let parsed: serde_json::Value = serde_json::from_str(&details)?;
@@ -1288,6 +1317,7 @@ mod tests {
             outcome_detail: None,
             started_at: t1,
             finished_at: None,
+            task_id: None,
         };
 
         // Secondary: all optional fields populated, later started_at, has finished_at.
@@ -1301,6 +1331,7 @@ mod tests {
             outcome_detail: Some("detail".into()),
             started_at: t2,
             finished_at: Some(t2),
+            task_id: None,
         };
 
         let merged = TaskRunEntry::merge_attempt_entries(&primary, &secondary);
@@ -1325,6 +1356,7 @@ mod tests {
             outcome_detail: Some("original-detail".into()),
             started_at: t1,
             finished_at: Some(t1),
+            task_id: None,
         };
 
         let merged2 = TaskRunEntry::merge_attempt_entries(&primary_full, &secondary);

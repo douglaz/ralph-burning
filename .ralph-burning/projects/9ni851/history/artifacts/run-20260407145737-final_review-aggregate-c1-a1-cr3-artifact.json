@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260407145737-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260407145737-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T16:44:38.018022642Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 3/25\n\n## Accepted\n\n- `fr-3-5e1074c4`\n- `fr-3-949a31d8`\n- `fr-3-1b3074a6`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-3-62268f91`\n\n## Final Accepted Amendments\n\n### `fr-3-5e1074c4`\n\nIn `src/adapters/fs.rs`, `CompletionJournalDetails::render()` (line 2857) passes `None` for the `task_id` parameter instead of `self.task_id.as_deref()`. This means any completion journal event that goes through the merge or repair code paths (lines 2951, 2996, 3017) will silently lose its `task_id` linkage. The fix is to change `None` to `self.task_id.as_deref()` on line 2857.\n\n### `fr-3-949a31d8`\n\nIn `src/adapters/fs.rs`, `CompletionJournalDetails::merge()` (lines 2816-2846) does not merge the `task_id` field. It should add a block like `if merged.task_id.is_none() { merged.task_id = requested.task_id.clone(); }` after the existing `outcome_detail` merge, and should also check for conflicts on `task_id` alongside the other optional fields.\n\n### `fr-3-1b3074a6`\n\n`src/adapters/fs.rs:2816-2858` and `src/adapters/fs.rs:2948-2996` still handle `CompletionJournalDetails` as if it had no `task_id`: the fs-side merge logic does not conflict-check or merge `task_id`, and `render()` always serializes `task_id` as `None`, even though the canonical model now includes it in `src/contexts/milestone_record/model.rs:492-514`. Update the fs journal dedupe/repair paths to preserve and serialize `task_id` so idempotent reruns or stale-event repairs do not silently strip the structured task-to-bead linkage from milestone completion events.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

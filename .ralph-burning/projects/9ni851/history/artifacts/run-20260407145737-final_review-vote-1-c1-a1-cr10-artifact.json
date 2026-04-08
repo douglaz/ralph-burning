@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T19:36:28.511653282Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments should be accepted. Amendments fr-10-f38cae85 and fr-10-805d3d2d correctly identify the same replay safety bug: `was_already_closed` proves only local closed state, not that `br sync --flush-only` ever succeeded, so swallowing sync errors on replay can incorrectly complete reconciliation after a prior close-without-flush failure. Amendment fr-10-19540092 correctly calls out missing coverage for that new branch. Amendment fr-10-901baff2 identifies a separate real data-loss bug where transient `bv` failures are conflated with an authoritative 'no hint' result, causing stale-but-valid hint deletion.\n\n## Votes\n\n- `fr-10-f38cae85`: Accept\n  The defect is real. `was_already_closed` can be true after a previous run closed the bead locally but failed before or during `br sync --flush-only`. If replay hits another sync failure, the current code logs and continues, then updates milestone state and returns success even though the close was never durably flushed. That is an unsound completion condition; a separate durable signal of prior successful sync is required before treating replay sync failure as non-fatal.\n- `fr-10-19540092`: Accept\n  This branch is currently untested and it is a consequential branch. There are tests for close idempotency, sync success/failure, and the happy-path reconciliation, but no test that exercises `Err(e) if was_already_closed` inside `reconcile_success`. Coverage for both first-close sync failure and replay sync failure is necessary to lock in the intended semantics and prevent regressions.\n- `fr-10-805d3d2d`: Accept\n  This is the same core correctness issue as fr-10-f38cae85 and is independently valid. The code comment already acknowledges the crash window between `br close` and `br sync --flush-only`; in exactly that state, `was_already_closed` will be true while durable sync has not happened. Suppressing `BrSyncFailed` there allows reconciliation to advance milestone/task completion on unflushed state, which is unsafe.\n- `fr-10-901baff2`: Accept\n  The amendment correctly identifies outcome conflation. `capture_next_step_hint()` returns `None` for both 'no recommendation' and any `bv` execution failure, and the caller deletes `next_step_hint.json` whenever it sees `None`. That means a transient `bv` outage on replay can erase a previously valid persisted hint without any new authoritative result. The code should distinguish failure from an actual empty recommendation and only delete the file in the latter case.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 10
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T19:18:39.229826793Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments identify real defects. The milestone reconciliation findings are higher severity because they can permanently lose durable state or incorrectly fail already-reconciled work; the hint-file findings are lower severity but still correct consistency and crash-safety issues.\n\n## Votes\n\n- `fr-9-ce53f239`: Accept\n  `persist_next_step_hint` uses `std::fs::write`, which truncates and rewrites the target in place. A crash or process interruption during that write can leave `next_step_hint.json` partially written, and the code explicitly intends downstream cycles to read this file later. A temp-file-plus-rename write is the standard fix and makes failure degrade to missing/stale data instead of corrupted on-disk JSON.\n- `fr-9-ff03e1a9`: Accept\n  The code only persists a hint when `next_step_hint` is `Some`, and does nothing when it is `None`. Because the file is stored per milestone, not per bead, an old hint can survive after a later completion produced no current hint, leaving materially stale guidance on disk. Deleting the file when no fresh hint exists is the correct behavior because absence is more accurate than a stale recommendation.\n- `fr-9-1d3f5736`: Accept\n  This is a real durability bug. `reconcile_success` performs `br close` and `br sync` before `update_milestone_state`, but `try_reconcile_success` explicitly swallows `MilestoneUpdateFailed` and the caller then marks the daemon task `Completed`; after that, `retry_task` refuses to retry completed tasks. That means a transient failure writing milestone snapshot, journal, or lineage can permanently lose milestone progress and task-to-bead linkage with no automated recovery path.\n- `fr-9-1145777f`: Accept\n  The replay path is not fully idempotent because it always reruns `br sync --flush-only` once the bead is observed closed, but it has no durable marker proving whether the prior sync already succeeded. Since replay constructs a fresh `BrMutationAdapter` with `has_unsync_mutations = false` and `BrSyncFailed` is treated as a hard reconciliation failure, a transient `br` outage during replay can incorrectly move an already-reconciled task into the failed/operator path. That is a real correctness gap in crash recovery.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 9
+}

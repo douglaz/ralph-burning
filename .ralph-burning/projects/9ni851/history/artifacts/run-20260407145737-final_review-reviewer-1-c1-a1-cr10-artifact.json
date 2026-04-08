@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T19:33:50.045444854Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed `HEAD^..HEAD` and read the success-reconciliation implementation paths in `src/contexts/automation_runtime/success_reconciliation.rs` and `src/contexts/automation_runtime/daemon_loop.rs`. Targeted `cargo test success_reconciliation --lib -- --nocapture` passes, but I found two correctness regressions: replay sync failures are now swallowed without proof that a prior sync succeeded, and transient `bv` failures now clear previously captured hint state.\n\n## Amendments\n\n1. `src/contexts/automation_runtime/success_reconciliation.rs:146-160` now suppresses `BrSyncFailed` whenever `was_already_closed` is true. That is not a safe proxy for \"the earlier reconciliation fully succeeded\": it is also the state you get after a crash between `br close` and `br sync --flush-only` (the comment at lines 141-145 already describes exactly that case). In that scenario, a replay that hits a transient `br sync` failure will now continue into milestone completion and task completion even though the close was never flushed. Please keep replay sync failures fatal unless you persist a separate durable marker proving the prior sync already landed.\n   Rationale: This violates the idempotency requirement for crash recovery and can leave `.beads` unflushed while milestone/task state says the bead completed successfully.\n2. `src/contexts/automation_runtime/success_reconciliation.rs:176-189`, together with `capture_next_step_hint()` at `src/contexts/automation_runtime/success_reconciliation.rs:311-320` and `delete_stale_hint()` at `src/contexts/automation_runtime/success_reconciliation.rs:368-381`, now deletes `next_step_hint.json` whenever hint capture returns `None`. But `capture_next_step_hint()` returns `None` for every `bv` failure path as well as for a genuine \"no hint\" case, so a transient `bv` outage on a replay can erase a previously persisted hint even though no new authoritative result was obtained. Please distinguish \"no recommendation\" from execution failure, and only clear the file for the former.\n   Rationale: The new delete-on-None behavior makes replay non-idempotent and can discard the last known next-step guidance on transient `bv` failures.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 10
+}

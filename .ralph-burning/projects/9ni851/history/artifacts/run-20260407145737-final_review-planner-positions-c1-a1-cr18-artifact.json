@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr18-artifact",
+  "payload_id": "run-20260407145737-final_review-planner-positions-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T23:04:56.285056235Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll three amendments identify genuine bugs with clear code evidence. Amendment 6dedc27c catches an error-variant confusion where BvExitError stdout is incorrectly treated as a benign message-only response. Amendment ba0587a2 identifies a regression where the Completed fast path swallows aborted-during-PR-handling retries that should start fresh. Amendment d52804bb exposes an asymmetry where missing RunCompleted is silently papered over with Utc::now() while missing RunStarted correctly fails closed, and the CLI path already treats the same condition as corruption.\n\n## Votes\n\n- `fr-18-6dedc27c`: Accept\n  Verified: raw_output() returns Some(stdout) for both BvExitError and BvParseError. If bv crashes with non-zero exit but stdout contains {\"message\":\"...\"}, capture_next_step_hint returns NoRecommendation instead of BvFailed, which triggers delete_stale_hint and removes a previously valid hint file. The fix — restricting the BvMessageOnlyResponse check to BvParseError only — is narrowly scoped and correct. BvParseError means bv exited 0 but returned unexpected JSON (a legitimate 'no recommendation' signal), while BvExitError means bv genuinely failed and existing hints should be preserved.\n- `fr-18-ba0587a2`: Accept\n  Verified: When a user aborts during completion-PR handling, the task ends up with RunStatus::Completed in the run snapshot but no failure_class (the abort path returns early without recording a failure). On retry, the daemon classifies it as a reconciliation retry based on the Completed run snapshot (lines 686-694, 1441-1449) and dispatch_in_worktree_with_service short-circuits with Ok(()) (lines 3127-3137). This contradicts claim_task's explicit intent that aborted retries (no failure_class) should start fresh (task_service.rs lines 148-162). The fast path needs a gate — e.g., checking that failure_class starts with 'reconciliation_' — to distinguish genuine reconciliation retries from aborted-during-bookkeeping retries.\n- `fr-18-d52804bb`: Accept\n  Verified: try_reconcile_success fabricates Utc::now() for missing RunCompleted (lines 1795-1818) while the same function returns a hard reconciliation_metadata_error for missing RunStarted (lines 1787-1791). The CLI reconciliation path (run.rs lines 317-327) already treats missing RunCompleted as AppError::CorruptRecord, and there is an explicit test validating this behavior. The daemon path should fail closed consistently: a missing RunCompleted event in a supposedly completed run indicates journal corruption or partial writes. Fabricating a wall-clock timestamp hides this corruption and can misorder milestone history, since the synthetic time has no relation to when the run actually finished.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 18
+}

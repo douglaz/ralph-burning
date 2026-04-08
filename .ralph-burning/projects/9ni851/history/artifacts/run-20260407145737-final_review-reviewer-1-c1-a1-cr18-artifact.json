@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr18-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-1-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T23:00:17.146706125Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the success-reconciliation changes in daemon/runtime, milestone lineage, and the new reconciliation module. I found 2 correctness issues: the new Completed-run shortcut is too broad and breaks aborted-retry semantics, and missing RunCompleted metadata is silently papered over with wall-clock time. Targeted checks run: `cargo test reconcile_success --lib --quiet` and `cargo test dispatch_completed_run_returns_ok_for_reconciliation_retry --features test-stub --quiet`.\n\n## Amendments\n\n1. Gate the new Completed-run fast path to actual reconciliation-failure retries. Right now both task-processing paths classify any project snapshot with status Completed as a reconciliation retry (src/contexts/automation_runtime/daemon_loop.rs:686-694, src/contexts/automation_runtime/daemon_loop.rs:1441-1449), and dispatch_in_worktree_with_service then short-circuits every Completed snapshot without rerunning the workflow (src/contexts/automation_runtime/daemon_loop.rs:3127-3137). That regresses aborted post-completion tasks: a user abort during completion-PR handling returns early with the task Aborted (src/contexts/automation_runtime/daemon_loop.rs:1519-1542), while claim_task explicitly says aborted retries should start fresh (src/contexts/automation_runtime/task_service.rs:148-162). After this change, retrying that task will silently reuse the old completed run instead of starting a new one.\n   Rationale: This changes retry semantics for user-cancelled tasks and can complete reconciliation/PR bookkeeping for a run the operator explicitly aborted.\n2. Treat a missing RunCompleted event as a hard reconciliation metadata error instead of fabricating Utc::now(). In try_reconcile_success, the matching RunCompleted timestamp is optional and falls back to wall-clock time when absent (src/contexts/automation_runtime/daemon_loop.rs:1795-1818), even though the same function already fails closed for missing RunStarted metadata and the CLI reconciliation path treats a missing terminal event as corruption (src/cli/run.rs:317-327). Proceeding with a synthetic timestamp can misorder milestone history and hide a partially written/corrupt project journal behind seemingly successful reconciliation.\n   Rationale: The milestone journal and lineage become less trustworthy if reconciliation invents completion times instead of surfacing the operator-visible metadata failure.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 18
+}

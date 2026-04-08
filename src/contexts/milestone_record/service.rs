@@ -1061,6 +1061,7 @@ fn merge_completion_journal_details(
             existing.outcome_detail.as_deref(),
             requested.outcome_detail.as_deref(),
         )
+        || option_conflicts(existing.task_id.as_deref(), requested.task_id.as_deref())
     {
         return None;
     }
@@ -1074,6 +1075,9 @@ fn merge_completion_journal_details(
     }
     if merged.outcome_detail.is_none() {
         merged.outcome_detail = requested.outcome_detail.clone();
+    }
+    if merged.task_id.is_none() {
+        merged.task_id = requested.task_id.clone();
     }
     Some(merged)
 }
@@ -6062,6 +6066,7 @@ mod tests {
             outcome_detail: Some("Completed with 3 warnings".to_owned()),
             started_at: now,
             finished_at: Some(now),
+            task_id: None,
         };
         let json = serde_json::to_string(&entry)?;
         let parsed: TaskRunEntry = serde_json::from_str(&json)?;
@@ -6109,6 +6114,7 @@ mod tests {
                 outcome_detail: None,
                 started_at: now,
                 finished_at: None,
+                task_id: None,
             },
         )?;
 
@@ -6163,6 +6169,7 @@ mod tests {
                     outcome_detail: None,
                     started_at: now,
                     finished_at: None,
+                    task_id: None,
                 })?
             ),
         )?;
@@ -6362,6 +6369,7 @@ mod tests {
                 outcome_detail: None,
                 started_at: first_started,
                 finished_at: None,
+                task_id: None,
             })?,
             serde_json::to_string(&TaskRunEntry {
                 milestone_id: record.id.to_string(),
@@ -6373,6 +6381,7 @@ mod tests {
                 outcome_detail: Some("legacy failure".to_owned()),
                 started_at: first_started,
                 finished_at: Some(first_started + chrono::Duration::seconds(5)),
+                task_id: None,
             })?,
             serde_json::to_string(&TaskRunEntry {
                 milestone_id: record.id.to_string(),
@@ -6384,6 +6393,7 @@ mod tests {
                 outcome_detail: None,
                 started_at: second_started,
                 finished_at: None,
+                task_id: None,
             })?,
             serde_json::to_string(&TaskRunEntry {
                 milestone_id: record.id.to_string(),
@@ -6395,6 +6405,7 @@ mod tests {
                 outcome_detail: Some("legacy success".to_owned()),
                 started_at: second_started,
                 finished_at: Some(second_started + chrono::Duration::seconds(5)),
+                task_id: None,
             })?,
             serde_json::to_string(&TaskRunEntry {
                 milestone_id: record.id.to_string(),
@@ -6406,6 +6417,7 @@ mod tests {
                 outcome_detail: None,
                 started_at: now + chrono::Duration::seconds(20),
                 finished_at: None,
+                task_id: None,
             })?,
         ]
         .join("\n");
@@ -6462,6 +6474,7 @@ mod tests {
                 outcome_detail: None,
                 started_at,
                 finished_at: None,
+                task_id: None,
             })?,
             serde_json::to_string(&TaskRunEntry {
                 milestone_id: record.id.to_string(),
@@ -6473,6 +6486,7 @@ mod tests {
                 outcome_detail: None,
                 started_at,
                 finished_at: Some(finished_at),
+                task_id: None,
             })?,
             serde_json::to_string(&TaskRunEntry {
                 milestone_id: record.id.to_string(),
@@ -6484,6 +6498,7 @@ mod tests {
                 outcome_detail: Some("replayed completion".to_owned()),
                 started_at,
                 finished_at: Some(finished_at),
+                task_id: None,
             })?,
         ]
         .join("\n");
@@ -6538,6 +6553,7 @@ mod tests {
                 outcome_detail: None,
                 started_at,
                 finished_at: None,
+                task_id: None,
             })?,
             serde_json::to_string(&TaskRunEntry {
                 milestone_id: record.id.to_string(),
@@ -6549,6 +6565,7 @@ mod tests {
                 outcome_detail: Some("first retry".to_owned()),
                 started_at,
                 finished_at: Some(started_at + chrono::Duration::seconds(1)),
+                task_id: None,
             })?,
             serde_json::to_string(&TaskRunEntry {
                 milestone_id: record.id.to_string(),
@@ -6560,6 +6577,7 @@ mod tests {
                 outcome_detail: None,
                 started_at,
                 finished_at: None,
+                task_id: None,
             })?,
             serde_json::to_string(&TaskRunEntry {
                 milestone_id: record.id.to_string(),
@@ -6571,6 +6589,7 @@ mod tests {
                 outcome_detail: Some("second retry".to_owned()),
                 started_at,
                 finished_at: Some(started_at + chrono::Duration::seconds(2)),
+                task_id: None,
             })?,
         ]
         .join("\n");
@@ -7020,6 +7039,7 @@ mod tests {
                 outcome_detail: None,
                 started_at: now,
                 finished_at: None,
+                task_id: None,
             },
         )?;
 
@@ -7462,6 +7482,7 @@ mod tests {
             outcome_detail: Some("legacy completion".to_owned()),
             started_at: now,
             finished_at: Some(shared_finished_at),
+            task_id: None,
         };
         let second_attempt = TaskRunEntry {
             milestone_id: record.id.to_string(),
@@ -7473,6 +7494,7 @@ mod tests {
             outcome_detail: Some("retry completion".to_owned()),
             started_at: now + chrono::Duration::seconds(10),
             finished_at: Some(shared_finished_at),
+            task_id: None,
         };
 
         let first_event =
@@ -7971,6 +7993,7 @@ mod tests {
                 outcome_detail: Some("first attempt finished".to_owned()),
                 started_at: now,
                 finished_at: Some(now + chrono::Duration::seconds(5)),
+                task_id: None,
             },
         )?;
 
@@ -8384,6 +8407,7 @@ mod tests {
             started_at,
             "succeeded",
             None,
+            None,
         ));
         let requested = MilestoneJournalEvent::new(
             MilestoneEventType::BeadFailed,
@@ -8397,6 +8421,7 @@ mod tests {
             started_at,
             "failed",
             Some("different outcome"),
+            None,
         ));
 
         assert!(repairable_completion_event(&existing, &requested).is_none());
@@ -8666,6 +8691,7 @@ mod tests {
                     outcome_detail: None,
                     started_at,
                     finished_at: None,
+                    task_id: None,
                 },
             )?;
         }

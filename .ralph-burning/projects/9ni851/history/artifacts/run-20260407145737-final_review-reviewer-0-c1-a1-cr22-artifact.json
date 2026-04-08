@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr22-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T00:46:47.350580199Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the success reconciliation implementation across ~5100 lines of changes. The implementation is well-structured: success_reconciliation.rs provides the core handler with idempotent bead close, sync-after-close, milestone state updates, and best-effort next-step hints. The daemon_loop.rs integration correctly handles both multi-repo and single-repo paths, with post-completion retry logic that skips rebase/ensure_project for already-completed runs. The DaemonTask model gains workflow_run_id for durable task→run binding. The task_service.rs change correctly skips branch resume for reconciliation-only retries. All 14 new tests pass. All 7 acceptance criteria are met. The code is defensively written with extensive comments explaining crash-safety invariants and idempotency guarantees.\n\n## Amendments\n\n1. In `update_milestone_state` (success_reconciliation.rs:320), `exact_attempt_already_terminal` is computed as `same_named_terminal_attempt_exists || <narrower check>`, but the narrower check (adding `started_at` constraint) is strictly subsumed by `same_named_terminal_attempt_exists` (which already matches project_id + run_id + terminal). The `||` makes the second branch dead code. The variable name `exact_attempt_already_terminal` is misleading since it actually equals `same_named_terminal_attempt_exists`. Consider simplifying to just use `same_named_terminal_attempt_exists` or renaming for clarity.\n   Rationale: Dead code / misleading name. Not a correctness bug since both branches route to the same `repair_task_run_with_disposition` call, but it makes the logic harder to reason about and could confuse future maintainers about the intent of the two-check design.\n2. On reconciliation-only retries (failure_class starts with 'reconciliation_'), the multi-repo daemon_loop success path still calls `handle_completion_pr_with_cancellation` before `try_reconcile_success`. For tasks where the original failure was reconciliation-only (PR was already created/merged successfully), re-running the PR handler is unnecessary work and could produce confusing log output or edge-case failures if the PR state has changed since the original run. Consider short-circuiting the PR handler for post-completion reconciliation retries, or at minimum adding a comment explaining why re-running it is safe.\n   Rationale: Robustness concern. If `handle_completion_pr_with_cancellation` encounters an unexpected PR state change (e.g., PR was force-closed by a human between the original failure and the retry), it could fail with `pr_runtime_failed`, creating a different failure class that masks the original reconciliation issue and potentially enters a different retry path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 22
+}

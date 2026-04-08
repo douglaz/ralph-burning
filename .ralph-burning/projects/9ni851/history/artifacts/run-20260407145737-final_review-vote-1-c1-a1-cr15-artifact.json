@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-vote-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260407145737-final_review-vote-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T21:40:59.360105250Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccept. The amendment identifies a real idempotency bug: success reconciliation always re-finalizes via the non-repair completion path while rewriting success detail to `task_id=...`, so exact-attempt replays against an already-terminal row with a different existing detail fail permanently instead of reconciling.\n\n## Votes\n\n- `fr-15-629e3ee2`: Accept\n  Local code trace supports the amendment. `src/contexts/automation_runtime/success_reconciliation.rs` builds `linkage_detail = format!(\"task_id={task_id}\")` and always calls `record_bead_completion`, which flows through `update_task_run_with_disposition` to `lineage_store.update_task_run(...)`. In `src/adapters/fs.rs`, that path invokes `finalize_task_run_internal(..., allow_terminal_repair=false)`. For an exact replay of an already-terminal success, `can_backfill_without_repair` only permits the replay when the existing `outcome_detail` is absent or matches; if the prior row already has a different success detail, the code falls through to `finalized_task_run_already_exists_error(...)`. `src/contexts/milestone_record/service.rs` also refuses to merge mismatched completion details in journal repair, so this is not just a superficial lineage issue. By contrast, `src/cli/run.rs` explicitly detects `exact_attempt_already_terminal` and routes that case to `repair_task_run_with_disposition`, which is the established safe pattern. The amendment therefore fixes a real permanent-retry failure mode and improves correctness and replay safety.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 15
+}

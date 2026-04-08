@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr13-artifact",
+  "payload_id": "run-20260407145737-final_review-reviewer-0-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-07T20:33:48.364335717Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the success reconciliation handler. The implementation is well-structured: reconciliation runs BEFORE mark_completed (crash-safe ordering), br close is idempotent (pre-check + post-failure re-check), sync runs unconditionally even on replay (crash between close and sync is handled), milestone update failures fail the task rather than silently proceeding or terminally wedging the milestone, and the RunStatus::Completed→Ok(()) change enables clean retry after reconciliation-only failures. The task_id field is properly threaded through all model/service/fs layers with correct merge/conflict semantics. All 10 new tests and all 600 existing lib tests pass. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 13
+}

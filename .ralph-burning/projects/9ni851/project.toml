@@ -1,0 +1,7 @@
+id = "9ni851"
+name = "success-reconciliation"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "2ec0d63b8ffa5f455d88a22becbe236e3fdfd933cbdb94488270596444cc21dd"
+created_at = "2026-04-07T14:57:37.199897606Z"
+status_summary = "created"

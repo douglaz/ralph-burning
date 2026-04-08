@@ -44,6 +44,7 @@ fn sample_task() -> DaemonTask {
         dispatch_mode: DispatchMode::Workflow,
         source_revision: None,
         requirements_run_id: None,
+        workflow_run_id: None,
         repo_slug: None,
         issue_number: None,
         pr_url: None,
