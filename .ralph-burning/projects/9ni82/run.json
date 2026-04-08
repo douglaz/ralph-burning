@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260408144314",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 6
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-5-10a320bc",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "In `select_next_milestone_bead_from_recommendation` (src/cli/run.rs:676-679), the controller transition reason says 'requesting the next bead recommendation from bv before any claim' even though this function receives a pre-fetched recommendation and never calls bv. The `Selecting` state reason should reflect reality, e.g. 'validating a pre-fetched bv recommendation against br readiness before any claim'. This matters because operators inspect controller state reasons for debugging.",
-        "created_at": "2026-04-08T16:53:02.081036121Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "972df562443f819e45d233f19a43daa381feba3ceee5a9228182d1181db44b94"
-      },
-      {
-        "amendment_id": "fr-5-cb55c3b1",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "In `persist_next_step_recommendation` (src/cli/run.rs:354-385), all error paths use `eprintln!` for logging. In a daemon context, stderr may not be monitored. Consider using `tracing::warn!` (already used elsewhere in the codebase, e.g. success_reconciliation.rs:267) for consistency, so these failures appear in structured logs alongside the tracing infrastructure the daemon already uses.",
-        "created_at": "2026-04-08T16:53:02.081058213Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "a535267831508164511b044e343f0b4f5af39e5844a591b8ed4ad3b102f3edb3"
-      }
-    ],
-    "processed_count": 13
+    "pending": [],
+    "processed_count": 15
   },
-  "status_summary": "running: final review restart round 6 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-08T16:40:15.528883839Z",

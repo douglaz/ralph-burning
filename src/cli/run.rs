@@ -358,8 +358,11 @@ fn persist_next_step_recommendation(
 ) {
     let milestone_dir = FileSystem::milestone_root(base_dir, milestone_id);
     if let Err(error) = std::fs::create_dir_all(&milestone_dir) {
-        eprintln!(
-            "run: failed to create milestone directory for next-step recommendation persistence: {error}"
+        tracing::warn!(
+            error = %error,
+            milestone_id = %milestone_id,
+            path = %milestone_dir.display(),
+            "failed to create milestone directory for next-step recommendation persistence"
         );
         return;
     }
@@ -369,18 +372,33 @@ fn persist_next_step_recommendation(
     let serialized = match serde_json::to_string_pretty(recommendation) {
         Ok(serialized) => serialized,
         Err(error) => {
-            eprintln!("run: failed to serialize next-step recommendation: {error}");
+            tracing::warn!(
+                error = %error,
+                milestone_id = %milestone_id,
+                bead_id = %recommendation.id,
+                "failed to serialize next-step recommendation"
+            );
             return;
         }
     };
 
     if let Err(error) = std::fs::write(&tmp_path, serialized) {
-        eprintln!("run: failed to write next-step recommendation temp file: {error}");
+        tracing::warn!(
+            error = %error,
+            milestone_id = %milestone_id,
+            path = %tmp_path.display(),
+            "failed to write next-step recommendation temp file"
+        );
         return;
     }
 
     if let Err(error) = std::fs::rename(&tmp_path, &hint_path) {
-        eprintln!("run: failed to persist next-step recommendation file: {error}");
+        tracing::warn!(
+            error = %error,
+            milestone_id = %milestone_id,
+            path = %hint_path.display(),
+            "failed to persist next-step recommendation file"
+        );
         let _ = std::fs::remove_file(&tmp_path);
     }
 }
@@ -390,11 +408,15 @@ fn delete_persisted_next_step_recommendation(
     milestone_id: &MilestoneId,
 ) {
     let hint_path = FileSystem::milestone_root(base_dir, milestone_id).join("next_step_hint.json");
-    if hint_path.exists() && std::fs::remove_file(&hint_path).is_err() {
-        eprintln!(
-            "run: failed to remove stale next-step recommendation file: {}",
-            hint_path.display()
-        );
+    if hint_path.exists() {
+        if let Err(error) = std::fs::remove_file(&hint_path) {
+            tracing::warn!(
+                error = %error,
+                milestone_id = %milestone_id,
+                path = %hint_path.display(),
+                "failed to remove stale next-step recommendation file"
+            );
+        }
     }
 }
 
@@ -675,7 +697,7 @@ pub(crate) async fn select_next_milestone_bead_from_recommendation<R: ProcessRun
         milestone_id,
         milestone_controller::ControllerTransitionRequest::new(
             MilestoneControllerState::Selecting,
-            "requesting the next bead recommendation from bv before any claim",
+            "validating a pre-fetched bv recommendation against br readiness before any claim",
         ),
         now,
     )?;
@@ -1740,7 +1762,8 @@ async fn handle_sync_milestone() -> AppResult<()> {
 mod tests {
     use super::{
         persist_next_step_recommendation, prepare_milestone_controller_for_execution,
-        resume_attempt_has_exact_lineage, select_next_milestone_bead, sync_terminal_milestone_task,
+        resume_attempt_has_exact_lineage, select_next_milestone_bead,
+        select_next_milestone_bead_from_recommendation, sync_terminal_milestone_task,
         sync_terminal_milestone_task_and_continue_selection,
         sync_terminal_milestone_task_with_options, MilestoneControllerExecutionOrigin,
         ProjectMilestoneControllerRuntime,
@@ -2182,6 +2205,57 @@ mod tests {
         assert_eq!(bv.calls()[0].args, vec!["--robot-next"]);
         assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
         assert_eq!(br.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_from_recommendation_records_prefetched_validation_reason() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-2",
+        ]))]);
+
+        let controller = select_next_milestone_bead_from_recommendation(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            Some(NextBeadResponse {
+                id: "ms-alpha.bead-2".to_owned(),
+                title: "Primary bead".to_owned(),
+                score: 9.2,
+                reasons: vec!["ready".to_owned()],
+                action: "implement".to_owned(),
+            }),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        let journal = crate::contexts::milestone_record::controller::MilestoneControllerPort::read_transition_journal(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("read controller journal");
+        let selecting_event = journal
+            .iter()
+            .find(|event| {
+                event.to_state == milestone_controller::MilestoneControllerState::Selecting
+            })
+            .expect("selecting transition");
+        assert_eq!(
+            selecting_event.reason,
+            "validating a pre-fetched bv recommendation against br readiness before any claim"
+        );
+        assert_eq!(br.calls().len(), 1);
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
     }
 
     #[tokio::test]
