@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260408144314-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260408144314-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T18:58:26.561710056Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 9/25\n\n## Accepted\n\n- `fr-9-3f12f18c`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-3f12f18c`\n\nStop canonicalizing the claimed bead ID unless the rest of the controller/runtime normalizes IDs the same way. The selection path now rewrites a ready bead like `bead-x` to `ms-id.bead-x` before storing it in controller state (`src/cli/run.rs:272-279`, `src/cli/run.rs:588-596`), but later execution paths still compare bead IDs as raw strings (`src/cli/run.rs:768-785`, `src/cli/run.rs:1018-1023`, `src/contexts/milestone_record/controller.rs:1339-1348`). For milestones that use explicit short bead IDs, selecting the next bead can therefore leave the controller tracking `ms-id.bead-x` while the project/task source still carries `bead-x`; the next start/resume/sync then fails with “controller is already tracking active bead ... and cannot adopt ...”. Either preserve the original `br` bead ID here or switch the downstream alignment checks to the same normalized/bead-match comparison.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}
