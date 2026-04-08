@@ -586,11 +586,13 @@ async fn complete_next_milestone_bead_selection<R: ProcessRunner>(
             });
 
             if let Some(ready_bead) = matching_ready_bead {
+                let canonical_bead_id =
+                    canonicalize_milestone_bead_ref(milestone_id, &ready_bead.id);
                 return transition_controller_for_selection_outcome(
                     base_dir,
                     milestone_id,
                     MilestoneControllerState::Claimed,
-                    Some(&ready_bead.id),
+                    Some(&canonical_bead_id),
                     format!(
                         "bv recommended bead '{}' and br confirmed it is ready to claim",
                         recommendation.id
@@ -2272,6 +2274,43 @@ mod tests {
         assert_eq!(bv.calls()[0].args, vec!["--robot-next"]);
         assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
         assert_eq!(br.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_canonicalizes_unqualified_ready_bead_id() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        // br ready reports the unqualified form "bead-2" instead of "ms-alpha.bead-2".
+        let br =
+            MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&["bead-2"]))]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "bead-2",
+            "Primary bead",
+        ))]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed with unqualified bead ID");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        // The stored bead ID should be the canonicalized qualified form.
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("ms-alpha.bead-2"),
+            "unqualified bead ID from br ready should be stored as qualified form"
+        );
     }
 
     #[tokio::test]

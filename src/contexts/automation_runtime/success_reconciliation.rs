@@ -156,20 +156,43 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         }
     })?;
 
-    milestone_controller::sync_controller_task_reconciling(
-        &FsMilestoneControllerStore,
-        base_dir,
-        &milestone_id,
-        bead_id,
-        project_id,
-        "workflow execution completed successfully; reconciling milestone state",
-        now,
-    )
-    .map_err(|e| ReconciliationError::MilestoneUpdateFailed {
-        bead_id: bead_id.to_owned(),
-        task_id: task_id.to_owned(),
-        details: e.to_string(),
-    })?;
+    // Guard: if a previous reconciliation already succeeded and the selector
+    // advanced the controller to the next bead, `sync_controller_task_reconciling`
+    // would reject the replay because the active bead no longer matches.
+    // Detect this case and skip the reconciling transition — the rest of the
+    // reconciliation steps (close, sync, milestone update) are already idempotent.
+    let controller_already_advanced =
+        milestone_controller::load_controller(&FsMilestoneControllerStore, base_dir, &milestone_id)
+            .map_err(|e| ReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: format!("failed to load controller for replay guard: {e}"),
+            })?
+            .is_some_and(|c| {
+                c.active_bead_id.as_deref() != Some(bead_id)
+                    && c.active_bead_id.is_some()
+                    && !matches!(
+                        c.state,
+                        milestone_controller::MilestoneControllerState::Idle
+                    )
+            });
+
+    if !controller_already_advanced {
+        milestone_controller::sync_controller_task_reconciling(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+            bead_id,
+            project_id,
+            "workflow execution completed successfully; reconciling milestone state",
+            now,
+        )
+        .map_err(|e| ReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: e.to_string(),
+        })?;
+    }
 
     // Step 1: Close the bead idempotently.
     let was_already_closed = close_bead_idempotent(br_mutation, br_read, bead_id, task_id).await?;
@@ -196,6 +219,7 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         plan_hash,
         started_at,
         now,
+        controller_already_advanced,
     )?;
 
     // Step 4: Capture next-step hints (best-effort, never blocks reconciliation).
@@ -229,7 +253,7 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
     };
 
     let mut next_step_selection_warning = None;
-    if milestone_status != MilestoneStatus::Completed {
+    if milestone_status != MilestoneStatus::Completed && !controller_already_advanced {
         if let Some(bv_adapter) = bv {
             // Reconciliation already closed and synced the completed bead, so
             // it is safe to continue directly into the same bv/br-validated
@@ -386,6 +410,7 @@ fn update_milestone_state(
     plan_hash: Option<&str>,
     started_at: DateTime<Utc>,
     now: DateTime<Utc>,
+    controller_already_advanced: bool,
 ) -> Result<MilestoneStatus, ReconciliationError> {
     // Record the task-to-bead linkage as outcome_detail so the durable
     // lineage row and journal payload include the daemon task_id.
@@ -464,29 +489,34 @@ fn update_milestone_state(
                 task_id: task_id.to_owned(),
                 details: e.to_string(),
             })?;
-    let (next_state, reason) = if snapshot.status == MilestoneStatus::Completed {
-        (
-            milestone_controller::MilestoneControllerState::Completed,
-            "reconciliation closed the final bead and completed the milestone",
+    // Skip controller transition on replay when the controller has already
+    // advanced to the next bead — the transition would be illegal (e.g.,
+    // Claimed -> Selecting).
+    if !controller_already_advanced {
+        let (next_state, reason) = if snapshot.status == MilestoneStatus::Completed {
+            (
+                milestone_controller::MilestoneControllerState::Completed,
+                "reconciliation closed the final bead and completed the milestone",
+            )
+        } else {
+            (
+                milestone_controller::MilestoneControllerState::Selecting,
+                "reconciliation recorded the bead outcome and returned the controller to bead selection",
+            )
+        };
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            milestone_id,
+            milestone_controller::ControllerTransitionRequest::new(next_state, reason),
+            now,
         )
-    } else {
-        (
-            milestone_controller::MilestoneControllerState::Selecting,
-            "reconciliation recorded the bead outcome and returned the controller to bead selection",
-        )
-    };
-    milestone_controller::sync_controller_state(
-        &FsMilestoneControllerStore,
-        base_dir,
-        milestone_id,
-        milestone_controller::ControllerTransitionRequest::new(next_state, reason),
-        now,
-    )
-    .map_err(|e| ReconciliationError::MilestoneUpdateFailed {
-        bead_id: bead_id.to_owned(),
-        task_id: task_id.to_owned(),
-        details: e.to_string(),
-    })?;
+        .map_err(|e| ReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: e.to_string(),
+        })?;
+    }
 
     Ok(snapshot.status)
 }
@@ -1684,7 +1714,11 @@ mod tests {
             controller.state,
             milestone_controller::MilestoneControllerState::Claimed
         );
-        assert_eq!(controller.active_bead_id.as_deref(), Some("bead-next"));
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("ms-next.bead-next"),
+            "selected bead ID should be canonicalized to qualified form"
+        );
         assert_eq!(controller.active_task_id, None);
         assert!(controller
             .last_transition_reason
@@ -2378,6 +2412,225 @@ mod tests {
         assert_eq!(outcome.bead_id, "bead-replay");
         assert_eq!(outcome.task_id, "task-replay-456");
         assert!(outcome.was_already_closed);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_success_replay_after_nonfinal_selection_is_idempotent(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::{
+            FsMilestoneControllerStore, FsMilestonePlanStore, FsMilestoneStore,
+        };
+        use crate::contexts::milestone_record::bundle::{
+            AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+        };
+        use crate::contexts::milestone_record::controller as milestone_controller;
+        use crate::contexts::milestone_record::service::{
+            create_milestone, persist_plan, CreateMilestoneInput,
+        };
+        use chrono::Utc;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
+
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+
+        let now = Utc::now();
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "ms-replay".to_owned(),
+                name: "Replay milestone".to_owned(),
+                description: "Replay after nonfinal selection should be idempotent".to_owned(),
+            },
+            now,
+        )?;
+
+        let bundle = MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: "ms-replay".to_owned(),
+                name: "Replay milestone".to_owned(),
+            },
+            executive_summary: "Verify replay after selection.".to_owned(),
+            goals: vec!["Close one bead and replay".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Both beads covered".to_owned(),
+                covered_by: vec!["bead-first".to_owned(), "bead-second".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Core".to_owned(),
+                description: None,
+                beads: vec![
+                    BeadProposal {
+                        bead_id: Some("bead-first".to_owned()),
+                        explicit_id: Some(true),
+                        title: "First bead".to_owned(),
+                        description: None,
+                        bead_type: Some("task".to_owned()),
+                        priority: Some(1),
+                        labels: vec![],
+                        depends_on: vec![],
+                        acceptance_criteria: vec!["AC-1".to_owned()],
+                        flow_override: None,
+                    },
+                    BeadProposal {
+                        bead_id: Some("bead-second".to_owned()),
+                        explicit_id: Some(true),
+                        title: "Second bead".to_owned(),
+                        description: None,
+                        bead_type: Some("task".to_owned()),
+                        priority: Some(1),
+                        labels: vec![],
+                        depends_on: vec![],
+                        acceptance_criteria: vec!["AC-1".to_owned()],
+                        flow_override: None,
+                    },
+                ],
+            }],
+            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            agents_guidance: None,
+        };
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &bundle,
+            now + chrono::Duration::milliseconds(1),
+        )?;
+
+        let started_at = now + chrono::Duration::seconds(1);
+        milestone_service::record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-first",
+            "proj-replay",
+            "run-replay",
+            "plan-v1",
+            started_at,
+        )?;
+
+        // First reconciliation: close bead-first, select bead-second.
+        let show_open = r#"{"id":"bead-first","title":"First bead","status":"open","priority":2,"bead_type":"task"}"#;
+        let show_closed = r#"{"id":"bead-first","title":"First bead","status":"closed","priority":2,"bead_type":"task"}"#;
+        let ready_second = serde_json::json!([
+            {
+                "id": "bead-second",
+                "title": "Second bead",
+                "priority": 1,
+                "bead_type": "task",
+                "labels": []
+            }
+        ])
+        .to_string();
+
+        let first_read_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(&ready_second),
+            MockBrRunner::success(show_open),
+        ]);
+        let first_br_read = BrAdapter::with_runner(first_read_runner);
+
+        let first_mutation_runner =
+            MockBrRunner::new(vec![MockBrRunner::success(""), MockBrRunner::success("")]);
+        let first_br_mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(first_mutation_runner));
+
+        let next_hint = r#"{"id":"bead-second","title":"Second bead","score":0.8,"reasons":["ready"],"action":"start"}"#;
+        let first_bv_runner = MockBvRunner::new(vec![MockBvRunner::success(next_hint)]);
+        let first_bv = BvAdapter::with_runner(first_bv_runner);
+
+        let completed_at = now + chrono::Duration::seconds(10);
+        let first_outcome = reconcile_success(
+            &first_br_mutation,
+            &first_br_read,
+            Some(&first_bv),
+            base,
+            "bead-first",
+            "task-replay-001",
+            "proj-replay",
+            "ms-replay",
+            "run-replay",
+            Some("plan-v1"),
+            started_at,
+            completed_at,
+        )
+        .await?;
+
+        assert_eq!(first_outcome.next_step_selection_warning, None);
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &record.id)?
+                .expect("controller should exist after first reconciliation");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("ms-replay.bead-second")
+        );
+
+        // Replay: reconcile the same bead-first again. The controller has already
+        // advanced to bead-second. This should not fail.
+        let replay_read_runner = MockBrRunner::new(vec![MockBrRunner::success(show_closed)]);
+        let replay_br_read = BrAdapter::with_runner(replay_read_runner);
+
+        let replay_mutation_runner = MockBrRunner::new(vec![MockBrRunner::success("")]);
+        let replay_br_mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(replay_mutation_runner));
+
+        let replay_bv_runner = MockBvRunner::new(vec![MockBvRunner::success(next_hint)]);
+        let replay_bv = BvAdapter::with_runner(replay_bv_runner);
+
+        let replay_outcome = reconcile_success(
+            &replay_br_mutation,
+            &replay_br_read,
+            Some(&replay_bv),
+            base,
+            "bead-first",
+            "task-replay-001",
+            "proj-replay",
+            "ms-replay",
+            "run-replay",
+            Some("plan-v1"),
+            started_at,
+            completed_at + chrono::Duration::seconds(1),
+        )
+        .await;
+
+        assert!(
+            replay_outcome.is_ok(),
+            "replay should succeed after nonfinal selection: {replay_outcome:?}"
+        );
+
+        // Controller should still be on bead-second (the replay must not clobber it).
+        let post_replay_controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &record.id)?
+                .expect("controller should exist after replay");
+        assert_eq!(
+            post_replay_controller.state,
+            milestone_controller::MilestoneControllerState::Claimed,
+            "controller should still be claimed for bead-second after replay"
+        );
+        assert_eq!(
+            post_replay_controller.active_bead_id.as_deref(),
+            Some("ms-replay.bead-second"),
+            "controller should still track bead-second after replay"
+        );
 
         Ok(())
     }
