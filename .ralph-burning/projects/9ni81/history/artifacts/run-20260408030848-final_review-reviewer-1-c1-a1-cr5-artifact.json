@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260408030848-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T06:11:06.497144966Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the `origin/master..HEAD` diff, read the controller/CLI/fs/reconciliation changes end-to-end, and ran `cargo test milestone_controller --quiet` plus `cargo test reconcile_success --quiet`. I found two correctness gaps: reconciliation failures do not surface through `needs_operator`, and global resume validation still relies on stale milestone snapshot counts instead of live bead state.\n\n## Amendments\n\n1. `reconcile_success()` now persists `reconciling` before any bead mutation (`src/contexts/automation_runtime/success_reconciliation.rs:152-165`), and the CLI sync path does the same before milestone writes (`src/cli/run.rs:585-673`), but neither failure path ever drives the controller to `needs_operator`. The daemon just returns the reconciliation error (`src/contexts/automation_runtime/daemon_loop.rs:1977-2006`), and `resume_controller()` treats `reconciling` with a terminal task as healthy (`src/contexts/milestone_record/controller.rs:945-951`). A `br sync` failure or milestone-write failure therefore leaves durable state stuck at `reconciling` even though manual intervention is required.\n   Rationale: The prompt defines `needs_operator` as the durable state for unrecoverable or ambiguous situations. Leaving the controller in `reconciling` hides the failed reconciliation on resume and misrepresents the milestone’s true recovery state.\n2. Global stale-state detection still trusts cached milestone snapshot counters instead of the live `.beads` graph. `ProjectMilestoneControllerRuntime::all_beads_closed()` only inspects `status.json` progress (`src/cli/run.rs:308-323`), and `resume_controller()` uses that boolean for the `idle`, `selecting`, `blocked`, and `completed` recovery branches (`src/contexts/milestone_record/controller.rs:805-829`, `src/contexts/milestone_record/controller.rs:965-989`). If a bead is reopened after the controller reached `completed`, or the last open bead is closed externally without updating milestone snapshot state, resume will keep the stale controller state instead of moving to `needs_operator` or `completed` as required.\n   Rationale: The bead explicitly requires resume validation against current `.beads` state. Snapshot-only completion checks miss exactly the external graph edits this controller is supposed to detect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}

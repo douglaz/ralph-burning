@@ -491,6 +491,34 @@ pub(crate) fn explicit_id_hints(
     Ok(hints)
 }
 
+pub(crate) fn planned_bead_membership_refs(
+    bundle: &MilestoneBundle,
+) -> Result<BTreeSet<String>, Vec<String>> {
+    let canonical = validated_canonical_bundle(bundle)?;
+    let milestone_id = canonical.identity.id.clone();
+    let qualified_prefix = format!("{milestone_id}.");
+    let mut refs = BTreeSet::new();
+
+    for workstream in canonical.workstreams {
+        for bead in workstream.beads {
+            let bead_id = bead
+                .bead_id
+                .expect("canonicalized bundles assign every bead an id");
+            refs.insert(bead_id.clone());
+
+            // Explicit beads may already exist in `.beads/` under their authored
+            // short ID, so keep both forms for runtime membership checks.
+            if bead.explicit_id.unwrap_or(false) {
+                if let Some(short_ref) = bead_id.strip_prefix(&qualified_prefix) {
+                    refs.insert(short_ref.to_owned());
+                }
+            }
+        }
+    }
+
+    Ok(refs)
+}
+
 fn apply_explicit_id_hints(
     bundle: &MilestoneBundle,
     hints: &BTreeMap<String, bool>,
@@ -1493,6 +1521,24 @@ mod tests {
         let parsed: MilestoneBundle = serde_json::from_str(&rendered)?;
 
         assert_eq!(parsed.workstreams[0].beads[0].explicit_id, Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_bead_membership_refs_include_explicit_short_ids(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].bead_id = Some("bead-e2e".to_owned());
+        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+        bundle.workstreams[0].beads[1].depends_on = vec!["bead-e2e".to_owned()];
+        bundle.acceptance_map[0].covered_by = vec!["bead-e2e".to_owned(), "bead-2".to_owned()];
+
+        let refs = planned_bead_membership_refs(&bundle).map_err(|errors| errors.join("; "))?;
+
+        assert!(refs.contains("ms-alpha.bead-e2e"));
+        assert!(refs.contains("bead-e2e"));
+        assert!(refs.contains("ms-alpha.bead-2"));
+        assert!(!refs.contains("bead-2"));
         Ok(())
     }
 

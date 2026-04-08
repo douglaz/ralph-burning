@@ -3,11 +3,12 @@
 //! Success reconciliation handler for completed bead tasks.
 //!
 //! After a bead-linked task finishes successfully, this handler:
-//! 1. Closes the bead in `br` with a success reason (idempotently)
-//! 2. Runs `br sync --flush-only` to persist the mutation
-//! 3. Updates milestone state via `record_bead_completion`
-//! 4. Captures next-step hints from `bv --robot-next` (informational)
-//! 5. Records the task-to-bead linkage outcome
+//! 1. Moves the milestone controller into `reconciling`
+//! 2. Closes the bead in `br` with a success reason (idempotently)
+//! 3. Runs `br sync --flush-only` to persist the mutation
+//! 4. Updates milestone state via `record_bead_completion`
+//! 5. Captures next-step hints from `bv --robot-next` (informational)
+//! 6. Records the task-to-bead linkage outcome
 
 use std::path::Path;
 
@@ -19,9 +20,11 @@ use crate::adapters::br_process::{
 };
 use crate::adapters::bv_process::{BvAdapter, BvProcessRunner, NextBeadResponse};
 use crate::adapters::fs::{
-    FsMilestoneJournalStore, FsMilestoneSnapshotStore, FsTaskRunLineageStore,
+    FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestoneSnapshotStore,
+    FsTaskRunLineageStore,
 };
-use crate::contexts::milestone_record::model::{MilestoneId, TaskRunOutcome};
+use crate::contexts::milestone_record::controller as milestone_controller;
+use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus, TaskRunOutcome};
 use crate::contexts::milestone_record::service::{
     self as milestone_service, CompletionMilestoneDisposition,
 };
@@ -114,11 +117,12 @@ async fn is_bead_already_closed<R: ProcessRunner>(
 /// Run the success reconciliation handler after a bead task completes.
 ///
 /// This is the main entry point. It performs all steps in order:
-/// 1. Close bead (idempotent — skips if already closed)
-/// 2. Sync flush
-/// 3. Update milestone state
-/// 4. Capture next-step hints (best-effort)
-/// 5. Return the linkage outcome
+/// 1. Move the controller into `reconciling`
+/// 2. Close bead (idempotent — skips if already closed)
+/// 3. Sync flush
+/// 4. Update milestone state
+/// 5. Capture next-step hints (best-effort)
+/// 6. Return the linkage outcome
 ///
 /// On `br close` or `br sync` failure, returns `ReconciliationError` so the
 /// caller can transition the controller to needs-operator state.
@@ -137,6 +141,29 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
     started_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Result<ReconciliationOutcome, ReconciliationError> {
+    let milestone_id = MilestoneId::new(milestone_id_str).map_err(|e| {
+        ReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!("invalid milestone id: {e}"),
+        }
+    })?;
+
+    milestone_controller::sync_controller_task_reconciling(
+        &FsMilestoneControllerStore,
+        base_dir,
+        &milestone_id,
+        bead_id,
+        project_id,
+        "workflow execution completed successfully; reconciling milestone state",
+        now,
+    )
+    .map_err(|e| ReconciliationError::MilestoneUpdateFailed {
+        bead_id: bead_id.to_owned(),
+        task_id: task_id.to_owned(),
+        details: e.to_string(),
+    })?;
+
     // Step 1: Close the bead idempotently.
     let was_already_closed = close_bead_idempotent(br_mutation, br_read, bead_id, task_id).await?;
 
@@ -157,7 +184,7 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         bead_id,
         task_id,
         project_id,
-        milestone_id_str,
+        &milestone_id,
         run_id,
         plan_hash,
         started_at,
@@ -271,20 +298,12 @@ fn update_milestone_state(
     bead_id: &str,
     task_id: &str,
     project_id: &str,
-    milestone_id_str: &str,
+    milestone_id: &MilestoneId,
     run_id: &str,
     plan_hash: Option<&str>,
     started_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Result<(), ReconciliationError> {
-    let milestone_id = MilestoneId::new(milestone_id_str).map_err(|e| {
-        ReconciliationError::MilestoneUpdateFailed {
-            bead_id: bead_id.to_owned(),
-            task_id: task_id.to_owned(),
-            details: format!("invalid milestone id: {e}"),
-        }
-    })?;
-
     // Record the task-to-bead linkage as outcome_detail so the durable
     // lineage row and journal payload include the daemon task_id.
     let linkage_detail = format!("task_id={task_id}");
@@ -304,7 +323,7 @@ fn update_milestone_state(
     let already_terminal_for_run = milestone_service::find_runs_for_bead(
         &FsTaskRunLineageStore,
         base_dir,
-        &milestone_id,
+        milestone_id,
         bead_id,
     )
     .unwrap_or_default()
@@ -321,7 +340,7 @@ fn update_milestone_state(
             &FsMilestoneJournalStore,
             &FsTaskRunLineageStore,
             base_dir,
-            &milestone_id,
+            milestone_id,
             bead_id,
             project_id,
             run_id,
@@ -338,7 +357,7 @@ fn update_milestone_state(
             &FsMilestoneJournalStore,
             &FsTaskRunLineageStore,
             base_dir,
-            &milestone_id,
+            milestone_id,
             bead_id,
             project_id,
             run_id,
@@ -353,7 +372,40 @@ fn update_milestone_state(
         bead_id: bead_id.to_owned(),
         task_id: task_id.to_owned(),
         details: e.to_string(),
-    })
+    })?;
+
+    let snapshot =
+        milestone_service::load_snapshot(&FsMilestoneSnapshotStore, base_dir, milestone_id)
+            .map_err(|e| ReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: e.to_string(),
+            })?;
+    let (next_state, reason) = if snapshot.status == MilestoneStatus::Completed {
+        (
+            milestone_controller::MilestoneControllerState::Completed,
+            "reconciliation closed the final bead and completed the milestone",
+        )
+    } else {
+        (
+            milestone_controller::MilestoneControllerState::Selecting,
+            "reconciliation recorded the bead outcome and returned the controller to bead selection",
+        )
+    };
+    milestone_controller::sync_controller_state(
+        &FsMilestoneControllerStore,
+        base_dir,
+        milestone_id,
+        milestone_controller::ControllerTransitionRequest::new(next_state, reason),
+        now,
+    )
+    .map_err(|e| ReconciliationError::MilestoneUpdateFailed {
+        bead_id: bead_id.to_owned(),
+        task_id: task_id.to_owned(),
+        details: e.to_string(),
+    })?;
+
+    Ok(())
 }
 
 /// Outcome of attempting to capture a next-step hint from bv.
@@ -695,6 +747,9 @@ mod tests {
     /// the same flag but with an un-flushed local state.
     #[tokio::test]
     async fn sync_failure_on_replay_is_still_fatal() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp_dir.path().join(".ralph-burning/milestones/ms-1"))?;
+
         // br show returns closed (bead already closed from prior attempt)
         let show_closed =
             r#"{"id":"b1","title":"Test","status":"closed","priority":2,"bead_type":"task"}"#;
@@ -710,7 +765,7 @@ mod tests {
             &br_mutation,
             &br_read,
             None::<&BvAdapter<MockBvRunner>>,
-            std::path::Path::new("/nonexistent"),
+            temp_dir.path(),
             "b1",
             "task-1",
             "proj-1",
@@ -730,6 +785,156 @@ mod tests {
             ),
             "should return BrSyncFailed even when bead was already closed"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_success_persists_reconciling_before_close_failure(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::{FsMilestonePlanStore, FsMilestoneStore};
+        use crate::contexts::milestone_record::bundle::{
+            AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+        };
+        use crate::contexts::milestone_record::controller as milestone_controller;
+        use crate::contexts::milestone_record::service::{
+            create_milestone, persist_plan, CreateMilestoneInput,
+        };
+        use chrono::Utc;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
+
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+
+        let now = Utc::now();
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "ms-close-failure".to_owned(),
+                name: "Close failure test".to_owned(),
+                description: "Verifies controller state is durable before br close".to_owned(),
+            },
+            now,
+        )?;
+
+        let bundle = MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: "ms-close-failure".to_owned(),
+                name: "Close failure test".to_owned(),
+            },
+            executive_summary: "Close failure test.".to_owned(),
+            goals: vec!["Verify controller ordering".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Bead completes".to_owned(),
+                covered_by: vec!["bead-close".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Core".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    bead_id: Some("bead-close".to_owned()),
+                    explicit_id: Some(true),
+                    title: "Close bead".to_owned(),
+                    description: None,
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec![],
+                    depends_on: vec![],
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: None,
+                }],
+            }],
+            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            agents_guidance: None,
+        };
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &bundle,
+            now + chrono::Duration::milliseconds(1),
+        )?;
+
+        let started_at = now + chrono::Duration::seconds(1);
+        milestone_service::record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-close",
+            "proj-close",
+            "run-close",
+            "plan-v1",
+            started_at,
+        )?;
+        milestone_controller::sync_controller_task_running(
+            &FsMilestoneControllerStore,
+            base,
+            &record.id,
+            "bead-close",
+            "proj-close",
+            "workflow execution started",
+            started_at,
+        )?;
+
+        let show_open = r#"{"id":"bead-close","title":"Close bead","status":"open","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(show_open),
+            MockBrRunner::success(show_open),
+        ]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![MockBrRunner::error(1, "close failed")]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let result = reconcile_success(
+            &br_mutation,
+            &br_read,
+            None::<&BvAdapter<MockBvRunner>>,
+            base,
+            "bead-close",
+            "task-close-1",
+            "proj-close",
+            "ms-close-failure",
+            "run-close",
+            Some("plan-v1"),
+            started_at,
+            now + chrono::Duration::seconds(10),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ReconciliationError::BrCloseFailed { .. })
+        ));
+
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &record.id)?
+                .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Reconciling
+        );
+        assert_eq!(controller.active_bead_id.as_deref(), Some("bead-close"));
+        assert_eq!(controller.active_task_id.as_deref(), Some("proj-close"));
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("reconciling milestone state")));
+
         Ok(())
     }
 
@@ -971,10 +1176,13 @@ mod tests {
     #[tokio::test]
     async fn reconcile_success_end_to_end_updates_milestone(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        use crate::adapters::fs::{FsMilestonePlanStore, FsMilestoneStore};
+        use crate::adapters::fs::{
+            FsMilestoneControllerStore, FsMilestonePlanStore, FsMilestoneStore,
+        };
         use crate::contexts::milestone_record::bundle::{
             AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
         };
+        use crate::contexts::milestone_record::controller as milestone_controller;
         use crate::contexts::milestone_record::model::{
             MilestoneEventType, MilestoneId, TaskRunOutcome,
         };
@@ -1129,6 +1337,15 @@ mod tests {
             snapshot.active_bead, None,
             "active_bead should be None after completion"
         );
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &record.id)?
+                .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Completed
+        );
+        assert_eq!(controller.active_bead_id, None);
+        assert_eq!(controller.active_task_id, None);
 
         // 8. Assert journal contains a BeadCompleted event
         let milestone_id = MilestoneId::new("ms-e2e")?;
@@ -1181,6 +1398,201 @@ mod tests {
         let persisted_hint: NextBeadResponse = serde_json::from_str(&hint_json)?;
         assert_eq!(persisted_hint.id, "bead-next");
         assert!((persisted_hint.score - 0.8).abs() < f64::EPSILON);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_success_replay_after_final_completion_is_idempotent(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::{
+            FsMilestoneControllerStore, FsMilestonePlanStore, FsMilestoneStore,
+        };
+        use crate::contexts::milestone_record::bundle::{
+            AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+        };
+        use crate::contexts::milestone_record::controller as milestone_controller;
+        use crate::contexts::milestone_record::model::{MilestoneEventType, MilestoneId};
+        use crate::contexts::milestone_record::service::{
+            create_milestone, persist_plan, read_journal, read_task_runs, CreateMilestoneInput,
+        };
+        use chrono::Utc;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
+
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+
+        let now = Utc::now();
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "ms-replay-e2e".to_owned(),
+                name: "Replay E2E milestone".to_owned(),
+                description: "Replays a completed success reconciliation".to_owned(),
+            },
+            now,
+        )?;
+
+        let bundle = MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: "ms-replay-e2e".to_owned(),
+                name: "Replay E2E milestone".to_owned(),
+            },
+            executive_summary: "Replay E2E test.".to_owned(),
+            goals: vec!["Verify replay idempotency".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Bead completes".to_owned(),
+                covered_by: vec!["bead-replay".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Core".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    bead_id: Some("bead-replay".to_owned()),
+                    explicit_id: Some(true),
+                    title: "Replay bead".to_owned(),
+                    description: None,
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec![],
+                    depends_on: vec![],
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: None,
+                }],
+            }],
+            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            agents_guidance: None,
+        };
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &bundle,
+            now + chrono::Duration::milliseconds(1),
+        )?;
+
+        let started_at = now + chrono::Duration::seconds(1);
+        milestone_service::record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-replay",
+            "proj-replay",
+            "run-replay",
+            "plan-v1",
+            started_at,
+        )?;
+        milestone_controller::sync_controller_task_running(
+            &FsMilestoneControllerStore,
+            base,
+            &record.id,
+            "bead-replay",
+            "proj-replay",
+            "workflow execution started",
+            started_at,
+        )?;
+
+        let show_open = r#"{"id":"bead-replay","title":"Replay bead","status":"open","priority":2,"bead_type":"task"}"#;
+        let show_closed = r#"{"id":"bead-replay","title":"Replay bead","status":"closed","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(show_closed),
+            MockBrRunner::success(show_open),
+        ]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(""),
+            MockBrRunner::success(""),
+            MockBrRunner::success(""),
+        ]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let first = reconcile_success(
+            &br_mutation,
+            &br_read,
+            None::<&BvAdapter<MockBvRunner>>,
+            base,
+            "bead-replay",
+            "task-replay-1",
+            "proj-replay",
+            "ms-replay-e2e",
+            "run-replay",
+            Some("plan-v1"),
+            started_at,
+            now + chrono::Duration::seconds(10),
+        )
+        .await?;
+        assert!(!first.was_already_closed);
+
+        let controller_journal_before_replay =
+            crate::contexts::milestone_record::controller::MilestoneControllerPort::read_transition_journal(
+                &FsMilestoneControllerStore,
+                base,
+                &record.id,
+            )?
+            .len();
+
+        let replay = reconcile_success(
+            &br_mutation,
+            &br_read,
+            None::<&BvAdapter<MockBvRunner>>,
+            base,
+            "bead-replay",
+            "task-replay-1",
+            "proj-replay",
+            "ms-replay-e2e",
+            "run-replay",
+            Some("plan-v1"),
+            started_at,
+            now + chrono::Duration::seconds(11),
+        )
+        .await?;
+        assert!(replay.was_already_closed);
+
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &record.id)?
+                .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Completed
+        );
+        assert_eq!(
+            crate::contexts::milestone_record::controller::MilestoneControllerPort::read_transition_journal(
+                &FsMilestoneControllerStore,
+                base,
+                &record.id,
+            )?
+            .len(),
+            controller_journal_before_replay
+        );
+
+        let milestone_id = MilestoneId::new("ms-replay-e2e")?;
+        let journal = read_journal(&journal_store, base, &milestone_id)?;
+        let completion_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadCompleted)
+            .collect();
+        assert_eq!(completion_events.len(), 1);
+
+        let task_runs = read_task_runs(&lineage_store, base, &milestone_id)?;
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-replay"));
+        assert_eq!(task_runs[0].task_id.as_deref(), Some("task-replay-1"));
 
         Ok(())
     }

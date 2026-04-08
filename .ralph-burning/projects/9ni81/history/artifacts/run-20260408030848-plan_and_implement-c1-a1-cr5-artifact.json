@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260408030848-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-08T05:54:52.490342711Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nHardened milestone controller recovery and reconciliation idempotency by moving daemon success reconciliation into a durable pre-close `reconciling` checkpoint, relaxing resume handling so terminal tasks on already-closed beads continue reconciliation instead of forcing `needs_operator`, allowing completed controllers to absorb duplicate reconciling syncs as checkpoints, and switching CLI/daemon post-reconciliation settling to an idempotent same-state sync path. Added regressions for pre-close controller durability, closed-bead resume recovery, daemon replay idempotency, and final-bead CLI sync replays.\n\n## Steps\n\n1. [Completed] Added controller-side same-state checkpoint syncing and made `sync_controller_task_reconciling` treat an already-`completed` controller as an idempotent checkpoint instead of a hard failure.\n2. [Completed] Relaxed controller resume handling for `claimed`, `running`, and `reconciling` states so terminal tasks on closed beads continue or remain in reconciliation, while non-terminal closed-bead drift still escalates to `needs_operator`.\n3. [Completed] Moved daemon success reconciliation to persist `reconciling` before `br close`/`br sync`, and switched both daemon and CLI post-reconciliation settling to the new idempotent controller sync path.\n4. [Completed] Added regression coverage for pre-close controller durability, closed-bead resume recovery, daemon replay idempotency, and repeated final-bead CLI syncs after controller completion.\n\n## Validation Evidence\n\n- Ran `cargo fmt --all`.\n- Ran `cargo test --lib` and all 630 library tests passed.\n- Ran `cargo test --test unit` and all 757 unit integration tests passed.\n- Ran `cargo test --test cli` and all 166 CLI integration tests passed.\n- Ran `cargo test --test run_attach_tmux` and the tmux integration test passed.\n\n## Outstanding Risks\n\n- Completed-state replay safety now relies on milestone snapshot and lineage consistency because `completed` controllers have already cleared their active bead/task identifiers, so duplicate reconciliations are treated as checkpoints rather than identity-checked transitions.\n- The worktree still contains unrelated/generated changes in `.ralph-burning/projects/9ni81/journal.ndjson` and `.ralph-burning/projects/9ni81/run.json` that were not touched by this implementation.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}

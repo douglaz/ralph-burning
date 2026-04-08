@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-final_review-arbiter-c1-a1-cr4-artifact",
+  "payload_id": "run-20260408030848-final_review-arbiter-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T05:37:47.578553309Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments are rejected because their proposed fixes are incompatible with existing Rust compiler behavior and controller validation invariants, respectively. For fr-4-b44daf83, simply removing Paused from the later match arm would cause a compile error since the early `if` guard is invisible to the match exhaustiveness checker. For fr-4-22406a12, adding bead_id/task_id to Selecting/Completed transition requests would trigger hard errors from state_context_error_details validation, which explicitly forbids active identifiers on these states. Both amendments identify genuine issues (dead code, observability gap) but propose incorrect solutions that would break the build or cause runtime failures.\n\n## Rulings\n\n- `fr-4-b44daf83`: Reject\n  The amendment proposes simply removing RunStatus::Paused from the match arm at line 440. However, the early Paused handling at lines 412-423 is a standalone `if` statement with an early return, NOT a match arm. Rust's exhaustiveness checker does not perform cross-statement control flow analysis — it cannot prove that Paused is unreachable at the match on line 425. Simply deleting Paused from the match arm would cause a compile error (E0004: pattern 'Paused' not covered). Reviewer 2 correctly identifies this. The underlying observation (dead code) is valid, but the proposed fix is incorrect as stated. A correct fix would require a control flow refactor — e.g., moving the Paused handling into the match itself, or replacing the later arm with `RunStatus::Paused => unreachable!()` — neither of which is what the amendment proposes.\n- `fr-4-22406a12`: Reject\n  The observability concern is real — journal events for Selecting/Completed transitions lose the identity of the reconciled bead. However, the proposed fix (adding bead_id/task_id to the ControllerTransitionRequest) would cause a hard error. The validation function state_context_error_details() at controller.rs lines 1020-1058 explicitly rejects any bead_id or task_id when the target state is Selecting or Completed, returning an error: 'state must not carry active bead/task identifiers'. This validation is enforced at multiple layers: transition_from_current_locked (line 716), MilestoneControllerRecord::transitioned (line 115), and hydrate_controller_locked (lines 646-661). The amendment's assumption that 'state_clears_active_context logic will still clear them from the controller record' is incorrect — validation fires before any clearing and would reject the request outright. Fixing this would require modifying the validation schema, the journal event model, and potentially the hydration logic — a much larger change than what the amendment proposes.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260408030848-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260408030848-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T05:37:47.594409561Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 4/25\n\n## Accepted\n\n- `fr-4-8e1219a6`\n- `fr-4-5703ce90`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-4-b44daf83`\n- `fr-4-22406a12`\n\n## Final Accepted Amendments\n\n### `fr-4-8e1219a6`\n\nBug: the success-reconciliation flow closes and syncs the bead before the controller can durably settle into a resumable post-run state ([src/contexts/automation_runtime/success_reconciliation.rs:142-167]). On resume, any `claimed`, `running`, or `reconciling` controller whose bead is already closed is treated as stale divergence and forced into `needs_operator` ([src/contexts/milestone_record/controller.rs:806-812], [src/contexts/milestone_record/controller.rs:844-847], [src/contexts/milestone_record/controller.rs:876-879]). A crash anywhere in that normal close/sync/reconcile window therefore strands an otherwise idempotent success path behind manual intervention. Either move the controller into a dedicated resumable reconciliation state before `br close`/`br sync`, or relax resume validation so this post-close window can continue automatically.\n\n### `fr-4-5703ce90`\n\nBug: duplicate completion syncs on the final bead are no longer idempotent. Both the CLI sync path and the daemon reconciliation path unconditionally try to re-enter `reconciling` for a completed run ([src/cli/run.rs:585-595], [src/contexts/automation_runtime/success_reconciliation.rs:289-297]), but `sync_controller_task_reconciling` hard-errors once the controller has already reached `completed` ([src/contexts/milestone_record/controller.rs:530-534]). Because successful final-bead reconciliation itself moves the controller to `completed` ([src/cli/run.rs:653-674], [src/contexts/automation_runtime/success_reconciliation.rs:381-397]), rerunning `ralph-burning run sync-milestone` or replaying the same completed reconciliation becomes a hard failure instead of a no-op/repair.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

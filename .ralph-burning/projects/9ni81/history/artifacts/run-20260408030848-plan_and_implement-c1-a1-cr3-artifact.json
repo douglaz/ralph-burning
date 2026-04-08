@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260408030848-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-08T04:32:42.364552885Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the milestone controller remediation by hardening `controller.json` loading and controller-lock recovery, appending initialization journal entries, validating persisted controller snapshots, moving resumed `running`+`Pending` tasks back to `claimed`, and wiring controller persistence into the real milestone execution path (`run start`, `run resume`, bead start, terminal sync, and success reconciliation) so production runs now create and reconcile `controller.json` and `controller-journal.ndjson` instead of bypassing the state machine.\n\n## Steps\n\n1. [Completed] Hardened filesystem-backed controller persistence by recovering pending milestone state commits under the controller lock, rejecting unsupported controller schema versions, and keeping initialization recoverable by appending an initial controller journal event.\n2. [Completed] Tightened controller load and resume semantics so persisted snapshots are validated on load and a resumed `running` controller with a still-pending task is downgraded back to `claimed` instead of being treated as healthy.\n3. [Completed] Wired the controller into production milestone execution by resuming/claiming it before `run start` and `run resume`, marking bead-linked projects `running` when execution starts, and driving `reconciling`/`selecting`/`completed` transitions from terminal run sync and daemon success reconciliation.\n4. [Completed] Added regression coverage for controller initialization journaling, schema/version validation, lock-side pending-state recovery, running-to-claimed resume behavior, and the new production wiring paths.\n\n## Validation Evidence\n\n- Ran `cargo fmt`.\n- Ran `cargo test --lib` and all 623 library tests passed.\n- Ran `cargo test --test unit` and all 757 unit integration tests passed.\n- Ran `cargo test --test cli` and all 166 CLI tests passed.\n- Ran `cargo test --test run_attach_tmux` and the tmux integration test passed.\n\n## Outstanding Risks\n\n- Milestone controller resume now shells out to `br show` and `br ready` during `run start`/`run resume`; if `br` is unavailable or `.beads` is externally inconsistent, the controller will fail closed and require operator intervention.\n- The worktree still contains unrelated/generated changes in `.ralph-burning/projects/9ni81/journal.ndjson` and `.ralph-burning/projects/9ni81/run.json` that were not touched by this implementation.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

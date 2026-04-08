@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260408030848-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-08T03:26:27.512163858Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded an explicit milestone controller state machine with validated legal transitions, durable `controller.json` persistence, append-only `controller-journal.ndjson` transition events, stop checkpoints, journal-based crash recovery, filesystem-backed storage, and isolated resume logic that detects stale active beads/tasks and moves the controller to `needs_operator` through mockable runtime probes.\n\n## Steps\n\n1. [Completed] Added milestone controller domain types, legal transition rules, semantic validation, and append-only transition journal events in the new controller module.\n2. [Completed] Implemented controller initialize/load/transition/checkpoint/resume service flows, including journal-first recovery and stale resume detection that escalates to `needs_operator`.\n3. [Completed] Wired filesystem persistence under milestone directories and exposed the new controller module from `milestone_record`.\n4. [Completed] Added isolated controller tests with fake adapters plus filesystem persistence coverage for `controller.json` and the transition journal.\n\n## Validation Evidence\n\n- Ran `cargo fmt`.\n- Ran `cargo test controller::tests --lib` and all 7 controller tests passed.\n- Ran `cargo test --lib` and all 611 library tests passed.\n- Ran `cargo test --test unit` and all 757 unit integration tests passed.\n- Ran `cargo test --test cli` and all 166 CLI tests passed.\n- Ran `cargo test --test run_attach_tmux` and the tmux integration test passed.\n\n## Outstanding Risks\n\n- The controller is implemented as a new reusable module and filesystem adapter, but it is not yet wired into the milestone execution CLI/runtime paths; later controller beads still need to invoke it.\n- One full `cargo test` run hit a transient failure in `checkpoint_test::worktree_adapter_includes_tracked_workspace_in_checkpoint_commits` before the isolated rerun and full `cargo test --test unit` suite passed, so that test may still be flaky in this environment.\n- The worktree still has unrelated/generated changes outside this implementation in `.beads/issues.jsonl`, `result`, and `.ralph-burning/projects/9ni81/`.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

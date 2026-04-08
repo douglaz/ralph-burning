@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260408030848-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T03:40:59.917425923Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments identify real issues or missing coverage. The controller journal reader is crash-sensitive to a truncated trailing line, the stale-state recovery path in resume is currently blocked by a second semantic validation, the key invalid-state resume branch lacks direct test coverage, and transition validation does not enforce bead/task identity continuity across in-flight states.\n\n## Votes\n\n- `fr-1-59f47374`: Accept\n  `append_line` writes the separator newline and the JSON payload in separate writes, so a crash can leave a partial final NDJSON record. `read_controller_journal_from_path` currently treats any malformed line as fatal, which means a truncated tail record bricks later controller hydration and therefore normal controller operations. Tolerating only a malformed final line while still rejecting earlier corruption is the correct WAL-style behavior.\n- `fr-1-9f67b47b`: Accept\n  The semantic-validation failure branch in `resume_transition_request` is important behavior, but the in-tree tests only cover other resume divergences such as closed beads and blocked-to-selecting recovery. I did not find a test that exercises resume from an invalid persisted state like `Running` without `active_task_id`. Adding that test is warranted because it covers the intended stale-state detection path directly.\n- `fr-1-937c41bf`: Accept\n  `resume_transition_request` correctly converts a semantic validation failure into a `NeedsOperator` transition request, but `resume_controller` then sends that request through `transition_from_current_locked`, which immediately calls `current.validate_semantics()` again and fails before persisting the recovery transition. That makes the advertised recovery path unreachable for invalid stored states such as `Running` with no task id. This is a real correctness bug.\n- `fr-1-666d8c32`: Accept\n  Current validation checks only whether the destination state's fields are shape-valid, not whether bead/task identity remains consistent with the source state. As a result, allowed transitions like `Running -> Reconciling` can silently replace `(bead_id, task_id)` with unrelated values and still pass both transition-time validation and journal validation. That violates the state machine's continuity invariants and should be rejected.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

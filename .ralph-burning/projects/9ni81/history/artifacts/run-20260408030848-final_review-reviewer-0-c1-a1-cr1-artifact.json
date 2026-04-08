@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408030848-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260408030848-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T03:29:53.468503711Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe controller state machine implementation is solid. The state transition table is comprehensive, validation logic is correct, crash recovery via write-ahead journal with hydration fallback is properly ordered (journal before snapshot), and the resume logic handles all state/runtime combinations sensibly. Tests cover the key scenarios. The FS adapter reuses existing locking and atomic-write infrastructure correctly. Two substantive issues found: a crash-resilience gap in the journal reader and a missing test for a key resume scenario.\n\n## Amendments\n\n1. In `src/adapters/fs.rs:2824-2851`, `read_controller_journal_from_path` fails hard on any malformed NDJSON line. Since the journal is the write-ahead source of truth and `append_line` writes separator + data non-atomically (lines 647-650), a crash mid-write could leave a truncated trailing line. This would make ALL controller operations fail permanently until the file is manually repaired. The reader should tolerate a malformed *final* line (log a warning and discard it) while still rejecting corruption in earlier lines, matching the write-ahead-log pattern where the last entry may be incomplete.\n   Rationale: The journal is specifically designed as the crash-recovery authority (hydrate_controller_locked reconstructs from it when controller.json is stale). A partial trailing write — the exact scenario crash recovery exists for — should not make the recovery mechanism itself unrecoverable. This is the one crash window that defeats the otherwise correct write-ahead ordering in transition_from_current_locked (line 445 before 456).\n2. Add a test for `resume_controller` when the persisted state has a semantic validation failure (e.g., `Running` state with missing `active_task_id`). The code path at `controller.rs:465-475` transitions to `NeedsOperator` on validation failure (unless already in `NeedsOperator`), but no test exercises this branch. This is the core 'stale state detection' requirement from the acceptance criteria.\n   Rationale: The bead spec explicitly requires 'Resume detects stale state and transitions to needs_operator.' The existing resume tests cover external-bead-closed and blocked-to-selecting scenarios but not the validate_semantics failure path, which is the primary guard against corrupt persisted state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

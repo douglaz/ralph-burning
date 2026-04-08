@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260408030848-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260408030848-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T05:01:01.560482083Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 3/25\n\n## Accepted\n\nNone.\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-3-379ec293`\n- `fr-3-c879c09f`\n- `fr-3-b61901db`\n\n## Final Accepted Amendments\n\n### `fr-3-c879c09f`\n\n`src/cli/run.rs:269-273` assumes every bead in a milestone starts with `<milestone_id>.` when it filters `br ready --json`. That is false for valid milestones with explicit bead IDs, including the new fixture that uses `bead-e2e` (`src/contexts/automation_runtime/success_reconciliation.rs:1062-1083`). Because `resume_controller()` relies on `has_ready_beads()` in the `selecting` and `blocked` states (`src/contexts/milestone_record/controller.rs:791-804` and `src/contexts/milestone_record/controller.rs:894-906`), those milestones will never be seen as having ready work after a restart and can get stranded in `blocked` or transition incorrectly. Scope readiness by the milestone’s planned bead set, not by a string-prefix heuristic.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}
