@@ -311,14 +311,16 @@ fn summarize_bead_ids(ids: &[String]) -> String {
 }
 
 fn br_show_error_is_missing(error: &BrError) -> bool {
+    fn message_describes_missing_bead(message: &str) -> bool {
+        let message = message.to_ascii_lowercase();
+        (message.contains("bead not found") || message.contains("issue not found"))
+            || (message.contains("not found")
+                && (message.contains("bead") || message.contains("issue")))
+    }
+
     match error {
         BrError::BrExitError { stderr, stdout, .. } => {
-            let stderr = stderr.to_ascii_lowercase();
-            let stdout = stdout.to_ascii_lowercase();
-            stderr.contains("not found")
-                || stderr.contains("unknown")
-                || stdout.contains("not found")
-                || stdout.contains("unknown")
+            message_describes_missing_bead(stderr) || message_describes_missing_bead(stdout)
         }
         _ => false,
     }
@@ -445,7 +447,7 @@ fn blocked_reason_for_recommendation_mismatch(
     )
 }
 
-async fn transition_controller_for_selection_outcome(
+fn transition_controller_for_selection_outcome(
     base_dir: &std::path::Path,
     milestone_id: &MilestoneId,
     state: MilestoneControllerState,
@@ -498,7 +500,6 @@ pub(crate) async fn select_next_milestone_bead<R: ProcessRunner, V: BvProcessRun
                 reason,
                 now,
             )
-            .await;
         }
     };
 
@@ -513,7 +514,6 @@ pub(crate) async fn select_next_milestone_bead<R: ProcessRunner, V: BvProcessRun
                 reason,
                 now,
             )
-            .await;
         }
     };
 
@@ -534,8 +534,7 @@ pub(crate) async fn select_next_milestone_bead<R: ProcessRunner, V: BvProcessRun
                         recommendation.id
                     ),
                     now,
-                )
-                .await;
+                );
             }
 
             let reason =
@@ -567,7 +566,6 @@ pub(crate) async fn select_next_milestone_bead<R: ProcessRunner, V: BvProcessRun
                                     reason,
                                     now,
                                 )
-                                .await;
                             }
                         };
                     blocked_reason_for_recommendation_mismatch(
@@ -586,7 +584,6 @@ pub(crate) async fn select_next_milestone_bead<R: ProcessRunner, V: BvProcessRun
                 reason,
                 now,
             )
-            .await
         }
         NextRecommendationOutcome::NoRecommendation => {
             let ready_ids = ready_beads
@@ -613,9 +610,122 @@ pub(crate) async fn select_next_milestone_bead<R: ProcessRunner, V: BvProcessRun
                 reason,
                 now,
             )
-            .await
         }
     }
+}
+
+fn controller_requires_terminal_task_sync(
+    controller: &milestone_controller::MilestoneControllerRecord,
+    bead_id: &str,
+    task_id: &str,
+) -> bool {
+    match controller.state {
+        MilestoneControllerState::Idle => true,
+        MilestoneControllerState::Selecting
+        | MilestoneControllerState::Blocked
+        | MilestoneControllerState::Completed => false,
+        MilestoneControllerState::Claimed
+        | MilestoneControllerState::Running
+        | MilestoneControllerState::Reconciling
+        | MilestoneControllerState::NeedsOperator => {
+            controller.active_bead_id.as_deref() == Some(bead_id)
+                && controller.active_task_id.as_deref() == Some(task_id)
+        }
+    }
+}
+
+async fn continue_selecting_milestone_bead_if_needed<R: ProcessRunner, V: BvProcessRunner>(
+    base_dir: &std::path::Path,
+    project_record: &ProjectRecord,
+    final_snapshot: &RunSnapshot,
+    br: &BrAdapter<R>,
+    bv: &BvAdapter<V>,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<()> {
+    if final_snapshot.status != RunStatus::Completed {
+        return Ok(());
+    }
+
+    let Some(task_source) = project_record.task_source.as_ref() else {
+        return Ok(());
+    };
+
+    let milestone_id = MilestoneId::new(&task_source.milestone_id)?;
+    let Some(controller) = milestone_controller::load_controller(
+        &FsMilestoneControllerStore,
+        base_dir,
+        &milestone_id,
+    )?
+    else {
+        return Ok(());
+    };
+
+    if controller.state != MilestoneControllerState::Selecting {
+        return Ok(());
+    }
+
+    let selection_at = std::cmp::max(now, controller.last_transition_at);
+    select_next_milestone_bead(base_dir, &milestone_id, br, bv, selection_at).await?;
+    Ok(())
+}
+
+async fn sync_terminal_milestone_task_and_continue_selection_with_options<
+    R: ProcessRunner,
+    V: BvProcessRunner,
+>(
+    base_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    project_record: &ProjectRecord,
+    final_snapshot: &RunSnapshot,
+    allow_missing_lineage_repair: bool,
+    br: &BrAdapter<R>,
+    bv: &BvAdapter<V>,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<bool> {
+    let synced = sync_terminal_milestone_task_with_options(
+        base_dir,
+        project_id,
+        project_record,
+        final_snapshot,
+        allow_missing_lineage_repair,
+    )?;
+    if synced {
+        continue_selecting_milestone_bead_if_needed(
+            base_dir,
+            project_record,
+            final_snapshot,
+            br,
+            bv,
+            now,
+        )
+        .await?;
+    }
+    Ok(synced)
+}
+
+async fn sync_terminal_milestone_task_and_continue_selection<
+    R: ProcessRunner,
+    V: BvProcessRunner,
+>(
+    base_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    project_record: &ProjectRecord,
+    final_snapshot: &RunSnapshot,
+    br: &BrAdapter<R>,
+    bv: &BvAdapter<V>,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<bool> {
+    sync_terminal_milestone_task_and_continue_selection_with_options(
+        base_dir,
+        project_id,
+        project_record,
+        final_snapshot,
+        true,
+        br,
+        bv,
+        now,
+    )
+    .await
 }
 
 impl MilestoneControllerResumePort for ProjectMilestoneControllerRuntime<'_> {
@@ -959,37 +1069,55 @@ fn sync_terminal_milestone_task_with_options(
         RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => unreachable!(),
     };
 
-    match final_snapshot.status {
-        RunStatus::Completed => {
-            milestone_controller::sync_controller_task_reconciling(
-                &FsMilestoneControllerStore,
-                base_dir,
-                &milestone_id,
-                &task_source.bead_id,
-                project_id.as_str(),
-                "workflow execution completed; reconciling milestone state",
-                finished_at,
-            )?;
-        }
-        RunStatus::Failed => {
-            milestone_controller::sync_controller_task_claimed(
-                &FsMilestoneControllerStore,
-                base_dir,
-                &milestone_id,
-                &task_source.bead_id,
-                project_id.as_str(),
-                "workflow attempt failed; the bead-linked project remains claimed for resume",
-                finished_at,
-            )?;
-        }
-        RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => unreachable!(),
-    }
-
     let exact_attempt_already_terminal = same_named_terminal_attempt_exists
         || matching_lineage_run.iter().any(|entry| {
             lineage_entry_matches_attempt(entry, project_id.as_str(), run_id, started_at)
                 && entry.outcome.is_terminal()
         });
+    let reconcile_controller = if exact_attempt_already_terminal {
+        match milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+        )? {
+            Some(controller) => controller_requires_terminal_task_sync(
+                &controller,
+                &task_source.bead_id,
+                project_id.as_str(),
+            ),
+            None => true,
+        }
+    } else {
+        true
+    };
+
+    if reconcile_controller {
+        match final_snapshot.status {
+            RunStatus::Completed => {
+                milestone_controller::sync_controller_task_reconciling(
+                    &FsMilestoneControllerStore,
+                    base_dir,
+                    &milestone_id,
+                    &task_source.bead_id,
+                    project_id.as_str(),
+                    "workflow execution completed; reconciling milestone state",
+                    finished_at,
+                )?;
+            }
+            RunStatus::Failed => {
+                milestone_controller::sync_controller_task_claimed(
+                    &FsMilestoneControllerStore,
+                    base_dir,
+                    &milestone_id,
+                    &task_source.bead_id,
+                    project_id.as_str(),
+                    "workflow attempt failed; the bead-linked project remains claimed for resume",
+                    finished_at,
+                )?;
+            }
+            RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => unreachable!(),
+        }
+    }
 
     if exact_attempt_already_terminal {
         milestone_service::repair_task_run_with_disposition(
@@ -1027,7 +1155,7 @@ fn sync_terminal_milestone_task_with_options(
         )?;
     }
 
-    if final_snapshot.status == RunStatus::Completed {
+    if final_snapshot.status == RunStatus::Completed && reconcile_controller {
         let snapshot =
             milestone_service::load_snapshot(&FsMilestoneSnapshotStore, base_dir, &milestone_id)?;
         let (next_state, reason) = if snapshot.status == MilestoneStatus::Completed {
@@ -1275,9 +1403,19 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     .await;
 
     let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
-    let milestone_sync_result =
-        sync_terminal_milestone_task(&current_dir, &project_id, &project_record, &final_snapshot)
-            .map_err(|error| decorate_sync_error(error, false));
+    let br = BrAdapter::new().with_working_dir(current_dir.clone());
+    let bv = BvAdapter::new().with_working_dir(current_dir.clone());
+    let milestone_sync_result = sync_terminal_milestone_task_and_continue_selection(
+        &current_dir,
+        &project_id,
+        &project_record,
+        &final_snapshot,
+        &br,
+        &bv,
+        chrono::Utc::now(),
+    )
+    .await
+    .map_err(|error| decorate_sync_error(error, false));
 
     // Test-only injection seam: delete the writer lock file before close()
     // to exercise close-failure handling at the CLI level.
@@ -1401,13 +1539,19 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             &project_record,
             &final_snapshot,
         )?;
-    let milestone_sync_result = sync_terminal_milestone_task_with_options(
+    let br = BrAdapter::new().with_working_dir(current_dir.clone());
+    let bv = BvAdapter::new().with_working_dir(current_dir.clone());
+    let milestone_sync_result = sync_terminal_milestone_task_and_continue_selection_with_options(
         &current_dir,
         &project_id,
         &project_record,
         &final_snapshot,
         allow_missing_lineage_repair,
+        &br,
+        &bv,
+        chrono::Utc::now(),
     )
+    .await
     .map_err(|error| decorate_sync_error(error, true));
 
     // Explicit guard shutdown before printing success — surfaces cleanup
@@ -1438,8 +1582,18 @@ async fn handle_sync_milestone() -> AppResult<()> {
     let project_record = FsProjectStore.read_project_record(&current_dir, &project_id)?;
     let final_snapshot = FsRunSnapshotStore.read_run_snapshot(&current_dir, &project_id)?;
 
-    let synced =
-        sync_terminal_milestone_task(&current_dir, &project_id, &project_record, &final_snapshot)?;
+    let br = BrAdapter::new().with_working_dir(current_dir.clone());
+    let bv = BvAdapter::new().with_working_dir(current_dir.clone());
+    let synced = sync_terminal_milestone_task_and_continue_selection(
+        &current_dir,
+        &project_id,
+        &project_record,
+        &final_snapshot,
+        &br,
+        &bv,
+        chrono::Utc::now(),
+    )
+    .await?;
     if synced {
         println!("Milestone task state synced for project '{}'.", project_id);
     } else {
@@ -1457,6 +1611,7 @@ mod tests {
     use super::{
         prepare_milestone_controller_for_execution, resume_attempt_has_exact_lineage,
         select_next_milestone_bead, sync_terminal_milestone_task,
+        sync_terminal_milestone_task_and_continue_selection,
         sync_terminal_milestone_task_with_options, MilestoneControllerExecutionOrigin,
         ProjectMilestoneControllerRuntime,
     };
@@ -2014,6 +2169,207 @@ mod tests {
             br.calls().is_empty(),
             "br should not be queried after bv failure"
         );
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_moves_to_needs_operator_on_br_ready_failure() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_single_bead_milestone_with_plan(base_dir, now);
+        let br =
+            MockBrAdapter::from_responses([MockBrResponse::timeout("br ready --json", 30_000)]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-alpha.bead-2",
+            "Primary bead",
+        ))]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator
+        );
+        assert_eq!(controller.active_bead_id, None);
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("could not query br ready")));
+        assert_eq!(bv.calls()[0].args, vec!["--robot-next"]);
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+        assert_eq!(br.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_moves_to_needs_operator_when_br_show_is_not_missing() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::from_responses([
+            MockBrResponse::success(ready_beads_json(&["ms-alpha.bead-2"])),
+            MockBrResponse::exit_failure(2, "unknown flag: --json"),
+        ]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-alpha.bead-3",
+            "Follow-up bead",
+        ))]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator
+        );
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| {
+                reason.contains("could not inspect bead 'ms-alpha.bead-3'")
+                    && reason.contains("unknown flag")
+            }));
+        assert_eq!(br.calls().len(), 2);
+        assert_eq!(
+            br.calls()[1].args,
+            vec!["show", "ms-alpha.bead-3", "--json"]
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_terminal_milestone_task_and_continue_selection_claims_next_bead_once() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/bead-run/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"bead-run","flow":"docs_change"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-1","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:30:00Z","event_type":"run_completed","details":{"run_id":"run-1","completion_rounds":0,"max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let milestone = create_milestone_with_plan(base_dir, started_at);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "bead-run",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )
+        .expect("record bead start");
+
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: started_at,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: "ms-alpha".to_owned(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+        let final_snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: None,
+            status: RunStatus::Completed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "completed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-3",
+        ]))]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-alpha.bead-3",
+            "Follow-up bead",
+        ))]);
+
+        let first = sync_terminal_milestone_task_and_continue_selection(
+            base_dir,
+            &project_id,
+            &project_record,
+            &final_snapshot,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            started_at,
+        )
+        .await
+        .expect("first sync should succeed");
+        assert!(first);
+
+        let replay = sync_terminal_milestone_task_and_continue_selection(
+            base_dir,
+            &project_id,
+            &project_record,
+            &final_snapshot,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            started_at,
+        )
+        .await
+        .expect("replay sync should succeed");
+        assert!(replay);
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("ms-alpha.bead-3")
+        );
+        assert_eq!(controller.active_task_id, None);
+        assert_eq!(bv.calls().len(), 1);
+        assert_eq!(br.calls().len(), 1);
+        assert_eq!(bv.calls()[0].args, vec!["--robot-next"]);
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
     }
 
     #[test]
