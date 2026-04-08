@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260408144314",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
     "started_at": "2026-04-08T14:43:14.866196922Z",
     "prompt_hash_at_cycle_start": "1e90139df0ccc9ae84ad052cb68e3839dfe2bf3f2c81b04d81608f2b49bcd2a8",
     "prompt_hash_at_stage_start": "1e90139df0ccc9ae84ad052cb68e3839dfe2bf3f2c81b04d81608f2b49bcd2a8",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-d830c63e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "`src/contexts/automation_runtime/success_reconciliation.rs:229-263` swallows any error from the new next-bead selection step after a non-final reconciliation, and `src/contexts/automation_runtime/success_reconciliation.rs:428-445` has already moved the controller back to `selecting` by that point. A corrupted/missing `plan.json`, controller write failure, or other `select_next_milestone_bead*()` setup error therefore leaves the milestone stuck in `selecting` with only a transient log/stdout warning. That undermines the new safe-state contract: this path should persist a `needs_operator` or `blocked` transition with the failure reason instead of leaving an apparently healthy selecting controller.",
+        "created_at": "2026-04-08T16:34:48.771023696Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "acfb87b8ebaea9b1632137a63ec83ddb5a7bb0d895df3ccf91ca395ac71a6685"
+      }
+    ],
     "processed_count": 12
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-08T15:49:01.651755689Z",
+    "resolved_at": "2026-04-08T16:15:46.996987286Z",
     "final_review_reviewers": [
       {
         "backend_family": "claude",
