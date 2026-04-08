@@ -586,13 +586,11 @@ async fn complete_next_milestone_bead_selection<R: ProcessRunner>(
             });
 
             if let Some(ready_bead) = matching_ready_bead {
-                let canonical_bead_id =
-                    canonicalize_milestone_bead_ref(milestone_id, &ready_bead.id);
                 return transition_controller_for_selection_outcome(
                     base_dir,
                     milestone_id,
                     MilestoneControllerState::Claimed,
-                    Some(&canonical_bead_id),
+                    Some(&ready_bead.id),
                     format!(
                         "bv recommended bead '{}' and br confirmed it is ready to claim",
                         recommendation.id
@@ -2277,7 +2275,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_next_milestone_bead_canonicalizes_unqualified_ready_bead_id() {
+    async fn select_next_milestone_bead_preserves_raw_bead_id_from_br_ready() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
         let now = Utc::now();
@@ -2305,11 +2303,13 @@ mod tests {
             controller.state,
             milestone_controller::MilestoneControllerState::Claimed
         );
-        // The stored bead ID should be the canonicalized qualified form.
+        // The stored bead ID must be the raw form from br ready so downstream
+        // comparisons in sync_controller_task_claimed and
+        // validate_active_context_alignment match the form in task_source.bead_id.
         assert_eq!(
             controller.active_bead_id.as_deref(),
-            Some("ms-alpha.bead-2"),
-            "unqualified bead ID from br ready should be stored as qualified form"
+            Some("bead-2"),
+            "bead ID from br ready should be stored as-is without canonicalization"
         );
     }
 

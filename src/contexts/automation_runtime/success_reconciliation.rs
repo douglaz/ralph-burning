@@ -1716,8 +1716,8 @@ mod tests {
         );
         assert_eq!(
             controller.active_bead_id.as_deref(),
-            Some("ms-next.bead-next"),
-            "selected bead ID should be canonicalized to qualified form"
+            Some("bead-next"),
+            "selected bead ID should preserve the raw form from br ready"
         );
         assert_eq!(controller.active_task_id, None);
         assert!(controller
@@ -2579,10 +2579,7 @@ mod tests {
             controller.state,
             milestone_controller::MilestoneControllerState::Claimed
         );
-        assert_eq!(
-            controller.active_bead_id.as_deref(),
-            Some("ms-replay.bead-second")
-        );
+        assert_eq!(controller.active_bead_id.as_deref(), Some("bead-second"));
 
         // Replay: reconcile the same bead-first again. The controller has already
         // advanced to bead-second. This should not fail.
@@ -2628,7 +2625,7 @@ mod tests {
         );
         assert_eq!(
             post_replay_controller.active_bead_id.as_deref(),
-            Some("ms-replay.bead-second"),
+            Some("bead-second"),
             "controller should still track bead-second after replay"
         );
 
