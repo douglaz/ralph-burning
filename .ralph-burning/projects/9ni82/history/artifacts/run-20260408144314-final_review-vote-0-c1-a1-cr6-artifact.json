@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-vote-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260408144314-final_review-vote-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T17:13:56.544189772Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify verified defects in the codebase. Amendment fr-6-de2f845b correctly identifies that checkpoint_existing_controller_locked (controller.rs:559-572) only updates updated_at and never records the new reason, causing silent loss of operationally distinct audit trail entries when sync_controller_state hits the same-state path on production reconciliation flows. Amendment fr-6-556abb70 correctly identifies that has_ready_beads (run.rs:938-944) uses raw planned_refs.contains() while the rest of the selection code uses milestone_planned_refs_contain with three-way ID normalization, creating a real inconsistency that can produce false-negative ready checks during restart and incorrect Selecting→Blocked state transitions.\n\n## Votes\n\n- `fr-6-de2f845b`: Accept\n  Verified: checkpoint_existing_controller_locked at controller.rs:559-572 updates only updated_at and writes the controller unchanged — it never touches the reason field. sync_controller_state at line 620 routes same-state requests to this checkpoint function, so the distinct reasons passed by select_next_milestone_bead_from_recommendation ('validating a pre-fetched bv recommendation...', run.rs:700) and select_next_milestone_bead ('requesting the next bead recommendation...', run.rs:736) are silently dropped. Since the reconciliation path at success_reconciliation.rs:188-199,239-253 already transitions the controller to Selecting before these functions are called, the same-state branch is the normal production path. This is a genuine observability defect — the journal loses visibility into which selection sub-step the system is executing. The proposed fix (either a distinct intermediate state or a same-state reason-update path) is proportionate and low-risk.\n- `fr-6-556abb70`: Accept\n  Verified: has_ready_beads at run.rs:938-944 uses planned_refs.contains(bead.id.as_str()), a single raw lookup. milestone_planned_refs_contain at run.rs:282-292 performs three-way matching: raw, canonicalized (prefixed with milestone_id), and short-form (stripped prefix). resume_controller at controller.rs:815-824 uses has_ready_beads to decide whether a Selecting controller should transition to Blocked, and at controller.rs:965-975 uses it to decide whether a Blocked controller should unblock to Selecting. If br ready returns IDs in a different form than the milestone plan, the raw contains() fails where milestone_planned_refs_contain would succeed, causing incorrect state transitions on restart. The fix — reusing milestone_planned_refs_contain and adding a mixed-ID restart test — directly addresses the inconsistency with minimal risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 6
+}

@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260408144314",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 6
+      "completion_round": 7
     },
     "started_at": "2026-04-08T14:43:14.866196922Z",
     "prompt_hash_at_cycle_start": "1e90139df0ccc9ae84ad052cb68e3839dfe2bf3f2c81b04d81608f2b49bcd2a8",
     "prompt_hash_at_stage_start": "1e90139df0ccc9ae84ad052cb68e3839dfe2bf3f2c81b04d81608f2b49bcd2a8",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 5
+    "final_review_restart_count": 6
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 6,
+  "completion_rounds": 7,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-6-de2f845b",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "Fix the post-reconciliation/post-sync selecting audit trail. `select_next_milestone_bead_from_recommendation` and `select_next_milestone_bead` both call `sync_controller_state(... Selecting ...)` in `src/cli/run.rs:694-703` and `src/cli/run.rs:730-739`, but the real call sites already moved the controller to `Selecting` in `src/contexts/automation_runtime/success_reconciliation.rs:188-199,239-253` and `src/cli/run.rs:1310-1330`. Because `sync_controller_state` checkpoints same-state requests instead of recording the new reason (`src/contexts/milestone_record/controller.rs:620-623`), the journal never captures the new “requesting the next bead recommendation…” / “validating a pre-fetched…” reasons on the production paths. Either transition through a distinct state or add a same-state path that updates the reason/journal entry so operators can see the actual selection step.",
+        "created_at": "2026-04-08T17:16:52.316268015Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "d76fdecea5a6d18f136d0f96c954746c6ee4da164e2ef86f6b0e0b6aeda17ff4"
+      },
+      {
+        "amendment_id": "fr-6-556abb70",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "Normalize bead IDs in restart-time ready checks. The new selection code added qualified/unqualified matching helpers in `src/cli/run.rs:272-296`, but `ProjectMilestoneControllerRuntime::has_ready_beads` still does a raw `planned_refs.contains(bead.id)` at `src/cli/run.rs:938-944`. `resume_controller` now relies on that method to keep `Selecting` controllers active and to unblock `Blocked` controllers (`src/contexts/milestone_record/controller.rs:815-824` and `src/contexts/milestone_record/controller.rs:967-975`). If `br ready` and the milestone plan use different bead-id forms, a restart will incorrectly report “no ready beads” even though the fresh selection path would find one. Reuse `milestone_planned_refs_contain`/canonicalization here and add a restart test for the mixed-ID case.",
+        "created_at": "2026-04-08T17:16:52.316329902Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "e94fe1b0c87a4976cfc14fed49627dc91a82e3e6bd0c8d35f12394589f27fc16"
+      }
+    ],
     "processed_count": 15
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 7 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-08T16:40:15.528883839Z",
+    "resolved_at": "2026-04-08T16:55:49.188566966Z",
     "final_review_reviewers": [
       {
         "backend_family": "claude",

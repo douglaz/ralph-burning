@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260408144314-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T17:16:52.302429449Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments identify concrete defects in the current controller flow: same-state selection syncs drop operator-visible reasons, and restart-time ready checks use narrower bead-ID matching than live selection, which can produce false negatives after resume.\n\n## Votes\n\n- `fr-6-de2f845b`: Accept\n  The issue is real. `select_next_milestone_bead_from_recommendation` and `select_next_milestone_bead` both submit meaningful `Selecting` reasons, but `sync_controller_state` sends same-state requests through `checkpoint_existing_controller_locked`, which only updates timestamps and does not record the new reason or append a journal event. The reconciliation and continue-selection paths can already have the controller in `Selecting`, so the journal misses the actual selection step operators need to see. This is a genuine audit/observability bug, and the proposed fix direction is sound.\n- `fr-6-556abb70`: Accept\n  The inconsistency is real. `ProjectMilestoneControllerRuntime::has_ready_beads` uses a raw `planned_refs.contains(bead.id)` check, while the normal selection path uses `milestone_planned_refs_contain` and canonicalization to handle qualified and short bead IDs. `resume_controller` relies on `has_ready_beads` to keep `Selecting` controllers active and to unblock `Blocked` controllers, so restart-time behavior can incorrectly report no ready beads even when fresh selection would succeed. Reusing the normalization helper here and adding a mixed-ID restart regression test is the right fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 6
+}

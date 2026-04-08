@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T17:01:16.873076013Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the bead selection implementation (9ni.8.2). The changes implement the 'selecting' state logic: querying bv for next-bead recommendations, validating against br readiness, and transitioning to claimed/blocked/needs_operator appropriately. The code is well-structured with clear separation between recommendation fetching, validation, and state transitions. All 645 tests pass. Key areas reviewed: (1) selection flow in `select_next_milestone_bead` and `complete_next_milestone_bead_selection` — correct state machine transitions, proper error handling with fallback to NeedsOperator; (2) blocker detection in `blocked_reason_for_recommendation_mismatch` — correctly filters DependencyKind::Blocks with non-closed status; (3) idempotency via `controller_requires_terminal_task_sync` — correctly prevents re-syncing when controller has moved past the current bead; (4) reconciliation integration — `reconcile_success` correctly chains selection for non-final milestones and handles selection failures non-fatally; (5) persistence — atomic write-then-rename for hint files with proper cleanup. Test coverage is comprehensive: single-ready, conflicting-recommendation, no-ready, bv failure, br failure, br show failure, replay idempotency, and blocked-controller retry cases are all covered.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 6
+}
