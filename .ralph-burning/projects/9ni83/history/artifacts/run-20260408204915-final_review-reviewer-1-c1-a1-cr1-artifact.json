@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408204915-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260408204915-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T21:38:12.689379971Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFocused review found three correctness issues in the new bead-claim flow: already-claimed beads are incorrectly accepted as successful claims, the br claim now happens before local validation/project creation and can strand beads `in_progress` without a task, and the fallback transition to `needs_operator` is not guaranteed because its error is swallowed. I also ran focused cargo tests for the new claim/controller paths and the existing create-from-bead CLI happy path.\n\n## Amendments\n\n1. src/cli/project.rs:773-780 treats any `br update <bead> --status=in_progress` failure as success whenever a follow-up `br show` reports the bead as `in_progress`. That means a bead already claimed by another operator/process will still get a new Ralph project, even though the contract for this bead says \"already claimed\" must stop and transition to `needs_operator`. Tighten this path so an existing `in_progress` bead is only accepted when you can prove it is the same in-flight claim; otherwise fail the command and mark the controller `needs_operator`.\n   Rationale: As written, concurrent/manual claims can produce duplicate Ralph projects for one bead and split ownership of the milestone task.\n2. src/cli/project.rs:383-414 now performs the `br update ... --status=in_progress` side effect before validating the requested project id at line 400 and before `create_project_from_bead_context` can fail at lines 404-414. If `ProjectId::new`, prompt validation, duplicate-project detection, or project writes fail, the bead is left `in_progress` with no Ralph task. That state is sticky because `src/contexts/milestone_record/controller.rs:966-977` preserves a claimed controller with no `task_id` on resume. Move all local validation ahead of the br claim, or roll the claim back / force `needs_operator` on any post-claim failure.\n   Rationale: A normal local validation error can now hide the bead from ready triage and wedge milestone progress without creating an owning project.\n3. src/cli/project.rs:386-396 ignores the result of `milestone_controller::sync_controller_state(...)` when the br claim fails. If the controller journal is corrupt, locked, or unwritable, the command still returns only the br error and leaves the controller in its previous state instead of guaranteeing the required `needs_operator` transition. Propagate that controller-sync error (or combine it with the br error) rather than discarding it.\n   Rationale: The recovery invariant for claim failure is not reliable today; a failed claim can leave controller state inconsistent with the aborted project creation flow.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

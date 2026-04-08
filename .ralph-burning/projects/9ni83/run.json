@@ -2,35 +2,116 @@
   "active_run": {
     "run_id": "run-20260408204915",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-08T20:49:15.170218817Z",
     "prompt_hash_at_cycle_start": "845570bb44e1d1b102e43f699c286f20716bce676d6023b05c9e93672821661c",
     "prompt_hash_at_stage_start": "845570bb44e1d1b102e43f699c286f20716bce676d6023b05c9e93672821661c",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-381c8de3",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "In `src/cli/project.rs` line 386, the result of `sync_controller_state` (the NeedsOperator transition on claim failure) is silently discarded with `let _ = ...`. If this state persistence itself fails, the operator has no durable record that the milestone needs attention, and the only signal is a transient CLI error. At minimum, log a warning when the controller transition fails, so the failure is observable in logs even if the CLI error is returned.",
+        "created_at": "2026-04-08T21:45:12.630254647Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "9d7aa55b6c38038fafd92e556335e253ec603cbb233852ab928ec60f61e920ff"
+      },
+      {
+        "amendment_id": "fr-1-d7bbd4c0",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "In `claim_bead_in_br` (`src/cli/project.rs` lines 787-791), when `sync_flush` fails after a successful `br update`, the bead has already been mutated locally to `in_progress` but the sync to remote storage didn't complete. The function returns an error, which causes `handle_create_from_bead` to transition the controller to `NeedsOperator` — but the bead is already locally claimed in br. Either document this as acceptable (local-only claim, sync retried later) or attempt a compensating action / note in the error message that the bead was locally claimed but not synced.",
+        "created_at": "2026-04-08T21:45:12.630258955Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "54f184d8c14d209c39e4c279d212818e8a5d69843f4fa590ae2ac8f1ad57f34f"
+      },
+      {
+        "amendment_id": "fr-1-844fa256",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "The timeout change in `src/contexts/requirements_drafting/service.rs` (line 2129, 300s → 3600s) is unrelated to bead claiming and appears to be an accidental inclusion in this branch. It should either be reverted or split into its own commit with a clear rationale.",
+        "created_at": "2026-04-08T21:45:12.630261059Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "4d28a59ff08a125d4b0f5502e84727d3d59c73c2c737b79acdebbb979f35713d"
+      },
+      {
+        "amendment_id": "fr-1-40d0ad73",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "src/cli/project.rs:773-780 treats any `br update <bead> --status=in_progress` failure as success whenever a follow-up `br show` reports the bead as `in_progress`. That means a bead already claimed by another operator/process will still get a new Ralph project, even though the contract for this bead says \"already claimed\" must stop and transition to `needs_operator`. Tighten this path so an existing `in_progress` bead is only accepted when you can prove it is the same in-flight claim; otherwise fail the command and mark the controller `needs_operator`.",
+        "created_at": "2026-04-08T21:45:12.630264656Z",
+        "batch_sequence": 4,
+        "source": "workflow_stage",
+        "dedup_key": "c093eca3d9b1d97465653b76c1f05417594b48b5c90ff5e950b68fb122f1d30e"
+      },
+      {
+        "amendment_id": "fr-1-a5232d57",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "src/cli/project.rs:383-414 now performs the `br update ... --status=in_progress` side effect before validating the requested project id at line 400 and before `create_project_from_bead_context` can fail at lines 404-414. If `ProjectId::new`, prompt validation, duplicate-project detection, or project writes fail, the bead is left `in_progress` with no Ralph task. That state is sticky because `src/contexts/milestone_record/controller.rs:966-977` preserves a claimed controller with no `task_id` on resume. Move all local validation ahead of the br claim, or roll the claim back / force `needs_operator` on any post-claim failure.",
+        "created_at": "2026-04-08T21:45:12.630268343Z",
+        "batch_sequence": 5,
+        "source": "workflow_stage",
+        "dedup_key": "1c5cac15245070618a156310128a3a4d09442d1a4a08392a649f76c7f59c78cc"
+      },
+      {
+        "amendment_id": "fr-1-0e49f349",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "src/cli/project.rs:386-396 ignores the result of `milestone_controller::sync_controller_state(...)` when the br claim fails. If the controller journal is corrupt, locked, or unwritable, the command still returns only the br error and leaves the controller in its previous state instead of guaranteeing the required `needs_operator` transition. Propagate that controller-sync error (or combine it with the br error) rather than discarding it.",
+        "created_at": "2026-04-08T21:45:12.630270998Z",
+        "batch_sequence": 6,
+        "source": "workflow_stage",
+        "dedup_key": "e8a80a03f09eb2e89be98e77b88decafdece36eb71ccdd6e532262249e7913ff"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
-    "stage_id": "plan_and_implement",
-    "resolved_at": "2026-04-08T20:49:15.204753985Z",
-    "primary_target": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-08T21:29:19.604345659Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }
