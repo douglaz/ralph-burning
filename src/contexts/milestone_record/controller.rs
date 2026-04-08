@@ -571,6 +571,121 @@ fn checkpoint_existing_controller_locked(
     Ok(controller)
 }
 
+fn same_state_context_error_details(
+    state: MilestoneControllerState,
+    current_bead_id: Option<&str>,
+    current_task_id: Option<&str>,
+    next_bead_id: Option<&str>,
+    next_task_id: Option<&str>,
+) -> Option<String> {
+    match (current_bead_id, next_bead_id) {
+        (Some(current), Some(next)) if current != next => {
+            return Some(format!(
+                "same-state sync for '{}' must preserve active bead identifier '{}'",
+                state_name(state),
+                current
+            ));
+        }
+        (Some(current), None) => {
+            return Some(format!(
+                "same-state sync for '{}' must preserve active bead identifier '{}'",
+                state_name(state),
+                current
+            ));
+        }
+        (None, Some(next)) => {
+            return Some(format!(
+                "same-state sync for '{}' must not introduce active bead identifier '{}'",
+                state_name(state),
+                next
+            ));
+        }
+        _ => {}
+    }
+
+    match (current_task_id, next_task_id) {
+        (Some(current), Some(next)) if current != next => Some(format!(
+            "same-state sync for '{}' must preserve active task identifier '{}'",
+            state_name(state),
+            current
+        )),
+        (Some(current), None) => Some(format!(
+            "same-state sync for '{}' must preserve active task identifier '{}'",
+            state_name(state),
+            current
+        )),
+        (None, Some(next)) => Some(format!(
+            "same-state sync for '{}' must not introduce active task identifier '{}'",
+            state_name(state),
+            next
+        )),
+        _ => None,
+    }
+}
+
+fn sync_existing_state_locked(
+    store: &impl MilestoneControllerPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    current: MilestoneControllerRecord,
+    request: ControllerTransitionRequest,
+    now: DateTime<Utc>,
+) -> AppResult<MilestoneControllerRecord> {
+    let bead_id = request
+        .bead_id
+        .clone()
+        .or_else(|| current.active_bead_id.clone());
+    let task_id = request
+        .task_id
+        .clone()
+        .or_else(|| current.active_task_id.clone());
+
+    if let Some(details) = same_state_context_error_details(
+        current.state,
+        current.active_bead_id.as_deref(),
+        current.active_task_id.as_deref(),
+        bead_id.as_deref(),
+        task_id.as_deref(),
+    ) {
+        return Err(controller_corrupt_record(
+            milestone_id,
+            "controller.json",
+            details,
+        ));
+    }
+
+    if current.last_transition_reason.as_deref() == Some(request.reason.as_str())
+        && current.active_bead_id == bead_id
+        && current.active_task_id == task_id
+    {
+        return checkpoint_existing_controller_locked(store, base_dir, milestone_id, current, now);
+    }
+
+    let event = MilestoneControllerTransitionEvent::new(
+        now,
+        current.state,
+        &ControllerTransitionRequest {
+            to_state: current.state,
+            bead_id: bead_id.clone(),
+            task_id: task_id.clone(),
+            reason: request.reason.clone(),
+        },
+    );
+    store.append_transition_event(base_dir, milestone_id, &event)?;
+
+    let synced = MilestoneControllerRecord::transitioned(
+        milestone_id.clone(),
+        current.state,
+        bead_id,
+        task_id,
+        Some(request.reason),
+        now,
+        now,
+    )?;
+    store.write_controller(base_dir, milestone_id, &synced)?;
+    Ok(synced)
+}
+
 pub fn load_controller(
     store: &impl MilestoneControllerPort,
     base_dir: &Path,
@@ -618,7 +733,7 @@ pub fn sync_controller_state(
         };
         current.validate_semantics()?;
         if current.state == request.to_state {
-            checkpoint_existing_controller_locked(store, base_dir, milestone_id, current, now)
+            sync_existing_state_locked(store, base_dir, milestone_id, current, request, now)
         } else {
             transition_from_current_locked(store, base_dir, milestone_id, current, request, now)
         }
@@ -996,8 +1111,8 @@ fn validate_transition_journal(
     journal: &[MilestoneControllerTransitionEvent],
 ) -> AppResult<()> {
     for (index, event) in journal.iter().enumerate() {
-        let initialization_event = index == 0 && event.from_state == event.to_state;
-        if !initialization_event && !event.from_state.allows_transition_to(event.to_state) {
+        let same_state_sync = event.from_state == event.to_state;
+        if !same_state_sync && !event.from_state.allows_transition_to(event.to_state) {
             return Err(controller_corrupt_record(
                 milestone_id,
                 "controller-journal.ndjson",
@@ -1047,14 +1162,25 @@ fn validate_transition_journal(
                     ),
                 ));
             }
-            if let Some(details) = transition_context_error_details(
-                previous.to_state,
-                previous.bead_id.as_deref(),
-                previous.task_id.as_deref(),
-                event.to_state,
-                event.bead_id.as_deref(),
-                event.task_id.as_deref(),
-            ) {
+            let transition_error = if same_state_sync {
+                same_state_context_error_details(
+                    event.to_state,
+                    previous.bead_id.as_deref(),
+                    previous.task_id.as_deref(),
+                    event.bead_id.as_deref(),
+                    event.task_id.as_deref(),
+                )
+            } else {
+                transition_context_error_details(
+                    previous.to_state,
+                    previous.bead_id.as_deref(),
+                    previous.task_id.as_deref(),
+                    event.to_state,
+                    event.bead_id.as_deref(),
+                    event.task_id.as_deref(),
+                )
+            };
+            if let Some(details) = transition_error {
                 return Err(controller_corrupt_record(
                     milestone_id,
                     "controller-journal.ndjson",
@@ -1547,6 +1673,61 @@ mod tests {
         assert_eq!(checkpointed.updated_at, ts(13));
         assert_eq!(checkpointed.last_transition_at, ts(12));
         assert_eq!(store.journal.borrow().len(), before_events);
+        Ok(())
+    }
+
+    #[test]
+    fn sync_controller_state_records_same_state_reason_updates(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let store = FakeControllerStore::default();
+        let base = Path::new(".");
+        let milestone_id = milestone_id();
+
+        transition_controller(
+            &store,
+            base,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Selecting,
+                "begin selecting the next bead",
+            ),
+            ts(10),
+        )?;
+
+        let synced = sync_controller_state(
+            &store,
+            base,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Selecting,
+                "requesting the next bead recommendation from bv before any claim",
+            ),
+            ts(11),
+        )?;
+
+        assert_eq!(synced.state, MilestoneControllerState::Selecting);
+        assert_eq!(synced.last_transition_at, ts(11));
+        assert_eq!(
+            synced.last_transition_reason.as_deref(),
+            Some("requesting the next bead recommendation from bv before any claim")
+        );
+        assert_eq!(store.journal.borrow().len(), 2);
+        assert_eq!(
+            store.journal.borrow()[1].from_state,
+            MilestoneControllerState::Selecting
+        );
+        assert_eq!(
+            store.journal.borrow()[1].to_state,
+            MilestoneControllerState::Selecting
+        );
+
+        let hydrated =
+            load_controller(&store, Path::new("."), &milestone_id)?.expect("controller exists");
+        assert_eq!(hydrated.last_transition_at, ts(11));
+        assert_eq!(
+            hydrated.last_transition_reason.as_deref(),
+            Some("requesting the next bead recommendation from bv before any claim")
+        );
         Ok(())
     }
 

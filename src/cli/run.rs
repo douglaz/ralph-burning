@@ -939,9 +939,9 @@ impl MilestoneControllerResumePort for ProjectMilestoneControllerRuntime<'_> {
         let ready: Vec<ReadyBead> =
             self.query_br_json(&["ready", "--json"], "milestone controller resume")?;
         let planned_refs = self.planned_bead_membership_refs()?;
-        Ok(ready
-            .iter()
-            .any(|bead| planned_refs.contains(bead.id.as_str())))
+        Ok(ready.iter().any(|bead| {
+            milestone_planned_refs_contain(&planned_refs, self.milestone_id, bead.id.as_str())
+        }))
     }
 
     fn all_beads_closed(&self) -> AppResult<bool> {
@@ -2164,6 +2164,54 @@ mod tests {
         assert!(runtime.has_ready_beads().expect("query ready beads"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn resume_blocked_controller_matches_mixed_form_ready_bead_ids() {
+        let _path_lock = lock_path_mutex();
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone =
+            create_explicit_bead_milestone_with_plan(base_dir, now, "ms-explicit", "bead-e2e");
+        install_fake_br_ready_script(
+            base_dir,
+            r#"[{"id":"ms-explicit.bead-e2e","title":"Explicit bead","priority":2,"bead_type":"task","labels":[]}]"#,
+        );
+        let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+        milestone_controller::initialize_controller_with_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+            milestone_controller::MilestoneControllerState::Blocked,
+            now,
+        )
+        .expect("initialize blocked controller");
+
+        let runtime = ProjectMilestoneControllerRuntime {
+            base_dir,
+            milestone_id: &milestone.id,
+        };
+        let resumed = milestone_controller::resume_controller(
+            &FsMilestoneControllerStore,
+            &runtime,
+            base_dir,
+            &milestone.id,
+            now + chrono::Duration::seconds(1),
+        )
+        .expect("resume controller");
+
+        assert_eq!(
+            resumed.state,
+            milestone_controller::MilestoneControllerState::Selecting
+        );
+        assert!(resumed
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("ready beads")));
+    }
+
     #[tokio::test]
     async fn select_next_milestone_bead_claims_a_single_ready_recommendation() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -2256,6 +2304,127 @@ mod tests {
         );
         assert_eq!(br.calls().len(), 1);
         assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_records_request_reason_when_already_selecting() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::Selecting,
+                "reconciliation recorded the bead outcome and returned the controller to bead selection",
+            ),
+            now,
+        )
+        .expect("seed selecting controller");
+
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-2",
+        ]))]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-alpha.bead-2",
+            "Primary bead",
+        ))]);
+
+        select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now + chrono::Duration::seconds(1),
+        )
+        .await
+        .expect("selection should succeed");
+
+        let journal = crate::contexts::milestone_record::controller::MilestoneControllerPort::read_transition_journal(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("read controller journal");
+        let selecting_reasons = journal
+            .iter()
+            .filter(|event| {
+                event.to_state == milestone_controller::MilestoneControllerState::Selecting
+            })
+            .map(|event| event.reason.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selecting_reasons,
+            vec![
+                "reconciliation recorded the bead outcome and returned the controller to bead selection",
+                "requesting the next bead recommendation from bv before any claim",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_from_recommendation_records_prefetched_reason_when_already_selecting(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::Selecting,
+                "reconciliation recorded the bead outcome and returned the controller to bead selection",
+            ),
+            now,
+        )
+        .expect("seed selecting controller");
+
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-2",
+        ]))]);
+
+        select_next_milestone_bead_from_recommendation(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            Some(NextBeadResponse {
+                id: "ms-alpha.bead-2".to_owned(),
+                title: "Primary bead".to_owned(),
+                score: 9.2,
+                reasons: vec!["ready".to_owned()],
+                action: "implement".to_owned(),
+            }),
+            now + chrono::Duration::seconds(1),
+        )
+        .await
+        .expect("selection should succeed");
+
+        let journal = crate::contexts::milestone_record::controller::MilestoneControllerPort::read_transition_journal(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("read controller journal");
+        let selecting_reasons = journal
+            .iter()
+            .filter(|event| {
+                event.to_state == milestone_controller::MilestoneControllerState::Selecting
+            })
+            .map(|event| event.reason.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selecting_reasons,
+            vec![
+                "reconciliation recorded the bead outcome and returned the controller to bead selection",
+                "validating a pre-fetched bv recommendation against br readiness before any claim",
+            ]
+        );
     }
 
     #[tokio::test]
