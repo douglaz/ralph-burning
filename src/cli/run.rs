@@ -350,6 +350,52 @@ async fn request_next_recommendation<V: BvProcessRunner>(
         })
 }
 
+fn persist_next_step_recommendation(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    recommendation: &NextBeadResponse,
+) {
+    let milestone_dir = FileSystem::milestone_root(base_dir, milestone_id);
+    if let Err(error) = std::fs::create_dir_all(&milestone_dir) {
+        eprintln!(
+            "run: failed to create milestone directory for next-step recommendation persistence: {error}"
+        );
+        return;
+    }
+
+    let hint_path = milestone_dir.join("next_step_hint.json");
+    let tmp_path = milestone_dir.join("next_step_hint.json.tmp");
+    let serialized = match serde_json::to_string_pretty(recommendation) {
+        Ok(serialized) => serialized,
+        Err(error) => {
+            eprintln!("run: failed to serialize next-step recommendation: {error}");
+            return;
+        }
+    };
+
+    if let Err(error) = std::fs::write(&tmp_path, serialized) {
+        eprintln!("run: failed to write next-step recommendation temp file: {error}");
+        return;
+    }
+
+    if let Err(error) = std::fs::rename(&tmp_path, &hint_path) {
+        eprintln!("run: failed to persist next-step recommendation file: {error}");
+    }
+}
+
+fn delete_persisted_next_step_recommendation(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+) {
+    let hint_path = FileSystem::milestone_root(base_dir, milestone_id).join("next_step_hint.json");
+    if hint_path.exists() && std::fs::remove_file(&hint_path).is_err() {
+        eprintln!(
+            "run: failed to remove stale next-step recommendation file: {}",
+            hint_path.display()
+        );
+    }
+}
+
 async fn request_ready_milestone_beads<R: ProcessRunner>(
     br: &BrAdapter<R>,
     milestone_id: &MilestoneId,
@@ -503,9 +549,27 @@ pub(crate) async fn select_next_milestone_bead<R: ProcessRunner, V: BvProcessRun
         }
     };
 
+    match &recommendation {
+        NextRecommendationOutcome::Recommended(recommendation) => {
+            // Persist the raw bv recommendation before validation so operators
+            // can inspect the exact candidate even if `br ready` fails later.
+            persist_next_step_recommendation(base_dir, milestone_id, recommendation);
+        }
+        NextRecommendationOutcome::NoRecommendation => {
+            delete_persisted_next_step_recommendation(base_dir, milestone_id);
+        }
+    }
+
     let ready_beads = match request_ready_milestone_beads(br, milestone_id, &planned_refs).await {
         Ok(ready_beads) => ready_beads,
         Err(reason) => {
+            let reason = match &recommendation {
+                NextRecommendationOutcome::Recommended(recommendation) => format!(
+                    "{reason}; bv recommended bead '{}' before validation failed",
+                    recommendation.id
+                ),
+                NextRecommendationOutcome::NoRecommendation => reason,
+            };
             return transition_controller_for_selection_outcome(
                 base_dir,
                 milestone_id,
@@ -513,7 +577,7 @@ pub(crate) async fn select_next_milestone_bead<R: ProcessRunner, V: BvProcessRun
                 None,
                 reason,
                 now,
-            )
+            );
         }
     };
 
@@ -596,6 +660,10 @@ pub(crate) async fn select_next_milestone_bead<R: ProcessRunner, V: BvProcessRun
                     milestone_id
                 )
             } else {
+                // Treat this as blocked instead of needs-operator: both tools
+                // executed successfully, no incorrect claim was made, and the
+                // safe response is to stop automatic claiming until the graph
+                // or recommendation data converges on a later retry.
                 format!(
                     "bv reported no actionable bead, but br ready found milestone beads: {}",
                     summarize_bead_ids(&ready_ids)
@@ -1619,6 +1687,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    use crate::adapters::bv_process::NextBeadResponse;
     use crate::adapters::fs::{
         FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
         FsMilestoneSnapshotStore, FsMilestoneStore, FsTaskRunLineageStore,
@@ -2103,6 +2172,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn select_next_milestone_bead_blocks_when_bv_recommendation_is_outside_the_milestone_plan(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-2",
+        ]))]);
+        let bv = MockBvAdapter::from_responses([MockBvResponse::success(bv_next_json(
+            "ms-foreign.bead-9",
+            "Foreign bead",
+        ))]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Blocked
+        );
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| {
+                reason.contains("ms-foreign.bead-9")
+                    && reason.contains("not part of milestone 'ms-alpha'")
+                    && reason.contains("ready milestone beads: ms-alpha.bead-2")
+            }));
+        assert_eq!(br.calls().len(), 1);
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+    }
+
+    #[tokio::test]
     async fn select_next_milestone_bead_blocks_when_no_ready_beads_exist() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
@@ -2132,6 +2243,45 @@ mod tests {
             .last_transition_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("no ready beads")));
+        assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
+    }
+
+    #[tokio::test]
+    async fn select_next_milestone_bead_blocks_when_bv_has_no_recommendation_but_br_ready_is_nonempty(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let br = MockBrAdapter::from_responses([MockBrResponse::success(ready_beads_json(&[
+            "ms-alpha.bead-2",
+        ]))]);
+        let bv =
+            MockBvAdapter::from_responses([MockBvResponse::success(bv_no_recommendation_json())]);
+
+        let controller = select_next_milestone_bead(
+            base_dir,
+            &milestone.id,
+            &br.as_br_adapter(),
+            &bv.as_bv_adapter(),
+            now,
+        )
+        .await
+        .expect("selection should succeed");
+
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Blocked
+        );
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| {
+                reason.contains("bv reported no actionable bead")
+                    && reason.contains("ms-alpha.bead-2")
+            }));
+        assert_eq!(br.calls().len(), 1);
         assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
     }
 
@@ -2203,10 +2353,23 @@ mod tests {
         assert!(controller
             .last_transition_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("could not query br ready")));
+            .is_some_and(|reason| {
+                reason.contains("could not query br ready") && reason.contains("ms-alpha.bead-2")
+            }));
         assert_eq!(bv.calls()[0].args, vec!["--robot-next"]);
         assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
         assert_eq!(br.calls().len(), 1);
+
+        let hint_path = crate::adapters::fs::FileSystem::milestone_root(base_dir, &milestone.id)
+            .join("next_step_hint.json");
+        assert!(
+            hint_path.exists(),
+            "recommendation should be persisted before br ready"
+        );
+        let hint_json = std::fs::read_to_string(&hint_path).expect("read persisted hint");
+        let persisted_hint: NextBeadResponse =
+            serde_json::from_str(&hint_json).expect("parse persisted hint");
+        assert_eq!(persisted_hint.id, "ms-alpha.bead-2");
     }
 
     #[tokio::test]
