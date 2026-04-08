@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr7-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-0-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T17:44:43.864904996Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the bead selection implementation (9ni.8.2). The changes add a well-structured selection flow: transition to 'selecting', query bv for recommendation, validate against br readiness, and transition to claimed/blocked/needs_operator. The code handles all required cases: single-ready, conflicting recommendation, no-ready, bv failure, br failure, and out-of-milestone recommendations. Same-state controller sync logic in controller.rs is correctly validated and tested. The reconciliation integration properly reuses the prefetched bv recommendation and safely falls back to NeedsOperator on selection failure. All new tests pass, clippy shows no regressions (19 vs 20 pre-existing errors). One minor robustness concern identified.\n\n## Amendments\n\n1. In `continue_selecting_milestone_bead_if_needed` (src/cli/run.rs:819), `selection_at` is computed as `std::cmp::max(now, controller.last_transition_at)`, but when the caller passes `started_at` as `now` (as in the sync_terminal tests), this timestamp could equal or precede the controller's existing `last_transition_at`. If `max` selects the controller's own `last_transition_at`, the new Selecting transition event will have the same timestamp as the prior event, making the journal ambiguous about ordering. Consider using `controller.last_transition_at + Duration::milliseconds(1)` as a floor instead of `max(now, ...)` to guarantee strict monotonicity in the journal timeline.\n   Rationale: When replaying terminal milestone sync (e.g., the `retries_blocked_controller_on_replay` test), both the first and second calls pass the same `started_at` as `now`. The `max` with controller's `last_transition_at` prevents going backwards, but can produce duplicate timestamps. While not currently causing test failures or data corruption, duplicate timestamps in the transition journal make forensic debugging harder and could confuse future ordering-dependent logic.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 7
+}

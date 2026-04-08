@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408144314-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260408144314-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T17:54:09.074707826Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the milestone-selection and reconciliation/controller changes end-to-end, and ran targeted cargo tests for the new selection/reconciliation paths. The happy-path tests pass, but I found two robustness/correctness issues in the new selection flow: CLI post-run selection errors can leave the controller stuck in `selecting` with no durable failure state, and recommendation persistence failures do not prevent claiming even though recording the recommendation is part of the contract.\n\n## Amendments\n\n1. `src/cli/run.rs:1310-1330` moves a completed milestone back to `selecting`, but the follow-up selection path in `src/cli/run.rs:728-763` and `src/cli/run.rs:786-855` just propagates any `AppError` from `select_next_milestone_bead` instead of persisting a safe fallback state. If plan loading, controller journal writes, or other local persistence fails during selection, `run start`, `run resume`, or `run sync-milestone` exits with an error and leaves the controller durably stuck in `selecting` with no operator-visible reason. That violates the bead requirement that mismatches/tool failures land in `blocked` or `needs_operator`. Add the same `needs_operator` fallback used in `persist_selection_failure_after_reconciliation` for this CLI sync path.\n   Rationale: Without this, a successful bead run can still leave milestone state ambiguous and non-recoverable after a local selection-time failure.\n2. `persist_next_step_recommendation` in `src/cli/run.rs:354-403` treats create/write/rename failures as warnings only, and `complete_next_milestone_bead_selection` still proceeds to claim the bead afterward (`src/cli/run.rs:550-555` and `src/cli/run.rs:588-599`). The new test at `src/cli/run.rs:2725-2755` codifies rename failure as non-fatal. That breaks the selection policy's requirement to record the `bv` recommendation before claiming anything: on a full disk, permission problem, or rename failure the controller can transition to `claimed` without any durable copy of the recommendation or its score/reasons. Recommendation persistence failure should block the claim and move the controller to `needs_operator` instead of being logged and ignored.\n   Rationale: The new feature is supposed to leave an operator-auditable recommendation trail before acting; currently that guarantee is lost exactly when local storage is unhealthy.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 7
+}
