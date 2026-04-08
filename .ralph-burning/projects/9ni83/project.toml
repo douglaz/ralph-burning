@@ -1,0 +1,7 @@
+id = "9ni83"
+name = "bead-claiming"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "845570bb44e1d1b102e43f699c286f20716bce676d6023b05c9e93672821661c"
+created_at = "2026-04-08T20:47:57.123101346Z"
+status_summary = "created"

@@ -562,6 +562,14 @@ fn write_show_bead_script_with_default_list(
         "br",
         &format!(
             r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "{bead_id}" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 {show_payload_json}
@@ -1938,6 +1946,14 @@ fn project_create_from_bead_bootstraps_project_from_milestone_context() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -2086,6 +2102,14 @@ fn project_create_from_bead_loads_closed_adjacent_bead_from_exhaustive_br_list()
         "br",
         &format!(
             r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -2159,6 +2183,14 @@ fn project_create_from_bead_falls_back_when_br_list_is_unavailable() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -2251,6 +2283,14 @@ fn project_create_from_bead_with_prompt_file_skips_br_list_prompt_hydration() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -2332,6 +2372,14 @@ fn project_create_from_bead_uses_unknown_relation_statuses_when_br_list_is_unava
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -2453,6 +2501,14 @@ fn project_create_from_bead_skips_fenced_planned_elsewhere_summary_openers() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -2596,6 +2652,14 @@ fn project_create_from_bead_uses_planned_elsewhere_scope_body_instead_of_scope_l
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -2732,6 +2796,14 @@ fn project_create_from_bead_skips_level_one_heading_in_planned_elsewhere_summary
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -2894,6 +2966,14 @@ fn project_create_from_bead_includes_shared_acceptance_owners_in_planned_elsewhe
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -2999,6 +3079,14 @@ fn project_create_from_bead_fails_when_br_list_reports_corrupt_bead_data() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -3558,6 +3646,14 @@ fn project_create_from_bead_rejects_status_hash_without_plan_version() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -3616,6 +3712,14 @@ fn project_create_from_bead_rejects_completed_milestone() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -3669,6 +3773,14 @@ fn project_create_from_bead_rejects_closed_bead() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -3794,6 +3906,14 @@ fn project_create_from_bead_rejects_plan_json_hash_drift_from_unknown_fields() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -3845,6 +3965,14 @@ fn project_create_from_bead_rejects_beads_outside_selected_milestone() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "other-ms.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -3896,6 +4024,14 @@ fn project_create_from_bead_rejects_single_show_response_for_wrong_bead() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 {
@@ -4111,6 +4247,14 @@ fn project_create_from_bead_skips_shared_acceptance_owners_when_membership_is_un
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -4234,6 +4378,14 @@ fn project_create_from_bead_preserves_wrapped_planned_elsewhere_paragraphs() {
         temp_dir.path(),
         "br",
         r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
 if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
 cat <<'EOF'
 [
@@ -7368,6 +7520,13 @@ fn run_sync_milestone_repairs_completed_bead_backed_project() {
         String::from_utf8_lossy(&create.stderr)
     );
 
+    // Clear controller state written during project creation so the
+    // manually-crafted journal timestamps below don't conflict.
+    let ms_root = milestone_root(temp_dir.path(), "ms-alpha");
+    let _ = fs::remove_file(ms_root.join("controller.json"));
+    let _ = fs::remove_file(ms_root.join("controller-journal.ndjson"));
+    let _ = fs::remove_file(ms_root.join("controller.lock"));
+
     let project_root = project_root(temp_dir.path(), "bead-sync-repair");
     fs::write(
         project_root.join("run.json"),
@@ -7441,6 +7600,13 @@ fn run_sync_milestone_repairs_stale_terminal_outcome_with_original_timestamp() {
         "create failed: {}",
         String::from_utf8_lossy(&create.stderr)
     );
+
+    // Clear controller state written during project creation so the
+    // manually-crafted journal timestamps below don't conflict.
+    let ms_root = milestone_root(temp_dir.path(), "ms-alpha");
+    let _ = fs::remove_file(ms_root.join("controller.json"));
+    let _ = fs::remove_file(ms_root.join("controller-journal.ndjson"));
+    let _ = fs::remove_file(ms_root.join("controller.lock"));
 
     let project_root = project_root(temp_dir.path(), "bead-sync-terminal-repair");
     fs::write(
@@ -7533,6 +7699,13 @@ fn run_sync_milestone_reconstructs_missing_lineage_for_terminal_project() {
         "create failed: {}",
         String::from_utf8_lossy(&create.stderr)
     );
+
+    // Clear controller state written during project creation so the
+    // manually-crafted journal timestamps below don't conflict.
+    let ms_root = milestone_root(temp_dir.path(), "ms-alpha");
+    let _ = fs::remove_file(ms_root.join("controller.json"));
+    let _ = fs::remove_file(ms_root.join("controller-journal.ndjson"));
+    let _ = fs::remove_file(ms_root.join("controller.lock"));
 
     let project_root = project_root(temp_dir.path(), "bead-sync-reconstruct");
     fs::write(

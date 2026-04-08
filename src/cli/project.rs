@@ -8,18 +8,21 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary, DependencyKind};
-use crate::adapters::br_process::{BrAdapter, BrCommand, BrError};
+use crate::adapters::br_process::{BrAdapter, BrCommand, BrError, BrMutationAdapter};
 use crate::adapters::fs::{
     FileSystem, FsActiveProjectStore, FsAmendmentQueueStore, FsDaemonStore, FsJournalStore,
-    FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
-    FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore, FsRunSnapshotStore,
-    FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
+    FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+    FsMilestoneSnapshotStore, FsMilestoneStore, FsPayloadArtifactWriteStore, FsProjectStore,
+    FsRequirementsStore, FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
 };
 use crate::composition::agent_execution_builder;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
 use crate::contexts::milestone_record::bundle::{bead_matches_implicit_slot, MilestoneBundle};
+use crate::contexts::milestone_record::controller::{
+    self as milestone_controller, MilestoneControllerState,
+};
 use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus};
 use crate::contexts::milestone_record::service::{
     self as milestone_service, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
@@ -373,9 +376,31 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         plan_version,
     };
 
+    // Claim the bead in br before creating the project. If the claim
+    // fails (and the bead is not already in_progress), transition the
+    // milestone controller to needs_operator so the operator can
+    // investigate before any Ralph task is created.
+    if let Err(claim_error) = claim_bead_in_br(&current_dir, &bead.id).await {
+        let now = Utc::now();
+        let reason = format!("br claim failed for bead '{}': {claim_error}", bead.id);
+        let _ = milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            &current_dir,
+            &milestone_id,
+            milestone_controller::ControllerTransitionRequest::new(
+                MilestoneControllerState::NeedsOperator,
+                &reason,
+            )
+            .with_bead(&bead.id),
+            now,
+        );
+        return Err(AppError::Io(std::io::Error::other(reason)));
+    }
+
     let project_id = args.project_id.map(ProjectId::new).transpose()?;
     let store = FsProjectStore;
     let journal_store = FsJournalStore;
+    let now = Utc::now();
     let record = service::create_project_from_bead_context(
         &store,
         &journal_store,
@@ -383,9 +408,21 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
         CreateProjectFromBeadContextInput {
             project_id,
             prompt_override,
-            created_at: Utc::now(),
+            created_at: now,
             context,
         },
+    )?;
+
+    // Record the linked task/project ID in the milestone controller
+    // so the controller tracks which project owns this bead.
+    milestone_controller::sync_controller_task_claimed(
+        &FsMilestoneControllerStore,
+        &current_dir,
+        &milestone_id,
+        &bead.id,
+        record.id.as_str(),
+        "bead claimed in br and Ralph project created",
+        now,
     )?;
 
     set_active_project_after_create(&current_dir, &record.id)?;
@@ -722,6 +759,37 @@ enum BrShowResponse {
 enum BrListResponse {
     Envelope { issues: Vec<BeadSummary> },
     Many(Vec<BeadSummary>),
+}
+
+/// Claim a bead in `br` by setting its status to `in_progress` and flushing.
+///
+/// If `br update` fails, checks whether the bead is already `in_progress`
+/// (idempotent retry) and succeeds silently in that case. Otherwise returns
+/// an error suitable for transitioning the milestone controller to
+/// `needs_operator`.
+async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
+    let br =
+        BrMutationAdapter::with_adapter(BrAdapter::new().with_working_dir(base_dir.to_path_buf()));
+    match br.update_bead_status(bead_id, "in_progress").await {
+        Ok(_) => {}
+        Err(update_error) => {
+            // Check if the bead is already in_progress (idempotent retry).
+            if let Ok(bead) = load_bead_detail(base_dir, bead_id).await {
+                if bead.status == BeadStatus::InProgress {
+                    return Ok(());
+                }
+            }
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "failed to claim bead '{bead_id}' via br update --status=in_progress: {update_error}"
+            ))));
+        }
+    }
+    br.sync_flush().await.map_err(|error| {
+        AppError::Io(std::io::Error::other(format!(
+            "failed to sync after claiming bead '{bead_id}': {error}"
+        )))
+    })?;
+    Ok(())
 }
 
 async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetail> {
@@ -3424,6 +3492,303 @@ mod tests {
             assert!(error
                 .to_string()
                 .contains(&format!("bead is already {status}")));
+        }
+    }
+
+    // ── claim_bead_in_br tests ────────────────────────────────────────────
+
+    #[cfg(unix)]
+    mod claim_bead_tests {
+        use std::os::unix::fs::PermissionsExt;
+
+        use super::*;
+        use crate::adapters::fs::FsMilestoneControllerStore;
+        use crate::contexts::milestone_record::controller::{
+            self as milestone_controller, MilestoneControllerState,
+        };
+        use crate::test_support::env::{lock_path_mutex, PathGuard};
+
+        /// Install a fake `br` script that succeeds on `update` and `sync`
+        /// subcommands and returns bead detail JSON on `show`.
+        fn install_fake_br_claim_success(base_dir: &std::path::Path, bead_id: &str) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+case "$1" in
+  update)
+    echo "Updated {bead_id}"
+    exit 0
+    ;;
+  sync)
+    echo "Synced"
+    exit 0
+    ;;
+  show)
+    cat <<'BEAD_JSON'
+{{"id":"{bead_id}","title":"Test bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+    exit 0
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
+        /// Install a fake `br` that fails on `update` (non-zero exit) and
+        /// returns an `open` bead on `show` (not idempotent).
+        fn install_fake_br_claim_failure(base_dir: &std::path::Path, bead_id: &str) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+case "$1" in
+  update)
+    echo "update failed: permission denied" >&2
+    exit 1
+    ;;
+  show)
+    cat <<'BEAD_JSON'
+{{"id":"{bead_id}","title":"Test bead","status":"open","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+    exit 0
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
+        /// Install a fake `br` that fails on `update` but returns
+        /// `in_progress` on `show` (idempotent retry scenario).
+        fn install_fake_br_claim_idempotent(base_dir: &std::path::Path, bead_id: &str) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+case "$1" in
+  update)
+    echo "already in_progress" >&2
+    exit 1
+    ;;
+  show)
+    cat <<'BEAD_JSON'
+{{"id":"{bead_id}","title":"Test bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+    exit 0
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_succeeds_on_update_and_sync(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_success(base_dir, "bead-1");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            super::super::claim_bead_in_br(base_dir, "bead-1").await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_fails_when_update_exits_nonzero_and_bead_not_in_progress(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_failure(base_dir, "bead-1");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            assert!(result.is_err());
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains("failed to claim bead 'bead-1'"),
+                "error should mention the bead id: {error}"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_succeeds_idempotently_when_already_in_progress(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_idempotent(base_dir, "bead-1");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            // Should succeed because the bead is already in_progress
+            super::super::claim_bead_in_br(base_dir, "bead-1").await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_failure_transitions_controller_to_needs_operator(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            // Set up a milestone with controller in Claimed state (with bead_id)
+            let milestone_id = MilestoneId::new("ms-claim-test")?;
+            let milestone_dir = base_dir
+                .join(".ralph-burning/milestones")
+                .join(milestone_id.as_str());
+            std::fs::create_dir_all(&milestone_dir)?;
+
+            milestone_controller::initialize_controller_with_request(
+                &FsMilestoneControllerStore,
+                base_dir,
+                &milestone_id,
+                milestone_controller::ControllerTransitionRequest::new(
+                    MilestoneControllerState::Claimed,
+                    "selection picked bead-claim-1",
+                )
+                .with_bead("bead-claim-1"),
+                chrono::Utc::now(),
+            )?;
+
+            // Install a fake br that fails on update (bead not in_progress)
+            install_fake_br_claim_failure(base_dir, "bead-claim-1");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            // Claim should fail
+            let claim_result = super::super::claim_bead_in_br(base_dir, "bead-claim-1").await;
+            assert!(claim_result.is_err());
+
+            // Simulate the transition that handle_create_from_bead would do
+            let reason = format!(
+                "br claim failed for bead 'bead-claim-1': {}",
+                claim_result.unwrap_err()
+            );
+            milestone_controller::sync_controller_state(
+                &FsMilestoneControllerStore,
+                base_dir,
+                &milestone_id,
+                milestone_controller::ControllerTransitionRequest::new(
+                    MilestoneControllerState::NeedsOperator,
+                    &reason,
+                )
+                .with_bead("bead-claim-1"),
+                chrono::Utc::now(),
+            )?;
+
+            // Verify controller is now in NeedsOperator
+            let controller = milestone_controller::load_controller(
+                &FsMilestoneControllerStore,
+                base_dir,
+                &milestone_id,
+            )?
+            .expect("controller should exist");
+            assert_eq!(controller.state, MilestoneControllerState::NeedsOperator);
+            assert!(
+                controller
+                    .last_transition_reason
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("br claim failed"),
+                "transition reason should mention br claim failure: {:?}",
+                controller.last_transition_reason
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn successful_claim_records_task_id_in_controller(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            // Set up a milestone with controller in Claimed state (with bead_id)
+            let milestone_id = MilestoneId::new("ms-link-test")?;
+            let milestone_dir = base_dir
+                .join(".ralph-burning/milestones")
+                .join(milestone_id.as_str());
+            std::fs::create_dir_all(&milestone_dir)?;
+
+            milestone_controller::initialize_controller_with_request(
+                &FsMilestoneControllerStore,
+                base_dir,
+                &milestone_id,
+                milestone_controller::ControllerTransitionRequest::new(
+                    MilestoneControllerState::Claimed,
+                    "selection picked bead-link-1",
+                )
+                .with_bead("bead-link-1"),
+                chrono::Utc::now(),
+            )?;
+
+            install_fake_br_claim_success(base_dir, "bead-link-1");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            // Claim succeeds
+            super::super::claim_bead_in_br(base_dir, "bead-link-1").await?;
+
+            // Record the linked task/project ID
+            let now = chrono::Utc::now();
+            let claimed = milestone_controller::sync_controller_task_claimed(
+                &FsMilestoneControllerStore,
+                base_dir,
+                &milestone_id,
+                "bead-link-1",
+                "project-from-bead",
+                "bead claimed in br and Ralph project created",
+                now,
+            )?;
+            // The returned record should already have the task_id
+            assert_eq!(
+                claimed.active_task_id.as_deref(),
+                Some("project-from-bead"),
+                "sync_controller_task_claimed return value should have task_id"
+            );
+
+            // Verify controller persisted with both bead_id and task_id
+            let controller = milestone_controller::load_controller(
+                &FsMilestoneControllerStore,
+                base_dir,
+                &milestone_id,
+            )?
+            .expect("controller should exist");
+            assert_eq!(controller.state, MilestoneControllerState::Claimed);
+            assert_eq!(controller.active_bead_id.as_deref(), Some("bead-link-1"));
+            assert_eq!(
+                controller.active_task_id.as_deref(),
+                Some("project-from-bead")
+            );
+            Ok(())
         }
     }
 }
