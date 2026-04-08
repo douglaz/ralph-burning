@@ -2126,7 +2126,7 @@ where
                 prompt: prompt.to_owned(),
                 context: serde_json::Value::Null,
             },
-            timeout: std::time::Duration::from_secs(3600),
+            timeout: std::time::Duration::from_secs(300),
             cancellation_token: CancellationToken::new(),
             session_policy: SessionPolicy::NewSession,
             prior_session: None,
