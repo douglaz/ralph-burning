@@ -9,7 +9,8 @@ use uuid::Uuid;
 
 use crate::adapters::fs::{
     FileSystem, FsArtifactStore, FsMilestoneControllerStore, FsMilestoneJournalStore,
-    FsMilestoneSnapshotStore, FsProjectStore, FsRollbackPointStore, FsTaskRunLineageStore,
+    FsMilestoneSnapshotStore, FsPlannedElsewhereMappingStore, FsProjectStore, FsRollbackPointStore,
+    FsTaskRunLineageStore,
 };
 use crate::adapters::process_backend::processed_contract_schema_value;
 use crate::adapters::worktree::WorktreeAdapter;
@@ -26,7 +27,7 @@ use crate::contexts::agent_execution::service::{
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::milestone_record::controller as milestone_controller;
-use crate::contexts::milestone_record::model::MilestoneId;
+use crate::contexts::milestone_record::model::{MilestoneId, PlannedElsewhereMapping};
 use crate::contexts::milestone_record::service as milestone_service;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
@@ -2693,6 +2694,25 @@ where
                         .await;
                     }
 
+                    // Record planned-elsewhere amendments as mappings AFTER the
+                    // stage commit succeeds, so a later failure does not leave
+                    // orphaned mappings for an uncommitted stage.
+                    // Always called (even with no PE amendments) so that a PE
+                    // round sentinel is written for correct round supersession.
+                    let pe_amendments: Vec<_> = commit_data
+                        .accepted_amendments
+                        .iter()
+                        .filter(|a| a.mapped_to_bead_id.is_some())
+                        .collect();
+                    record_planned_elsewhere_amendments(
+                        log_write,
+                        base_dir,
+                        project_id,
+                        &pe_amendments,
+                        run_id,
+                        cursor.completion_round,
+                    );
+
                     if stage_index + 1 == stage_plan.len() {
                         complete_run(
                             snapshot,
@@ -2845,8 +2865,16 @@ where
                         .await;
                     }
 
+                    // Partition: planned-elsewhere amendments are routed to
+                    // the mapping handler; only regular amendments enter the queue.
+                    // Recording is deferred until after the stage commit succeeds.
+                    let (planned_elsewhere, regular_amendments): (Vec<_>, Vec<_>) = commit_data
+                        .accepted_amendments
+                        .iter()
+                        .partition(|a| a.mapped_to_bead_id.is_some());
+
                     let mut written_ids: Vec<String> = Vec::new();
-                    for amendment in &commit_data.accepted_amendments {
+                    for amendment in &regular_amendments {
                         if let Err(error) = amendment_queue_port.write_amendment(
                             base_dir,
                             project_id,
@@ -2885,7 +2913,7 @@ where
                     }
 
                     let mut last_journaled_amendment_index = None;
-                    for (index, amendment) in commit_data.accepted_amendments.iter().enumerate() {
+                    for (index, amendment) in regular_amendments.iter().enumerate() {
                         *seq += 1;
                         let amendment_event = journal::amendment_queued_event(
                             *seq,
@@ -2903,8 +2931,7 @@ where
                             journal_store.append_event(base_dir, project_id, &event_line)
                         {
                             *seq -= 1;
-                            let cleanup_errors: Vec<String> = commit_data.accepted_amendments
-                                [index..]
+                            let cleanup_errors: Vec<String> = regular_amendments[index..]
                                 .iter()
                                 .filter_map(|pending| {
                                     amendment_queue_port
@@ -2925,14 +2952,13 @@ where
                             snapshot.completion_rounds = snapshot.completion_rounds.max(to_round);
                             if let Some(last_index) = last_journaled_amendment_index {
                                 snapshot.amendment_queue.pending.extend(
-                                    commit_data.accepted_amendments[..=last_index]
+                                    regular_amendments[..=last_index]
                                         .iter()
                                         .map(|amendment| amendment.queued.clone()),
                                 );
                             } else {
                                 snapshot.amendment_queue.pending.extend(
-                                    commit_data
-                                        .accepted_amendments
+                                    regular_amendments
                                         .iter()
                                         .map(|amendment| amendment.queued.clone()),
                                 );
@@ -2971,8 +2997,7 @@ where
                         .as_ref()
                         .and_then(|active_run| active_run.stage_resolution_snapshot.clone());
                     snapshot.amendment_queue.pending.extend(
-                        commit_data
-                            .accepted_amendments
+                        regular_amendments
                             .iter()
                             .map(|amendment| amendment.queued.clone()),
                     );
@@ -3054,6 +3079,20 @@ where
                         )
                         .await;
                     }
+
+                    // Record planned-elsewhere amendments AFTER the stage commit
+                    // and round-advance event succeed, so failures do not leave
+                    // orphaned mappings for an uncommitted restart.
+                    // Always called (even with no PE amendments) so that a PE
+                    // round sentinel is written for correct round supersession.
+                    record_planned_elsewhere_amendments(
+                        log_write,
+                        base_dir,
+                        project_id,
+                        &planned_elsewhere,
+                        run_id,
+                        from_round,
+                    );
 
                     let _ = log_write.append_runtime_log(
                         base_dir,
@@ -6578,6 +6617,9 @@ struct FinalReviewQueuedAmendment {
     queued: QueuedAmendment,
     reviewer_sources:
         Vec<crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource>,
+    /// When set, this amendment is planned-elsewhere and should be routed to
+    /// the mapping handler instead of the amendment queue.
+    mapped_to_bead_id: Option<String>,
 }
 
 enum FinalReviewPanelOutcome {
@@ -7376,6 +7418,7 @@ where
                     dedup_key,
                 },
                 reviewer_sources: amendment.sources.clone(),
+                mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
             }
         })
         .collect::<Vec<_>>();
@@ -7497,6 +7540,182 @@ fn persist_final_review_aggregate_records(
         &artifact_record,
     )?;
     Ok(())
+}
+
+/// Record planned-elsewhere mappings for amendments that are classified as
+/// belonging to another bead. Best-effort: failures are logged but do not
+/// block the active bead from proceeding.
+fn record_planned_elsewhere_amendments(
+    log_write: &dyn RuntimeLogWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    amendments: &[&FinalReviewQueuedAmendment],
+    run_id: &RunId,
+    completion_round: u32,
+) {
+    // Read project record to get task_source (milestone_id + bead_id).
+    let project_record = match FsProjectStore.read_project_record(base_dir, project_id) {
+        Ok(record) => record,
+        Err(e) => {
+            let _ = log_write.append_runtime_log(
+                base_dir,
+                project_id,
+                &RuntimeLogEntry {
+                    timestamp: Utc::now(),
+                    level: LogLevel::Warn,
+                    source: "engine".to_owned(),
+                    message: format!(
+                        "cannot record planned-elsewhere mappings: failed to read project record: {e}"
+                    ),
+                },
+            );
+            return;
+        }
+    };
+
+    let Some(task_source) = project_record.task_source.as_ref() else {
+        let _ = log_write.append_runtime_log(
+            base_dir,
+            project_id,
+            &RuntimeLogEntry {
+                timestamp: Utc::now(),
+                level: LogLevel::Warn,
+                source: "engine".to_owned(),
+                message: "cannot record planned-elsewhere mappings: no task_source on project"
+                    .to_owned(),
+            },
+        );
+        return;
+    };
+
+    let milestone_id = match MilestoneId::new(&task_source.milestone_id) {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = log_write.append_runtime_log(
+                base_dir,
+                project_id,
+                &RuntimeLogEntry {
+                    timestamp: Utc::now(),
+                    level: LogLevel::Warn,
+                    source: "engine".to_owned(),
+                    message: format!(
+                        "cannot record planned-elsewhere mappings: invalid milestone ID: {e}"
+                    ),
+                },
+            );
+            return;
+        }
+    };
+
+    // PE validation is authoritative in final_review.rs (lines 644-656 and
+    // 1526-1536) which strips invalid mapped_to_bead_id values before
+    // acceptance.  No redundant re-read of the mutable prompt here.
+
+    // Always write a PE round sentinel so that rebuild_planned_elsewhere_from_journal
+    // knows this completion_round was processed — even if zero PE mappings exist.
+    // This allows a later round with no PE findings to supersede an earlier round.
+    // Retry once on failure since the sentinel is the sole mechanism for zero-PE
+    // round supersession — a missing sentinel leaves stale mappings authoritative
+    // permanently (reconstruction from aggregates cannot synthesise sentinels).
+    let now = Utc::now();
+    let sentinel_result = milestone_service::record_planned_elsewhere_round_sentinel(
+        &FsMilestoneJournalStore,
+        base_dir,
+        &milestone_id,
+        &task_source.bead_id,
+        run_id.as_str(),
+        completion_round,
+        now,
+    )
+    .or_else(|first_err| {
+        tracing::warn!(
+            error = %first_err,
+            completion_round,
+            "PE round sentinel write failed, retrying once"
+        );
+        milestone_service::record_planned_elsewhere_round_sentinel(
+            &FsMilestoneJournalStore,
+            base_dir,
+            &milestone_id,
+            &task_source.bead_id,
+            run_id.as_str(),
+            completion_round,
+            Utc::now(),
+        )
+    });
+    if let Err(e) = sentinel_result {
+        let _ = log_write.append_runtime_log(
+            base_dir,
+            project_id,
+            &RuntimeLogEntry {
+                timestamp: Utc::now(),
+                level: LogLevel::Error,
+                source: "engine".to_owned(),
+                message: format!(
+                    "failed to write PE round sentinel for completion_round={completion_round} \
+                     after retry: {e} — stale planned-elsewhere mappings from earlier rounds \
+                     may not be superseded"
+                ),
+            },
+        );
+    }
+    for amendment in amendments {
+        let Some(mapped_to) = amendment.mapped_to_bead_id.as_deref() else {
+            continue;
+        };
+        let mapped_to = mapped_to.trim();
+        if mapped_to.is_empty() {
+            continue;
+        }
+        let mapping = PlannedElsewhereMapping {
+            active_bead_id: task_source.bead_id.clone(),
+            finding_summary: amendment.queued.body.clone(),
+            mapped_to_bead_id: mapped_to.to_owned(),
+            recorded_at: now,
+            mapped_bead_verified: false, // Verification deferred to automation_runtime
+            run_id: Some(run_id.as_str().to_owned()),
+            completion_round: Some(completion_round),
+        };
+
+        match milestone_service::record_planned_elsewhere_mapping(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            base_dir,
+            &milestone_id,
+            &mapping,
+        ) {
+            Ok(()) => {
+                let _ = log_write.append_runtime_log(
+                    base_dir,
+                    project_id,
+                    &RuntimeLogEntry {
+                        timestamp: Utc::now(),
+                        level: LogLevel::Info,
+                        source: "engine".to_owned(),
+                        message: format!(
+                            "recorded planned-elsewhere mapping: amendment={} mapped_to={}",
+                            amendment.queued.amendment_id, mapped_to
+                        ),
+                    },
+                );
+            }
+            Err(e) => {
+                let _ = log_write.append_runtime_log(
+                    base_dir,
+                    project_id,
+                    &RuntimeLogEntry {
+                        timestamp: Utc::now(),
+                        level: LogLevel::Warn,
+                        source: "engine".to_owned(),
+                        message: format!(
+                            "failed to record planned-elsewhere mapping for amendment={}: {e}",
+                            amendment.queued.amendment_id
+                        ),
+                    },
+                );
+            }
+        }
+    }
 }
 
 /// Clean up aggregate payload/artifact files that were persisted by

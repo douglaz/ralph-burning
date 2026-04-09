@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr17-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T15:20:05.215307548Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe changeset is well-structured and correct. It adds completion_round tracking to PlannedElsewhereMapping, switches journal event type to ProgressUpdated with sub_type for rollback compatibility, adds round-based filtering in success reconciliation, validates mapped_to_bead_id against the prompt's PE section, and adds crash-tolerant trailing-line handling in journal reads. All 37 planned-elsewhere tests and 21 success_reconciliation tests pass. The backward-compatibility story (reading both legacy PlannedElsewhereMapped and new ProgressUpdated+sub_type events) is handled correctly. The round-filtering logic in verify_planned_elsewhere_after_success correctly falls through to unfiltered when no round info exists (pure-legacy scenario). The reconstruct_missing_pe_mappings change to only scan the highest round is sound — earlier rounds' PE decisions are correctly superseded. One notable gap: extract_pe_bead_ids has no unit tests despite being used in a validation path that gates whether PE mappings are accepted.\n\n## Amendments\n\n1. Add unit tests for extract_pe_bead_ids in task_prompt_contract.rs. The function parses prompt text to build the allowed PE bead ID set and is used in record_planned_elsewhere_amendments to validate mapped_to_bead_id — a bug here could silently accept hallucinated bead IDs or reject legitimate ones. Tests should cover: (1) normal bullet format '- 9ni.8.5.3 (description)', (2) no PE section in prompt returns empty set, (3) PE section with no bullets returns empty set, (4) multiple beads are all captured, (5) stops at next ## heading.\n   Rationale: This function is in the validation path that prevents hallucinated bead IDs from bypassing the restart/fix loop. Without tests, a regression (e.g. from changing the section header constant or bullet format) would go undetected and silently break the safety gate.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 17
+}

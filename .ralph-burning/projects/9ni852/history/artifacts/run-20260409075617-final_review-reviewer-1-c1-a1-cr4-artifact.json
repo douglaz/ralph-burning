@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T10:03:09.106858468Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the planned-elsewhere changes in final review, engine, milestone_record, and success reconciliation. I found two correctness issues in the new persistence/replay path: verified mappings are never collapsed so replays are not idempotent, and journal-only mappings can be lost whenever the sidecar already has older data. Targeted tests (`cargo test planned_elsewhere --lib` and `cargo test final_review_aggregate_planned_elsewhere_no_restart --test unit`) passed, but they do not cover these failure modes.\n\n## Amendments\n\n1. src/contexts/automation_runtime/success_reconciliation.rs:744-756 and src/contexts/milestone_record/service.rs:2400-2413: post-success verification appends a second `PlannedElsewhereMapping` row with `mapped_bead_verified=true` and assumes \"the latest record for a given mapping wins\", but `load_planned_elsewhere_mappings()` just returns every NDJSON row verbatim. After a restart, the original `mapped_bead_verified=false` row is still loaded, so the same finding is re-verified and can post duplicate `br comment`s on every replay. Collapse mappings by identity when loading (for example by `(active_bead_id, finding_summary, mapped_to_bead_id)` keeping the newest row), or update the existing record instead of append-only writes.\n   Rationale: This breaks idempotency for the new reconciliation flow and can spam mapped beads with repeated comments while also exposing duplicate mappings to any consumer of the milestone state.\n2. src/contexts/milestone_record/service.rs:2385-2390 and src/contexts/milestone_record/service.rs:2400-2413: the recovery path does not actually honor the journal-first durability model. If `append_event()` succeeds but `append_mapping()` fails after `planned_elsewhere.ndjson` already contains older rows, `load_planned_elsewhere_mappings()` returns the non-empty sidecar and never rebuilds from the authoritative journal, so the newly journaled mapping disappears after restart. The loader needs to merge/reconcile journal events with the sidecar, or rebuild current state from the journal whenever they can diverge.\n   Rationale: As written, a successful journal write is not sufficient for durability; partial sidecar loss silently drops valid mappings, which violates the acceptance criteria around persistence across controller restarts.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

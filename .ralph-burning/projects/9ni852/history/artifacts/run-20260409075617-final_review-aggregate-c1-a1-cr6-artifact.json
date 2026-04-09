@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260409075617-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260409075617-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T10:52:06.417774980Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 6/25\n\n## Accepted\n\n- `fr-6-2b17af9b`\n- `fr-6-f0e1a47f`\n- `fr-6-bf0488dc`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-2b17af9b`\n\nMake planned-elsewhere mapping persistence part of the durable final-review commit, or reconstruct it from the accepted final-review aggregate on replay. The stage is committed before `record_planned_elsewhere_amendments()` runs (`src/contexts/workflow_composition/engine.rs:2697-2712`, `src/contexts/workflow_composition/engine.rs:3081-3090`), and that helper only logs-and-continues on failures (`src/contexts/workflow_composition/engine.rs:7555-7658`). Later success reconciliation only loads whatever mappings already exist in milestone state (`src/contexts/automation_runtime/success_reconciliation.rs:686-704`). A crash or transient append failure in that window permanently drops the planned-elsewhere mapping even though the run proceeds or completes.\n\n### `fr-6-f0e1a47f`\n\nValidate and normalize `mapped_to_bead_id` before using it to suppress restarts. Reviewer payloads are only schema-deserialized (`src/contexts/workflow_composition/final_review.rs:474-513`), and the restart decision treats any `Some(...)` as planned-elsewhere (`src/contexts/workflow_composition/final_review.rs:1503-1558`). The engine then records the target verbatim (`src/contexts/workflow_composition/engine.rs:7610-7618`). That means `\"\"`, whitespace, or other garbage IDs from model output can incorrectly skip the reopen/fix loop and close the active bead with only a later warning.\n\n### `fr-6-bf0488dc`\n\nMake mapped-bead comments replay-safe. In `src/contexts/automation_runtime/success_reconciliation.rs:733-777`, comments are posted and `sync_flush()` is executed before the verified mapping row is appended. If the process crashes after the flush succeeds but before `record_planned_elsewhere_mapping()` writes the verified event, replay still sees the original unverified mapping and `verify_and_comment_mappings()` will post the same comment again (`src/contexts/automation_runtime/planned_elsewhere.rs:305-333`).\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}

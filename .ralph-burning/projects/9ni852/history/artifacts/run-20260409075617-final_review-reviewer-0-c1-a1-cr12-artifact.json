@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr12-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T12:47:11.944015939Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed two changed source files. The closed-bead-is-verified semantic change in planned_elsewhere.rs is correct and well-tested. The round-dedup improvement in reconstruct_missing_pe_mappings is logically sound. All 1615 tests pass. Clippy has 19 pre-existing errors, none introduced by this diff. Found two issues: stale doc comments on BeadVerification variants, and missing test coverage for the new round-dedup logic in the recovery path.\n\n## Amendments\n\n1. Update the doc comments on BeadVerification::Verified (line 51) and BeadVerification::Stale (line 53) in planned_elsewhere.rs to match the new behavior. Verified should say 'Bead exists (any status) — verified' and Stale should say 'Bead is definitively stale (not found)' removing the 'or already closed' clause. These comments currently describe the old behavior where closed beads were treated as stale.\n   Rationale: The doc comments contradict the implementation after this change. Verified says 'open/in-progress' but now accepts closed beads. Stale says 'not found or already closed' but no longer treats closed as stale. This will mislead future contributors reading the enum definition without checking verify_bead_exists.\n2. Add a test for reconstruct_missing_pe_mappings that exercises the round-dedup logic: create two final-review aggregates for the same completion_round with different created_at timestamps and different amendments, and verify only the amendments from the latest aggregate are reconstructed.\n   Rationale: The new latest_by_round HashMap dedup in reconstruct_missing_pe_mappings is a recovery/durability path with no direct test coverage. If the dedup logic regresses (e.g., picking the earliest instead of latest), stale pre-rollback amendments would be silently resurrected — a subtle correctness bug that would only manifest during crash recovery.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 12
+}

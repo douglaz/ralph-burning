@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T10:41:00.020019274Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed four source files changed in this diff. All 683 library tests pass. The changes are well-structured: (1) verify_bead_exists now distinguishes definitive bead-not-found from other non-zero exits, treating the latter as transient errors that propagate rather than silently degrading to stale warnings — this is a genuine correctness improvement. (2) success_reconciliation flush logic correctly avoids marking mappings as verified when the comment flush failed, preventing lost comments on replay. (3) milestone_record/service.rs correctly swallows NDJSON sidecar write failures since load_planned_elsewhere_mappings reads from the journal, not the sidecar. (4) final_review.rs voter/arbiter prompts now surface planned-elsewhere classification to voters. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 6
+}

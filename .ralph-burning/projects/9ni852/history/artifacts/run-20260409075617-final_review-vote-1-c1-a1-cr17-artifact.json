@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T15:34:29.132090395Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll three amendments identify real defects in the planned-elsewhere pipeline. The parser is security-relevant and currently untested, restart suppression is decided from raw `mapped_to_bead_id` values before validation, empty or unreadable allowed sets currently fail open, and reconciliation can recreate invalid mappings from already-committed aggregates without revalidation.\n\n## Votes\n\n- `fr-17-fc75ff73`: Accept\n  `extract_pe_bead_ids` is the gatekeeper for which bead IDs may be treated as planned-elsewhere, and its behavior depends on prompt section parsing details that are easy to regress. The proposed tests cover the meaningful boundary cases in the implementation: matching bullet syntax, missing section, empty section, multiple entries, and stopping at the next `##` heading. That is appropriate unit coverage for a function whose mistakes could either admit hallucinated IDs or reject valid ones.\n- `fr-17-59a68d4c`: Accept\n  This is a real correctness bug. `restart_required` is computed from whether accepted amendments have `mapped_to_bead_id == None`, so any non-empty mapped ID suppresses restart before `record_planned_elsewhere_amendments()` runs. Separately, the recorder explicitly skips validation when the extracted allowed set is empty or the prompt cannot be read, which means the normal no-PE prompt path fails open and accepts arbitrary real bead IDs. Validation has to happen before restart suppression, and an empty allowed list should mean no planned-elsewhere mapping is valid.\n- `fr-17-1292e667`: Accept\n  This is distinct from the fail-open bug and should be fixed even if recorder-side validation improves. The current design treats post-commit recording as the enforcement point, but by then the aggregate outcome and restart decision are already committed. `reconstruct_missing_pe_mappings()` then reads committed aggregate payloads and recreates mappings without checking whether those mappings were ever valid under the prompt’s allowed set. Invalid planned-elsewhere classifications therefore can persist and be reintroduced later. Enforcement needs to occur before commit, with invalid mappings downgraded back to normal amendments or otherwise prevented from affecting outcome state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 17
+}

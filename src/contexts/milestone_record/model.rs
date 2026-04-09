@@ -293,6 +293,12 @@ pub enum MilestoneEventType {
     BeadFailed,
     BeadSkipped,
     ProgressUpdated,
+    PlannedElsewhereMapped,
+    /// Catch-all for event types added in newer versions. Allows older code
+    /// to read journals that contain events from future versions without
+    /// failing deserialization. Consumers should skip `Unknown` events.
+    #[serde(other)]
+    Unknown,
 }
 
 impl MilestoneJournalEvent {
@@ -716,6 +722,43 @@ impl fmt::Display for TaskRunOutcome {
             Self::Failed => f.write_str("failed"),
             Self::Skipped => f.write_str("skipped"),
         }
+    }
+}
+
+// ── Planned-Elsewhere Mappings ───────────────────────────────────────
+
+/// Records that a review finding was classified as "planned-elsewhere":
+/// the concern is valid but already covered by another bead.
+///
+/// Persisted to `planned_elsewhere.ndjson` alongside the milestone journal,
+/// and also emitted as a `MilestoneJournalEvent` for audit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlannedElsewhereMapping {
+    /// The bead whose review produced the finding.
+    pub active_bead_id: String,
+    /// Human-readable summary of the finding from the review stage.
+    pub finding_summary: String,
+    /// Bead ID that already owns the concern.
+    pub mapped_to_bead_id: String,
+    /// When this mapping was recorded.
+    pub recorded_at: DateTime<Utc>,
+    /// Whether the mapped-to bead was verified to exist at recording time.
+    pub mapped_bead_verified: bool,
+    /// The run that produced this mapping. Used to scope verification to
+    /// the current successful run and ignore stale mappings from
+    /// rolled-back or abandoned runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// The final-review completion round that accepted this mapping.
+    /// Used to filter out stale mappings from earlier rounds when a
+    /// later round no longer accepts them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_round: Option<u32>,
+}
+
+impl PlannedElsewhereMapping {
+    pub fn to_ndjson_line(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
     }
 }
 

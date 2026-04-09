@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-0-c1-a1-cr24-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-0-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T18:40:41.299045661Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nVerified the bug by reading the actual source. strip_milestone_prefix() at task_prompt_contract.rs:322-330 unconditionally splits on the first dot, so '8.5.3' yields '5.3'. In verify_bead_exists() at planned_elsewhere.rs:88-96, Direction 1 tries this stripped ID before Direction 2 can prepend the correct milestone prefix. If a bead '5.3' exists, the function returns early with the wrong bead — silent misdirection of comments. The existing test at line 858-868 explicitly mocks '5.3' as not-found, preventing this collision from being caught. The proposed fix (guard Direction 1 with a milestone prefix check, add a collision test) is correct and minimal.\n\n## Votes\n\n- `fr-24-5f171b75`: Accept\n  Confirmed by reading the code: strip_milestone_prefix('8.5.3') returns '5.3' because it splits on the first dot unconditionally (task_prompt_contract.rs:323-324). In verify_bead_exists() (planned_elsewhere.rs:88-96), Direction 1 calls try_br_show('5.3') before Direction 2 can expand to '9ni.8.5.3'. If bead '5.3' exists, Direction 1 returns it as verified — a silent wrong-bead resolution. The existing test at line 865-868 specifically mocks '5.3' as not-found, so the collision path is untested. The fix is straightforward: guard Direction 1 with a check that milestone_prefix_of(bead_id) matches the known milestone prefix, so '8.5.3' (prefix '8') is not stripped when the milestone is '9ni'. A collision test is essential to lock this down.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 24
+}

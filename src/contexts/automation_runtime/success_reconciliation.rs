@@ -21,15 +21,22 @@ use crate::adapters::br_process::{
 };
 use crate::adapters::bv_process::{BvAdapter, BvProcessRunner, NextBeadResponse};
 use crate::adapters::fs::{
-    FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestoneSnapshotStore,
-    FsTaskRunLineageStore,
+    FsArtifactStore, FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestoneSnapshotStore,
+    FsPlannedElsewhereMappingStore, FsTaskRunLineageStore,
 };
 use crate::cli::run::{select_next_milestone_bead, select_next_milestone_bead_from_recommendation};
 use crate::contexts::milestone_record::controller as milestone_controller;
-use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus, TaskRunOutcome};
+use crate::contexts::milestone_record::model::{
+    MilestoneId, MilestoneStatus, PlannedElsewhereMapping, TaskRunOutcome,
+};
 use crate::contexts::milestone_record::service::{
     self as milestone_service, CompletionMilestoneDisposition,
 };
+use crate::contexts::project_run_record::service::ArtifactStorePort;
+use crate::contexts::workflow_composition::panel_contracts::{
+    FinalReviewAggregatePayload, RecordKind,
+};
+use crate::shared::domain::{ProjectId, StageId};
 /// Outcome of the success reconciliation process.
 #[derive(Debug, Clone)]
 pub struct ReconciliationOutcome {
@@ -221,6 +228,21 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         now,
         controller_already_advanced,
     )?;
+
+    // Step 3b: Verify planned-elsewhere mappings and post comments (best-effort).
+    // The engine records unverified mappings during final-review; this step
+    // performs the actual stale-bead lookup and optional br comment posting
+    // that the engine cannot do (it lacks BrAdapter access).
+    verify_planned_elsewhere_after_success(
+        br_mutation,
+        br_read,
+        base_dir,
+        bead_id,
+        milestone_id_str,
+        project_id,
+        run_id,
+    )
+    .await;
 
     // Step 4: Capture next-step hints (best-effort, never blocks reconciliation).
     let (next_step_hint, prefetched_selection) = if let Some(bv_adapter) = bv {
@@ -650,6 +672,398 @@ fn delete_stale_hint(base_dir: &Path, milestone_id_str: &str) {
             );
         }
     }
+}
+
+/// Best-effort verification and commenting for planned-elsewhere mappings.
+///
+/// Loads mappings for this milestone from the journal, filters for unverified
+/// ones belonging to this bead, then runs four phases:
+/// 1. Verify mapped-to beads exist via `br show`
+/// 2. Persist verified records to journal (durable before commenting)
+/// 3. Post `br comments add` on verified beads (only if Phase 2 succeeded)
+/// 4. Flush br mutations
+///
+/// Failures are logged but never block reconciliation.
+///
+/// If no mappings exist at all for this bead (e.g. because
+/// `record_planned_elsewhere_amendments` in engine.rs failed after the stage
+/// commit), attempts to reconstruct them from the persisted final-review
+/// aggregate payload.
+async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
+    br_mutation: &BrMutationAdapter<R>,
+    br_read: &BrAdapter<R>,
+    base_dir: &Path,
+    bead_id: &str,
+    milestone_id_str: &str,
+    project_id: &str,
+    run_id: &str,
+) {
+    let Ok(milestone_id) = MilestoneId::new(milestone_id_str) else {
+        return;
+    };
+    let mappings = match milestone_service::load_planned_elsewhere_mappings(
+        &FsPlannedElsewhereMappingStore,
+        &FsMilestoneJournalStore,
+        base_dir,
+        &milestone_id,
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                "failed to load planned-elsewhere mappings for verification (non-blocking)"
+            );
+            return;
+        }
+    };
+
+    let all_bead_mappings: Vec<_> = mappings
+        .iter()
+        .filter(|m| m.active_bead_id == bead_id && m.run_id.as_deref() == Some(run_id))
+        .cloned()
+        .collect();
+
+    // Reconstruct any planned-elsewhere amendments from persisted final-review
+    // aggregates that are missing from the journal.  Also returns the
+    // authoritative max completion_round from the aggregates — this is the
+    // source of truth for which round is "latest", even if that round wrote
+    // zero PE mappings (meaning the finding was fixed/rejected).
+    let (reconstructed, authoritative_max_round) = reconstruct_missing_pe_mappings(
+        base_dir,
+        project_id,
+        bead_id,
+        &milestone_id,
+        &all_bead_mappings,
+        run_id,
+    );
+
+    // Fall back to legacy mappings (run_id: None) when no current-run
+    // mappings exist and reconstruction found nothing.  Without this
+    // fallback, legacy unverified PE mappings would never be verified
+    // or receive comments.
+    let all_bead_mappings = if all_bead_mappings.is_empty() && reconstructed.is_empty() {
+        mappings
+            .into_iter()
+            .filter(|m| m.active_bead_id == bead_id && m.run_id.is_none())
+            .collect()
+    } else {
+        all_bead_mappings
+    };
+
+    // Filter journal mappings to only the authoritative round.  If the
+    // aggregates tell us the latest round is N, only mappings from round N
+    // survive — earlier rounds' PE decisions are superseded.  If no aggregate
+    // was found, fall back to the max round from the journal mappings
+    // themselves (legacy / no-aggregate scenario).
+    let effective_max_round = authoritative_max_round.or_else(|| {
+        all_bead_mappings
+            .iter()
+            .filter_map(|m| m.completion_round)
+            .max()
+    });
+    let bead_mappings: Vec<_> = if let Some(max_round) = effective_max_round {
+        all_bead_mappings
+            .into_iter()
+            .filter(|m| m.completion_round == Some(max_round))
+            .collect()
+    } else {
+        all_bead_mappings
+    };
+
+    let mut unverified: Vec<_> = bead_mappings
+        .into_iter()
+        .filter(|m| !m.mapped_bead_verified)
+        .collect();
+    unverified.extend(reconstructed);
+
+    if unverified.is_empty() {
+        return;
+    }
+
+    let post_comments = std::env::var("RALPH_BURNING_PLANNED_ELSEWHERE_COMMENTS")
+        .map(|v| v != "0" && v.to_lowercase() != "false")
+        .unwrap_or(true);
+
+    // Phase 1: Verify only — no comments. Comment posting happens in Phase 3
+    // after verified records are durably persisted, preventing duplicate
+    // comments on replay.
+    let outcomes = super::planned_elsewhere::verify_mappings(br_read, bead_id, &unverified).await;
+
+    for outcome in &outcomes {
+        if let Some(warning) = &outcome.warning {
+            tracing::warn!(
+                mapped_to_bead_id = outcome.mapping.mapped_to_bead_id.as_str(),
+                warning = warning.as_str(),
+                "planned-elsewhere verification warning"
+            );
+        }
+    }
+
+    // Phase 2: Persist verified mappings to the journal BEFORE posting any
+    // comments. Track which mappings were durably persisted so Phase 3 only
+    // posts comments for those — if persist fails, skipping the comment
+    // prevents duplicates on replay (the mapping stays unverified so replay
+    // will re-verify and re-attempt both persist and comment).
+    // Gate by outcome index (not just mapped_to_bead_id) so two findings
+    // mapped to the same bead are tracked independently.
+    let now = Utc::now();
+    let mut durably_verified_indices: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
+    for (idx, outcome) in outcomes.iter().enumerate() {
+        if outcome.verified {
+            let verified_mapping = PlannedElsewhereMapping {
+                active_bead_id: outcome.mapping.active_bead_id.clone(),
+                finding_summary: outcome.mapping.finding_summary.clone(),
+                mapped_to_bead_id: outcome.mapping.mapped_to_bead_id.clone(),
+                recorded_at: now,
+                mapped_bead_verified: true,
+                run_id: outcome.mapping.run_id.clone(),
+                completion_round: outcome.mapping.completion_round,
+            };
+            if let Err(e) = milestone_service::record_planned_elsewhere_mapping(
+                &FsMilestoneJournalStore,
+                &FsPlannedElsewhereMappingStore,
+                base_dir,
+                &milestone_id,
+                &verified_mapping,
+            ) {
+                tracing::warn!(
+                    mapped_to_bead_id = outcome.mapping.mapped_to_bead_id.as_str(),
+                    error = %e,
+                    "failed to persist verified planned-elsewhere mapping (non-blocking)"
+                );
+            } else {
+                durably_verified_indices.insert(idx);
+            }
+        }
+    }
+
+    // Phase 3: Post comments only for mappings whose verified state was
+    // durably recorded in Phase 2. This prevents duplicate comments on
+    // replay: if persist failed, the mapping stays unverified and replay
+    // will re-attempt both persist and comment together.
+    let mut commented_count = 0usize;
+    if post_comments {
+        for (idx, outcome) in outcomes.iter().enumerate() {
+            if !durably_verified_indices.contains(&idx) {
+                continue;
+            }
+            let comment_text = format!(
+                "Planned-elsewhere mapping from {}: {}",
+                outcome.mapping.active_bead_id, outcome.mapping.finding_summary
+            );
+            // Use the resolved bead ID (which may be the short-form alias
+            // that `br show` succeeded with) for the comment target.
+            let comment_target = outcome
+                .resolved_bead_id
+                .as_deref()
+                .unwrap_or(&outcome.mapping.mapped_to_bead_id);
+            match br_mutation
+                .comment_bead(comment_target, &comment_text)
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!(
+                        mapped_to_bead_id = outcome.mapping.mapped_to_bead_id.as_str(),
+                        active_bead_id = bead_id,
+                        "posted planned-elsewhere comment on mapped-to bead"
+                    );
+                    commented_count += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        mapped_to_bead_id = outcome.mapping.mapped_to_bead_id.as_str(),
+                        error = %e,
+                        "failed to post planned-elsewhere comment (non-blocking)"
+                    );
+                }
+            }
+        }
+    }
+
+    // Phase 4: Flush any br mutations (comments) so they're persisted upstream.
+    // Best-effort: if flush fails, comments may be lost but the mapping is
+    // already recorded as verified above.
+    if commented_count > 0 {
+        if let Err(e) = br_mutation.sync_flush().await {
+            tracing::warn!(
+                error = %e,
+                "failed to flush br mutations after planned-elsewhere comments (non-blocking)"
+            );
+        }
+    }
+
+    let verified_count = outcomes.iter().filter(|o| o.verified).count();
+    if !outcomes.is_empty() {
+        tracing::info!(
+            bead_id = bead_id,
+            total = outcomes.len(),
+            verified = verified_count,
+            commented = commented_count,
+            "planned-elsewhere post-run verification complete"
+        );
+    }
+}
+
+/// Reconstruct any planned-elsewhere mappings from persisted final-review
+/// aggregate payloads that are missing from the journal. Only considers
+/// aggregates from the current run (payload_id starts with run_id) and,
+/// for each completion_round, only uses the latest aggregate (by
+/// `created_at`) to skip pre-rollback or abandoned review attempts.
+///
+/// This covers the failure window where the durable stage commit (which
+/// includes the aggregate) succeeded but `record_planned_elsewhere_amendments`
+/// in engine.rs failed or was interrupted — including for earlier restart
+/// rounds within the same run when the bead already has mappings from other
+/// rounds.
+/// Returns `(reconstructed_mappings, authoritative_max_round)`.
+/// `authoritative_max_round` is the highest `completion_round` among all
+/// final-review aggregates for this run — the source of truth for which
+/// round is latest, even if that round contains no PE amendments.
+fn reconstruct_missing_pe_mappings(
+    base_dir: &Path,
+    project_id: &str,
+    bead_id: &str,
+    milestone_id: &MilestoneId,
+    existing_mappings: &[PlannedElsewhereMapping],
+    run_id: &str,
+) -> (Vec<PlannedElsewhereMapping>, Option<u32>) {
+    let pid = match ProjectId::new(project_id) {
+        Ok(pid) => pid,
+        Err(_) => return (Vec::new(), None),
+    };
+    let payloads = match FsArtifactStore.list_payloads(base_dir, &pid) {
+        Ok(p) => p,
+        Err(_) => return (Vec::new(), None),
+    };
+
+    // Collect final-review aggregates from the current run. For each
+    // completion_round, keep only the latest aggregate (by created_at)
+    // so pre-rollback or abandoned attempts are skipped.
+    let mut latest_by_round: std::collections::HashMap<u32, _> = std::collections::HashMap::new();
+    for payload in &payloads {
+        if payload.stage_id != StageId::FinalReview
+            || payload.record_kind != RecordKind::StageAggregate
+            || !payload.payload_id.starts_with(&format!("{run_id}-"))
+        {
+            continue;
+        }
+        let entry = latest_by_round
+            .entry(payload.completion_round)
+            .or_insert(payload);
+        if payload.created_at > entry.created_at {
+            *entry = payload;
+        }
+    }
+
+    // Build a mutable set of existing identity keys for dedup. Updated as
+    // new mappings are reconstructed so the same identity appearing in
+    // multiple aggregates is only reconstructed once. Includes
+    // completion_round so that later rounds can reconstruct the same
+    // finding/target pair independently (e.g. round N succeeded in journal
+    // but round N+1's journal write failed).
+    let mut seen_keys: std::collections::HashSet<(String, String, String, Option<u32>)> =
+        existing_mappings
+            .iter()
+            .map(|m| {
+                (
+                    m.active_bead_id.clone(),
+                    m.finding_summary.clone(),
+                    m.mapped_to_bead_id.clone(),
+                    m.completion_round,
+                )
+            })
+            .collect();
+
+    // The authoritative max round is the highest completion_round among all
+    // final-review aggregates for this run — even if that round's aggregate
+    // contains zero PE amendments (meaning findings were fixed/rejected).
+    let authoritative_max_round = latest_by_round.keys().copied().max();
+
+    let now = Utc::now();
+    let mut reconstructed = Vec::new();
+
+    // PE validation is authoritative in final_review.rs (lines 644-656 and
+    // 1526-1536) which strips invalid mapped_to_bead_id values before
+    // acceptance.  The aggregate already contains validated data — no
+    // redundant re-read of the mutable prompt here.
+
+    // Only reconstruct from the highest completion_round — earlier rounds'
+    // PE decisions may have been superseded by the latest final-review
+    // aggregate (e.g. a finding was planned-elsewhere in round 1 but
+    // fixed/rejected in round 2).
+    let rounds_to_scan: Vec<u32> = authoritative_max_round.into_iter().collect();
+    for round in rounds_to_scan {
+        let payload = latest_by_round[&round];
+
+        let aggregate: FinalReviewAggregatePayload =
+            match serde_json::from_value(payload.payload.clone()) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+
+        for amendment in &aggregate.final_accepted_amendments {
+            let mapped_to = match amendment.mapped_to_bead_id.as_deref() {
+                Some(id) => {
+                    let trimmed = id.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    trimmed
+                }
+                None => continue,
+            };
+
+            let identity_key = (
+                bead_id.to_owned(),
+                amendment.normalized_body.clone(),
+                mapped_to.to_owned(),
+                Some(round),
+            );
+            if seen_keys.contains(&identity_key) {
+                continue;
+            }
+            seen_keys.insert(identity_key);
+
+            let mapping = PlannedElsewhereMapping {
+                active_bead_id: bead_id.to_owned(),
+                finding_summary: amendment.normalized_body.clone(),
+                mapped_to_bead_id: mapped_to.to_owned(),
+                recorded_at: now,
+                mapped_bead_verified: false,
+                run_id: Some(run_id.to_owned()),
+                completion_round: Some(round),
+            };
+
+            // Record the reconstructed mapping to the journal so subsequent
+            // replays don't need to reconstruct again.
+            if let Err(e) = milestone_service::record_planned_elsewhere_mapping(
+                &FsMilestoneJournalStore,
+                &FsPlannedElsewhereMappingStore,
+                base_dir,
+                milestone_id,
+                &mapping,
+            ) {
+                tracing::warn!(
+                    mapped_to_bead_id = mapped_to,
+                    error = %e,
+                    "failed to persist reconstructed planned-elsewhere mapping (non-blocking)"
+                );
+            }
+
+            reconstructed.push(mapping);
+        }
+    }
+
+    if !reconstructed.is_empty() {
+        tracing::info!(
+            bead_id = bead_id,
+            count = reconstructed.len(),
+            "reconstructed missing planned-elsewhere mappings from final-review aggregates"
+        );
+    }
+
+    (reconstructed, authoritative_max_round)
 }
 
 #[cfg(test)]
@@ -2627,6 +3041,133 @@ mod tests {
             post_replay_controller.active_bead_id.as_deref(),
             Some("bead-second"),
             "controller should still track bead-second after replay"
+        );
+
+        Ok(())
+    }
+
+    /// Two aggregates for the same completion_round but different created_at:
+    /// only the latest aggregate's PE amendments should be reconstructed.
+    #[test]
+    fn reconstruct_pe_mappings_deduplicates_by_round_latest_wins(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::FileSystem;
+        use crate::contexts::project_run_record::model::PayloadRecord;
+        use crate::contexts::workflow_composition::panel_contracts::{
+            FinalReviewAggregatePayload, FinalReviewCanonicalAmendment, RecordKind,
+        };
+        use chrono::Utc;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+
+        // Set up .git dir so FileSystem::project_root resolves
+        let git_dir = base.join(".git");
+        std::fs::create_dir_all(&git_dir)?;
+
+        let project_id = ProjectId::new("proj-dedup")?;
+        let project_root = FileSystem::project_root(base, &project_id);
+        let payloads_dir = project_root.join("history/payloads");
+        std::fs::create_dir_all(&payloads_dir)?;
+
+        // Also create milestone dir for journal writes during reconstruction
+        let milestone_id = MilestoneId::new("ms-dedup")?;
+        let milestone_root = base
+            .join(".ralph-burning/milestones")
+            .join(milestone_id.as_str());
+        std::fs::create_dir_all(&milestone_root)?;
+
+        let now = Utc::now();
+
+        // Build two aggregates for the same completion_round (5) with
+        // different created_at timestamps and different PE amendments.
+        let make_aggregate = |mapped_to: &str, body: &str| -> FinalReviewAggregatePayload {
+            FinalReviewAggregatePayload {
+                restart_required: false,
+                force_completed: false,
+                total_reviewers: 1,
+                total_proposed_amendments: 1,
+                unique_amendment_count: 1,
+                accepted_amendment_ids: vec!["a1".to_owned()],
+                rejected_amendment_ids: vec![],
+                disputed_amendment_ids: vec![],
+                amendments: vec![],
+                final_accepted_amendments: vec![FinalReviewCanonicalAmendment {
+                    amendment_id: "a1".to_owned(),
+                    normalized_body: body.to_owned(),
+                    sources: vec![],
+                    mapped_to_bead_id: Some(mapped_to.to_owned()),
+                }],
+                final_review_restart_count: 0,
+                max_restarts: 3,
+                summary: "test".to_owned(),
+                exhausted_count: 0,
+                probe_exhausted_count: 0,
+                effective_min_reviewers: 1,
+            }
+        };
+
+        let earlier = now - chrono::Duration::seconds(60);
+        let later = now - chrono::Duration::seconds(10);
+
+        // Earlier aggregate (pre-rollback): maps to "old-bead"
+        let payload_old = PayloadRecord {
+            payload_id: "run-dedup-final_review-aggregate-c1-a1-cr5-old-payload".to_owned(),
+            stage_id: StageId::FinalReview,
+            cycle: 1,
+            attempt: 1,
+            created_at: earlier,
+            payload: serde_json::to_value(make_aggregate("old-bead", "old finding"))?,
+            record_kind: RecordKind::StageAggregate,
+            producer: None,
+            completion_round: 5,
+        };
+
+        // Later aggregate (post-rollback): maps to "new-bead"
+        let payload_new = PayloadRecord {
+            payload_id: "run-dedup-final_review-aggregate-c1-a1-cr5-rb1-payload".to_owned(),
+            stage_id: StageId::FinalReview,
+            cycle: 1,
+            attempt: 1,
+            created_at: later,
+            payload: serde_json::to_value(make_aggregate("new-bead", "new finding"))?,
+            record_kind: RecordKind::StageAggregate,
+            producer: None,
+            completion_round: 5,
+        };
+
+        // Write both payload files
+        std::fs::write(
+            payloads_dir.join("old-aggregate.json"),
+            serde_json::to_string(&payload_old)?,
+        )?;
+        std::fs::write(
+            payloads_dir.join("new-aggregate.json"),
+            serde_json::to_string(&payload_new)?,
+        )?;
+
+        let (reconstructed, authoritative_max_round) = reconstruct_missing_pe_mappings(
+            base,
+            "proj-dedup",
+            "active-bead",
+            &milestone_id,
+            &[],         // no existing mappings
+            "run-dedup", // run_id — must match payload_id prefix with "-"
+        );
+
+        assert_eq!(authoritative_max_round, Some(5));
+        assert_eq!(
+            reconstructed.len(),
+            1,
+            "should reconstruct exactly one mapping from the latest aggregate"
+        );
+        assert_eq!(
+            reconstructed[0].mapped_to_bead_id, "new-bead",
+            "should use amendment from the later aggregate"
+        );
+        assert_eq!(
+            reconstructed[0].finding_summary, "new finding",
+            "should use body from the later aggregate"
         );
 
         Ok(())

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260409075617-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260409075617-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T11:57:20.372029615Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 9/25\n\n## Accepted\n\n- `fr-9-a9fe286e`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-a9fe286e`\n\n`src/contexts/automation_runtime/success_reconciliation.rs:770-805` still keys the new `durably_verified` gate only by `mapped_to_bead_id`. That is too coarse. If one active bead has two planned-elsewhere findings that both map to the same existing bead, and persisting the verified row succeeds for the first finding but fails for the second, line 793 inserts the shared bead id and line 805 will still post the second comment. The second mapping remains unverified in milestone state, so replay will comment it again. The same bug also lets a transiently failed verification slip through once another mapping to the same bead was persisted. Phase 3 needs to gate on the full mapping identity (for example `(active_bead_id, finding_summary, mapped_to_bead_id)`) and/or retain an explicit per-outcome `verified` check.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}

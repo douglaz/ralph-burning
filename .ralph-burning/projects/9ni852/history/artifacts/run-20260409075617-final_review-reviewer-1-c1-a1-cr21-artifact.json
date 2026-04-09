@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr21-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T17:18:05.319740271Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the planned-elsewhere changes across final review, engine persistence, milestone-state reconstruction, and success reconciliation. Targeted `cargo test planned_elsewhere`, `cargo test final_review`, and `cargo test success_reconciliation` pass. I found two remaining correctness/robustness gaps: cross-run supersession is still wrong in the public milestone-state loader, and sentinel write failures are silently ignored even though the new zero-PE filtering relies on them.\n\n## Amendments\n\n1. Fix `load_planned_elsewhere_mappings()` so a newer run can supersede mappings from an abandoned run. `PlannedElsewhereMapping.run_id` is documented as the way to ignore stale mappings from rolled-back or abandoned runs (`src/contexts/milestone_record/model.rs:747-749`), but `rebuild_planned_elsewhere_from_journal()` still computes max rounds per `(active_bead_id, run_id)` and then keeps the latest mapping from every run (`src/contexts/milestone_record/service.rs:2583-2611`). If bead `A` records a planned-elsewhere mapping in `run-1` and a later `run-2` completes with no planned-elsewhere findings, `load_planned_elsewhere_mappings()` will still return the stale `run-1` mapping forever. Collapse milestone state to the latest authoritative run per bead, or make the loader require the authoritative run id instead of exposing superseded cross-run data as current state.\n   Rationale: This leaves the public milestone-state API inconsistent with the new `run_id` semantics and can surface obsolete planned-elsewhere findings after retries or re-runs.\n2. Do not silently discard failures from `record_planned_elsewhere_round_sentinel()`. Both completion paths call it and ignore the result (`src/contexts/workflow_composition/engine.rs:7617-7624` and `src/contexts/workflow_composition/engine.rs:3088-3094` via `record_planned_elsewhere_amendments()`), but the zero-PE supersession logic in `rebuild_planned_elsewhere_from_journal()` depends on those sentinel journal entries (`src/contexts/milestone_record/service.rs:2496-2526` and `src/contexts/milestone_record/service.rs:2590-2608`). A journal append failure in a later round with zero planned-elsewhere findings will therefore silently resurrect stale mappings, and today there is no warning or retry path for operators to notice.\n   Rationale: The new stale-round suppression is only durable if sentinel writes are durable. Swallowing the error makes milestone state silently wrong under exactly the crash/I/O failure mode this feature is trying to harden.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 21
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-planner-positions-c1-a1-cr9-artifact",
+  "payload_id": "run-20260409075617-final_review-planner-positions-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T11:55:46.613400007Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed amendment fr-9-a9fe286e against the actual code. The durably_verified HashSet at line 770 is keyed only by mapped_to_bead_id (&str), but multiple findings from the same active bead can map to the same target bead. This creates a real duplicate-comment bug when persist succeeds for one finding but fails for another sharing the same mapped_to_bead_id. The fix (keying on full mapping identity) is straightforward and correct.\n\n## Votes\n\n- `fr-9-a9fe286e`: Accept\n  Verified in code: line 770 declares `durably_verified: HashSet<&str>` keyed only on `mapped_to_bead_id`, line 793 inserts just that ID, and line 805 checks it. Since `verify_mappings` (planned_elsewhere.rs:275) iterates all unverified mappings for an active bead — and nothing prevents two findings from mapping to the same target bead — the too-coarse key creates a real correctness defect. If persist fails for finding #2 but #1 (same target) succeeded, the HashSet lookup passes for #2 anyway, posting its comment without durable backing. On replay, #2 remains unverified, so both persist and comment are re-attempted, producing a duplicate comment. The proposed fix (composite key on active_bead_id + finding_summary + mapped_to_bead_id, or per-outcome verified tracking) is sound and necessary.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 9
+}

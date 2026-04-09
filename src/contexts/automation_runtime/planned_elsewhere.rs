@@ -1,0 +1,1023 @@
+#![forbid(unsafe_code)]
+
+//! Planned-elsewhere reconciliation handler.
+//!
+//! When the review stage classifies a finding as "planned-elsewhere"
+//! (valid concern but already covered by another bead), this handler:
+//! 1. Verifies the mapped-to bead exists (falls back gracefully if stale)
+//! 2. Records a `PlannedElsewhereMapping` in milestone state
+//! 3. Emits a journal event for audit
+//! 4. Optionally adds a `br comment` on the mapped-to bead
+//! 5. Allows the active bead to proceed without reopen/fix loops
+
+use std::path::Path;
+
+use chrono::{DateTime, Utc};
+
+use crate::adapters::br_process::{
+    BrAdapter, BrCommand, BrError, BrMutationAdapter, ProcessRunner,
+};
+use crate::adapters::fs::{FsMilestoneJournalStore, FsPlannedElsewhereMappingStore};
+use crate::contexts::milestone_record::model::{MilestoneId, PlannedElsewhereMapping};
+use crate::contexts::milestone_record::service as milestone_service;
+use crate::shared::error::{AppError, AppResult};
+
+/// Input for recording a single planned-elsewhere finding.
+#[derive(Debug, Clone)]
+pub struct PlannedElsewhereInput {
+    /// The bead whose review produced the finding.
+    pub active_bead_id: String,
+    /// Human-readable summary of the finding.
+    pub finding_summary: String,
+    /// Bead ID that already owns the concern.
+    pub mapped_to_bead_id: String,
+}
+
+/// Outcome of processing a single planned-elsewhere finding.
+#[derive(Debug, Clone)]
+pub struct PlannedElsewhereOutcome {
+    /// The mapping that was persisted.
+    pub mapping: PlannedElsewhereMapping,
+    /// Whether the mapped-to bead was verified to exist.
+    pub bead_verified: bool,
+    /// Whether the optional comment was posted.
+    pub comment_posted: bool,
+    /// Warning if the mapped-to bead is stale (doesn't exist or closed).
+    pub stale_warning: Option<String>,
+}
+
+/// Result of verifying a mapped-to bead.
+enum BeadVerification {
+    /// Bead exists (any status: open, in-progress, or closed).
+    /// Carries the resolved bead ID that `br show` succeeded with — this
+    /// may be the short-form alias if the canonical ID was not found.
+    Verified(String),
+    /// Bead is definitively stale (not found).
+    Stale(String),
+    /// A transient/infrastructure error prevented verification.
+    TransientError(String),
+}
+
+/// Check whether a bead exists, trying both the canonical ID and a
+/// short-form alias.
+///
+/// Canonical bead IDs have the form `{milestone_id}.{short_id}`.  Explicit
+/// beads may exist in `.beads/` under the authored short ID, so if
+/// `br show <canonical>` fails with "not found", we retry with the short
+/// form (strip everything up to and including the first dot).
+///
+/// A bead in any status (open, in-progress, closed) is considered verified.
+/// Closed beads are legitimate planned-elsewhere targets: the mapped-to
+/// bead may already be complete, and the mapping still documents that the
+/// concern is covered.
+///
+/// Distinguishes definitive stale-bead results (bead not found) from
+/// transient/infrastructure errors (timeouts, parse failures, binary not
+/// found, I/O errors). Only definitive results are downgraded to warnings;
+/// transient errors propagate so the operator can investigate.
+async fn verify_bead_exists<R: ProcessRunner>(
+    br_read: &BrAdapter<R>,
+    bead_id: &str,
+    milestone_prefix: Option<&str>,
+) -> BeadVerification {
+    let result = try_br_show(br_read, bead_id).await;
+    match &result {
+        BeadVerification::Stale(_) => {
+            use crate::contexts::project_run_record::task_prompt_contract::{
+                milestone_prefix_of, strip_milestone_prefix,
+            };
+            let existing_prefix = milestone_prefix_of(bead_id);
+
+            if let Some(prefix) = milestone_prefix {
+                if existing_prefix == Some(prefix) {
+                    // Direction 1 — canonical→short: bead_id starts with
+                    // our milestone prefix (e.g. "9ni.8.5.3" → "8.5.3").
+                    if let Some(short_id) = strip_milestone_prefix(bead_id) {
+                        let alias_result = try_br_show(br_read, short_id).await;
+                        if matches!(alias_result, BeadVerification::Verified(_)) {
+                            return alias_result;
+                        }
+                    }
+                } else {
+                    // Direction 2 — short→canonical: bead_id does NOT
+                    // start with our prefix (e.g. "8.5.3" → "9ni.8.5.3").
+                    let canonical = format!("{prefix}.{bead_id}");
+                    let alias_result = try_br_show(br_read, &canonical).await;
+                    if matches!(alias_result, BeadVerification::Verified(_)) {
+                        return alias_result;
+                    }
+                }
+            } else {
+                // No milestone prefix available — fall back to stripping
+                // only (original pre-bidirectional behaviour).
+                if let Some(short_id) = strip_milestone_prefix(bead_id) {
+                    let alias_result = try_br_show(br_read, short_id).await;
+                    if matches!(alias_result, BeadVerification::Verified(_)) {
+                        return alias_result;
+                    }
+                }
+            }
+            result
+        }
+        _ => result,
+    }
+}
+
+/// Single `br show` attempt for a bead ID.
+async fn try_br_show<R: ProcessRunner>(br_read: &BrAdapter<R>, bead_id: &str) -> BeadVerification {
+    use crate::adapters::br_models::BeadDetail;
+    let cmd = BrCommand::show(bead_id);
+    match br_read.exec_json::<BeadDetail>(&cmd).await {
+        Ok(_detail) => BeadVerification::Verified(bead_id.to_owned()),
+        Err(
+            ref e @ BrError::BrExitError {
+                ref stderr,
+                ref stdout,
+                ..
+            },
+        ) => {
+            // Only treat as definitive staleness when the message
+            // clearly indicates the bead does not exist. Other non-zero
+            // exits (corrupt state, permission errors, etc.) are treated
+            // as transient so the operator can investigate.
+            let msg_lower = |s: &str| s.to_ascii_lowercase();
+            let describes_missing = |s: &str| {
+                let s = msg_lower(s);
+                (s.contains("bead not found") || s.contains("issue not found"))
+                    || (s.contains("not found") && (s.contains("bead") || s.contains("issue")))
+            };
+            if describes_missing(stderr) || describes_missing(stdout) {
+                BeadVerification::Stale(format!("mapped-to bead '{bead_id}' not found"))
+            } else {
+                BeadVerification::TransientError(format!(
+                    "could not verify mapped-to bead '{bead_id}': {e}"
+                ))
+            }
+        }
+        Err(e @ BrError::BrNotFound { .. })
+        | Err(e @ BrError::BrTimeout { .. })
+        | Err(e @ BrError::BrParseError { .. })
+        | Err(e @ BrError::Io(_)) => {
+            // Infrastructure / transient error — cannot determine bead state.
+            BeadVerification::TransientError(format!(
+                "could not verify mapped-to bead '{bead_id}': {e}"
+            ))
+        }
+    }
+}
+
+/// Process a single planned-elsewhere finding:
+/// - Verify the mapped-to bead exists
+/// - Record the mapping in milestone state
+/// - Optionally post a comment on the mapped-to bead
+pub async fn reconcile_planned_elsewhere<R: ProcessRunner>(
+    br_mutation: &BrMutationAdapter<R>,
+    br_read: &BrAdapter<R>,
+    base_dir: &Path,
+    milestone_id_str: &str,
+    input: &PlannedElsewhereInput,
+    post_comment: bool,
+    now: DateTime<Utc>,
+) -> AppResult<PlannedElsewhereOutcome> {
+    let milestone_id = MilestoneId::new(milestone_id_str)?;
+
+    // Step 1: Verify the mapped-to bead exists.
+    let prefix = crate::contexts::project_run_record::task_prompt_contract::milestone_prefix_of(
+        &input.active_bead_id,
+    );
+    let (bead_verified, resolved_bead_id, stale_warning) =
+        match verify_bead_exists(br_read, &input.mapped_to_bead_id, prefix).await {
+            BeadVerification::Verified(resolved) => (true, Some(resolved), None),
+            BeadVerification::Stale(warning) => {
+                tracing::warn!(
+                    active_bead_id = input.active_bead_id.as_str(),
+                    mapped_to_bead_id = input.mapped_to_bead_id.as_str(),
+                    warning = warning.as_str(),
+                    "planned-elsewhere mapping references stale bead"
+                );
+                (false, None, Some(warning))
+            }
+            BeadVerification::TransientError(details) => {
+                return Err(AppError::Io(std::io::Error::other(details)));
+            }
+        };
+
+    // Step 2: Build and persist the mapping.
+    let mapping = PlannedElsewhereMapping {
+        active_bead_id: input.active_bead_id.clone(),
+        finding_summary: input.finding_summary.clone(),
+        mapped_to_bead_id: input.mapped_to_bead_id.clone(),
+        recorded_at: now,
+        mapped_bead_verified: bead_verified,
+        run_id: None,
+        completion_round: None,
+    };
+
+    milestone_service::record_planned_elsewhere_mapping(
+        &FsMilestoneJournalStore,
+        &FsPlannedElsewhereMappingStore,
+        base_dir,
+        &milestone_id,
+        &mapping,
+    )?;
+
+    // Step 3: Optionally post a comment on the mapped-to bead.
+    // Use the resolved bead ID (which may be the short-form alias)
+    // since that is the form that `br show` succeeded with.
+    let comment_target = resolved_bead_id
+        .as_deref()
+        .unwrap_or(&input.mapped_to_bead_id);
+    let comment_posted = if post_comment && bead_verified {
+        let comment_text = format!(
+            "Planned-elsewhere mapping from {}: {}",
+            input.active_bead_id, input.finding_summary
+        );
+        match br_mutation
+            .comment_bead(comment_target, &comment_text)
+            .await
+        {
+            Ok(_) => {
+                tracing::info!(
+                    mapped_to_bead_id = input.mapped_to_bead_id.as_str(),
+                    active_bead_id = input.active_bead_id.as_str(),
+                    "posted planned-elsewhere comment on mapped-to bead"
+                );
+                true
+            }
+            Err(e) => {
+                tracing::warn!(
+                    mapped_to_bead_id = input.mapped_to_bead_id.as_str(),
+                    error = %e,
+                    "failed to post planned-elsewhere comment (non-blocking)"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    Ok(PlannedElsewhereOutcome {
+        mapping,
+        bead_verified,
+        comment_posted,
+        stale_warning,
+    })
+}
+
+/// Process a batch of planned-elsewhere findings for a single bead.
+/// Returns outcomes for each finding. Failures in individual mappings
+/// do not prevent the active bead from proceeding.
+pub async fn reconcile_planned_elsewhere_batch<R: ProcessRunner>(
+    br_mutation: &BrMutationAdapter<R>,
+    br_read: &BrAdapter<R>,
+    base_dir: &Path,
+    milestone_id_str: &str,
+    inputs: &[PlannedElsewhereInput],
+    post_comments: bool,
+    now: DateTime<Utc>,
+) -> Vec<Result<PlannedElsewhereOutcome, String>> {
+    let mut outcomes = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        match reconcile_planned_elsewhere(
+            br_mutation,
+            br_read,
+            base_dir,
+            milestone_id_str,
+            input,
+            post_comments,
+            now,
+        )
+        .await
+        {
+            Ok(outcome) => outcomes.push(Ok(outcome)),
+            Err(e) => {
+                tracing::warn!(
+                    active_bead_id = input.active_bead_id.as_str(),
+                    mapped_to_bead_id = input.mapped_to_bead_id.as_str(),
+                    error = %e,
+                    "failed to record planned-elsewhere mapping (non-blocking)"
+                );
+                outcomes.push(Err(e.to_string()));
+            }
+        }
+    }
+    outcomes
+}
+
+/// Outcome of verifying and commenting on a single unverified mapping.
+#[derive(Debug, Clone)]
+pub struct MappingVerificationOutcome {
+    /// The original mapping.
+    pub mapping: PlannedElsewhereMapping,
+    /// Whether the bead was verified.
+    pub verified: bool,
+    /// The bead ID that `br show` succeeded with.  May differ from
+    /// `mapping.mapped_to_bead_id` when the short-form alias was used.
+    /// `None` when verification failed.
+    pub resolved_bead_id: Option<String>,
+    /// Whether a comment was posted.
+    pub comment_posted: bool,
+    /// Warning if the bead is stale or a transient error occurred.
+    pub warning: Option<String>,
+}
+
+/// Verify unverified planned-elsewhere mappings by checking that each
+/// mapped-to bead exists via `br show`.
+///
+/// Called from success_reconciliation after a run completes to perform
+/// the stale-bead lookups that the engine cannot do (it lacks BrAdapter
+/// access). Comment posting is handled separately by the caller after
+/// persisting verified records, to avoid duplicate comments on replay.
+///
+/// Best-effort: individual failures are logged but do not prevent the
+/// active bead from completing.
+pub async fn verify_mappings<R: ProcessRunner>(
+    br_read: &BrAdapter<R>,
+    active_bead_id: &str,
+    mappings: &[PlannedElsewhereMapping],
+) -> Vec<MappingVerificationOutcome> {
+    let prefix = crate::contexts::project_run_record::task_prompt_contract::milestone_prefix_of(
+        active_bead_id,
+    );
+    let mut outcomes = Vec::with_capacity(mappings.len());
+
+    for mapping in mappings {
+        // Only process mappings for this bead that are not yet verified.
+        if mapping.active_bead_id != active_bead_id || mapping.mapped_bead_verified {
+            continue;
+        }
+
+        let (verified, resolved_bead_id, warning) =
+            match verify_bead_exists(br_read, &mapping.mapped_to_bead_id, prefix).await {
+                BeadVerification::Verified(resolved) => (true, Some(resolved), None),
+                BeadVerification::Stale(warning) => {
+                    tracing::warn!(
+                        active_bead_id = active_bead_id,
+                        mapped_to_bead_id = mapping.mapped_to_bead_id.as_str(),
+                        warning = warning.as_str(),
+                        "planned-elsewhere mapping references stale bead (post-run verification)"
+                    );
+                    (false, None, Some(warning))
+                }
+                BeadVerification::TransientError(details) => {
+                    tracing::warn!(
+                        active_bead_id = active_bead_id,
+                        mapped_to_bead_id = mapping.mapped_to_bead_id.as_str(),
+                        error = details.as_str(),
+                        "transient error during planned-elsewhere verification (non-blocking)"
+                    );
+                    (false, None, Some(details))
+                }
+            };
+
+        outcomes.push(MappingVerificationOutcome {
+            mapping: mapping.clone(),
+            verified,
+            resolved_bead_id,
+            comment_posted: false,
+            warning,
+        });
+    }
+
+    outcomes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::br_process::{BrError, BrOutput, ProcessRunner};
+    use std::path::Path;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use crate::adapters::fs::{FsMilestoneJournalStore, FsMilestoneStore};
+    use crate::contexts::milestone_record::model::{
+        MilestoneEventType, MilestoneRecord, MilestoneSnapshot,
+    };
+    use crate::contexts::milestone_record::service::{MilestoneJournalPort, MilestoneStorePort};
+
+    struct MockBrRunner {
+        responses: Mutex<Vec<Result<BrOutput, BrError>>>,
+    }
+
+    impl MockBrRunner {
+        fn new(responses: Vec<Result<BrOutput, BrError>>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+            }
+        }
+
+        fn success(stdout: &str) -> Result<BrOutput, BrError> {
+            Ok(BrOutput {
+                stdout: stdout.to_owned(),
+                stderr: String::new(),
+                exit_code: 0,
+            })
+        }
+
+        fn error(exit_code: i32, stderr: &str) -> Result<BrOutput, BrError> {
+            Err(BrError::BrExitError {
+                exit_code,
+                stdout: String::new(),
+                stderr: stderr.to_owned(),
+                command: "br mock".to_owned(),
+            })
+        }
+    }
+
+    impl ProcessRunner for MockBrRunner {
+        async fn run(
+            &self,
+            _args: Vec<String>,
+            _timeout: Duration,
+            _working_dir: Option<&Path>,
+        ) -> Result<BrOutput, BrError> {
+            self.responses
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or_else(|| panic!("MockBrRunner: no more responses"))
+        }
+    }
+
+    fn setup_milestone(base_dir: &Path, milestone_id: &MilestoneId) {
+        let now = Utc::now();
+        let record = MilestoneRecord::new(
+            milestone_id.clone(),
+            "test-ms".to_owned(),
+            "test milestone".to_owned(),
+            now,
+        );
+        let snapshot = MilestoneSnapshot::initial(now);
+        let event = crate::contexts::milestone_record::model::MilestoneJournalEvent::new(
+            MilestoneEventType::Created,
+            now,
+        );
+        let journal_line = event.to_ndjson_line().unwrap();
+        FsMilestoneStore
+            .create_milestone_atomic(base_dir, &record, &snapshot, &journal_line)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn successful_mapping_with_verified_bead() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // br show returns an open bead
+        let show_json = r#"{"id":"other-bead","title":"Other","status":"open","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![MockBrRunner::success(show_json)]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let input = PlannedElsewhereInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Should handle edge case X".to_owned(),
+            mapped_to_bead_id: "other-bead".to_owned(),
+        };
+
+        let now = Utc::now();
+        let outcome = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            false,
+            now,
+        )
+        .await?;
+
+        assert!(outcome.bead_verified);
+        assert!(outcome.stale_warning.is_none());
+        assert!(!outcome.comment_posted);
+        assert_eq!(outcome.mapping.active_bead_id, "active-bead");
+        assert_eq!(outcome.mapping.mapped_to_bead_id, "other-bead");
+        assert_eq!(outcome.mapping.finding_summary, "Should handle edge case X");
+
+        // Verify persistence: read back mappings
+        let mappings = milestone_service::load_planned_elsewhere_mappings(
+            &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
+            base_dir,
+            &milestone_id,
+        )?;
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].active_bead_id, "active-bead");
+        assert!(mappings[0].mapped_bead_verified);
+
+        // Verify journal event was recorded (written as ProgressUpdated
+        // with sub_type metadata for rollback compatibility).
+        let journal = FsMilestoneJournalStore.read_journal(base_dir, &milestone_id)?;
+        let pe_events: Vec<_> = journal
+            .iter()
+            .filter(|e| {
+                e.event_type == MilestoneEventType::ProgressUpdated
+                    && e.metadata
+                        .as_ref()
+                        .and_then(|m| m.get("sub_type"))
+                        .and_then(|v| v.as_str())
+                        == Some("planned_elsewhere_mapped")
+            })
+            .collect();
+        assert_eq!(pe_events.len(), 1);
+        assert_eq!(pe_events[0].bead_id.as_deref(), Some("active-bead"));
+        assert_eq!(
+            pe_events[0].details.as_deref(),
+            Some("Should handle edge case X")
+        );
+        let metadata = pe_events[0].metadata.as_ref().unwrap();
+        assert_eq!(metadata["mapped_to_bead_id"], "other-bead");
+        assert_eq!(metadata["mapped_bead_verified"], true);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_bead_fallback_with_warning() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // br show returns an error (bead doesn't exist)
+        let read_runner = MockBrRunner::new(vec![MockBrRunner::error(1, "bead not found")]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let input = PlannedElsewhereInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Edge case Y".to_owned(),
+            mapped_to_bead_id: "nonexistent-bead".to_owned(),
+        };
+
+        let now = Utc::now();
+        let outcome = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            false,
+            now,
+        )
+        .await?;
+
+        assert!(!outcome.bead_verified);
+        assert!(outcome.stale_warning.is_some());
+        assert!(outcome.stale_warning.unwrap().contains("nonexistent-bead"));
+        assert!(!outcome.comment_posted);
+
+        // Mapping is still persisted with verified=false
+        let mappings = milestone_service::load_planned_elsewhere_mappings(
+            &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
+            base_dir,
+            &milestone_id,
+        )?;
+        assert_eq!(mappings.len(), 1);
+        assert!(!mappings[0].mapped_bead_verified);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closed_bead_is_verified() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // br show returns a closed bead — should still be verified since
+        // closed beads are legitimate planned-elsewhere targets.
+        let show_json = r#"{"id":"closed-bead","title":"Done","status":"closed","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![MockBrRunner::success(show_json)]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let input = PlannedElsewhereInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Edge case Z".to_owned(),
+            mapped_to_bead_id: "closed-bead".to_owned(),
+        };
+
+        let now = Utc::now();
+        let outcome = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            false,
+            now,
+        )
+        .await?;
+
+        assert!(outcome.bead_verified);
+        assert!(outcome.stale_warning.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn comment_posted_on_verified_bead() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // br show returns open bead
+        let show_json = r#"{"id":"target-bead","title":"Target","status":"open","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![MockBrRunner::success(show_json)]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        // comment mutation succeeds
+        let mutation_runner = MockBrRunner::new(vec![MockBrRunner::success("")]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let input = PlannedElsewhereInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Handle retry logic".to_owned(),
+            mapped_to_bead_id: "target-bead".to_owned(),
+        };
+
+        let now = Utc::now();
+        let outcome = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            true,
+            now,
+        )
+        .await?;
+
+        assert!(outcome.bead_verified);
+        assert!(outcome.comment_posted);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn comment_skipped_for_stale_bead() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // br show fails (bead doesn't exist)
+        let read_runner =
+            MockBrRunner::new(vec![MockBrRunner::error(1, "bead not found: ghost-bead")]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let input = PlannedElsewhereInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Edge case".to_owned(),
+            mapped_to_bead_id: "ghost-bead".to_owned(),
+        };
+
+        let now = Utc::now();
+        let outcome = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            true, // post_comment=true, but should be skipped for stale bead
+            now,
+        )
+        .await?;
+
+        assert!(!outcome.bead_verified);
+        assert!(!outcome.comment_posted);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn persistence_survives_reload() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // Record two mappings
+        let show_json1 =
+            r#"{"id":"bead-a","title":"A","status":"open","priority":2,"bead_type":"task"}"#;
+        let show_json2 =
+            r#"{"id":"bead-b","title":"B","status":"open","priority":2,"bead_type":"task"}"#;
+
+        let now = Utc::now();
+
+        // First mapping
+        let read_runner1 = MockBrRunner::new(vec![MockBrRunner::success(show_json1)]);
+        let br_read1 = BrAdapter::with_runner(read_runner1);
+        let mutation_runner1 = MockBrRunner::new(vec![]);
+        let br_mutation1 =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner1));
+
+        reconcile_planned_elsewhere(
+            &br_mutation1,
+            &br_read1,
+            base_dir,
+            "test-ms",
+            &PlannedElsewhereInput {
+                active_bead_id: "active-1".to_owned(),
+                finding_summary: "Finding 1".to_owned(),
+                mapped_to_bead_id: "bead-a".to_owned(),
+            },
+            false,
+            now,
+        )
+        .await?;
+
+        // Second mapping
+        let read_runner2 = MockBrRunner::new(vec![MockBrRunner::success(show_json2)]);
+        let br_read2 = BrAdapter::with_runner(read_runner2);
+        let mutation_runner2 = MockBrRunner::new(vec![]);
+        let br_mutation2 =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner2));
+
+        reconcile_planned_elsewhere(
+            &br_mutation2,
+            &br_read2,
+            base_dir,
+            "test-ms",
+            &PlannedElsewhereInput {
+                active_bead_id: "active-1".to_owned(),
+                finding_summary: "Finding 2".to_owned(),
+                mapped_to_bead_id: "bead-b".to_owned(),
+            },
+            false,
+            now,
+        )
+        .await?;
+
+        // "Restart": read back from fresh store instance
+        let mappings = milestone_service::load_planned_elsewhere_mappings(
+            &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
+            base_dir,
+            &milestone_id,
+        )?;
+        assert_eq!(mappings.len(), 2);
+        let mut mapped_ids: Vec<&str> = mappings
+            .iter()
+            .map(|m| m.mapped_to_bead_id.as_str())
+            .collect();
+        mapped_ids.sort();
+        assert_eq!(mapped_ids, vec!["bead-a", "bead-b"]);
+
+        // Journal also has both events (written as ProgressUpdated with sub_type)
+        let journal = FsMilestoneJournalStore.read_journal(base_dir, &milestone_id)?;
+        let pe_events: Vec<_> = journal
+            .iter()
+            .filter(|e| {
+                e.event_type == MilestoneEventType::ProgressUpdated
+                    && e.metadata
+                        .as_ref()
+                        .and_then(|m| m.get("sub_type"))
+                        .and_then(|v| v.as_str())
+                        == Some("planned_elsewhere_mapped")
+            })
+            .collect();
+        assert_eq!(pe_events.len(), 2);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn transient_error_propagates_instead_of_stale_fallback(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // br show returns a timeout (transient error, not definitive bead-not-found)
+        let read_runner = MockBrRunner::new(vec![Err(BrError::BrTimeout {
+            command: "br show ghost-bead".to_owned(),
+            timeout_ms: 30000,
+        })]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let input = PlannedElsewhereInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Edge case".to_owned(),
+            mapped_to_bead_id: "ghost-bead".to_owned(),
+        };
+
+        let now = Utc::now();
+        let result = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            false,
+            now,
+        )
+        .await;
+
+        assert!(result.is_err(), "transient errors should propagate");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("ghost-bead"),
+            "error should mention the bead: {err}"
+        );
+
+        // No mapping should have been persisted
+        let mappings = milestone_service::load_planned_elsewhere_mappings(
+            &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
+            base_dir,
+            &milestone_id,
+        )?;
+        assert!(mappings.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn short_to_canonical_alias_resolves_bead() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // The reviewer uses the short form "8.5.3" which `br show` doesn't know,
+        // but "9ni.8.5.3" (canonical) succeeds.  The resolver sees that "8.5.3"
+        // does NOT start with prefix "9ni", so it skips Direction 1 and goes
+        // straight to Direction 2 (short→canonical expansion).
+        //   1. br show 8.5.3       → not found
+        //   2. br show 9ni.8.5.3   → success    (short→canonical expansion)
+        let canonical_json = r#"{"id":"9ni.8.5.3","title":"Target","status":"open","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(canonical_json), // 2nd call (popped first)
+            MockBrRunner::error(1, "issue not found: 8.5.3"), // 1st call
+        ]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        // active_bead_id has the "9ni" prefix so milestone_prefix_of can extract it
+        let input = PlannedElsewhereInput {
+            active_bead_id: "9ni.8.5.2".to_owned(),
+            finding_summary: "Short form alias test".to_owned(),
+            mapped_to_bead_id: "8.5.3".to_owned(),
+        };
+
+        let now = Utc::now();
+        let outcome = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            false,
+            now,
+        )
+        .await?;
+
+        assert!(
+            outcome.bead_verified,
+            "short→canonical alias should resolve"
+        );
+        assert!(outcome.stale_warning.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn alias_resolver_does_not_collide_with_different_prefix_bead(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Scenario: bead_id "8.5.3" is stale.  Naïvely stripping the first
+        // segment yields "5.3", which happens to exist as a DIFFERENT bead.
+        // The resolver must NOT verify "5.3" — it should skip Direction 1
+        // (because "8" ≠ milestone prefix "9ni") and go straight to
+        // Direction 2, resolving "9ni.8.5.3".
+        //
+        // Call sequence:
+        //   1. br show 8.5.3       → not found
+        //   2. br show 9ni.8.5.3   → success  (Direction 2)
+        // "5.3" must never be queried.
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        let canonical_json = r#"{"id":"9ni.8.5.3","title":"Target","status":"open","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(canonical_json), // 2nd call (Direction 2)
+            MockBrRunner::error(1, "issue not found: 8.5.3"), // 1st call
+        ]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let input = PlannedElsewhereInput {
+            active_bead_id: "9ni.8.5.2".to_owned(),
+            finding_summary: "Alias collision avoidance test".to_owned(),
+            mapped_to_bead_id: "8.5.3".to_owned(),
+        };
+
+        let now = Utc::now();
+        let outcome = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            false,
+            now,
+        )
+        .await?;
+
+        // If 5.3 were queried, MockBrRunner would panic (no 3rd response).
+        assert!(
+            outcome.bead_verified,
+            "should resolve via Direction 2 to 9ni.8.5.3, never touching 5.3"
+        );
+        assert!(outcome.stale_warning.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn non_missing_bead_exit_error_is_transient_not_stale(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // br show exits non-zero with a message that does NOT indicate a missing bead
+        // (e.g., corrupt state or permission error). Should be transient, not stale.
+        let read_runner = MockBrRunner::new(vec![MockBrRunner::error(
+            1,
+            "internal error: corrupt bead index",
+        )]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let input = PlannedElsewhereInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Edge case".to_owned(),
+            mapped_to_bead_id: "target-bead".to_owned(),
+        };
+
+        let now = Utc::now();
+        let result = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            false,
+            now,
+        )
+        .await;
+
+        // Should propagate as an error (transient), not silently succeed with stale warning
+        assert!(
+            result.is_err(),
+            "non-missing-bead exit error should propagate as transient"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("target-bead"),
+            "error should mention the bead: {err}"
+        );
+
+        // No mapping should have been persisted
+        let mappings = milestone_service::load_planned_elsewhere_mappings(
+            &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
+            base_dir,
+            &milestone_id,
+        )?;
+        assert!(mappings.is_empty());
+
+        Ok(())
+    }
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr24-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T18:42:10.823447616Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nThe amendment identifies a real alias-resolution correctness bug: the current fallback logic can verify and comment on the wrong bead when a short dotted ID is misread as canonical and its first segment is stripped unconditionally. The proposed guardrails and collision regression test are technically sound and improve safety with minimal complexity.\n\n## Votes\n\n- `fr-24-5f171b75`: Accept\n  In `verify_bead_exists()` the stale-path retry order is `br show <input>` then `strip_milestone_prefix(input)` then `prefix + \".\" + input`. Because `strip_milestone_prefix()` removes the first dotted segment from any dotted string, an input like `8.5.3` is retried as `5.3` even when `8.5.3` was already the short form. If `5.3` exists, the function returns `Verified(\"5.3\")`, which incorrectly marks the mapping as valid and causes comment posting to target the wrong bead. That is a real silent data-integrity defect, not just a test gap. Restricting canonical-to-short fallback to IDs whose existing prefix matches the active milestone, and only doing short-to-canonical expansion when the input lacks any canonical prefix, is the correct minimal fix. Adding the proposed collision test is also necessary because the current regression only covers the non-collision call order.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 24
+}

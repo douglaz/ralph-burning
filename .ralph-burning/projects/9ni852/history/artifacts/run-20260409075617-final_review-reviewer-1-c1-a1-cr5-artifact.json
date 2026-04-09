@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T10:28:50.541915026Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound three correctness issues: final-review votes never see the planned-elsewhere target metadata that suppresses restarts, successful comment attempts are treated as permanent even when the follow-up sync fails, and planned-elsewhere verification collapses every `br show` exit failure into a stale/not-found warning.\n\n## Amendments\n\n1. Fix `src/contexts/workflow_composition/final_review.rs:1850-1893` and `src/contexts/workflow_composition/final_review.rs:1896-1933` so planner/voter/arbiter prompts include the planned-elsewhere classification and `mapped_to_bead_id` for each amendment before `src/contexts/workflow_composition/final_review.rs:1554-1590` uses that metadata to suppress restarts. Right now the panel only votes on the amendment body, so a reviewer can accept the concern without ever seeing or approving the 'planned elsewhere, mapped to bead X' claim that decides whether the active bead restarts.\n   Rationale: This is a correctness hole in the consensus flow: restart/no-restart is being driven by metadata the reviewers never saw.\n2. Fix `src/contexts/automation_runtime/success_reconciliation.rs:733-763` so a planned-elsewhere mapping is not marked permanently verified until any posted `br comment` has also been durably flushed. As written, `verify_and_comment_mappings` reports `comment_posted` as soon as `br comment` returns `Ok` (`src/contexts/automation_runtime/planned_elsewhere.rs:285-319`), `sync_flush()` failures are only logged, and the code still appends a verified mapping afterward. On replay that mapping is filtered out as already verified, so the comment can be lost permanently after a flush failure.\n   Rationale: A transient sync failure turns an attempted comment into a silent permanent drop, which breaks durability for the optional cross-bead context.\n3. Fix `src/contexts/automation_runtime/planned_elsewhere.rs:82-85` so only true missing-bead exits are downgraded to a stale-warning fallback. The current blanket `Err(BrError::BrExitError { .. }) => not found` path treats every non-zero `br show` exit as definitive staleness, even though the rest of the codebase already distinguishes missing-bead errors from other `br` failures by inspecting the message (`src/cli/run.rs:314-327`). With the current logic, corrupt bead state or other `br` failures will be misreported as 'not found' and the active bead can proceed without a real verification.\n   Rationale: This masks operational failures as benign stale references, which can let the workflow complete on bad assumptions.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}

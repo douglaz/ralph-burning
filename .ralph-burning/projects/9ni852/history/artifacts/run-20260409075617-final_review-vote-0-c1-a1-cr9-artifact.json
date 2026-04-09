@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-0-c1-a1-cr9-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-0-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T11:56:23.249837006Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nVerified the amendment against the actual code. Lines 770-805 of success_reconciliation.rs confirm the durably_verified HashSet is keyed only by mapped_to_bead_id (&str). The verify_mappings function (planned_elsewhere.rs:271) iterates all unverified mappings for an active bead, and nothing prevents two distinct findings from mapping to the same target bead. The too-coarse key creates a real correctness defect: if persist succeeds for finding #1 but fails for finding #2 (both targeting the same bead), the HashSet check passes for #2 anyway, posting a comment without durable backing. On replay, #2 remains unverified, producing a duplicate comment. The proposed composite key fix is sound.\n\n## Votes\n\n- `fr-9-a9fe286e`: Accept\n  Confirmed in code: line 770 declares `durably_verified: HashSet<&str>` keyed solely on `mapped_to_bead_id`, line 793 inserts only that ID, and line 805 gates comment posting on containment in that set. The MappingVerificationOutcome struct (planned_elsewhere.rs:250) carries the full mapping (active_bead_id, finding_summary, mapped_to_bead_id), and verify_mappings (line 271) processes all unverified mappings for the active bead — two distinct findings can absolutely map to the same target bead. When persist fails for one finding but succeeds for another sharing the same mapped_to_bead_id, Phase 3 incorrectly allows the comment for the failed-persist finding. On replay the mapping is still unverified, so both persist and comment are re-attempted, producing a duplicate comment. The fix (composite key or per-outcome verified tracking) is necessary, straightforward, and low-risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 9
+}

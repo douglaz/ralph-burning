@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-0-c1-a1-cr11-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-0-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T12:34:45.350764026Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify genuine bugs confirmed by code inspection. Amendment fr-11-11949bb2 correctly identifies that the run_id prefix check is insufficient after rollbacks — abandoned aggregate files remain on disk and will be replayed, corrupting planned-elsewhere mappings. Amendment fr-11-fa8dbab2 correctly identifies that treating Closed beads as Stale is a semantic inversion — closed means the work was completed, which should be the verification success case.\n\n## Votes\n\n- `fr-11-11949bb2`: Accept\n  Confirmed by reading the code. persist_final_review_aggregate_records (engine.rs:7499-7538) writes aggregates to disk at engine.rs:2632, BEFORE the journal commit at engine.rs:2656-2668. The payload_id incorporates rollback_count (engine.rs:7386-7389, format: '{base_id}-rb{rollback_count}-payload'), but reconstruct_missing_pe_mappings at line 910 only checks payload_id.starts_with(run_id). Since all rollback variants of a payload_id share the same run_id prefix, this filter admits aggregates from ALL rollback rounds — including abandoned ones whose review results were never committed to the journal. After a rollback, the pre-rollback aggregate files persist on disk, and this function will reconstruct planned-elsewhere mappings from those abandoned review attempts, then persist them to the journal (lines 949-961), corrupting the mapping state. The fix needs to either cross-reference against committed journal events or include rollback_count in the filter criteria.\n- `fr-11-fa8dbab2`: Accept\n  Confirmed by reading planned_elsewhere.rs:60-80. The verify_bead_exists function explicitly checks detail.status == BeadStatus::Closed at line 74 and returns BeadVerification::Stale — but a Closed bead means the planned-elsewhere work was completed successfully. This is the opposite of stale; it's the strongest possible confirmation that the mapping is valid. The downstream impact is significant: at line 170, comment posting is gated on bead_verified being true, so a correctly completed bead never gets its comment posted. Additionally, every subsequent reconciliation replay will re-check the closed bead, get Stale again, and emit warning noise. Closed should map to BeadVerification::Verified, not Stale.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 11
+}

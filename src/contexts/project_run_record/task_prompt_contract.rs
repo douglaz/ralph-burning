@@ -268,6 +268,83 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
     }
 }
 
+/// Extract bead IDs from the "Already Planned Elsewhere" section of a
+/// canonical bead execution prompt.  Returns the set of bead IDs that
+/// reviewers may reference as `mapped_to_bead_id`.
+///
+/// Each bullet line in the section starts with `- {bead_id} (...)`.
+/// The bead ID is the first whitespace-delimited token after `- `.
+///
+/// For each canonical (qualified) bead ID like `milestone.short_id`, the
+/// short-form alias `short_id` is also included so reviewers can reference
+/// either form.  This mirrors `planned_bead_membership_refs` in bundle.rs.
+pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
+    let mut result = std::collections::HashSet::new();
+    let section_header = format!("## {SECTION_ALREADY_PLANNED_ELSEWHERE}");
+    let mut in_section = false;
+
+    for line in prompt.lines() {
+        if in_section {
+            // Stop at the next `## ` heading.
+            if line.starts_with("## ") {
+                break;
+            }
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("- ") {
+                // The bead ID is the first token before space or '('.
+                let id = rest
+                    .split(|c: char| c.is_whitespace() || c == '(')
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if !id.is_empty() {
+                    result.insert(id.to_owned());
+                    // Also accept the short-form alias: strip the milestone
+                    // prefix (everything up to and including the first dot).
+                    if let Some(short) = strip_milestone_prefix(id) {
+                        result.insert(short.to_owned());
+                    }
+                }
+            }
+        } else if line.trim() == section_header {
+            in_section = true;
+        }
+    }
+
+    result
+}
+
+/// Strip the milestone-id prefix from a canonical bead ID.
+///
+/// Canonical bead IDs have the form `{milestone_id}.{short_id}` where
+/// `milestone_id` does not contain dots.  Returns the `short_id` portion
+/// if a dot separator is found, or `None` if the ID has no prefix.
+pub fn strip_milestone_prefix(canonical_id: &str) -> Option<&str> {
+    let idx = canonical_id.find('.')?;
+    let short = &canonical_id[idx + 1..];
+    if short.is_empty() {
+        None
+    } else {
+        Some(short)
+    }
+}
+
+/// Extract the milestone prefix from a canonical bead ID.
+///
+/// Canonical bead IDs have the form `{milestone_prefix}.{short_id}` where the
+/// milestone prefix is a short alphanumeric string (e.g. `9ni`).  Returns the
+/// prefix portion before the first dot, or `None` if the ID contains no dot
+/// or the prefix is empty.
+pub fn milestone_prefix_of(canonical_id: &str) -> Option<&str> {
+    let idx = canonical_id.find('.')?;
+    let prefix = &canonical_id[..idx];
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix)
+    }
+}
+
 /// Default review policy for canonical bead execution prompts.
 pub fn default_review_policy() -> Vec<String> {
     vec![
@@ -517,5 +594,76 @@ mod tests {
         );
 
         assert!(validate_canonical_prompt_shape(&prompt).is_ok());
+    }
+
+    #[test]
+    fn extract_pe_bead_ids_normal_bullets() {
+        let prompt = "## Already Planned Elsewhere\n\n- bead-A (some title) - relationship\n- bead-B (another) - relationship\n";
+        let ids = extract_pe_bead_ids(prompt);
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("bead-A"));
+        assert!(ids.contains("bead-B"));
+    }
+
+    #[test]
+    fn extract_pe_bead_ids_no_pe_section_returns_empty() {
+        let prompt = "## Milestone Summary\n\nSome text\n\n## Acceptance Criteria\n\nMore text\n";
+        let ids = extract_pe_bead_ids(prompt);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn extract_pe_bead_ids_pe_section_no_bullets_returns_empty() {
+        let prompt =
+            "## Already Planned Elsewhere\n\nNo explicit planned-elsewhere items were supplied.\n";
+        let ids = extract_pe_bead_ids(prompt);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn extract_pe_bead_ids_multiple_beads_captured() {
+        let prompt = "## Already Planned Elsewhere\n\n- alpha (Title A) - covers X\n- beta (Title B) - covers Y\n- gamma (Title C) - covers Z\n";
+        let ids = extract_pe_bead_ids(prompt);
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains("alpha"));
+        assert!(ids.contains("beta"));
+        assert!(ids.contains("gamma"));
+    }
+
+    #[test]
+    fn extract_pe_bead_ids_stops_at_next_heading() {
+        let prompt = "## Already Planned Elsewhere\n\n- bead-X (title) - rel\n\n## Review Policy\n\n- bead-Y (should not be captured)\n";
+        let ids = extract_pe_bead_ids(prompt);
+        assert_eq!(ids.len(), 1);
+        assert!(ids.contains("bead-X"));
+        assert!(!ids.contains("bead-Y"));
+    }
+
+    #[test]
+    fn extract_pe_bead_ids_includes_short_form_aliases() {
+        let prompt = "## Already Planned Elsewhere\n\n- 9ni.8.5.3 (Handle missing work) - downstream\n- plain-id (No prefix) - adjacent\n";
+        let ids = extract_pe_bead_ids(prompt);
+        // 9ni.8.5.3 produces both canonical and short form; plain-id has no dot prefix
+        assert!(ids.contains("9ni.8.5.3"));
+        assert!(ids.contains("8.5.3"));
+        assert!(ids.contains("plain-id"));
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn strip_milestone_prefix_extracts_short_id() {
+        assert_eq!(strip_milestone_prefix("9ni.8.5.3"), Some("8.5.3"));
+        assert_eq!(strip_milestone_prefix("ms-alpha.bead-4"), Some("bead-4"));
+        assert_eq!(strip_milestone_prefix("no-dots"), None);
+        assert_eq!(strip_milestone_prefix("trailing."), None);
+    }
+
+    #[test]
+    fn milestone_prefix_of_extracts_prefix() {
+        assert_eq!(milestone_prefix_of("9ni.8.5.3"), Some("9ni"));
+        assert_eq!(milestone_prefix_of("ms-alpha.bead-4"), Some("ms-alpha"));
+        assert_eq!(milestone_prefix_of("no-dots"), None);
+        assert_eq!(milestone_prefix_of(".leading-dot"), None);
+        assert_eq!(milestone_prefix_of("trailing."), Some("trailing"));
     }
 }

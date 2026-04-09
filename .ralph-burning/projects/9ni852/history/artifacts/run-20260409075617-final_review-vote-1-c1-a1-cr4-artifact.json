@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T10:10:26.559029011Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nThree amendments are technically sound: the journal/sidecar durability gap is real, the verified-row replay bug is real when identity is preserved at the finding level, and the missing tests cover important untested paths. I reject the bead-pair-only dedup amendment because that fix would collapse distinct planned-elsewhere findings that legitimately share the same active bead and mapped-to bead.\n\n## Votes\n\n- `fr-4-5b7bcf96`: Reject\n  The replay bug is real, but deduplicating by `(active_bead_id, mapped_to_bead_id)` is too coarse. `PlannedElsewhereMapping` is recorded per finding, `finding_summary` is persisted, and downstream comments include that summary. Two distinct findings from the same active bead can validly map to the same target bead; collapsing them by bead pair would lose data and suppress legitimate verification/comment work. This needs a finding-level identity, not bead-pair-only deduplication.\n- `fr-4-291dd0ae`: Accept\n  These tests cover important untested behavior. `rebuild_planned_elsewhere_from_journal()` is the recovery path for sidecar loss/write failure, and it depends on metadata extraction that is easy to regress. Verifying successful rebuild, full field extraction, and skip-on-missing-required-metadata behavior is worthwhile. A test around the post-success verified re-persistence loop is also justified because that path is central to preventing replayed verification/comment duplication.\n- `fr-4-1a01895e`: Accept\n  This accurately describes a real defect: the append-only write path adds a verified row, but the load path returns all rows, so the original unverified row is replayed and reprocessed after restart. Using an identity that includes `finding_summary` is materially better than bead-pair-only dedup because the mapping is per finding, not just per target bead. Collapsing by identity on load, or otherwise updating the existing logical record, is a sound fix.\n- `fr-4-766dd780`: Accept\n  This is a real durability bug. `record_planned_elsewhere_mapping()` writes the journal first and the sidecar second, but `load_planned_elsewhere_mappings()` only rebuilds from the journal when the sidecar is empty. If the journal append succeeds and the sidecar append fails while older sidecar rows already exist, restart reads stale sidecar state and silently drops the newer journaled mapping. That contradicts the stated journal-first durability model; the loader must reconcile with or rebuild from the journal when divergence is possible.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

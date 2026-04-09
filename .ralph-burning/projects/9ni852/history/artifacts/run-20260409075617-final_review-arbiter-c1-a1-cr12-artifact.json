@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-arbiter-c1-a1-cr12-artifact",
+  "payload_id": "run-20260409075617-final_review-arbiter-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T13:03:39.641293957Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected the cycle-scoped dedup key amendment. The existing completion_round-only key in latest_by_round is semantically correct because cycle advances represent retry/remediation attempts within the same completion round, not independent work streams. A later cycle at the same round supersedes the earlier one, so keeping only the latest aggregate is the intended behavior. Keying by (cycle, completion_round) would risk reconstructing stale planned-elsewhere mappings from abandoned cycles.\n\n## Rulings\n\n- `fr-12-50625e05`: Reject\n  Reviewer 1's argument is correct: within a single completion_round, multiple cycles represent superseding remediation attempts, not independent histories. The advance_cycle method preserves completion_round because cycles are retries within the same round's scope — if cycle 1 produced a final-review aggregate that was insufficient, cycle 2's aggregate is the corrected replacement. The existing latest-by-created_at dedup correctly selects the authoritative (most recent) aggregate for each completion_round. Keying by (cycle, completion_round) would reconstruct planned-elsewhere mappings from abandoned/superseded cycle attempts alongside the corrected ones, producing stale or contradictory state. The overwrite behavior is intentional, not a bug — the code comment at line 893-895 explicitly says 'pre-rollback or abandoned attempts are skipped', which is precisely what the latest-aggregate-per-round logic achieves. While the planner and reviewer 0 correctly identify the mechanical possibility of overwrites, they don't address whether those overwrites represent correct or incorrect behavior. Given the domain semantics of cycle-as-retry, the current behavior is correct.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 12
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-0-c1-a1-cr10-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-0-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T12:15:26.223412851Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify genuine defects in the planned-elsewhere feature. Amendment fr-10-91f7448a identifies an unscoped scan across all project history that can resurrect stale mappings from older runs. Amendment fr-10-872f23a9 identifies that the reviewer prompt template contains no guidance for producing mapped_to_bead_id, rendering the feature effectively dead at the reviewer stage. Both are accepted.\n\n## Votes\n\n- `fr-10-91f7448a`: Accept\n  Confirmed by code inspection. `reconstruct_missing_pe_mappings` (line 871) calls `FsArtifactStore.list_payloads(base_dir, &pid)` which returns ALL payloads for the entire project — every run, every completion round, every abandoned attempt. It then iterates every `FinalReview`/`StageAggregate` record without any run-scoping filter. Meanwhile, the parent function `reconcile_success` (line 144) already receives `run_id: &str` as a parameter, but `verify_planned_elsewhere_after_success` (line 691) — the intermediate caller — neither accepts nor forwards it. The dedup by (finding_summary, mapped_to_bead_id) identity key is insufficient protection: the same finding text could legitimately map to different beads across runs, or a mapping valid in a superseded run may reference a bead that has since been closed, reprioritized, or had its scope changed. The payload_id already encodes the run identifier (e.g., `run-20260409075617-...`), making run-scoped filtering straightforward. This is a real data integrity bug that worsens with each project restart.\n- `fr-10-872f23a9`: Accept\n  Confirmed by code inspection. The `FINAL_REVIEW_REVIEWER_DEFAULT` template (template_catalog.rs:220-244) contains zero mention of planned-elsewhere classification, `mapped_to_bead_id`, or any guidance on when/how to set this field. The reviewer sees the field only as a bare `Option<String>` in the JSON schema (via `FinalReviewProposal`'s `JsonSchema` derive at panel_contracts.rs:150), with no instructions on what constitutes a planned-elsewhere finding, what bead ID format to use, or how to determine which bead owns a concern. The planned-elsewhere prompt text was added only to the voter prompt (line 1880) and arbiter prompt (line 1937), which render it as informational context on amendments that already have `mapped_to_bead_id` set — but by that point the field needed to have been produced upstream by the reviewer. The conservative merge logic in `merge_final_review_amendments` (line 167) correctly clears on disagreement, but this is moot since reviewers have no guidance to produce the field in the first place. Without explicit reviewer instructions, `mapped_to_bead_id` will almost always be `None`, making the entire planned-elsewhere feature effectively inert at the review stage.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 10
+}

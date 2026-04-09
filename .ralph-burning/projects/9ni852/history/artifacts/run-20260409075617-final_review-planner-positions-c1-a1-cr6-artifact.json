@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-planner-positions-c1-a1-cr6-artifact",
+  "payload_id": "run-20260409075617-final_review-planner-positions-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T10:48:37.877199641Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll three amendments identify genuine bugs verified against the actual source code. Amendment fr-6-2b17af9b identifies a durability gap where stage commits happen before planned-elsewhere mappings are persisted, with the helper silently swallowing failures. Amendment fr-6-f0e1a47f identifies missing semantic validation on mapped_to_bead_id, where empty strings or garbage from model output bypass the restart loop via an is_none() check that treats any Some(...) as valid. Amendment fr-6-bf0488dc identifies a replay-safety gap where comments are posted and flushed before the verified mapping row is written, causing duplicate comments on crash-replay.\n\n## Votes\n\n- `fr-6-2b17af9b`: Accept\n  Verified: engine.rs commits the stage event at lines 2656-2668 and only then calls record_planned_elsewhere_amendments() at lines 2697-2712 (and similarly at 3081-3090 for round-advance). The helper returns void and logs-and-continues on all failure paths (lines 7555-7658), meaning a transient storage failure or crash silently drops the mapping. Success reconciliation at lines 686-704 only loads whatever mappings exist, so the lost mapping is never reconstructed. This is a genuine durability defect — the mapping should either be part of the atomic stage commit or reconstructable from the durable final-review aggregate.\n- `fr-6-f0e1a47f`: Accept\n  Verified: mapped_to_bead_id is deserialized as Option<String> with only JSON schema type validation (panel_contracts.rs line 150). The restart decision at final_review.rs line 1556 uses .is_none() which returns false for Some(\"\"), causing the empty/garbage string to suppress restart_required. The engine at lines 7610-7618 records the value verbatim via as_deref() which passes through empty strings. Since model output can contain empty strings or malformed IDs, this allows invalid planned-elsewhere markers to skip the reopen/fix loop — a real input validation defect at a trust boundary with LLM output.\n- `fr-6-bf0488dc`: Accept\n  Verified: success_reconciliation.rs lines 733-777 first calls verify_and_comment_mappings() which posts comments (planned_elsewhere.rs lines 305-333), then calls sync_flush() at line 748, and only then writes the verified mapping via record_planned_elsewhere_mapping() at lines 755-779. A crash between flush and the verified-mapping write leaves the mapping as unverified on disk. On replay, the unverified mapping is reprocessed (filtered at planned_elsewhere.rs line 278 by mapped_bead_verified == false) and the same comment is posted again with no deduplication. This is a genuine replay-safety bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 6
+}

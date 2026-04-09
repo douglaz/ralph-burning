@@ -142,6 +142,12 @@ pub struct FinalReviewProposal {
     /// Optional reviewer-provided rationale for why this amendment matters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rationale: Option<String>,
+    /// When set, this finding is classified as "planned-elsewhere": the concern
+    /// is valid but already covered by the referenced bead. Accepted
+    /// planned-elsewhere proposals are routed to the mapping handler instead of
+    /// the amendment queue, allowing the active bead to proceed without restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapped_to_bead_id: Option<String>,
 }
 
 /// Payload returned by each final-review reviewer during proposal collection.
@@ -214,6 +220,10 @@ pub struct FinalReviewCanonicalAmendment {
     pub amendment_id: String,
     pub normalized_body: String,
     pub sources: Vec<FinalReviewAmendmentSource>,
+    /// When set, this amendment is classified as "planned-elsewhere" and will
+    /// be routed to the mapping handler instead of the amendment queue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapped_to_bead_id: Option<String>,
 }
 
 /// Canonical aggregate record for the final-review panel.

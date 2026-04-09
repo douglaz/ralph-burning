@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr23-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T18:19:53.824339748Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nThree amendments identify real correctness or data-integrity gaps in planned-elsewhere handling. One amendment is only a cosmetic/readability observation and does not rise to the level of a defect.\n\n## Votes\n\n- `fr-23-b775ec2e`: Reject\n  The cited code is redundant, but still logically correct. The shadowed local and repeated lowercasing are trivial, and removing the first disjunct would be a readability cleanup rather than a correctness, safety, robustness, or meaningful maintainability fix.\n- `fr-23-d2e853a3`: Accept\n  `reconcile_planned_elsewhere` can persist legacy mappings with `run_id: None`, while `verify_planned_elsewhere_after_success` only considers mappings whose `run_id` matches `Some(run_id)`. That excludes runless legacy records from the only post-run verification/comment path, so they can remain permanently unverified even though `load_planned_elsewhere_mappings` still surfaces them. That is a real backward-compatibility and state-repair gap.\n- `fr-23-bd15d454`: Accept\n  The prompt contract and final-review pipeline explicitly allow short-form bead IDs, but `verify_bead_exists` only retries canonical-to-short fallback and never expands an already-short ID back to canonical form. In this repo, `br show 9ni.8.5.3` succeeds while `br show 8.5.3` returns `ISSUE_NOT_FOUND`, so an accepted valid mapping can be misclassified as stale, left `mapped_bead_verified=false`, and skip comment posting. That is a real correctness bug.\n- `fr-23-6578ae22`: Accept\n  The sentinel write is the only durable journal signal that a completion round ran and produced zero planned-elsewhere mappings. `load_planned_elsewhere_mappings` depends on that sentinel to advance `max_round_by_bead_run`; without it, older mappings remain authoritative. `verify_planned_elsewhere_after_success` can reconstruct accepted mappings from final-review aggregates, but it cannot synthesize a zero-PE round marker, so a sentinel write failure can permanently preserve stale earlier-round mappings. That is a real data-integrity defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 23
+}

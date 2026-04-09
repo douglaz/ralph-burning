@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T11:55:03.136125548Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the diff and the changed implementation in `planned_elsewhere.rs` and `success_reconciliation.rs`. I found 1 correctness issue in the new durable-comment gating: it tracks persistence by target bead id instead of by mapping identity, so duplicate comments can still be emitted when multiple findings map to the same bead.\n\n## Amendments\n\n1. `src/contexts/automation_runtime/success_reconciliation.rs:770-805` still keys the new `durably_verified` gate only by `mapped_to_bead_id`. That is too coarse. If one active bead has two planned-elsewhere findings that both map to the same existing bead, and persisting the verified row succeeds for the first finding but fails for the second, line 793 inserts the shared bead id and line 805 will still post the second comment. The second mapping remains unverified in milestone state, so replay will comment it again. The same bug also lets a transiently failed verification slip through once another mapping to the same bead was persisted. Phase 3 needs to gate on the full mapping identity (for example `(active_bead_id, finding_summary, mapped_to_bead_id)`) and/or retain an explicit per-outcome `verified` check.\n   Rationale: The change is meant to eliminate duplicate `br comment` postings after partial persistence failures, but in the multi-finding same-target case it still produces duplicates and breaks the idempotence guarantee.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 9
+}

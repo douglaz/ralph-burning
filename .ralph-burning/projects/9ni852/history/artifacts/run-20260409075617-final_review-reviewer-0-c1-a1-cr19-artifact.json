@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr19-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T16:09:24.385720585Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed 5 changed source files implementing planned-elsewhere reconciliation with PE-set validation, authoritative round tracking, and journal round supersession. The changes are well-structured with consistent fail-closed validation in final_review.rs and engine.rs. The u32 truncation fix in service.rs is correct. Tests pass (one pre-existing flaky failure unrelated to these changes). Found one defense-in-depth gap in the reconstruction path.\n\n## Amendments\n\n1. In `src/contexts/automation_runtime/success_reconciliation.rs`, the `reconstruct_missing_pe_mappings` function (around line 975) does NOT validate `mapped_to_bead_id` against the allowed PE set from the prompt, unlike both `engine.rs` (line 7641) and `final_review.rs` (line 1516-1519) which explicitly do. The reconstructed mappings go through `verify_bead_exists()` (which checks the bead exists in `br`) but this is not equivalent — a bead could exist but not be in the prompt's allowed PE set. While the final-review aggregate that the reconstruction reads from should already have been validated by `final_review.rs`, adding the same `extract_pe_bead_ids` check here would maintain the fail-closed invariant and protect against corrupted or tampered aggregate files on disk.\n   Rationale: The codebase establishes a clear \"fail closed\" pattern: both engine.rs and final_review.rs validate mapped_to_bead_id against the prompt's allowed PE set before accepting it. The reconstruction path bypasses this check, creating an inconsistency. If an aggregate file on disk were corrupted or if the prompt's PE section changed between the original recording and reconstruction, an unauthorized PE mapping could be accepted. Defense-in-depth demands the same validation at all entry points.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 19
+}

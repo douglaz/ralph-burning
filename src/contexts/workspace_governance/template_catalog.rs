@@ -229,6 +229,19 @@ end-to-end. For each issue found, cite specific files and line numbers.
 Ignore style and cosmetics — only report real bugs, safety problems, \
 correctness gaps, and significant maintainability risks.
 
+## Planned-Elsewhere Classification
+
+If a finding is a valid concern but is already covered by another bead listed \
+in the \"Already Planned Elsewhere\" section of the project prompt, you may \
+classify it as planned-elsewhere instead of proposing a fix. To do this, set \
+the `mapped_to_bead_id` field to the bead ID that owns the concern. \
+Planned-elsewhere amendments do not trigger a restart — the concern is recorded \
+as already covered by the referenced bead.
+
+Only use this classification when you are confident the mapped-to bead's scope \
+genuinely covers the finding. When in doubt, omit `mapped_to_bead_id` and \
+propose a normal amendment.
+
 {{task_prompt_contract}}\
 \n\n\
 ## Project Prompt

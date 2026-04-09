@@ -137,6 +137,7 @@ fn final_review_proposal_payload_round_trips() {
         amendments: vec![FinalReviewProposal {
             body: "Tighten the final wording.".to_string(),
             rationale: Some("Clarifies the edge case.".to_string()),
+            mapped_to_bead_id: None,
         }],
     };
     let json = serde_json::to_string(&payload).expect("serializes");
@@ -180,6 +181,7 @@ fn final_review_aggregate_payload_round_trips() {
         amendment_id: "fr-1-deadbeef".to_string(),
         normalized_body: "Tighten the final wording.".to_string(),
         sources: vec![],
+        mapped_to_bead_id: None,
     };
     let payload = FinalReviewAggregatePayload {
         restart_required: true,
@@ -202,6 +204,56 @@ fn final_review_aggregate_payload_round_trips() {
     let json = serde_json::to_string(&payload).expect("serializes");
     let restored: FinalReviewAggregatePayload = serde_json::from_str(&json).expect("deserializes");
     assert_eq!(payload, restored);
+}
+
+#[test]
+fn final_review_aggregate_planned_elsewhere_no_restart() {
+    // When all accepted amendments are planned-elsewhere, restart_required
+    // should be false and the summary should reflect that.
+    let amendment = FinalReviewCanonicalAmendment {
+        amendment_id: "fr-1-deadbeef".to_string(),
+        normalized_body: "Tighten the final wording.".to_string(),
+        sources: vec![],
+        mapped_to_bead_id: Some("other-bead-42".to_string()),
+    };
+    let payload = FinalReviewAggregatePayload {
+        restart_required: false,
+        force_completed: false,
+        total_reviewers: 2,
+        total_proposed_amendments: 1,
+        unique_amendment_count: 1,
+        accepted_amendment_ids: vec!["fr-1-deadbeef".to_string()],
+        rejected_amendment_ids: vec![],
+        disputed_amendment_ids: vec![],
+        amendments: vec![amendment.clone()],
+        final_accepted_amendments: vec![amendment],
+        final_review_restart_count: 0,
+        max_restarts: 2,
+        summary:
+            "Final review accepted 1 amendment(s), all planned-elsewhere; no restart required."
+                .to_string(),
+        exhausted_count: 0,
+        probe_exhausted_count: 0,
+        effective_min_reviewers: 2,
+    };
+
+    // Verify the payload round-trips correctly with planned-elsewhere fields.
+    let json = serde_json::to_string(&payload).expect("serializes");
+    let restored: FinalReviewAggregatePayload = serde_json::from_str(&json).expect("deserializes");
+    assert_eq!(payload, restored);
+
+    // Key assertions: restart is not required and the mapped_to_bead_id is preserved.
+    assert!(
+        !restored.restart_required,
+        "all planned-elsewhere should not restart"
+    );
+    assert_eq!(
+        restored.final_accepted_amendments[0]
+            .mapped_to_bead_id
+            .as_deref(),
+        Some("other-bead-42"),
+        "mapped_to_bead_id must survive serialization round-trip"
+    );
 }
 
 #[test]

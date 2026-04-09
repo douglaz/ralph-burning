@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-planner-positions-c1-a1-cr20-artifact",
+  "payload_id": "run-20260409075617-final_review-planner-positions-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T16:48:08.918960472Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real, verified bugs in the planned-elsewhere mapping pipeline. Amendment dc14e164 addresses a data-loss risk where re-reading the mutable prompt from disk during persistence/reconstruction can silently drop accepted findings. Amendment 39844465 addresses an API contract violation where the public load_planned_elsewhere_mappings function returns stale round-1 mappings when a later round resolved the concern with zero mappings, despite a workaround existing in one call site.\n\n## Votes\n\n- `fr-20-dc14e164`: Accept\n  Code investigation confirms the vulnerability is real. final_review.rs reads the prompt once at function start and validates consistently against it, but engine.rs:7619-7627 and success_reconciliation.rs:976-978 independently re-read the mutable prompt from disk during persistence and reconstruction. If the prompt file changes between final-review completion and these later stages (due to legitimate update, transient I/O error, or configuration drift), accepted amendments with valid mapped_to_bead_id values are silently skipped — engine.rs emits only a Warn log, and success_reconciliation.rs logs nothing at all. This is a silent data-loss path for accepted findings. The proposed fix — using the already-validated final-review result or an immutable prompt snapshot — is sound because the FinalReviewResult.final_accepted_amendments have already been validated twice against the correct prompt state and persisted in the aggregate, making them the authoritative source of truth.\n- `fr-20-39844465`: Accept\n  Code investigation confirms the bug. service.rs:2516-2535 builds max_round_by_bead_run only by iterating over existing mappings, so if round 2 resolves a concern by emitting zero PE mappings, it never appears in the HashMap and round-1 mappings survive indefinitely. While success_reconciliation.rs:741-759 works around this by consulting final-review aggregates for the authoritative max round, the public load_planned_elsewhere_mappings API (exported from milestone_record module) does not apply this correction. Any caller using this public API directly — current or future — gets stale round-1 mappings. This is a real API contract violation: the function's contract implies it returns current state, but it can return superseded mappings. The fix should be in the canonical loader itself (service.rs), not papered over in one consumer. The planned_elsewhere.ndjson projection, while documented as stale, compounds the inconsistency for any tooling that reads it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 20
+}

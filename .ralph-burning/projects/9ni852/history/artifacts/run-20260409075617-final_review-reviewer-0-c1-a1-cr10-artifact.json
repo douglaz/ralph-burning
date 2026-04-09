@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr10-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T12:00:32.980428130Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the planned-elsewhere reconciliation implementation. The code is well-structured with clear separation of concerns: panel_contracts.rs defines the schema, final_review.rs handles amendment classification and consensus, engine.rs partitions amendments and records mappings, planned_elsewhere.rs handles verification and commenting, and success_reconciliation.rs ties it together post-run. Key design strengths: (1) conservative merge strategy for conflicting mapped_to_bead_id across reviewers, (2) three-phase verify→persist→comment approach that prevents duplicate comments on replay, (3) journal-as-source-of-truth with NDJSON sidecar as write-through projection, (4) reconstruct_missing_pe_mappings covers failure window between stage commit and mapping recording, (5) transient vs definitive error distinction in bead verification prevents false stale-bead downgrades. Tests cover all acceptance criteria: successful mapping, stale bead fallback, journal recording, persistence across reload, transient error propagation, closed-bead-is-stale, comment posting/skipping, and round-trip serialization. All tests pass. No bugs or safety issues found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 10
+}

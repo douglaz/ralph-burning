@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-arbiter-c1-a1-cr4-artifact",
+  "payload_id": "run-20260409075617-final_review-arbiter-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T10:13:31.961533500Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected fr-4-5b7bcf96 because its proposed dedup key (active_bead_id, mapped_to_bead_id) is too coarse for the data model. PlannedElsewhereMapping is recorded per finding with finding_summary as a meaningful field used in downstream comments, so the same bead pair can legitimately have multiple distinct mappings. The replay duplication bug is real, but the fix belongs in the companion amendment fr-4-1a01895e which uses the correct (active_bead_id, finding_summary, mapped_to_bead_id) key that preserves distinct findings while eliminating stale duplicate rows.\n\n## Rulings\n\n- `fr-4-5b7bcf96`: Reject\n  The underlying replay bug is real and unanimously confirmed: read_mappings() returns all NDJSON lines without deduplication, causing stale unverified rows to be reprocessed. However, the proposed dedup key (active_bead_id, mapped_to_bead_id) is too coarse. Code inspection shows PlannedElsewhereMapping is created per finding, finding_summary is a distinct field used in downstream br comments (format!(\"Planned-elsewhere mapping from {}: {}\", mapping.active_bead_id, mapping.finding_summary)), and a single active bead can legitimately produce multiple distinct findings that map to the same target bead. Deduplicating by bead pair only would collapse these distinct mappings, silently dropping legitimate findings and their associated verification work and comments. Reviewer 2's rejection rationale is correct on this point. The companion amendment fr-4-1a01895e proposes the correct finer-grained key (active_bead_id, finding_summary, mapped_to_bead_id) which preserves distinct per-finding identity while still solving the replay duplication bug. Accepting both amendments would create contradictory implementation guidance. The bug fix should use the finding-level identity key, not the bead-pair-only key.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

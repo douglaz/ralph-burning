@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T12:37:29.307358057Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments identify real correctness bugs. The first exposes replay of uncommitted or rolled-back final-review aggregates during planned-elsewhere reconstruction. The second shows that closed mapped-to beads are being misclassified as stale even though a closed bead still satisfies the \"already covered elsewhere\" contract.\n\n## Votes\n\n- `fr-11-11949bb2`: Accept\n  `reconstruct_missing_pe_mappings` currently accepts any `final_review` stage aggregate whose `payload_id` starts with the run id. That is not a safe proxy for \"committed on the current branch\": final-review aggregate records are persisted before the journal commit event(s), and payload ids are additionally partitioned by `rollback_count`. After a rollback, or after a crash between aggregate persistence and the durable `stage_completed`/`completion_round_advanced` commit, those abandoned aggregate files can remain on disk and still match the prefix filter. Replaying them into milestone planned-elsewhere mappings would resurrect data from review attempts that never became part of the committed run history.\n- `fr-11-fa8dbab2`: Accept\n  The planned-elsewhere contract says the finding is valid but already covered by the referenced bead. A bead in `Closed` status still exists and represents completed ownership of that concern; it is not a stale reference like a missing bead. Treating `BeadStatus::Closed` as `Stale` causes valid mappings to remain forever unverified, suppresses comment posting behind the `bead_verified` gate, and creates repeated warning/reverification noise on replay. Closed should be treated as a valid verified target, not downgraded to staleness.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 11
+}

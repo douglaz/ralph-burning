@@ -54,6 +54,8 @@ pub struct CanonicalAmendment {
     pub amendment_id: String,
     pub normalized_body: String,
     pub sources: Vec<FinalReviewAmendmentSource>,
+    /// When set, this amendment is a planned-elsewhere finding.
+    pub mapped_to_bead_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +78,8 @@ pub struct FinalReviewAcceptedAmendment {
     pub amendment_id: String,
     pub normalized_body: String,
     pub sources: Vec<FinalReviewAmendmentSource>,
+    /// When set, this amendment is classified as "planned-elsewhere".
+    pub mapped_to_bead_id: Option<String>,
 }
 
 struct ReviewerProposalRecord {
@@ -147,6 +151,19 @@ pub fn consensus_status(
     }
 }
 
+/// Normalize a `mapped_to_bead_id` value: trim whitespace and convert
+/// empty/whitespace-only strings to `None` so they cannot suppress restarts.
+fn normalize_mapped_to_bead_id(id: Option<&String>) -> Option<String> {
+    id.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
+}
+
 fn merge_final_review_amendments(
     completion_round: u32,
     proposals: &[ReviewerProposalRecord],
@@ -168,10 +185,34 @@ fn merge_final_review_amendments(
                 model_id: proposal.model_id.clone(),
             };
 
+            let incoming_mapped = normalize_mapped_to_bead_id(amendment.mapped_to_bead_id.as_ref());
+
             match by_body.get_mut(&normalized_body) {
                 Some(existing) => {
                     if !existing.sources.contains(&source) {
                         existing.sources.push(source);
+                    }
+                    // Conservative merge for planned-elsewhere classification:
+                    // - If ANY reviewer says "not planned-elsewhere" (None),
+                    //   clear the field so the amendment is treated as regular.
+                    // - If reviewers disagree on WHICH bead owns it, clear the
+                    //   field (conflicting targets → treat as regular).
+                    match (&existing.mapped_to_bead_id, &incoming_mapped) {
+                        (Some(_), None) | (None, Some(_)) => {
+                            // Reviewers disagree on whether this is
+                            // planned-elsewhere. Conservative: treat as
+                            // regular amendment.
+                            existing.mapped_to_bead_id = None;
+                        }
+                        (Some(existing_target), Some(new_target))
+                            if existing_target != new_target =>
+                        {
+                            // Conflicting targets — treat as regular amendment.
+                            existing.mapped_to_bead_id = None;
+                        }
+                        _ => {
+                            // Agreement: both None or both same Some.
+                        }
                     }
                 }
                 None => {
@@ -182,6 +223,7 @@ fn merge_final_review_amendments(
                             amendment_id,
                             normalized_body,
                             sources: vec![source],
+                            mapped_to_bead_id: incoming_mapped,
                         },
                     );
                 }
@@ -565,7 +607,7 @@ where
         });
     }
 
-    let amendments = merge_final_review_amendments(cursor.completion_round, &reviewer_records);
+    let mut amendments = merge_final_review_amendments(cursor.completion_round, &reviewer_records);
     if amendments.is_empty() {
         let aggregate = FinalReviewAggregatePayload {
             restart_required: false,
@@ -597,6 +639,20 @@ where
             restart_required: false,
             force_completed: false,
         });
+    }
+
+    // Validate mapped_to_bead_id BEFORE building voter/arbiter prompts.
+    // Fail closed: if the allowed set is empty (no PE section in the prompt or
+    // prompt says "no explicit planned-elsewhere items"), strip ALL
+    // mapped_to_bead_id values so they cannot mislead the voting panel.
+    let allowed_pe_ids = task_prompt_contract::extract_pe_bead_ids(&project_prompt);
+    for amendment in &mut amendments {
+        if let Some(ref mapped_to) = amendment.mapped_to_bead_id {
+            let valid = !allowed_pe_ids.is_empty() && allowed_pe_ids.contains(mapped_to.trim());
+            if !valid {
+                amendment.mapped_to_bead_id = None;
+            }
+        }
     }
 
     let planner_prompt = build_voter_prompt(
@@ -1461,11 +1517,24 @@ where
     final_accepted_ids.sort();
     final_accepted_ids.dedup();
 
-    let final_accepted_amendments: Vec<CanonicalAmendment> = amendments
+    let mut final_accepted_amendments: Vec<CanonicalAmendment> = amendments
         .iter()
         .filter(|amendment| final_accepted_ids.contains(&amendment.amendment_id))
         .cloned()
         .collect();
+
+    // Defense-in-depth: re-validate mapped_to_bead_id on the accepted subset
+    // before the restart decision. The primary validation already ran on
+    // `amendments` before voter/arbiter prompts, but this guards against any
+    // code path that could re-introduce an invalid mapping.
+    for amendment in &mut final_accepted_amendments {
+        if let Some(ref mapped_to) = amendment.mapped_to_bead_id {
+            let valid = !allowed_pe_ids.is_empty() && allowed_pe_ids.contains(mapped_to.trim());
+            if !valid {
+                amendment.mapped_to_bead_id = None;
+            }
+        }
+    }
 
     let total_all_exhausted =
         probe_exhausted_count + proposal_total_exhausted + vote_total_exhausted;
@@ -1473,7 +1542,10 @@ where
         .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
         .max(1);
 
-    if !final_accepted_amendments.is_empty() && final_review_restart_count >= max_restarts {
+    let has_non_pe_for_force_check = final_accepted_amendments
+        .iter()
+        .any(|a| a.mapped_to_bead_id.is_none());
+    if has_non_pe_for_force_check && final_review_restart_count >= max_restarts {
         let aggregate = FinalReviewAggregatePayload {
             restart_required: false,
             force_completed: true,
@@ -1513,6 +1585,7 @@ where
                     amendment_id: amendment.amendment_id,
                     normalized_body: amendment.normalized_body,
                     sources: amendment.sources,
+                    mapped_to_bead_id: amendment.mapped_to_bead_id,
                 })
                 .collect(),
             restart_required: false,
@@ -1520,8 +1593,11 @@ where
         });
     }
 
+    let has_non_planned_elsewhere = final_accepted_amendments
+        .iter()
+        .any(|a| a.mapped_to_bead_id.is_none());
     let aggregate = FinalReviewAggregatePayload {
-        restart_required: !final_accepted_amendments.is_empty(),
+        restart_required: has_non_planned_elsewhere,
         force_completed: false,
         total_reviewers: reviewer_votes.len(),
         total_proposed_amendments: reviewer_records
@@ -1537,17 +1613,22 @@ where
             .iter()
             .map(canonical_to_payload)
             .collect(),
-        final_review_restart_count: if final_accepted_amendments.is_empty() {
-            final_review_restart_count
-        } else {
+        final_review_restart_count: if has_non_planned_elsewhere {
             final_review_restart_count.saturating_add(1)
+        } else {
+            final_review_restart_count
         },
         max_restarts,
         summary: if final_accepted_amendments.is_empty() {
             "Final review accepted no amendments.".to_owned()
-        } else {
+        } else if has_non_planned_elsewhere {
             format!(
                 "Final review accepted {} amendment(s); restart required.",
+                final_accepted_amendments.len()
+            )
+        } else {
+            format!(
+                "Final review accepted {} amendment(s), all planned-elsewhere; no restart required.",
                 final_accepted_amendments.len()
             )
         },
@@ -1567,9 +1648,10 @@ where
                 amendment_id: amendment.amendment_id,
                 normalized_body: amendment.normalized_body,
                 sources: amendment.sources,
+                mapped_to_bead_id: amendment.mapped_to_bead_id,
             })
             .collect(),
-        restart_required: !aggregate.final_accepted_amendments.is_empty(),
+        restart_required: has_non_planned_elsewhere,
         force_completed: false,
     })
 }
@@ -1776,6 +1858,7 @@ fn canonical_to_payload(amendment: &CanonicalAmendment) -> FinalReviewCanonicalA
         amendment_id: amendment.amendment_id.clone(),
         normalized_body: amendment.normalized_body.clone(),
         sources: amendment.sources.clone(),
+        mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
     }
 }
 
@@ -1824,9 +1907,20 @@ fn build_voter_prompt(
     let amendment_text = amendments
         .iter()
         .map(|amendment| {
+            let pe_note = amendment
+                .mapped_to_bead_id
+                .as_ref()
+                .map(|id| {
+                    format!(
+                        "\n\n**Classification: planned-elsewhere** — mapped to bead `{id}`. \
+                         If accepted, this amendment will NOT trigger a restart; the concern \
+                         will be recorded as already covered by the mapped-to bead."
+                    )
+                })
+                .unwrap_or_default();
             format!(
-                "## Amendment: {}\n\n{}",
-                amendment.amendment_id, amendment.normalized_body
+                "## Amendment: {}\n\n{}{}",
+                amendment.amendment_id, amendment.normalized_body, pe_note
             )
         })
         .collect::<Vec<_>>()
@@ -1870,9 +1964,20 @@ fn build_arbiter_prompt(
     let amendment_text = disputed_amendments
         .values()
         .map(|amendment| {
+            let pe_note = amendment
+                .mapped_to_bead_id
+                .as_ref()
+                .map(|id| {
+                    format!(
+                        "\n\n**Classification: planned-elsewhere** — mapped to bead `{id}`. \
+                         If accepted, this amendment will NOT trigger a restart; the concern \
+                         will be recorded as already covered by the mapped-to bead."
+                    )
+                })
+                .unwrap_or_default();
             format!(
-                "## Amendment: {}\n\n{}",
-                amendment.amendment_id, amendment.normalized_body
+                "## Amendment: {}\n\n{}{}",
+                amendment.amendment_id, amendment.normalized_body, pe_note
             )
         })
         .collect::<Vec<_>>()
@@ -2448,6 +2553,7 @@ mod tests {
                 amendments: vec![FinalReviewProposal {
                     body: body.to_owned(),
                     rationale: None,
+                    mapped_to_bead_id: None,
                 }],
             },
         }
@@ -2536,6 +2642,7 @@ mod tests {
                         amendments: vec![FinalReviewProposal {
                             body: " tighten wording ".to_owned(),
                             rationale: None,
+                            mapped_to_bead_id: None,
                         }],
                     },
                 },
@@ -2554,6 +2661,7 @@ mod tests {
                         amendments: vec![FinalReviewProposal {
                             body: "tighten wording".to_owned(),
                             rationale: None,
+                            mapped_to_bead_id: None,
                         }],
                     },
                 },
@@ -2566,6 +2674,106 @@ mod tests {
         assert_eq!(merged[0].sources[1].reviewer_id, "reviewer-2");
         assert_eq!(merged[0].sources[0].model_id, "claude-opus");
         assert_eq!(merged[0].sources[1].model_id, "claude-opus");
+    }
+
+    fn proposal_record_with_mapping(
+        reviewer_id: &str,
+        body: &str,
+        mapped_to_bead_id: Option<&str>,
+    ) -> ReviewerProposalRecord {
+        ReviewerProposalRecord {
+            member_index: reviewer_id
+                .rsplit_once('-')
+                .and_then(|(_, value)| value.parse::<usize>().ok())
+                .unwrap_or(1)
+                .saturating_sub(1),
+            reviewer_id: reviewer_id.to_owned(),
+            required: true,
+            backend_family: "claude".to_owned(),
+            model_id: format!("model-{reviewer_id}"),
+            target: ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                format!("model-{reviewer_id}"),
+            ),
+            payload: FinalReviewProposalPayload {
+                summary: format!("proposal from {reviewer_id}"),
+                amendments: vec![FinalReviewProposal {
+                    body: body.to_owned(),
+                    rationale: None,
+                    mapped_to_bead_id: mapped_to_bead_id.map(|s| s.to_owned()),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn merge_planned_elsewhere_unanimous_preserves_mapping() {
+        // Both reviewers agree the amendment is planned-elsewhere to the same bead.
+        let merged = merge_final_review_amendments(
+            1,
+            &[
+                proposal_record_with_mapping("reviewer-a", "fix error handling", Some("bead-42")),
+                proposal_record_with_mapping("reviewer-b", "fix error handling", Some("bead-42")),
+            ],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].mapped_to_bead_id.as_deref(),
+            Some("bead-42"),
+            "unanimous planned-elsewhere should preserve mapping"
+        );
+    }
+
+    #[test]
+    fn merge_planned_elsewhere_disagreement_clears_mapping() {
+        // Reviewer A says planned-elsewhere, reviewer B says regular amendment.
+        let merged = merge_final_review_amendments(
+            1,
+            &[
+                proposal_record_with_mapping("reviewer-a", "fix error handling", Some("bead-42")),
+                proposal_record_with_mapping("reviewer-b", "fix error handling", None),
+            ],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].mapped_to_bead_id, None,
+            "disagreement on planned-elsewhere should clear mapping"
+        );
+    }
+
+    #[test]
+    fn merge_planned_elsewhere_conflicting_targets_clears_mapping() {
+        // Both say planned-elsewhere but point to different beads.
+        let merged = merge_final_review_amendments(
+            1,
+            &[
+                proposal_record_with_mapping("reviewer-a", "fix error handling", Some("bead-42")),
+                proposal_record_with_mapping("reviewer-b", "fix error handling", Some("bead-99")),
+            ],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].mapped_to_bead_id, None,
+            "conflicting targets should clear mapping"
+        );
+    }
+
+    #[test]
+    fn merge_first_none_then_some_clears_mapping() {
+        // Reviewer A proposes as regular, reviewer B says planned-elsewhere.
+        // Conservative: any disagreement clears the mapping.
+        let merged = merge_final_review_amendments(
+            1,
+            &[
+                proposal_record_with_mapping("reviewer-a", "fix error handling", None),
+                proposal_record_with_mapping("reviewer-b", "fix error handling", Some("bead-42")),
+            ],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].mapped_to_bead_id, None,
+            "first-None then-Some should clear mapping (disagreement)"
+        );
     }
 
     #[test]

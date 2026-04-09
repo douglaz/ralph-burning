@@ -1,0 +1,7 @@
+id = "9ni852"
+name = "planned-elsewhere-reconciliation"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6"
+created_at = "2026-04-09T07:56:12.255312655Z"
+status_summary = "created"

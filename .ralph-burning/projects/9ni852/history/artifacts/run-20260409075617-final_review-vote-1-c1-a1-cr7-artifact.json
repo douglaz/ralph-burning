@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T11:25:23.541830158Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccepted three amendments as real defects: the planned-elsewhere verification path has a crash window that can duplicate comments, the fallback reconstruction can permanently miss accepted mappings across rounds, and the `br` comment command is built incorrectly. Rejected one amendment because its core claims are factually wrong: payload ordering is explicitly sorted and reconstruction is already guarded against repeated replay appends.\n\n## Votes\n\n- `fr-7-a79f285c`: Accept\n  `verify_and_comment_mappings` posts the bead comment before `verify_planned_elsewhere_after_success` appends the verified mapping event. A crash in that gap leaves only the unverified mapping in the journal, so replay re-runs verification and re-posts the comment. That is a real durability/idempotency bug, even though any fix needs to preserve eventual comment delivery rather than just naively reordering steps.\n- `fr-7-9e0205ad`: Reject\n  `FsArtifactStore::list_payloads` sorts records by `created_at`, so `iter().rev().find(...)` already selects the newest final-review aggregate instead of depending on filesystem order. Reconstruction is also gated by `!has_any_for_bead`, so a successful reconstruction does not append a fresh duplicate set on every replay. The amendment's main correctness claims are therefore incorrect.\n- `fr-7-3afb6840`: Accept\n  `verify_planned_elsewhere_after_success` only reconstructs when the bead has no mappings at all, while engine-side mapping persistence is a best-effort post-commit side effect. If any older mapping exists, a missed mapping from a later round is never reconstructed, and even when reconstruction does run it only inspects the latest final-review aggregate. That can permanently lose accepted planned-elsewhere findings from earlier rounds.\n- `fr-7-d6991eda`: Accept\n  `BrCommand::comment` emits `br comment <id> <text>`, but the installed CLI expects `br comments add <id> <text>`. In this workspace, `br comment TEST hi` fails with an argument error, so both planned-elsewhere comment paths invoke a broken command and do not post the intended bead comment.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 7
+}

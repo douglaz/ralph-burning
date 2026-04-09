@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T11:15:57.112789752Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nTargeted planned-elsewhere/final-review tests pass, but I found two runtime correctness issues: the recovery path can still lose planned-elsewhere mappings across completion rounds, and the BR comment command is wired to the wrong CLI syntax.\n\n## Amendments\n\n1. src/contexts/automation_runtime/success_reconciliation.rs:713-727 only attempts fallback reconstruction when the active bead has no planned-elsewhere mappings at all, and src/contexts/automation_runtime/success_reconciliation.rs:821-892 rebuilds from only the latest final-review aggregate. Because src/contexts/workflow_composition/engine.rs:2697-2712 and src/contexts/workflow_composition/engine.rs:3081-3090 record mappings as a best-effort post-commit side effect, a later completion round can permanently lose accepted planned-elsewhere findings: if the bead already has any older mapping, or if the missed mapping came from an earlier restart round, the fallback never replays the committed aggregate that actually contained that finding.\n   Rationale: This breaks the durability/audit goal for planned-elsewhere reconciliation. A transient failure in `record_planned_elsewhere_amendments` can leave committed final-review decisions missing from milestone state forever, and the current recovery logic does not cover multi-round beads.\n2. src/adapters/br_process.rs:227-229 and src/adapters/br_process.rs:601-604 build the mutation as `br comment <id> <text>`, but the installed CLI accepts `br comments add <id> <text>` instead. The planned-elsewhere comment paths in src/contexts/automation_runtime/planned_elsewhere.rs:170-177 and src/contexts/automation_runtime/planned_elsewhere.rs:305-312 therefore fail at runtime, so mapped-to beads never receive the context comment even when verification succeeds.\n   Rationale: This misses an acceptance criterion outright. The failure is only logged as a non-blocking warning, so tests can stay green while production never posts the cross-bead comment.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 7
+}

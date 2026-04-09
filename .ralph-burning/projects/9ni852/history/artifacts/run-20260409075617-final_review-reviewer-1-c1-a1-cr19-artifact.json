@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr19-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T16:18:11.103018429Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 2 correctness issues in the planned-elsewhere flow: invalid `mapped_to_bead_id` values influence final-review voting before validation, and the post-success reconstruction path can drop a latest-round mapping when the same finding/target already existed in an earlier round. Targeted planned-elsewhere tests pass, but neither case appears covered.\n\n## Amendments\n\n1. Validate `mapped_to_bead_id` before any planner/reviewer/arbiter voting prompts are built. In `src/contexts/workflow_composition/final_review.rs:644-651` and `src/contexts/workflow_composition/final_review.rs:879-886`, the panel is asked to vote on amendments before the allowlist check runs. `build_voter_prompt` and `build_arbiter_prompt` then treat any non-empty mapping as planned-elsewhere at `src/contexts/workflow_composition/final_review.rs:1894-1911` and `src/contexts/workflow_composition/final_review.rs:1951-1968`, including the promise that accepting it will not restart the bead. The actual validation only happens later at `src/contexts/workflow_composition/final_review.rs:1516-1522`. A hallucinated or out-of-scope bead ID can therefore bias the panel into accepting an amendment under 'no restart' semantics, then get stripped and turned into a restart-required amendment afterward.\n   Rationale: This changes the decision procedure, not just the rendered output: invalid planned-elsewhere classifications can alter vote outcomes and trigger unnecessary restarts.\n2. Fix planned-elsewhere reconstruction so later rounds can reconstruct the same finding/target pair. In `src/contexts/automation_runtime/success_reconciliation.rs:942-951` and `src/contexts/automation_runtime/success_reconciliation.rs:987-995`, `reconstruct_missing_pe_mappings` deduplicates only on `(active_bead_id, finding_summary, mapped_to_bead_id)`. But `src/contexts/automation_runtime/success_reconciliation.rs:744-763` then throws away journal mappings from older completion rounds once a newer authoritative round exists. If round N recorded mapping X, round N+1 accepted the same X again, and only the round N+1 journal write failed, reconstruction skips it as 'already seen' and the latest-round mapping disappears entirely.\n   Rationale: This breaks the crash-recovery path the feature is meant to provide: a valid latest-round planned-elsewhere decision can be lost precisely in the failure window reconstruction is supposed to heal.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 19
+}

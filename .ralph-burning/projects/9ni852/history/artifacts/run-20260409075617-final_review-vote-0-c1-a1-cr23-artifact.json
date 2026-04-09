@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-0-c1-a1-cr23-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-0-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T18:16:57.949355143Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nVerified all four amendments against the codebase. Three identify real bugs or data integrity risks with confirmed code paths. One is a cosmetic observation about logically correct but redundant pattern matching. I agree with the planner positions on all four.\n\n## Votes\n\n- `fr-23-b775ec2e`: Reject\n  Verified: the redundancy in the disjunction is real but the amendment itself states 'This is logically correct (no bug).' The first disjunct is indeed a subset of the second, but both evaluate to the same result in all cases. The double-lowercasing happens exactly twice (once for stderr, once for stdout) — trivially cheap. This is a readability nit with zero functional, safety, or correctness impact. Not worth acting on.\n- `fr-23-d2e853a3`: Accept\n  Verified: reconcile_planned_elsewhere() at planned_elsewhere.rs:180-188 explicitly creates mappings with run_id: None. verify_planned_elsewhere_after_success at success_reconciliation.rs:720-723 filters with m.run_id.as_deref() == Some(run_id), which unconditionally excludes all legacy mappings from all_bead_mappings. Although there is fallback logic at lines 739-757 for 'legacy / no-aggregate scenario', it operates on the already-filtered all_bead_mappings, so legacy run_id:None mappings are irreversibly excluded at line 722. Beads with only legacy PE mappings will never be verified or receive comments.\n- `fr-23-bd15d454`: Accept\n  Verified across all three files. task_prompt_contract.rs:301-306 adds short-form aliases (e.g. '8.5.3') to the allowed set via strip_milestone_prefix(). final_review.rs:648-655 validates against this set but normalize_mapped_to_bead_id() only trims whitespace — no expansion. planned_elsewhere.rs:84-96 only strips the milestone prefix (canonical→short) on br show failure, never expands short→canonical. br_process.rs:159-161 passes the ID to br show as-is. No code path exists to expand '8.5.3' to '9ni.8.5.3', so br show fails with ISSUE_NOT_FOUND and the mapping is persisted as unverified. Real bug.\n- `fr-23-6578ae22`: Accept\n  Verified: engine.rs:7618-7641 catches sentinel write errors with if-let-Err, logs a warning, and continues. The warning message itself documents the consequence: 'stale planned-elsewhere mappings from earlier rounds may not be superseded.' service.rs:2599-2627 seeds max_round_by_bead_run from sentinel events — without the sentinel, a zero-PE round cannot supersede an earlier round's mappings. success_reconciliation.rs:991-1036 reconstructs mappings but contains no sentinel repair logic (grep confirmed zero references). After a single sentinel write failure, stale PE mappings remain authoritative with no recovery path. Real data integrity risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 23
+}

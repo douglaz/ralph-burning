@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T16:45:47.660383334Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 2 issues: accepted planned-elsewhere mappings can be lost if the prompt is re-read from mutable disk state after final review, and the milestone-state loader still returns superseded mappings when the latest completion round has zero planned-elsewhere entries.\n\n## Amendments\n\n1. Use the already-validated final-review result (or an immutable prompt snapshot/hash from the run) when persisting/reconstructing planned-elsewhere mappings instead of re-reading the mutable project prompt from disk. `src/contexts/workflow_composition/final_review.rs:644-656` and `src/contexts/workflow_composition/final_review.rs:1526-1536` already strip invalid `mapped_to_bead_id` values before acceptance, but `src/contexts/workflow_composition/engine.rs:7614-7642` and `src/contexts/automation_runtime/success_reconciliation.rs:968-1015` fail closed if that later prompt read is empty or changed. A transient read error, prompt rewrite, or prompt-reference change after final review can therefore cause accepted planned-elsewhere findings to be silently dropped instead of being journaled and sidecar-persisted.\n   Rationale: This violates the durability/audit goal of the bead: once a mapping has been accepted and the aggregate committed, later prompt-file drift should not be able to erase it.\n2. Fix the milestone-state loader so later completion rounds that contain zero planned-elsewhere mappings can still supersede earlier rounds. Right now `src/contexts/milestone_record/service.rs:2516-2535` computes the max round only from mappings that exist, so a round-1 mapping survives forever if round 2 resolved the concern and emitted no mapping. `src/contexts/automation_runtime/success_reconciliation.rs:741-759` has to paper over this by consulting final-review aggregates, which means the public `load_planned_elsewhere_mappings` API and the `planned_elsewhere.ndjson` projection can still report stale state to any other caller.\n   Rationale: The service claims to rebuild authoritative milestone state, but it currently cannot represent the common case 'latest round has no planned-elsewhere findings'. That leaves a leaky abstraction and stale data outside the one reconciler call site that knows about the workaround.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 20
+}

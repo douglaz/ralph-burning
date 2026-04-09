@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T14:38:56.241661929Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll three amendments identify real correctness/safety defects: two around overly lenient parsing of the authoritative milestone journal, and one around stale planned-elsewhere mappings surviving across final-review rounds and being acted on after success.\n\n## Votes\n\n- `fr-15-917d5289`: Accept\n  `read_journal_from_path` now catches any `serde_json` parse failure and only logs a warning before skipping the line. `MilestoneEventType::Unknown` already provides forward compatibility for valid JSON carrying a newer `event_type`, so this broader fallback mainly suppresses genuinely malformed or corrupted journal entries. Because this journal is replayed as the authoritative source of milestone state, warning-only skips can reconstruct the wrong state without surfacing an error, so the defect is valid even if the exact mitigation can vary.\n- `fr-15-9d688895`: Accept\n  The mapping write path records `completion_round`, but the rebuild path collapses only by `(active_bead_id, finding_summary, mapped_to_bead_id)` and the success reconciliation filter only checks `active_bead_id` plus `run_id`. That means mappings accepted in an earlier round remain eligible for verification/commenting when a later round fixes, rejects, or retargets the finding, because nothing supersedes or removes the old mapping. Acting on stale round state after success is incorrect behavior, so reconciliation needs to restrict itself to the latest accepted final-review state or persist explicit removals.\n- `fr-15-c925fee0`: Accept\n  This is the same underlying regression from a more specific angle: malformed `journal.ndjson` lines are no longer reported as `AppError::CorruptRecord` and instead disappear from replay. That is unsafe for an authoritative audit log, since truncated or corrupted entries can erase completion or planned-elsewhere events during reconstruction. `#[serde(other)] Unknown` already covers forward-compatible event types for valid JSON, so malformed historical lines should not be silently skipped.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 15
+}

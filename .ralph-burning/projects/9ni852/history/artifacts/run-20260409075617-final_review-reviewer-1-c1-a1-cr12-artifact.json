@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T12:55:57.088182455Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff, read the planned-elsewhere/final-review/success-reconciliation implementation paths, and ran `cargo test` successfully. I found two correctness issues in the `reconstruct_missing_pe_mappings` recovery logic; the rest of the feature looks sound.\n\n## Amendments\n\n1. In `src/contexts/automation_runtime/success_reconciliation.rs:898-901`, `reconstruct_missing_pe_mappings` accepts any payload whose `payload_id` merely `starts_with(run_id)`. `RunId` itself is unconstrained (`src/shared/domain.rs:875-882`), so histories containing runs like `test-run-1` and `test-run-10` will cross-match and let one run reconstruct planned-elsewhere mappings from another. Tighten this to an exact run-id boundary (for example `format!(\"{run_id}-\")`) or persist an explicit run-id field on payload records.\n   Rationale: This is a real recovery-path correctness bug: a successful reconciliation can import foreign mappings into the current milestone when run IDs share a prefix.\n2. In `src/contexts/automation_runtime/success_reconciliation.rs:893-909`, the recovery dedup map is keyed only by `completion_round`, even though payload records also carry `cycle` (`src/contexts/project_run_record/model.rs:374-389`) and cycle restarts preserve the current completion round (`src/shared/domain.rs:815-824`). If the same run reaches final review in multiple cycles at the same round, the later cycle silently overwrites the earlier one in `latest_by_round`, so accepted planned-elsewhere mappings from the earlier committed cycle can never be reconstructed after an engine write failure. Key this cache by `(cycle, completion_round)` or otherwise explicitly scope recovery to a single cycle.\n   Rationale: The recovery logic is supposed to preserve accepted planned-elsewhere findings across interrupted writes. Round-only dedup drops valid records whenever a run spans more than one cycle.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 12
+}
