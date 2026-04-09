@@ -21,9 +21,8 @@ use crate::adapters::br_process::{
 };
 use crate::adapters::bv_process::{BvAdapter, BvProcessRunner, NextBeadResponse};
 use crate::adapters::fs::{
-    FileSystem, FsArtifactStore, FsMilestoneControllerStore, FsMilestoneJournalStore,
-    FsMilestoneSnapshotStore, FsPlannedElsewhereMappingStore, FsProjectStore,
-    FsTaskRunLineageStore,
+    FsArtifactStore, FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestoneSnapshotStore,
+    FsPlannedElsewhereMappingStore, FsTaskRunLineageStore,
 };
 use crate::cli::run::{select_next_milestone_bead, select_next_milestone_bead_from_recommendation};
 use crate::contexts::milestone_record::controller as milestone_controller;
@@ -33,8 +32,7 @@ use crate::contexts::milestone_record::model::{
 use crate::contexts::milestone_record::service::{
     self as milestone_service, CompletionMilestoneDisposition,
 };
-use crate::contexts::project_run_record::service::{ArtifactStorePort, ProjectStorePort};
-use crate::contexts::project_run_record::task_prompt_contract;
+use crate::contexts::project_run_record::service::ArtifactStorePort;
 use crate::contexts::workflow_composition::panel_contracts::{
     FinalReviewAggregatePayload, RecordKind,
 };
@@ -965,23 +963,10 @@ fn reconstruct_missing_pe_mappings(
     let now = Utc::now();
     let mut reconstructed = Vec::new();
 
-    // Load the prompt to extract the allowed planned-elsewhere bead IDs.
-    // Fail closed: if the prompt cannot be read or the allowed set is empty,
-    // skip all PE-mapped reconstructions (defense-in-depth against corrupted
-    // or tampered aggregate files on disk).
-    let allowed_pe_ids = {
-        let project_root = FileSystem::project_root(base_dir, &pid);
-        match FsProjectStore.read_project_record(base_dir, &pid) {
-            Ok(record) => {
-                let prompt_path = project_root.join(&record.prompt_reference);
-                match std::fs::read_to_string(&prompt_path) {
-                    Ok(prompt_text) => task_prompt_contract::extract_pe_bead_ids(&prompt_text),
-                    Err(_) => std::collections::HashSet::new(),
-                }
-            }
-            Err(_) => std::collections::HashSet::new(),
-        }
-    };
+    // PE validation is authoritative in final_review.rs (lines 644-656 and
+    // 1526-1536) which strips invalid mapped_to_bead_id values before
+    // acceptance.  The aggregate already contains validated data — no
+    // redundant re-read of the mutable prompt here.
 
     // Only reconstruct from the highest completion_round — earlier rounds'
     // PE decisions may have been superseded by the latest final-review
@@ -1008,12 +993,6 @@ fn reconstruct_missing_pe_mappings(
                 }
                 None => continue,
             };
-
-            // Validate mapped_to_bead_id against the allowed PE set from the
-            // prompt. Fail closed: if the allowed set is empty, skip this mapping.
-            if !allowed_pe_ids.contains(mapped_to) {
-                continue;
-            }
 
             let identity_key = (
                 bead_id.to_owned(),
@@ -3070,30 +3049,6 @@ mod tests {
         let project_root = FileSystem::project_root(base, &project_id);
         let payloads_dir = project_root.join("history/payloads");
         std::fs::create_dir_all(&payloads_dir)?;
-
-        // Set up project record and prompt so PE validation can extract allowed IDs
-        {
-            use crate::contexts::project_run_record::model::{ProjectRecord, ProjectStatusSummary};
-            use crate::shared::domain::FlowPreset;
-            let record = ProjectRecord {
-                id: project_id.clone(),
-                name: "dedup-test".to_owned(),
-                flow: FlowPreset::Minimal,
-                prompt_reference: "prompt.md".to_owned(),
-                prompt_hash: "test".to_owned(),
-                created_at: Utc::now(),
-                status_summary: ProjectStatusSummary::Active,
-                task_source: None,
-            };
-            std::fs::write(
-                project_root.join("project.toml"),
-                toml::to_string_pretty(&record)?,
-            )?;
-            std::fs::write(
-                project_root.join("prompt.md"),
-                "## Already Planned Elsewhere\n- old-bead\n- new-bead\n",
-            )?;
-        }
 
         // Also create milestone dir for journal writes during reconstruction
         let milestone_id = MilestoneId::new("ms-dedup")?;

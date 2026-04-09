@@ -2415,6 +2415,46 @@ pub fn record_planned_elsewhere_mapping(
     Ok(())
 }
 
+/// Write a PE round sentinel to the milestone journal.
+///
+/// A sentinel marks that a given `(active_bead_id, run_id, completion_round)`
+/// tuple was processed — even if zero PE mappings were produced.  This allows
+/// [`rebuild_planned_elsewhere_from_journal`] to compute the authoritative max
+/// round correctly so that a later round with no PE findings can still
+/// supersede an earlier round that did have PE findings.
+pub fn record_planned_elsewhere_round_sentinel(
+    journal_store: &impl MilestoneJournalPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    active_bead_id: &str,
+    run_id: &str,
+    completion_round: u32,
+) -> AppResult<()> {
+    let mut metadata = JsonMap::new();
+    metadata.insert(
+        "active_bead_id".to_owned(),
+        JsonValue::String(active_bead_id.to_owned()),
+    );
+    metadata.insert("run_id".to_owned(), JsonValue::String(run_id.to_owned()));
+    metadata.insert(
+        "completion_round".to_owned(),
+        JsonValue::Number(serde_json::Number::from(completion_round)),
+    );
+    metadata.insert(
+        "sub_type".to_owned(),
+        JsonValue::String("pe_round_sentinel".to_owned()),
+    );
+
+    let mut event = MilestoneJournalEvent::new(MilestoneEventType::ProgressUpdated, Utc::now())
+        .with_bead(active_bead_id.to_owned())
+        .with_details("planned-elsewhere round sentinel".to_owned());
+    event.metadata = Some(metadata);
+
+    let line = event.to_ndjson_line()?;
+    journal_store.append_event(base_dir, milestone_id, &line)?;
+    Ok(())
+}
+
 /// Load all planned-elsewhere mappings for a milestone.
 ///
 /// Rebuilds authoritative state from the journal `PlannedElsewhereMapped`
@@ -2453,19 +2493,46 @@ fn rebuild_planned_elsewhere_from_journal(
     let mut by_identity: HashMap<(String, String, String), PlannedElsewhereMapping> =
         HashMap::new();
 
+    // Also track max completion_round from PE round sentinels so that a
+    // later round with zero PE mappings can still supersede earlier rounds.
+    let mut sentinel_max_round: HashMap<(String, String), u32> = HashMap::new();
+
     for event in &events {
+        let sub_type = event
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("sub_type"))
+            .and_then(|v| v.as_str());
+
+        // Collect PE round sentinels for max-round computation.
+        if event.event_type == MilestoneEventType::ProgressUpdated
+            && sub_type == Some("pe_round_sentinel")
+        {
+            if let Some(m) = &event.metadata {
+                let bead = m.get("active_bead_id").and_then(|v| v.as_str());
+                let rid = m.get("run_id").and_then(|v| v.as_str());
+                let cr = m
+                    .get("completion_round")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| u32::try_from(v).ok());
+                if let (Some(bead), Some(rid), Some(cr)) = (bead, rid, cr) {
+                    let key = (bead.to_owned(), rid.to_owned());
+                    let entry = sentinel_max_round.entry(key).or_insert(cr);
+                    if cr > *entry {
+                        *entry = cr;
+                    }
+                }
+            }
+            continue;
+        }
+
         // Recognise both the legacy PlannedElsewhereMapped event type and
         // the newer ProgressUpdated events that carry a sub_type
         // discriminator of "planned_elsewhere_mapped" (write-compatible
         // with older code that does not know PlannedElsewhereMapped).
         let is_pe = event.event_type == MilestoneEventType::PlannedElsewhereMapped
             || (event.event_type == MilestoneEventType::ProgressUpdated
-                && event
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.get("sub_type"))
-                    .and_then(|v| v.as_str())
-                    == Some("planned_elsewhere_mapped"));
+                && sub_type == Some("planned_elsewhere_mapped"));
         if !is_pe {
             continue;
         }
@@ -2520,7 +2587,9 @@ fn rebuild_planned_elsewhere_from_journal(
     // Mappings with run_id=None (legacy) or completion_round=None are kept
     // unconditionally since they lack provenance for round filtering.
     let mappings: Vec<_> = by_identity.into_values().collect();
-    let mut max_round_by_bead_run: HashMap<(String, String), u32> = HashMap::new();
+    // Seed max-round from sentinel events (which cover zero-PE rounds),
+    // then update from the mapping-derived rounds.
+    let mut max_round_by_bead_run: HashMap<(String, String), u32> = sentinel_max_round;
     for m in &mappings {
         if let (Some(rid), Some(cr)) = (&m.run_id, m.completion_round) {
             let key = (m.active_bead_id.clone(), rid.clone());

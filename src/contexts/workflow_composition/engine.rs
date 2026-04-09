@@ -2697,21 +2697,21 @@ where
                     // Record planned-elsewhere amendments as mappings AFTER the
                     // stage commit succeeds, so a later failure does not leave
                     // orphaned mappings for an uncommitted stage.
+                    // Always called (even with no PE amendments) so that a PE
+                    // round sentinel is written for correct round supersession.
                     let pe_amendments: Vec<_> = commit_data
                         .accepted_amendments
                         .iter()
                         .filter(|a| a.mapped_to_bead_id.is_some())
                         .collect();
-                    if !pe_amendments.is_empty() {
-                        record_planned_elsewhere_amendments(
-                            log_write,
-                            base_dir,
-                            project_id,
-                            &pe_amendments,
-                            run_id,
-                            cursor.completion_round,
-                        );
-                    }
+                    record_planned_elsewhere_amendments(
+                        log_write,
+                        base_dir,
+                        project_id,
+                        &pe_amendments,
+                        run_id,
+                        cursor.completion_round,
+                    );
 
                     if stage_index + 1 == stage_plan.len() {
                         complete_run(
@@ -3083,16 +3083,16 @@ where
                     // Record planned-elsewhere amendments AFTER the stage commit
                     // and round-advance event succeed, so failures do not leave
                     // orphaned mappings for an uncommitted restart.
-                    if !planned_elsewhere.is_empty() {
-                        record_planned_elsewhere_amendments(
-                            log_write,
-                            base_dir,
-                            project_id,
-                            &planned_elsewhere,
-                            run_id,
-                            from_round,
-                        );
-                    }
+                    // Always called (even with no PE amendments) so that a PE
+                    // round sentinel is written for correct round supersession.
+                    record_planned_elsewhere_amendments(
+                        log_write,
+                        base_dir,
+                        project_id,
+                        &planned_elsewhere,
+                        run_id,
+                        from_round,
+                    );
 
                     let _ = log_write.append_runtime_log(
                         base_dir,
@@ -7553,10 +7553,6 @@ fn record_planned_elsewhere_amendments(
     run_id: &RunId,
     completion_round: u32,
 ) {
-    if amendments.is_empty() {
-        return;
-    }
-
     // Read project record to get task_source (milestone_id + bead_id).
     let project_record = match FsProjectStore.read_project_record(base_dir, project_id) {
         Ok(record) => record,
@@ -7611,20 +7607,21 @@ fn record_planned_elsewhere_amendments(
         }
     };
 
-    // Load the prompt to extract the allowed planned-elsewhere bead IDs.
-    // Fail closed: if the prompt cannot be read or the allowed set is empty,
-    // reject ALL mappings rather than silently accepting them.
-    let allowed_pe_ids = {
-        let project_root = FileSystem::project_root(base_dir, project_id);
-        let prompt_path = project_root.join(&project_record.prompt_reference);
-        match std::fs::read_to_string(&prompt_path) {
-            Ok(prompt_text) => {
-                use crate::contexts::project_run_record::task_prompt_contract;
-                task_prompt_contract::extract_pe_bead_ids(&prompt_text)
-            }
-            Err(_) => std::collections::HashSet::new(),
-        }
-    };
+    // PE validation is authoritative in final_review.rs (lines 644-656 and
+    // 1526-1536) which strips invalid mapped_to_bead_id values before
+    // acceptance.  No redundant re-read of the mutable prompt here.
+
+    // Always write a PE round sentinel so that rebuild_planned_elsewhere_from_journal
+    // knows this completion_round was processed — even if zero PE mappings exist.
+    // This allows a later round with no PE findings to supersede an earlier round.
+    let _ = milestone_service::record_planned_elsewhere_round_sentinel(
+        &FsMilestoneJournalStore,
+        base_dir,
+        &milestone_id,
+        &task_source.bead_id,
+        run_id.as_str(),
+        completion_round,
+    );
 
     let now = Utc::now();
     for amendment in amendments {
@@ -7633,26 +7630,6 @@ fn record_planned_elsewhere_amendments(
         };
         let mapped_to = mapped_to.trim();
         if mapped_to.is_empty() {
-            continue;
-        }
-        // Validate that mapped_to_bead_id is in the allowed PE set from the
-        // prompt.  Fail closed: when the allowed set is empty (prompt
-        // unreadable or no PE section), reject rather than accept.
-        if !allowed_pe_ids.contains(mapped_to) {
-            let _ = log_write.append_runtime_log(
-                base_dir,
-                project_id,
-                &RuntimeLogEntry {
-                    timestamp: Utc::now(),
-                    level: LogLevel::Warn,
-                    source: "engine".to_owned(),
-                    message: format!(
-                        "ignoring planned-elsewhere mapping for amendment={}: \
-                         mapped_to_bead_id '{}' is not in the allowed planned-elsewhere set",
-                        amendment.queued.amendment_id, mapped_to
-                    ),
-                },
-            );
             continue;
         }
         let mapping = PlannedElsewhereMapping {
