@@ -80,11 +80,15 @@ pub enum FindingClassification {
 
 /// Validates that a string is a syntactically valid bead identifier.
 ///
-/// Bead IDs are non-empty, contain no whitespace, no path separators
-/// (`/`, `\`), and do not start with a dot. Dotted forms like
-/// `milestone.bead-name` are allowed (qualified IDs). This does NOT
-/// check whether the bead actually exists — that happens at
-/// reconciliation time.
+/// Bead IDs consist of alphanumeric characters, hyphens, underscores,
+/// and dots (for qualified forms like `milestone.bead-name`). They must
+/// not start with a dot or hyphen, end with a dot, or contain
+/// consecutive dots. This does NOT check whether the bead actually
+/// exists — that happens at reconciliation time.
+///
+/// The character allowlist also prevents CLI injection: since bead IDs
+/// are passed as positional args to `br show`, values like `--help`
+/// would be misinterpreted as flags without this check.
 fn validate_bead_id_syntax(value: &str) -> Result<(), String> {
     if value.is_empty() {
         return Err("must not be empty".to_owned());
@@ -94,22 +98,29 @@ fn validate_bead_id_syntax(value: &str) -> Result<(), String> {
             "'{value}' must not contain leading or trailing whitespace"
         ));
     }
-    if value.contains(char::is_whitespace) {
-        return Err(format!("'{value}' must not contain whitespace characters"));
+    if value.starts_with('-') {
+        return Err(format!(
+            "'{value}' must not start with a hyphen (would be interpreted as a CLI flag)"
+        ));
     }
     if value.starts_with('.') {
         return Err(format!("'{value}' must not start with a dot"));
-    }
-    if value.contains('/') || value.contains('\\') {
-        return Err(format!(
-            "'{value}' must not contain path separators ('/' or '\\\\')"
-        ));
     }
     if value.ends_with('.') {
         return Err(format!("'{value}' must not end with a dot"));
     }
     if value.contains("..") {
         return Err(format!("'{value}' must not contain consecutive dots"));
+    }
+    // Bead IDs may only contain: a-z A-Z 0-9 . - _
+    if let Some(ch) = value
+        .chars()
+        .find(|c| !c.is_ascii_alphanumeric() && *c != '.' && *c != '-' && *c != '_')
+    {
+        return Err(format!(
+            "'{value}' contains invalid character '{ch}'; bead IDs may only contain \
+             alphanumeric characters, hyphens, underscores, and dots"
+        ));
     }
     Ok(())
 }
@@ -783,7 +794,7 @@ mod tests {
         };
         let errors = validate_classification(&c);
         assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
-        assert!(errors.iter().any(|e| e.contains("whitespace")));
+        assert!(errors.iter().any(|e| e.contains("invalid character")));
         Ok(())
     }
 
@@ -812,7 +823,7 @@ mod tests {
         };
         let errors = validate_classification(&c);
         assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
-        assert!(errors.iter().any(|e| e.contains("path separator")));
+        assert!(errors.iter().any(|e| e.contains("invalid character")));
         Ok(())
     }
 
@@ -1077,6 +1088,80 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(r#""just a string""#)?;
         let errors = validate_classification_fields(&json);
         assert!(errors.iter().any(|e| e.contains("must be a JSON object")));
+        Ok(())
+    }
+
+    // ── Bead ID: character allowlist ──────────────────────────────────
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_starting_with_hyphen(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "--help".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        assert!(errors.iter().any(|e| e.contains("hyphen")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_with_colon() -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "scope:bead".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        assert!(errors.iter().any(|e| e.contains("invalid character")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_with_question_mark(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "bead?x".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        assert!(errors.iter().any(|e| e.contains("invalid character")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_accepts_bead_id_with_underscore() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "my_bead_id".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_accepts_bead_id_with_internal_hyphen(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "error-handling".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
         Ok(())
     }
 

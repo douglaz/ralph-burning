@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409194344",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 6
@@ -23,40 +23,14 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-5-78f4e637",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "Strengthen bead-id syntax validation in `src/contexts/workflow_composition/review_classification.rs:81-114` and its use at `src/contexts/workflow_composition/review_classification.rs:238-239`. The current check accepts arbitrary non-whitespace strings such as `--help`, `:`, or `bead?x` as 'syntactically valid' bead IDs. That is too weak for the stated contract, and it is not harmless: `BrCommand::show` passes the ID straight through as a positional CLI arg in `src/adapters/br_process.rs:132-160`, so a value like `--help` is interpreted by `br` as a flag instead of an issue id during reconciliation.",
-        "created_at": "2026-04-09T20:51:51.988200036Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "8da93cb3d9a7652c607deac7a20f84f967d7bd6287d5095293a11c406cb403b2"
-      }
-    ],
-    "processed_count": 7
+    "pending": [],
+    "processed_count": 8
   },
-  "status_summary": "running: final review restart round 6 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
-    "stage_id": "final_review",
-    "resolved_at": "2026-04-09T20:38:44.266917243Z",
-    "final_review_reviewers": [
-      {
-        "backend_family": "claude",
-        "model_id": "claude-opus-4-6"
-      },
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.4"
-      }
-    ],
-    "final_review_planner": {
-      "backend_family": "claude",
-      "model_id": "claude-opus-4-6"
-    },
-    "final_review_arbiter": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-09T20:51:52.100809936Z",
+    "primary_target": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }
