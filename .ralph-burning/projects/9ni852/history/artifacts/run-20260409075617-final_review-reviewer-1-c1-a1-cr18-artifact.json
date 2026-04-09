@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr18-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T15:53:46.303765129Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the planned-elsewhere reconciliation changes across final review, engine persistence, milestone state, and success reconciliation. I found 2 correctness issues: prompt validation uses a live-only project root and drops valid mappings in audit-only workspaces, and the milestone-state rebuild never applies the new run/round supersession semantics, so stale mappings remain visible after later rounds change or remove them.\n\n## Amendments\n\n1. src/contexts/workflow_composition/engine.rs:7617-7626 validates `mapped_to_bead_id` by reading the prompt from `FileSystem::live_project_root(...)`. The engine otherwise resolves projects through `FileSystem::project_root(...)`, so audit-only/legacy workspaces will fail this read, produce an empty allowed-id set, and silently drop every planned-elsewhere mapping even when the prompt actually contains valid entries. Load the prompt through the same fallback root used elsewhere before fail-closing the mapping.\n   Rationale: This turns valid planned-elsewhere findings into no-ops in compatible but non-live workspaces, which breaks persistence and durability for exactly the environments the fallback root exists to support.\n2. src/contexts/milestone_record/model.rs:752-754 says `completion_round` exists to filter stale mappings, but src/contexts/milestone_record/service.rs:2429-2510 ignores both `run_id` and `completion_round` and only deduplicates by `(active_bead_id, finding_summary, mapped_to_bead_id)`. If round 1 records `finding X -> bead-A` and a later round fixes that concern or remaps it, `load_planned_elsewhere_mappings()` still returns the superseded round-1 entry (and can even return both targets). The only latest-round filter is the ad hoc one in src/contexts/automation_runtime/success_reconciliation.rs:744-753, so the persisted milestone state is stale for every other reader. Make the rebuild/read path apply run/round supersession, or emit an explicit superseded/tombstone event when a later round no longer accepts an earlier mapping.\n   Rationale: Without this, the new milestone-state API is not trustworthy: stale or contradictory planned-elsewhere mappings survive after later review rounds change the verdict, which is a correctness bug for any future consumer of the persisted state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 18
+}
