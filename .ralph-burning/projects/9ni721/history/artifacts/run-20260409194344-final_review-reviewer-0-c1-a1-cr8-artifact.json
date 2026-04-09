@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-reviewer-0-c1-a1-cr8-artifact",
+  "payload_id": "run-20260409194344-final_review-reviewer-0-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T21:27:03.574595862Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe review_classification.rs module is well-designed and thorough. Types match the spec (FindingClassification enum with FixNow/PlannedElsewhere/ProposeNewBead, Severity enum, domain validation). The custom Deserialize impl that catches cross-variant field contamination is a smart defense against serde's silent field-drop behavior with internally-tagged enums. Bead ID syntax validation includes CLI injection prevention. All 72 tests pass. No clippy warnings from the new code. One real concern: the Deserialize impl is hardcoded to serde_json::Value, which is fine for the stated JSON persistence use case but would silently break if someone tries to deserialize from a non-JSON format. One minor robustness gap: NaN confidence can be constructed in-memory (bypassing deserialization) and will compare as not-equal to itself via PartialEq, which could cause subtle bugs in downstream code that puts classifications into collections or deduplicates them.\n\n## Amendments\n\n1. The custom `Deserialize` impl for `FindingClassification` (line 158-177) uses `serde_json::Value::deserialize(deserializer)` which hard-couples deserialization to JSON. If this type is ever deserialized from TOML, YAML, or any non-JSON serde format, it will fail at runtime with a confusing error. Add a doc comment on the `Deserialize` impl (or on the type itself) stating that deserialization is JSON-only by design, so downstream consumers don't hit this silently. Alternatively, if non-JSON formats should be supported in the future, consider using `serde_value::Value` instead.\n   Rationale: This is a correctness/documentation gap. The bead spec says 'Serde JSON round-trip tests' and 'JSON persistence', so JSON-only is likely intentional, but the constraint is implicit — a consumer importing this type has no indication that `serde_json::from_str` works but `toml::from_str` would fail.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 8
+}
