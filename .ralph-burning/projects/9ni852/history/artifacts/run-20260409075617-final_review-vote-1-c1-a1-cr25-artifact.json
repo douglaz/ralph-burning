@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr25-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr25-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T19:05:35.672860274Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nRejected fr-25-77fdf162 because it misreads the missing-bead predicate and would remove real coverage. Accepted fr-25-0c53a35e and fr-25-d7d14225 because legacy planned-elsewhere rows with run_id=None are currently never superseded once a newer sentinel-backed authoritative run exists. Accepted fr-25-0b807ecf because PE bead-id extraction wrongly treats indented continuation lines as top-level bullets, allowing bogus mapped_to_bead_id values to survive restart gating.\n\n## Votes\n\n- `fr-25-77fdf162`: Reject\n  The amendment's core claim is incorrect. The branch `s.contains(\"not found\") && (s.contains(\"bead\") || s.contains(\"issue\"))` is broader than the exact-phrase checks, not a subset of them: a message like `bead 42 was not found` matches the broader branch but not `bead not found`. Removing that branch would narrow the heuristic and turn legitimate stale-bead errors into transient failures. The shadowed helper is only minor cleanup, not a correctness issue.\n- `fr-25-0c53a35e`: Accept\n  This identifies a real bug. In `rebuild_planned_elsewhere_from_journal`, the filter only applies cross-run supersession to rows with both `run_id` and `completion_round`; legacy rows fall through the `_ => true` branch and are kept even when `latest_run_by_bead` points at a newer authoritative run for the same bead. That means `load_planned_elsewhere_mappings` can expose stale legacy state alongside current state. Success reconciliation partly masks this by preferring current-run rows, but the loader itself still leaks mixed stale/current data to other callers.\n- `fr-25-d7d14225`: Accept\n  This is the right fix for the leak above. Once `latest_run_by_bead` establishes an authoritative run for an `active_bead_id`, legacy `run_id=None` rows for that bead are superseded and should no longer survive the rebuild filter. That is especially important when the newer run wrote only a sentinel to clear prior planned-elsewhere findings, because keeping legacy rows would resurrect stale state. A regression test covering legacy rows plus a newer sentinel/current run is appropriate.\n- `fr-25-0b807ecf`: Accept\n  This is a real parsing bug. `extract_pe_bead_ids` trims each line before checking for `- `, so indented continuation lines are treated as fresh bullets. Prompt generation already emits multiline planned-elsewhere entries with indented continuation lines, so a continuation line beginning with `- ` can be misparsed as another bead id and added to `allowed_pe_ids`. Final-review validation then treats that bogus id as valid, which can preserve `mapped_to_bead_id` and incorrectly suppress a restart. Restricting parsing to true top-level bullets and adding a regression test is the correct repair.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 25
+}

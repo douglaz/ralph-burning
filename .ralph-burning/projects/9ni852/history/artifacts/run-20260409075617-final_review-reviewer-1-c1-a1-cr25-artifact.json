@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr25-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr25-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T18:59:49.408455354Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff against `master` and read the planned-elsewhere implementation across `final_review`, `engine`, `planned_elsewhere`, `success_reconciliation`, and milestone state/fs handling. Targeted `cargo test planned_elsewhere --lib` passes. I found two correctness issues: stale legacy mappings are not superseded in the public journal rebuild path, and PE-ID extraction can misparse indented continuation lines as valid bead IDs, which can incorrectly suppress restarts.\n\n## Amendments\n\n1. Update `rebuild_planned_elsewhere_from_journal` so legacy rows are not kept once a newer authoritative run exists for the same bead. In `src/contexts/milestone_record/service.rs:2596-2629`, the filter keeps every `run_id == None` mapping via the `_ => true` branch even when `latest_run_by_bead` already points at a newer run. That means `load_planned_elsewhere_mappings` can still return stale planned-elsewhere state from an older run, including the case where a newer run wrote only a sentinel to clear PE findings. Drop legacy rows for any bead that has an authoritative run, and add a regression test for `legacy mapping + newer sentinel/current run`.\n   Rationale: This is a real state-correctness bug in the public load path. The success-reconciliation caller mostly masks it with extra filtering, but milestone state rebuilt from the authoritative journal is still wrong for any other consumer and can resurrect superseded PE mappings.\n2. Tighten `extract_pe_bead_ids` so it only accepts top-level PE bullets instead of trimming every line. In `src/contexts/project_run_record/task_prompt_contract.rs:286-305`, `line.trim()` means an indented continuation line like `    - note` is parsed as another bead ID. Final-review validation then trusts that set at `src/contexts/workflow_composition/final_review.rs:648-654` and `src/contexts/workflow_composition/final_review.rs:1530-1534`, so a bogus `mapped_to_bead_id` can survive validation, suppress a restart, and only surface later as a stale-warning during reconciliation. Parse only column-1 bullets (or otherwise ignore indented continuation lines) and add a regression test covering multiline summary / prompt-override content.\n   Rationale: This is a correctness gap in the fail-closed validation path. A malformed or hand-edited prompt can accidentally whitelist arbitrary tokens as PE targets, which lets the active bead complete without the mapped bead actually existing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 25
+}
