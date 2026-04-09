@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 23
+      "completion_round": 24
     },
     "started_at": "2026-04-09T07:56:17.977024141Z",
     "prompt_hash_at_cycle_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "prompt_hash_at_stage_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 22
+    "final_review_restart_count": 23
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 23,
+  "completion_rounds": 24,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-23-d2e853a3",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 23,
+        "body": "In `success_reconciliation.rs` `verify_planned_elsewhere_after_success`, the function filters mappings with `m.run_id.as_deref() == Some(run_id)` at line 722, which means legacy mappings with `run_id: None` are excluded from post-run verification entirely. If a bead has unverified PE mappings from a legacy run (before run_id tracking was added), they will never be verified or receive comments during success reconciliation. Consider whether legacy mappings should be included in verification when no run_id-bearing mappings exist for the bead.",
+        "created_at": "2026-04-09T18:19:53.837277815Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "36859591d815cace20fee7b4265a8cba694969685b5b7c476bbf0aa6010a34d5"
+      },
+      {
+        "amendment_id": "fr-23-bd15d454",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 23,
+        "body": "`src/contexts/project_run_record/task_prompt_contract.rs:278-305` intentionally allows reviewers to use short-form bead IDs like `8.5.3`, and `src/contexts/workflow_composition/final_review.rs:648-655` preserves those values when they are listed in the prompt. But `src/contexts/automation_runtime/planned_elsewhere.rs:78-97` only retries canonical -> short aliasing after `br show` fails; it never expands a short ID back to the canonical `9ni.8.5.3` form. In this repo, `br show 9ni.8.5.3` succeeds while `br show 8.5.3` returns `ISSUE_NOT_FOUND`, so a valid planned-elsewhere mapping can be downgraded to a stale warning, persisted with `mapped_bead_verified=false`, and never receive the optional comment.",
+        "created_at": "2026-04-09T18:19:53.837280500Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "ca47a1bae88f018490d3a40e220fa9db1437064855f340d634de921a519378fd"
+      },
+      {
+        "amendment_id": "fr-23-6578ae22",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 23,
+        "body": "`src/contexts/workflow_composition/engine.rs:7614-7638` treats failure to append the planned-elsewhere round sentinel as a warning and continues. That sentinel is the only thing that lets `src/contexts/milestone_record/service.rs:2599-2627` supersede older mappings when the latest completion round has zero planned-elsewhere findings. `src/contexts/automation_runtime/success_reconciliation.rs:991-1024` can only reconstruct accepted mappings from the final-review aggregate, so it cannot repair a missing zero-PE sentinel. After a single sentinel-write failure, stale mappings from an earlier round remain authoritative in milestone state even though the latest accepted round cleared them.",
+        "created_at": "2026-04-09T18:19:53.837282724Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "409d003cbd64cf14a8a2149ba0101fc2657cdabfcfb56fafc54c23123999d718"
+      }
+    ],
     "processed_count": 67
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 24 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-09T17:32:22.926836733Z",
+    "resolved_at": "2026-04-09T18:01:44.123857429Z",
     "final_review_reviewers": [
       {
         "backend_family": "claude",
