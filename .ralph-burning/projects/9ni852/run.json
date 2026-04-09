@@ -2,35 +2,105 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
     "started_at": "2026-04-09T07:56:17.977024141Z",
     "prompt_hash_at_cycle_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "prompt_hash_at_stage_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-a1bfff21",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "In `record_planned_elsewhere_amendments` (engine.rs:7538), the `mapped_bead_verified` field is hardcoded to `false` with a comment saying verification is deferred to `automation_runtime`. However, the `automation_runtime::planned_elsewhere::reconcile_planned_elsewhere` function — which does perform verification — is never called from the engine or from `success_reconciliation`. The engine records unverified mappings, but there is no code path that later invokes the verification handler to update them. Either the automation_runtime reconciler should be wired into the success_reconciliation flow to verify pending unverified mappings, or the engine should call `reconcile_planned_elsewhere` directly instead of `record_planned_elsewhere_amendments`. As it stands, `mapped_bead_verified` will always be `false` for mappings created through the engine path.",
+        "created_at": "2026-04-09T09:08:57.575956322Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "d39fdbe838ba96a02b5dab3cd5d0655d340862b7ec526494ca332b530719753d"
+      },
+      {
+        "amendment_id": "fr-2-96a6f547",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "There are no tests for the `mapped_to_bead_id: Some(...)` path in the final_review aggregation logic. The `has_non_planned_elsewhere` flag, the partitioning of amendments into planned-elsewhere vs regular in the engine, and the no-restart behavior when all amendments are planned-elsewhere are all untested. The existing final_review tests only set `mapped_to_bead_id: None`. At minimum, add a test for `aggregate_final_review_panel` where some amendments have `mapped_to_bead_id: Some(\"...\")` to verify that `restart_required` is false when all accepted amendments are planned-elsewhere.",
+        "created_at": "2026-04-09T09:08:57.575959027Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "293522b1bf8f496585d658c748966a7c1ef48f22599729dbf0162b975379f6a9"
+      },
+      {
+        "amendment_id": "fr-2-d7cb5f67",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "The shipped execution path never performs the stale-bead lookup or optional `br comment` that this feature is supposed to add. The final-review engine records planned-elsewhere items by calling `record_planned_elsewhere_amendments` from `src/contexts/workflow_composition/engine.rs:2655-2668` and `src/contexts/workflow_composition/engine.rs:2864-2878`, and that helper hardcodes `mapped_bead_verified: false` before writing the mapping in `src/contexts/workflow_composition/engine.rs:7607-7613`. The only code that actually verifies the mapped bead and posts comments lives in `src/contexts/automation_runtime/planned_elsewhere.rs:103-157`, but this branch does not route the production final-review flow through that handler. As a result, stale bead references are never detected in production and the optional `br comment` path is unreachable.",
+        "created_at": "2026-04-09T09:08:57.575961552Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "8bcd027b4a099f47578568ae890a0c3a4fa8c30265d3966473a8b83c4041e48f"
+      },
+      {
+        "amendment_id": "fr-2-8e9cf27f",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "Planned-elsewhere mappings are persisted before the final-review stage commit is known to have succeeded, and they are not rolled back if the stage later fails. In the completion path, mappings are written at `src/contexts/workflow_composition/engine.rs:2655-2668` before the stage-completed journal append at `src/contexts/workflow_composition/engine.rs:2670-2698`. In the restart path, mappings are written at `src/contexts/workflow_composition/engine.rs:2864-2878` before queue writes and later failure handling at `src/contexts/workflow_composition/engine.rs:2880-2975`. Because `record_planned_elsewhere_mapping` appends directly to the milestone journal and `planned_elsewhere.ndjson` in `src/contexts/milestone_record/service.rs:2353-2390`, any later stage failure leaves behind durable mapping state for a final-review attempt that never committed, and retries will append duplicates.",
+        "created_at": "2026-04-09T09:08:57.575963816Z",
+        "batch_sequence": 4,
+        "source": "workflow_stage",
+        "dedup_key": "2ac0ae0d0eb72355ff5da08972921e785d988b100ab2913e3486ace51a2a3b33"
+      },
+      {
+        "amendment_id": "fr-2-2161e26f",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "Final-review deduplication collapses amendments solely by normalized body and silently keeps the first non-`None` mapping target, so conflicting ownership classifications can be misrouted. `merge_final_review_amendments` in `src/contexts/workflow_composition/final_review.rs:154-183` uses only `normalized_body` as the dedup key and, on collision, preserves whatever `mapped_to_bead_id` it saw first. Later, restart behavior is decided purely from that surviving field in `src/contexts/workflow_composition/final_review.rs:1533-1591`. If two reviewers submit the same amendment text but disagree on whether it is planned-elsewhere, or disagree on which bead owns it, one reviewer's classification is discarded based on proposal order and the run can incorrectly skip a restart or record the mapping against the wrong bead.",
+        "created_at": "2026-04-09T09:08:57.575966181Z",
+        "batch_sequence": 5,
+        "source": "workflow_stage",
+        "dedup_key": "3479b0bfeb90b7ce5058e28f8e2804747707bd1945ab751da676d080d9aa14e0"
+      }
+    ],
     "processed_count": 3
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
-    "stage_id": "plan_and_implement",
-    "resolved_at": "2026-04-09T08:25:58.162997458Z",
-    "primary_target": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-09T08:44:44.809493758Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }
