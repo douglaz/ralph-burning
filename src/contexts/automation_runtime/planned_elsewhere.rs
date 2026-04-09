@@ -14,7 +14,6 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
-use crate::adapters::br_models::BeadStatus;
 use crate::adapters::br_process::{
     BrAdapter, BrCommand, BrError, BrMutationAdapter, ProcessRunner,
 };
@@ -57,12 +56,17 @@ enum BeadVerification {
     TransientError(String),
 }
 
-/// Check whether a bead exists and is not closed.
+/// Check whether a bead exists.
 ///
-/// Distinguishes definitive stale-bead results (bead not found or closed)
-/// from transient/infrastructure errors (timeouts, parse failures, binary
-/// not found, I/O errors). Only definitive results are downgraded to
-/// warnings; transient errors propagate so the operator can investigate.
+/// A bead in any status (open, in-progress, closed) is considered verified.
+/// Closed beads are legitimate planned-elsewhere targets: the mapped-to
+/// bead may already be complete, and the mapping still documents that the
+/// concern is covered.
+///
+/// Distinguishes definitive stale-bead results (bead not found) from
+/// transient/infrastructure errors (timeouts, parse failures, binary not
+/// found, I/O errors). Only definitive results are downgraded to warnings;
+/// transient errors propagate so the operator can investigate.
 async fn verify_bead_exists<R: ProcessRunner>(
     br_read: &BrAdapter<R>,
     bead_id: &str,
@@ -70,15 +74,7 @@ async fn verify_bead_exists<R: ProcessRunner>(
     use crate::adapters::br_models::BeadDetail;
     let cmd = BrCommand::show(bead_id);
     match br_read.exec_json::<BeadDetail>(&cmd).await {
-        Ok(detail) => {
-            if detail.status == BeadStatus::Closed {
-                BeadVerification::Stale(format!(
-                    "mapped-to bead '{bead_id}' exists but is already closed"
-                ))
-            } else {
-                BeadVerification::Verified
-            }
-        }
+        Ok(_detail) => BeadVerification::Verified,
         Err(
             ref e @ BrError::BrExitError {
                 ref stderr,
@@ -511,13 +507,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closed_bead_is_stale() -> Result<(), Box<dyn std::error::Error>> {
+    async fn closed_bead_is_verified() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base_dir = tmp.path();
         let milestone_id = MilestoneId::new("test-ms")?;
         setup_milestone(base_dir, &milestone_id);
 
-        // br show returns a closed bead
+        // br show returns a closed bead — should still be verified since
+        // closed beads are legitimate planned-elsewhere targets.
         let show_json = r#"{"id":"closed-bead","title":"Done","status":"closed","priority":2,"bead_type":"task"}"#;
         let read_runner = MockBrRunner::new(vec![MockBrRunner::success(show_json)]);
         let br_read = BrAdapter::with_runner(read_runner);
@@ -543,12 +540,8 @@ mod tests {
         )
         .await?;
 
-        assert!(!outcome.bead_verified);
-        assert!(outcome
-            .stale_warning
-            .as_deref()
-            .unwrap()
-            .contains("already closed"));
+        assert!(outcome.bead_verified);
+        assert!(outcome.stale_warning.is_none());
 
         Ok(())
     }

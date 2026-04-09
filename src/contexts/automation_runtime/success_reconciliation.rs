@@ -864,9 +864,9 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
 
 /// Reconstruct any planned-elsewhere mappings from persisted final-review
 /// aggregate payloads that are missing from the journal. Only considers
-/// aggregates from the current run (payload_id starts with run_id) to
-/// prevent resurrecting stale mappings from superseded restart rounds,
-/// older runs, or abandoned review attempts.
+/// aggregates from the current run (payload_id starts with run_id) and,
+/// for each completion_round, only uses the latest aggregate (by
+/// `created_at`) to skip pre-rollback or abandoned review attempts.
 ///
 /// This covers the failure window where the durable stage commit (which
 /// includes the aggregate) succeeded but `record_planned_elsewhere_amendments`
@@ -890,6 +890,25 @@ fn reconstruct_missing_pe_mappings(
         Err(_) => return Vec::new(),
     };
 
+    // Collect final-review aggregates from the current run. For each
+    // completion_round, keep only the latest aggregate (by created_at)
+    // so pre-rollback or abandoned attempts are skipped.
+    let mut latest_by_round: std::collections::HashMap<u32, _> = std::collections::HashMap::new();
+    for payload in &payloads {
+        if payload.stage_id != StageId::FinalReview
+            || payload.record_kind != RecordKind::StageAggregate
+            || !payload.payload_id.starts_with(run_id)
+        {
+            continue;
+        }
+        let entry = latest_by_round
+            .entry(payload.completion_round)
+            .or_insert(payload);
+        if payload.created_at > entry.created_at {
+            *entry = payload;
+        }
+    }
+
     // Build a mutable set of existing identity keys for dedup. Updated as
     // new mappings are reconstructed so the same identity appearing in
     // multiple aggregates is only reconstructed once.
@@ -901,16 +920,12 @@ fn reconstruct_missing_pe_mappings(
     let now = Utc::now();
     let mut reconstructed = Vec::new();
 
-    // Scan final-review aggregates from the current run only, so that
-    // mappings lost in any restart round within this run are recovered
-    // without resurrecting stale mappings from older runs.
-    for payload in &payloads {
-        if payload.stage_id != StageId::FinalReview
-            || payload.record_kind != RecordKind::StageAggregate
-            || !payload.payload_id.starts_with(run_id)
-        {
-            continue;
-        }
+    // Scan only the latest aggregate per completion_round from the current
+    // run, so pre-rollback or crashed attempts are skipped.
+    let mut rounds: Vec<u32> = latest_by_round.keys().copied().collect();
+    rounds.sort_unstable();
+    for round in rounds {
+        let payload = latest_by_round[&round];
 
         let aggregate: FinalReviewAggregatePayload =
             match serde_json::from_value(payload.payload.clone()) {
