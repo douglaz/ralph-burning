@@ -114,6 +114,83 @@ fn validate_bead_id_syntax(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ── JSON-level field validation ──────────────────────────────────────
+
+/// Expected fields per classification variant (excluding the tag itself).
+const FIX_NOW_FIELDS: &[&str] = &[
+    "finding_summary",
+    "severity",
+    "affected_files",
+    "remediation_hint",
+];
+const PLANNED_ELSEWHERE_FIELDS: &[&str] = &[
+    "finding_summary",
+    "mapped_to_bead_id",
+    "confidence",
+    "rationale",
+];
+const PROPOSE_NEW_BEAD_FIELDS: &[&str] = &[
+    "finding_summary",
+    "proposed_title",
+    "proposed_scope",
+    "severity",
+    "rationale",
+];
+
+/// Validates that a JSON object representing a classification does not
+/// contain fields from a different variant.
+///
+/// Serde internally tagged enums silently discard unknown fields, so a
+/// payload like `{"classification":"fix-now",...,"mapped_to_bead_id":"x"}`
+/// would deserialize as `FixNow` and lose the planned-elsewhere field.
+/// This function detects such cross-variant contamination at the JSON
+/// level before or after deserialization.
+///
+/// Returns a list of errors. An empty vec means no unknown fields.
+pub fn validate_classification_fields(value: &serde_json::Value) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => {
+            errors.push("classification must be a JSON object".to_owned());
+            return errors;
+        }
+    };
+
+    let tag = match obj.get("classification").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => {
+            errors
+                .push("classification object must have a 'classification' string field".to_owned());
+            return errors;
+        }
+    };
+
+    let allowed = match tag {
+        "fix-now" => FIX_NOW_FIELDS,
+        "planned-elsewhere" => PLANNED_ELSEWHERE_FIELDS,
+        "propose-new-bead" => PROPOSE_NEW_BEAD_FIELDS,
+        other => {
+            errors.push(format!("unknown classification variant '{other}'"));
+            return errors;
+        }
+    };
+
+    for key in obj.keys() {
+        if key == "classification" {
+            continue;
+        }
+        if !allowed.contains(&key.as_str()) {
+            errors.push(format!(
+                "{tag}: unexpected field '{key}' (not valid for this classification)"
+            ));
+        }
+    }
+
+    errors
+}
+
 // ── Validation ───────────────────────────────────────────────────────
 
 /// Validates a `FindingClassification` against domain rules.
@@ -128,7 +205,7 @@ pub fn validate_classification(classification: &FindingClassification) -> Vec<St
             finding_summary,
             severity: _,
             affected_files,
-            remediation_hint: _,
+            remediation_hint,
         } => {
             if finding_summary.trim().is_empty() {
                 errors.push("fix_now: finding_summary must not be empty".to_owned());
@@ -138,6 +215,14 @@ pub fn validate_classification(classification: &FindingClassification) -> Vec<St
                     errors.push(format!(
                         "fix_now: affected_files[{i}] must not be empty or whitespace-only"
                     ));
+                }
+            }
+            if let Some(hint) = remediation_hint {
+                if hint.trim().is_empty() {
+                    errors.push(
+                        "fix_now: remediation_hint must not be empty or whitespace-only when present"
+                            .to_owned(),
+                    );
                 }
             }
         }
@@ -841,6 +926,157 @@ mod tests {
         };
         let errors = validate_classification(&c);
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        Ok(())
+    }
+
+    // ── Validation: remediation_hint ───────────────────────────────
+
+    #[test]
+    fn fix_now_rejects_empty_remediation_hint() -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::FixNow {
+            finding_summary: "Valid summary".to_owned(),
+            severity: Severity::High,
+            affected_files: vec![],
+            remediation_hint: Some("".to_owned()),
+        };
+        let errors = validate_classification(&c);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("remediation_hint"));
+        Ok(())
+    }
+
+    #[test]
+    fn fix_now_rejects_whitespace_only_remediation_hint() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let c = FindingClassification::FixNow {
+            finding_summary: "Valid summary".to_owned(),
+            severity: Severity::Medium,
+            affected_files: vec![],
+            remediation_hint: Some("   ".to_owned()),
+        };
+        let errors = validate_classification(&c);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("remediation_hint"));
+        Ok(())
+    }
+
+    #[test]
+    fn fix_now_accepts_none_remediation_hint() -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::FixNow {
+            finding_summary: "Valid summary".to_owned(),
+            severity: Severity::Low,
+            affected_files: vec![],
+            remediation_hint: None,
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn fix_now_accepts_valid_remediation_hint() -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::FixNow {
+            finding_summary: "Valid summary".to_owned(),
+            severity: Severity::High,
+            affected_files: vec![],
+            remediation_hint: Some("Add guard clause".to_owned()),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        Ok(())
+    }
+
+    // ── JSON-level cross-variant field detection ────────────────────
+
+    #[test]
+    fn cross_variant_field_on_fix_now_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"classification":"fix-now","finding_summary":"s","severity":"high","affected_files":[],"mapped_to_bead_id":"bead-2"}"#,
+        )?;
+        let errors = validate_classification_fields(&json);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("mapped_to_bead_id"));
+        assert!(errors[0].contains("not valid for this classification"));
+        Ok(())
+    }
+
+    #[test]
+    fn cross_variant_field_on_planned_elsewhere_is_rejected(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"classification":"planned-elsewhere","finding_summary":"s","mapped_to_bead_id":"m1.b1","confidence":0.5,"rationale":"r","proposed_title":"leaked"}"#,
+        )?;
+        let errors = validate_classification_fields(&json);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("proposed_title"));
+        Ok(())
+    }
+
+    #[test]
+    fn cross_variant_field_on_propose_new_bead_is_rejected(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"classification":"propose-new-bead","finding_summary":"s","proposed_title":"t","proposed_scope":"s","severity":"low","rationale":"r","confidence":0.9}"#,
+        )?;
+        let errors = validate_classification_fields(&json);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("confidence"));
+        Ok(())
+    }
+
+    #[test]
+    fn multiple_cross_variant_fields_all_reported() -> Result<(), Box<dyn std::error::Error>> {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"classification":"fix-now","finding_summary":"s","severity":"high","affected_files":[],"mapped_to_bead_id":"x","confidence":0.5,"proposed_title":"y"}"#,
+        )?;
+        let errors = validate_classification_fields(&json);
+        assert_eq!(errors.len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn clean_fix_now_json_passes_field_validation() -> Result<(), Box<dyn std::error::Error>> {
+        let c = fix_now_valid();
+        let json = serde_json::to_value(&c)?;
+        let errors = validate_classification_fields(&json);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn clean_planned_elsewhere_json_passes_field_validation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = planned_elsewhere_valid();
+        let json = serde_json::to_value(&c)?;
+        let errors = validate_classification_fields(&json);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn clean_propose_new_bead_json_passes_field_validation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = propose_new_bead_valid();
+        let json = serde_json::to_value(&c)?;
+        let errors = validate_classification_fields(&json);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_classification_variant_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"classification":"unknown","some_field":"v"}"#)?;
+        let errors = validate_classification_fields(&json);
+        assert!(errors.iter().any(|e| e.contains("unknown classification")));
+        Ok(())
+    }
+
+    #[test]
+    fn non_object_json_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let json: serde_json::Value = serde_json::from_str(r#""just a string""#)?;
+        let errors = validate_classification_fields(&json);
+        assert!(errors.iter().any(|e| e.contains("must be a JSON object")));
         Ok(())
     }
 

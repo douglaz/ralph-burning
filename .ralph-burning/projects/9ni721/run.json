@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409194344",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 5
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-4-4878e972",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "`src/contexts/workflow_composition/review_classification.rs:49-76` does not reject unknown or cross-variant fields during deserialization. Because `FindingClassification` is an internally tagged enum without any `deny_unknown_fields` guard, a payload like `{\"classification\":\"fix-now\",...,\"mapped_to_bead_id\":\"bead-2\"}` will deserialize as `FixNow` and silently discard the planned-elsewhere field. That violates the stated rule that each finding must have exactly one classification and lets malformed reviewer output take the wrong downstream path instead of being rejected.",
-        "created_at": "2026-04-09T20:35:36.461965933Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "ff5d40aa4888c58bfe74607066e903a42b22eec111eb151cf49ebac4d35902f7"
-      },
-      {
-        "amendment_id": "fr-4-673cabe8",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "`src/contexts/workflow_composition/review_classification.rs:127-143` never validates `remediation_hint` when it is present on `FixNow`. `Some(\"\")` and whitespace-only hints currently pass `validate_classification`, even though the bead explicitly calls for rejecting malformed classifications and empty-string edge cases. That means persisted/classified findings can carry a meaningless remediation hint as if it were valid data.",
-        "created_at": "2026-04-09T20:35:36.461967947Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "28ffc59fb3259a2b93407d99a25ab1c1b24aeb86432441849016b899a7af2482"
-      }
-    ],
-    "processed_count": 5
+    "pending": [],
+    "processed_count": 7
   },
-  "status_summary": "running: final review restart round 5 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-09T20:26:49.281144934Z",
