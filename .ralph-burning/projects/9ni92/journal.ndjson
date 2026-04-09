@@ -1,0 +1,4 @@
+{"sequence":1,"timestamp":"2026-04-09T05:50:52.128332712Z","event_type":"project_created","details":{"flow":"minimal","project_id":"9ni92"}}
+{"sequence":2,"timestamp":"2026-04-09T05:51:04.199625768Z","event_type":"run_started","details":{"first_stage":"plan_and_implement","max_completion_rounds":25,"run_id":"run-20260409055104"}}
+{"sequence":3,"timestamp":"2026-04-09T05:51:04.221627810Z","event_type":"stage_entered","details":{"attempt":1,"cycle":1,"run_id":"run-20260409055104","stage_id":"plan_and_implement"}}
+{"sequence":4,"timestamp":"2026-04-09T05:57:19.304463185Z","event_type":"stage_completed","details":{"artifact_id":"run-20260409055104-plan_and_implement-c1-a1-cr1-artifact","attempt":1,"cycle":1,"payload_id":"run-20260409055104-plan_and_implement-c1-a1-cr1","run_id":"run-20260409055104","stage_id":"plan_and_implement"}}
