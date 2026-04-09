@@ -7615,7 +7615,7 @@ fn record_planned_elsewhere_amendments(
     // Fail closed: if the prompt cannot be read or the allowed set is empty,
     // reject ALL mappings rather than silently accepting them.
     let allowed_pe_ids = {
-        let project_root = FileSystem::live_project_root(base_dir, project_id);
+        let project_root = FileSystem::project_root(base_dir, project_id);
         let prompt_path = project_root.join(&project_record.prompt_reference);
         match std::fs::read_to_string(&prompt_path) {
             Ok(prompt_text) => {

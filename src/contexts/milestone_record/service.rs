@@ -2437,9 +2437,10 @@ pub fn load_planned_elsewhere_mappings(
 
 /// Rebuild planned-elsewhere mappings from journal `PlannedElsewhereMapped`
 /// events. Collapses rows by identity key `(active_bead_id, finding_summary,
-/// mapped_to_bead_id)`, keeping the latest (newest `recorded_at`) row for
-/// each key. This ensures that a verification event appended after the
-/// original unverified record supersedes it.
+/// mapped_to_bead_id)`, keeping the last journal entry for each key (relies
+/// on append-only chronological ordering of the journal). This ensures that
+/// a verification event appended after the original unverified record
+/// supersedes it.
 fn rebuild_planned_elsewhere_from_journal(
     journal_store: &impl MilestoneJournalPort,
     base_dir: &Path,
@@ -2512,7 +2513,38 @@ fn rebuild_planned_elsewhere_from_journal(
         by_identity.insert(key, mapping);
     }
 
-    Ok(by_identity.into_values().collect())
+    // Apply run/round supersession: for each (active_bead_id, run_id) group
+    // where run_id is Some, find the maximum completion_round and keep only
+    // mappings from that round.  This ensures that if a later round fixes or
+    // remaps a finding, the earlier round's PE mapping is discarded.
+    // Mappings with run_id=None (legacy) or completion_round=None are kept
+    // unconditionally since they lack provenance for round filtering.
+    let mappings: Vec<_> = by_identity.into_values().collect();
+    let mut max_round_by_bead_run: HashMap<(String, String), u32> = HashMap::new();
+    for m in &mappings {
+        if let (Some(rid), Some(cr)) = (&m.run_id, m.completion_round) {
+            let key = (m.active_bead_id.clone(), rid.clone());
+            let entry = max_round_by_bead_run.entry(key).or_insert(cr);
+            if cr > *entry {
+                *entry = cr;
+            }
+        }
+    }
+    let result: Vec<_> = mappings
+        .into_iter()
+        .filter(|m| {
+            match (&m.run_id, m.completion_round) {
+                (Some(rid), Some(cr)) => {
+                    let key = (m.active_bead_id.clone(), rid.clone());
+                    max_round_by_bead_run.get(&key) == Some(&cr)
+                }
+                // Legacy mappings without provenance are kept unconditionally.
+                _ => true,
+            }
+        })
+        .collect();
+
+    Ok(result)
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 19
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-18-55302ad6",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 18,
-        "body": "In `rebuild_planned_elsewhere_from_journal` (service.rs ~L2440-2512), the doc comment says 'keeping the latest (newest `recorded_at`) row for each key' but the code uses unconditional `HashMap::insert` without comparing timestamps. This is only correct because journal events are append-only (chronologically ordered). If the journal were ever reordered (e.g., by a future merge/compaction tool), the last-writer-wins semantic would silently produce wrong results. Either add a timestamp guard (`if mapping.recorded_at >= existing.recorded_at`) or update the doc comment to say 'keeping the last journal entry for each key (relies on append-only ordering)' so the invariant is explicit.",
-        "created_at": "2026-04-09T16:01:59.686713069Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "ba2a4b7409f9b322b3f224c0f1acc5b558539716e60eaea2a4e8e513a65c737a"
-      },
-      {
-        "amendment_id": "fr-18-33e48239",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 18,
-        "body": "src/contexts/workflow_composition/engine.rs:7617-7626 validates `mapped_to_bead_id` by reading the prompt from `FileSystem::live_project_root(...)`. The engine otherwise resolves projects through `FileSystem::project_root(...)`, so audit-only/legacy workspaces will fail this read, produce an empty allowed-id set, and silently drop every planned-elsewhere mapping even when the prompt actually contains valid entries. Load the prompt through the same fallback root used elsewhere before fail-closing the mapping.",
-        "created_at": "2026-04-09T16:01:59.686715183Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "0dceb320f9f247a4fa0dfc0d718cac8355a9bc3526fc53e3492d9d68213f7204"
-      },
-      {
-        "amendment_id": "fr-18-fe66f16f",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 18,
-        "body": "src/contexts/milestone_record/model.rs:752-754 says `completion_round` exists to filter stale mappings, but src/contexts/milestone_record/service.rs:2429-2510 ignores both `run_id` and `completion_round` and only deduplicates by `(active_bead_id, finding_summary, mapped_to_bead_id)`. If round 1 records `finding X -> bead-A` and a later round fixes that concern or remaps it, `load_planned_elsewhere_mappings()` still returns the superseded round-1 entry (and can even return both targets). The only latest-round filter is the ad hoc one in src/contexts/automation_runtime/success_reconciliation.rs:744-753, so the persisted milestone state is stale for every other reader. Make the rebuild/read path apply run/round supersession, or emit an explicit superseded/tombstone event when a later round no longer accepts an earlier mapping.",
-        "created_at": "2026-04-09T16:01:59.686717928Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "320ea0744ab83c14f2ffa4f894eff8680c9c4db079e0ecc600db7e93abe154db"
-      }
-    ],
-    "processed_count": 55
+    "pending": [],
+    "processed_count": 58
   },
-  "status_summary": "running: final review restart round 19 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-09T15:42:03.389868101Z",
