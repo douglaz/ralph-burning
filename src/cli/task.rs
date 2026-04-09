@@ -2,9 +2,14 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
+use crate::adapters::fs::{FsActiveProjectStore, FsProjectStore};
+use crate::contexts::project_run_record::model::{ProjectDetail, ProjectStatusSummary};
+use crate::contexts::project_run_record::service;
+use crate::contexts::workspace_governance;
+use crate::shared::domain::ProjectId;
 use crate::shared::error::AppResult;
 
-use super::project::{self, CreateFromBeadArgs, ProjectCommand, ProjectSubcommand};
+use super::project::{self, CreateFromBeadArgs};
 
 /// Task commands — aliases for project operations in a bead/milestone context.
 ///
@@ -51,43 +56,103 @@ pub struct TaskCreateArgs {
 
 pub async fn handle(command: TaskCommand) -> AppResult<()> {
     match command.command {
-        TaskSubcommand::Create(args) => {
-            let project_cmd = ProjectCommand {
-                command: ProjectSubcommand::CreateFromBead(CreateFromBeadArgs {
-                    milestone_id: args.milestone_id,
-                    bead_id: args.bead_id,
-                    project_id: args.project_id,
-                    prompt_file: args.prompt_file,
-                    flow: args.flow,
-                }),
-            };
-            project::handle(project_cmd).await
-        }
-        TaskSubcommand::Show { id } => {
-            let project_cmd = ProjectCommand {
-                command: ProjectSubcommand::Show { id },
-            };
-            project::handle(project_cmd).await
-        }
-        TaskSubcommand::Select { id } => {
-            let project_cmd = ProjectCommand {
-                command: ProjectSubcommand::Select { id },
-            };
-            project::handle(project_cmd).await
-        }
-        TaskSubcommand::List => {
-            let project_cmd = ProjectCommand {
-                command: ProjectSubcommand::List,
-            };
-            project::handle(project_cmd).await
-        }
+        TaskSubcommand::Create(args) => handle_create(args).await,
+        TaskSubcommand::Show { id } => handle_show(id).await,
+        TaskSubcommand::Select { id } => handle_select(id).await,
+        TaskSubcommand::List => handle_list().await,
     }
+}
+
+async fn handle_create(args: TaskCreateArgs) -> AppResult<()> {
+    let bead_args = CreateFromBeadArgs {
+        milestone_id: args.milestone_id,
+        bead_id: args.bead_id,
+        project_id: args.project_id,
+        prompt_file: args.prompt_file,
+        flow: args.flow,
+    };
+    let project_id = project::execute_create_from_bead(bead_args).await?;
+    let current_dir = std::env::current_dir()?;
+    let detail = project::load_project_detail(&current_dir, &project_id)?;
+    print_task_detail(&detail);
+    Ok(())
+}
+
+async fn handle_show(id: Option<String>) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+
+    let project_id = match id {
+        Some(raw) => ProjectId::new(raw)?,
+        None => workspace_governance::resolve_active_project(&current_dir)?,
+    };
+
+    let detail = project::load_project_detail(&current_dir, &project_id)?;
+    print_task_detail(&detail);
+    Ok(())
+}
+
+async fn handle_select(id: String) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let project_id = ProjectId::new(id)?;
+    workspace_governance::set_active_project(&current_dir, &project_id)?;
+    println!("Selected task '{}' (project '{}')", project_id, project_id);
+    Ok(())
+}
+
+async fn handle_list() -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+
+    let store = FsProjectStore;
+    let active_store = FsActiveProjectStore;
+    let entries = service::list_projects(&store, &active_store, &current_dir)?;
+
+    if entries.is_empty() {
+        println!("No tasks found.");
+        return Ok(());
+    }
+
+    for entry in &entries {
+        let active_marker = if entry.is_active { " *" } else { "" };
+        let status = match entry.status_summary {
+            ProjectStatusSummary::Created => "created",
+            ProjectStatusSummary::Active => "active",
+            ProjectStatusSummary::Completed => "completed",
+            ProjectStatusSummary::Failed => "failed",
+        };
+        println!(
+            "  {}{} ({}) [{}] - {}",
+            entry.id, active_marker, entry.flow, status, entry.name
+        );
+    }
+
+    Ok(())
+}
+
+fn print_task_detail(detail: &ProjectDetail) {
+    let active_label = if detail.is_active { " (active)" } else { "" };
+    println!(
+        "Task: '{}' (project '{}'){}",
+        detail.record.id, detail.record.id, active_label
+    );
+    println!("Name: {}", detail.record.name);
+    println!("Flow: {}", detail.record.flow);
+    println!("Prompt reference: {}", detail.record.prompt_reference);
+    println!("Prompt hash: {}", detail.record.prompt_hash);
+    println!("Created: {}", detail.record.created_at);
+    println!("Run status: {}", detail.run_snapshot.status_summary);
+    println!("Journal events: {}", detail.journal_event_count);
+    println!("Rollback points: {}", detail.rollback_count);
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
+    use crate::cli::project::ProjectSubcommand;
     use crate::cli::{Cli, Commands};
 
     use super::*;
@@ -253,6 +318,7 @@ mod tests {
         assert_eq!(task_args.milestone_id, project_args.milestone_id);
         assert_eq!(task_args.bead_id, project_args.bead_id);
         assert_eq!(task_args.project_id, project_args.project_id);
+        assert_eq!(task_args.prompt_file, project_args.prompt_file);
         assert_eq!(task_args.flow, project_args.flow);
         Ok(())
     }

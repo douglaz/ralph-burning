@@ -11242,3 +11242,268 @@ fn run_start_malformed_project_override_does_not_fall_back_to_workspace() {
         "stderr should mention malformed template: {stderr}"
     );
 }
+
+// ── Task Alias Integration Tests ──
+
+#[test]
+fn task_select_sets_active_project_with_task_aware_output() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["task", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task select");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Selected task 'alpha' (project 'alpha')"),
+        "task select should show task-aware output, got: {stdout}"
+    );
+    // Verify the active-project pointer is set (same state as project select)
+    assert_eq!(
+        "alpha",
+        fs::read_to_string(active_project_path(temp_dir.path())).expect("read active project")
+    );
+}
+
+#[test]
+fn task_select_and_project_select_produce_same_state() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    // Use task select
+    let task_output = Command::new(binary())
+        .args(["task", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task select");
+    assert!(task_output.status.success());
+
+    let active_after_task =
+        fs::read_to_string(active_project_path(temp_dir.path())).expect("read active project");
+
+    // Use project select to overwrite (same project — pointer should be identical)
+    let project_output = Command::new(binary())
+        .args(["project", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project select");
+    assert!(project_output.status.success());
+
+    let active_after_project =
+        fs::read_to_string(active_project_path(temp_dir.path())).expect("read active project");
+
+    assert_eq!(active_after_task, active_after_project);
+}
+
+#[test]
+fn task_select_rejects_missing_project() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["task", "select", "nonexistent"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task select for missing");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not found"),
+        "task select for missing project should fail, got: {stderr}"
+    );
+}
+
+#[test]
+fn task_list_shows_no_tasks_when_empty() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["task", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task list");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No tasks found"),
+        "task list empty should say 'No tasks found', got: {stdout}"
+    );
+}
+
+#[test]
+fn task_list_shows_same_entries_as_project_list() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    // Create two projects
+    Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "alpha",
+            "--name",
+            "Alpha",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create alpha");
+
+    Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "beta",
+            "--name",
+            "Beta",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "quick_dev",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create beta");
+
+    // Select alpha as active
+    Command::new(binary())
+        .args(["project", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select alpha");
+
+    let task_list = Command::new(binary())
+        .args(["task", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task list");
+
+    let project_list = Command::new(binary())
+        .args(["project", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project list");
+
+    assert!(task_list.status.success());
+    assert!(project_list.status.success());
+
+    let task_stdout = String::from_utf8_lossy(&task_list.stdout);
+    let project_stdout = String::from_utf8_lossy(&project_list.stdout);
+
+    // Both should show the same entries (same format)
+    assert!(task_stdout.contains("alpha *"));
+    assert!(task_stdout.contains("beta"));
+    assert!(task_stdout.contains("standard"));
+    assert!(task_stdout.contains("quick_dev"));
+    // The entry lines themselves should be identical
+    assert_eq!(task_stdout, project_stdout);
+}
+
+#[test]
+fn task_show_displays_task_aware_detail() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "showme",
+            "--name",
+            "Show Me",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "docs_change",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    let output = Command::new(binary())
+        .args(["task", "show", "showme"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task show");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Task: 'showme' (project 'showme')"),
+        "task show should use task-aware header, got: {stdout}"
+    );
+    assert!(stdout.contains("Name: Show Me"));
+    assert!(stdout.contains("Flow: docs_change"));
+    assert!(stdout.contains("Run status: not started"));
+}
+
+#[test]
+fn task_show_resolves_active_project_when_no_id_given() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "active-task",
+            "--name",
+            "Active Task",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["task", "select", "active-task"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select task");
+
+    let output = Command::new(binary())
+        .args(["task", "show"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task show without id");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Task: 'active-task' (project 'active-task') (active)"),
+        "task show should show active marker, got: {stdout}"
+    );
+}
+
+#[test]
+fn task_show_fails_when_no_active_project() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["task", "show"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task show without active project");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no active project"),
+        "task show without active project should fail, got: {stderr}"
+    );
+}
