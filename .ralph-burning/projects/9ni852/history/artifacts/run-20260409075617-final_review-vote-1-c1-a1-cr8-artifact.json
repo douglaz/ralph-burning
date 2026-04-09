@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T11:42:00.826362605Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments should be accepted. Two independently identify the same real replay bug in the verify/persist/comment flow, one identifies a legitimate duplication-driven maintainability risk, and one identifies a real same-run deduplication bug during mapping reconstruction.\n\n## Votes\n\n- `fr-8-88f788ba`: Accept\n  The defect is real. Phase 2 logs `record_planned_elsewhere_mapping(...)` failures as non-blocking, but Phase 3 still posts comments for every `outcome.verified`. That means the code can emit a comment even when the verified state was not durably recorded, so a later replay can verify and comment again. Gating Phase 3 on successful Phase 2 persistence for that mapping is the right fix direction; the gate should be keyed by mapping identity, not merely bead id, if multiple findings can target the same bead.\n- `fr-8-dc90abe2`: Accept\n  The duplication is real and worth addressing. `success_reconciliation.rs` reimplements the same planned-elsewhere comment formatting and posting behavior already present in `verify_and_comment_mappings`, with the same message shape and same best-effort error handling. That creates a maintenance drift risk: a future change to comment text or posting semantics can easily be applied in one place and missed in the other. A shared helper is the stronger remedy; documentation-only is weaker but still acknowledges the coupling.\n- `fr-8-02afe4b6`: Accept\n  This is the same underlying correctness bug as `fr-8-88f788ba`, stated more directly. The code path at the Phase 2 write can fail, and the Phase 3 comment path still runs because it checks only `outcome.verified`. That violates the stated assumption that verified records are already durable before comments are posted, and it can produce duplicate comments on retry or replay.\n- `fr-8-f4e46f89`: Accept\n  The reconstruction dedup logic is incomplete. `existing_keys` is populated once from the journal snapshot at function entry and never updated as newly reconstructed mappings are discovered. If the same `(finding_summary, mapped_to_bead_id)` appears in multiple final-review aggregates, each copy will pass the dedup check within the same run and be reconstructed again, leading to duplicate persisted mappings and repeated later verification/comment work. Updating the dedup set as each new mapping is reconstructed is necessary.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 8
+}

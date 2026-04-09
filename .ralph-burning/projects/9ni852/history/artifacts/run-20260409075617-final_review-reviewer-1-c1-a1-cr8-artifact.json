@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T11:39:11.083697088Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nTargeted planned-elsewhere and success-reconciliation tests pass, but I found two correctness issues in the new recovery flow: duplicate comments are still possible when verified-state persistence fails, and reconstruction across multiple aggregates can emit the same mapping multiple times.\n\n## Amendments\n\n1. `src/contexts/automation_runtime/success_reconciliation.rs:772-813` still posts mapped-bead comments even when writing the verified mapping fails at `:782-788`. If `record_planned_elsewhere_mapping(...)` returns an error, phase 3 still calls `comment_bead(...)`, so a retry/replay sees no durable `mapped_bead_verified=true` record and can post the same comment again. Only mappings whose verified state was durably recorded should advance to comment posting.\n   Rationale: The change is trying to close the duplicate-comment crash window, but the remaining persistence-failure path still breaks idempotency and can spam the mapped bead with repeated comments.\n2. `src/contexts/automation_runtime/success_reconciliation.rs:883-948` deduplicates reconstructed mappings only against the journal snapshot loaded at entry. Because `existing_keys` is never updated after a new mapping is reconstructed, the same `(finding_summary, mapped_to_bead_id)` present in multiple final-review aggregates will be reconstructed once per aggregate, then verified/commented once per copy in the same reconciliation run. Insert each newly reconstructed identity into the dedup set before continuing.\n   Rationale: Completion rounds can legitimately repeat the same planned-elsewhere finding. In the recovery case this code now emits duplicate journal rows and duplicate `br` comments for one logical mapping.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 8
+}
