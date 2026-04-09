@@ -8,6 +8,7 @@ test-stub = []
 
 [dependencies]
 chrono = { version = "0.4", features = ["clock", "serde"] }
+futures-util = "0.3"
 clap = { version = "4.5", features = ["derive", "env"] }
 nix = { version = "0.29", default-features = false, features = ["fs", "signal", "process"] }
 notify = "6"

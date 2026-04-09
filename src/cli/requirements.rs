@@ -52,7 +52,7 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
         }
         RequirementsSubcommand::Quick { idea } => {
             let now = chrono::Utc::now();
-            let run_id = service.quick(&base_dir, &idea, now, None).await?;
+            let run_id = service.quick(&base_dir, &idea, now, None, true).await?;
             println!("Requirements run completed: {run_id}");
         }
         RequirementsSubcommand::Milestone { idea } => {

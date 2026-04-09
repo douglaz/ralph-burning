@@ -1,0 +1,7 @@
+id = "wt3"
+name = "wt3"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "6fcce4cb9d0f0802337b3aa040bc9b2b58a06eded84377c57adfad4212224e29"
+created_at = "2026-04-09T22:10:54.226915174Z"
+status_summary = "created"

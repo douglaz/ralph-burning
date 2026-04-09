@@ -17,6 +17,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use futures_util::future::join_all;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -276,9 +277,8 @@ where
             details: format!("failed to read prompt for final review: {e}"),
         })?;
 
-    let mut reviewer_records = Vec::new();
-    let mut proposal_total_exhausted: usize = 0;
-    let mut last_proposal_exhaustion_error: Option<AppError> = None;
+    // --- Proposal phase: prepare and emit started events ---
+    let mut proposal_preps = Vec::new();
     for (idx, member) in panel.reviewers.iter().enumerate() {
         let reviewer_id = final_review_reviewer_id(idx);
         let reviewer_prompt =
@@ -308,25 +308,51 @@ where
             None,
             None,
         );
-        let started_at = Instant::now();
-        let reviewer_payload = invoke_final_review_member(
-            agent_service,
-            project_root,
-            backend_working_dir,
-            run_id,
-            stage_id,
-            cursor,
-            &member.target,
-            BackendRole::Reviewer,
-            &reviewer_id,
-            "reviewer",
-            reviewer_prompt,
-            Value::Null,
-            reviewer_timeout_for_backend(member.target.backend.family),
-            cancellation_token.clone(),
-        )
-        .await;
+        proposal_preps.push((idx, member, reviewer_id, reviewer_prompt));
+    }
 
+    // --- Proposal phase: invoke all reviewers concurrently ---
+    let mut proposal_futures = Vec::with_capacity(proposal_preps.len());
+    for (_, member, reviewer_id, reviewer_prompt) in &proposal_preps {
+        let cancellation_token = cancellation_token.clone();
+        let target = member.target.clone();
+        let reviewer_id = reviewer_id.clone();
+        let reviewer_prompt = reviewer_prompt.clone();
+        let timeout = reviewer_timeout_for_backend(member.target.backend.family);
+        proposal_futures.push(async move {
+            let started_at = Instant::now();
+            let result = invoke_final_review_member(
+                agent_service,
+                project_root,
+                backend_working_dir,
+                run_id,
+                stage_id,
+                cursor,
+                &target,
+                BackendRole::Reviewer,
+                &reviewer_id,
+                "reviewer",
+                reviewer_prompt,
+                Value::Null,
+                timeout,
+                cancellation_token,
+            )
+            .await;
+            (started_at, result)
+        });
+    }
+    let proposal_results = join_all(proposal_futures).await;
+
+    // --- Proposal phase: process results sequentially ---
+    let mut reviewer_records = Vec::new();
+    let mut proposal_total_exhausted: usize = 0;
+    let mut last_proposal_exhaustion_error: Option<AppError> = None;
+    let mut first_required_proposal_failure: Option<AppError> = None;
+    let mut first_optional_proposal_failure: Option<AppError> = None;
+    for ((idx, member, reviewer_id, _), (started_at, reviewer_payload)) in
+        proposal_preps.iter().zip(proposal_results)
+    {
+        let idx = *idx;
         let (reviewer_payload, producer) = match reviewer_payload {
             Ok(payload) => payload,
             // BackendExhausted is handled first regardless of required/optional
@@ -336,9 +362,6 @@ where
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
             {
-                // Track all exhausted members — both required and optional
-                // count toward quorum reduction because resolve_panel_backends
-                // counts all resolved members toward the configured minimum.
                 proposal_total_exhausted += 1;
                 tracing::warn!(
                     reviewer = %reviewer_id,
@@ -352,7 +375,7 @@ where
                     run_id,
                     cursor,
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     started_at.elapsed(),
@@ -365,29 +388,14 @@ where
                     project_id,
                     "completed",
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     Some(started_at.elapsed()),
                     Some("failed_exhausted"),
                     Some(0),
                 );
-                // Reduce effective quorum only when exhaustion makes the
-                // configured minimum impossible (remaining < min).
-                let effective_min = min_reviewers
-                    .min(
-                        panel
-                            .reviewers
-                            .len()
-                            .saturating_sub(proposal_total_exhausted),
-                    )
-                    .max(1);
-                if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
-                    < effective_min
-                {
-                    last_proposal_exhaustion_error = Some(error);
-                    break;
-                }
+                last_proposal_exhaustion_error = Some(error);
                 continue;
             }
             Err(error) if !member.required => {
@@ -399,7 +407,7 @@ where
                     run_id,
                     cursor,
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     started_at.elapsed(),
@@ -412,38 +420,15 @@ where
                     project_id,
                     "completed",
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     Some(started_at.elapsed()),
                     Some("failed_optional"),
                     Some(0),
                 );
-                // Use the reduced quorum: only reduce when exhaustion
-                // makes the configured minimum impossible.
-                let effective_optional_min = min_reviewers
-                    .min(
-                        panel
-                            .reviewers
-                            .len()
-                            .saturating_sub(proposal_total_exhausted),
-                    )
-                    .max(1);
-                if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
-                    < effective_optional_min
-                {
-                    tracing::warn!(
-                        reviewer = idx,
-                        backend = %member.target.backend.family,
-                        successful = reviewer_records.len(),
-                        remaining = panel.reviewers.len().saturating_sub(idx + 1),
-                        exhausted = proposal_total_exhausted,
-                        effective_min = effective_optional_min,
-                        "proposal quorum shortfall: optional failure + exhaustion makes minimum unreachable"
-                    );
-                    // Propagate the original error so its FailureClass is
-                    // preserved for the engine's retry decision.
-                    return Err(error);
+                if first_optional_proposal_failure.is_none() {
+                    first_optional_proposal_failure = Some(error);
                 }
                 continue;
             }
@@ -456,7 +441,7 @@ where
                     run_id,
                     cursor,
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     started_at.elapsed(),
@@ -469,14 +454,17 @@ where
                     project_id,
                     "completed",
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     Some(started_at.elapsed()),
                     Some("failed"),
                     Some(0),
                 );
-                return Err(error);
+                if first_required_proposal_failure.is_none() {
+                    first_required_proposal_failure = Some(error);
+                }
+                continue;
             }
         };
         let (backend_family, model_id) = panel_member_identity_from_producer(
@@ -497,7 +485,7 @@ where
                     run_id,
                     cursor,
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &backend_family,
                     &model_id,
@@ -511,7 +499,7 @@ where
                     project_id,
                     "completed",
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &backend_family,
                     &model_id,
@@ -536,7 +524,7 @@ where
             run_id,
             cursor,
             "proposal",
-            &reviewer_id,
+            reviewer_id,
             "reviewer",
             &backend_family,
             &model_id,
@@ -550,7 +538,7 @@ where
             project_id,
             "completed",
             "proposal",
-            &reviewer_id,
+            reviewer_id,
             "reviewer",
             &backend_family,
             &model_id,
@@ -575,13 +563,18 @@ where
 
         reviewer_records.push(ReviewerProposalRecord {
             member_index: idx,
-            reviewer_id,
+            reviewer_id: reviewer_id.clone(),
             required: member.required,
             backend_family,
             model_id,
             target: member.target.clone(),
             payload: proposal,
         });
+    }
+
+    // Required failures take priority over quorum shortfalls.
+    if let Some(error) = first_required_proposal_failure {
+        return Err(error);
     }
 
     let all_proposal_exhausted = probe_exhausted_count + proposal_total_exhausted;
@@ -594,9 +587,12 @@ where
         )
         .max(1);
     if reviewer_records.len() < effective_proposal_min {
-        // When the shortfall is entirely due to backend exhaustion,
-        // propagate the last BackendExhausted error so the engine's
-        // failure-class-aware handling can apply (e.g., non-retryable).
+        // Propagate the most specific error so the engine's
+        // failure-class-aware handling can apply (e.g., retry decisions).
+        // Priority: optional failure (preserves FailureClass) > exhaustion > generic.
+        if let Some(error) = first_optional_proposal_failure {
+            return Err(error);
+        }
         if let Some(exhaustion_error) = last_proposal_exhaustion_error {
             return Err(exhaustion_error);
         }
@@ -886,10 +882,23 @@ where
         .map(|vote| (vote.amendment_id.clone(), vote.decision))
         .collect();
 
-    let mut reviewer_votes = Vec::new();
-    let mut vote_total_exhausted: usize = 0;
-    let mut last_vote_exhaustion_error: Option<AppError> = None;
-    for (idx, reviewer) in reviewer_records.iter().enumerate() {
+    // --- Vote phase: prepare and emit started events ---
+    let amendments_context = json!({
+        "amendments": amendments
+            .iter()
+            .map(|amendment| {
+                json!({
+                    "amendment_id": amendment.amendment_id,
+                    "body": amendment.normalized_body,
+                    "planner_position": planner_positions
+                        .get(&amendment.amendment_id)
+                        .map(|decision| decision.to_string()),
+                })
+            })
+            .collect::<Vec<_>>(),
+    });
+    let mut vote_preps = Vec::new();
+    for reviewer in reviewer_records.iter() {
         let vote_prompt = build_voter_prompt(
             "Final Review Votes",
             &amendments,
@@ -923,38 +932,49 @@ where
             None,
             None,
         );
-        let started_at = Instant::now();
-        let vote_payload = invoke_final_review_member(
-            agent_service,
-            project_root,
-            backend_working_dir,
-            run_id,
-            stage_id,
-            cursor,
-            &reviewer.target,
-            BackendRole::Reviewer,
-            &reviewer.reviewer_id,
-            "voter",
-            vote_prompt,
-            json!({
-                "amendments": amendments
-                    .iter()
-                    .map(|amendment| {
-                        json!({
-                            "amendment_id": amendment.amendment_id,
-                            "body": amendment.normalized_body,
-                            "planner_position": planner_positions
-                                .get(&amendment.amendment_id)
-                                .map(|decision| decision.to_string()),
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            }),
-            reviewer_timeout_for_backend(reviewer.target.backend.family),
-            cancellation_token.clone(),
-        )
-        .await;
+        vote_preps.push((reviewer, vote_prompt));
+    }
 
+    // --- Vote phase: invoke all voters concurrently ---
+    let mut vote_futures = Vec::with_capacity(vote_preps.len());
+    for (reviewer, vote_prompt) in &vote_preps {
+        let cancellation_token = cancellation_token.clone();
+        let target = reviewer.target.clone();
+        let reviewer_id = reviewer.reviewer_id.clone();
+        let vote_prompt = vote_prompt.clone();
+        let amendments_context = amendments_context.clone();
+        let timeout = reviewer_timeout_for_backend(reviewer.target.backend.family);
+        vote_futures.push(async move {
+            let started_at = Instant::now();
+            let result = invoke_final_review_member(
+                agent_service,
+                project_root,
+                backend_working_dir,
+                run_id,
+                stage_id,
+                cursor,
+                &target,
+                BackendRole::Reviewer,
+                &reviewer_id,
+                "voter",
+                vote_prompt,
+                amendments_context,
+                timeout,
+                cancellation_token,
+            )
+            .await;
+            (started_at, result)
+        });
+    }
+    let vote_results = join_all(vote_futures).await;
+
+    // --- Vote phase: process results sequentially ---
+    let mut reviewer_votes = Vec::new();
+    let mut vote_total_exhausted: usize = 0;
+    let mut last_vote_exhaustion_error: Option<AppError> = None;
+    let mut first_required_vote_failure: Option<AppError> = None;
+    let mut first_optional_vote_failure: Option<AppError> = None;
+    for ((reviewer, _), (started_at, vote_payload)) in vote_preps.iter().zip(vote_results) {
         let (vote_payload, producer) = match vote_payload {
             Ok(payload) => payload,
             // BackendExhausted is handled first regardless of required/optional
@@ -964,8 +984,6 @@ where
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
             {
-                // Track all exhausted members — both required and optional
-                // count toward quorum reduction (see proposal phase comment).
                 vote_total_exhausted += 1;
                 tracing::warn!(
                     reviewer = %reviewer.reviewer_id,
@@ -999,15 +1017,7 @@ where
                     Some("failed_exhausted"),
                     Some(0),
                 );
-                let effective_min = min_reviewers
-                    .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
-                    .max(1);
-                if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
-                    < effective_min
-                {
-                    last_vote_exhaustion_error = Some(error);
-                    break;
-                }
+                last_vote_exhaustion_error = Some(error);
                 continue;
             }
             Err(error) if !reviewer.required => {
@@ -1039,26 +1049,8 @@ where
                     Some("failed_optional"),
                     Some(0),
                 );
-                // Use the reduced quorum: only reduce when exhaustion
-                // makes the configured minimum impossible.
-                let effective_optional_min = min_reviewers
-                    .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
-                    .max(1);
-                if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
-                    < effective_optional_min
-                {
-                    tracing::warn!(
-                        reviewer = idx,
-                        backend = %reviewer.target.backend.family,
-                        successful_votes = reviewer_votes.len(),
-                        remaining = reviewer_records.len().saturating_sub(idx + 1),
-                        exhausted = vote_total_exhausted,
-                        effective_min = effective_optional_min,
-                        "vote quorum shortfall: optional failure + exhaustion makes minimum unreachable"
-                    );
-                    // Propagate the original error so its FailureClass is
-                    // preserved for the engine's retry decision.
-                    return Err(error);
+                if first_optional_vote_failure.is_none() {
+                    first_optional_vote_failure = Some(error);
                 }
                 continue;
             }
@@ -1091,7 +1083,10 @@ where
                     Some("failed"),
                     Some(0),
                 );
-                return Err(error);
+                if first_required_vote_failure.is_none() {
+                    first_required_vote_failure = Some(error);
+                }
+                continue;
             }
         };
         let (backend_family, model_id) = panel_member_identity_from_producer(
@@ -1229,6 +1224,11 @@ where
         reviewer_votes.push(votes);
     }
 
+    // Required vote failures take priority over quorum shortfalls.
+    if let Some(error) = first_required_vote_failure {
+        return Err(error);
+    }
+
     // Reduce vote quorum only when exhaustion makes the configured
     // minimum impossible.  reviewer_records is the post-proposal panel;
     // vote_total_exhausted is the invocation-time exhaustion during voting.
@@ -1236,9 +1236,11 @@ where
         .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
         .max(1);
     if reviewer_votes.len() < effective_vote_min {
-        // When the shortfall is entirely due to backend exhaustion,
-        // propagate the last BackendExhausted error so the engine's
-        // failure-class-aware handling can apply (e.g., non-retryable).
+        // Propagate the most specific error so the engine's
+        // failure-class-aware handling can apply (e.g., retry decisions).
+        if let Some(error) = first_optional_vote_failure {
+            return Err(error);
+        }
         if let Some(exhaustion_error) = last_vote_exhaustion_error {
             return Err(exhaustion_error);
         }

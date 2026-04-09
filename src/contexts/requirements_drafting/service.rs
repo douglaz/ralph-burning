@@ -229,6 +229,7 @@ where
         idea: &str,
         now: DateTime<Utc>,
         project_id: Option<&ProjectId>,
+        enable_review: bool,
     ) -> AppResult<String> {
         let run_id = generate_run_id(now);
         let mut run = RequirementsRun::new_quick(run_id.clone(), idea.to_owned(), now);
@@ -252,8 +253,17 @@ where
         }
 
         // Skip question generation entirely — go through quick revision loop
-        self.run_quick_mode_pipeline(base_dir, &mut run, idea, &[], 2, now, project_id)
-            .await?;
+        self.run_quick_mode_pipeline(
+            base_dir,
+            &mut run,
+            idea,
+            &[],
+            2,
+            now,
+            project_id,
+            enable_review,
+        )
+        .await?;
 
         Ok(run_id)
     }
@@ -452,6 +462,7 @@ where
                 seq + 1,
                 Utc::now(),
                 project_id,
+                true,
             )
             .await?;
         }
@@ -1381,6 +1392,7 @@ where
         start_seq: u64,
         _now: DateTime<Utc>,
         project_id: Option<&ProjectId>,
+        enable_review: bool,
     ) -> AppResult<()> {
         let run_id = run.run_id.clone();
         let run_root = requirements_run_root(base_dir, &run_id);
@@ -1465,6 +1477,13 @@ where
             seq += 1;
         }
         last_draft_artifact = draft_bundle.artifact.clone();
+
+        // When review is disabled, skip directly to seed generation.
+        if !enable_review {
+            return self
+                .generate_and_commit_seed(base_dir, run, &last_draft_artifact, &[], seq, project_id)
+                .await;
+        }
 
         // Revision loop: review → possibly revise → review again
         loop {

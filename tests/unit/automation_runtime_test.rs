@@ -3503,7 +3503,7 @@ async fn daemon_requirements_quick_honors_workspace_backend_model_defaults() {
 
     // Run requirements quick
     let _run_id = req_svc
-        .quick(base_dir, "Test idea for quick", Utc::now(), None)
+        .quick(base_dir, "Test idea for quick", Utc::now(), None, true)
         .await
         .expect("requirements quick should succeed");
 
@@ -3601,7 +3601,7 @@ async fn daemon_requirements_quick_without_defaults_uses_role_defaults() {
     let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
 
     let _run_id = req_svc
-        .quick(base_dir, "Test with no defaults", Utc::now(), None)
+        .quick(base_dir, "Test with no defaults", Utc::now(), None, true)
         .await
         .expect("requirements quick should succeed");
 
@@ -3653,7 +3653,7 @@ async fn daemon_requirements_partial_defaults_backend_only() {
     let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
 
     let _run_id = req_svc
-        .quick(base_dir, "Backend-only default", Utc::now(), None)
+        .quick(base_dir, "Backend-only default", Utc::now(), None, true)
         .await
         .expect("requirements quick should succeed");
 
@@ -3699,7 +3699,7 @@ async fn daemon_requirements_partial_defaults_model_only() {
     let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
 
     let _run_id = req_svc
-        .quick(base_dir, "Model-only default", Utc::now(), None)
+        .quick(base_dir, "Model-only default", Utc::now(), None, true)
         .await
         .expect("requirements quick should succeed");
 
