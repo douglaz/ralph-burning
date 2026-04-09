@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr5-artifact",
+  "payload_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T20:46:08.330460542Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real issues. Amendment fr-5-7c4a47aa raises a valid concern about a validation gap between JSON-level and deserialized-level checks, but the existing code design explicitly documents this as an intentional serde limitation with a separate validation function provided for callers who need it — and current callers already handle bead-id validation at reconciliation time (final_review.rs:644-656, 1526-1536). Amendment fr-5-78f4e637 identifies a genuine command injection risk where arbitrary strings like '--help' pass bead-id syntax validation and flow into BrCommand::show as positional CLI args.\n\n## Votes\n\n- `fr-5-7c4a47aa`: Reject\n  The code already provides validate_classification_fields() as a separate public function precisely because serde internally-tagged enums silently drop unknown fields — the doc comment at lines 143-149 explicitly calls this out. The validate_classifications() function intentionally operates on already-deserialized values for domain-level checks (empty strings, confidence ranges, bead-id syntax). These are two distinct validation layers by design. In practice, callers that receive raw JSON from LLM output can and should call validate_classification_fields() on the raw Value before deserializing. The amendment frames this as a bug, but it's a documented design choice. The real call sites (final_review.rs:644-656, 1526-1536) validate mapped_to_bead_id against an allowlist of PE IDs extracted from the prompt, providing defense-in-depth regardless. Merging JSON-level field validation into the deserialized-value validator would require passing the original serde_json::Value alongside the deserialized struct, which would couple the two layers unnecessarily.\n- `fr-5-78f4e637`: Accept\n  This is a real safety issue. validate_bead_id_syntax() at lines 88-114 only checks for empty, whitespace, dots, and path separators — but accepts strings like '--help', ':', or 'bead?x'. When a PlannedElsewhere classification carries such an ID, it flows through BrCommand::show(bead_id) (br_process.rs:159) which passes it as a positional arg. A value starting with '--' would be interpreted by the br CLI as a flag, not an ID, causing incorrect behavior during reconciliation. The fix is straightforward: add a check that bead IDs must not start with '-' and should only contain alphanumeric characters, dots, and hyphens (matching the actual br bead ID format). While the final_review.rs code does validate against an allowlist of known PE IDs (which would block most bad values), the validate_bead_id_syntax function is a general-purpose public validator and should be correct on its own merits — other callers may not have an allowlist available.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}

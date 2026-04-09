@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260409194344-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T21:02:37.947372703Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the new `review_classification` module and related export. Found 1 correctness gap: cross-variant field validation exists, but it is not enforced by normal deserialization, so malformed JSON can still be accepted and silently reclassified. Targeted and full test suites pass otherwise.\n\n## Amendments\n\n1. Make cross-variant field contamination impossible to accept through the normal API. In `src/contexts/workflow_composition/review_classification.rs:49-50`, `FindingClassification` still derives plain `Deserialize` as an internally tagged enum, so a payload like `{\"classification\":\"fix-now\",...,\"mapped_to_bead_id\":\"x\"}` will deserialize as `FixNow` and silently drop the extra field. The JSON-level guard at `src/contexts/workflow_composition/review_classification.rs:161-202` detects this, but it is not wired into deserialization or the batch helper at `src/contexts/workflow_composition/review_classification.rs:288-302`. Add a checked constructor/custom `Deserialize` path (and a regression test) so malformed JSON is rejected instead of being reclassified.\n   Rationale: This schema exists to drive three-way routing. If malformed reviewer output can collapse into the wrong variant during deserialization, downstream reconciliation can take the wrong branch and lose the original finding intent.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 6
+}

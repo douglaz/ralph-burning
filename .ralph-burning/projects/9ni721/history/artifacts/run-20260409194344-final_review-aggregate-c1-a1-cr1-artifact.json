@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260409194344-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260409194344-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T19:59:21.955788753Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-cc71f355`\n- `fr-1-b63f9c8c`\n\n## Rejected\n\n- `fr-1-2200c907`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-cc71f355`\n\nThe `validate_classification` function does not check individual entries in `affected_files` (FixNow variant) for empty or whitespace-only strings. A classification with `affected_files: vec![\"\".to_owned()]` passes validation. Add a check that rejects empty/whitespace-only entries in the affected_files vector, consistent with how all other string fields are validated.\n\n### `fr-1-b63f9c8c`\n\nsrc/contexts/workflow_composition/review_classification.rs:108-110 only rejects an empty `mapped_to_bead_id`, and the accompanying coverage at 350-360 exercises only that case. The bead contract says this field must be syntactically valid, but values such as `\"../bad\"`, `\"bad id\"`, or `\" 9ni.8.5.2 \"` currently pass `validate_classification()`. That lets malformed planned-elsewhere ownership references get serialized and carried forward until reconciliation, where they are indistinguishable from a legitimate-but-stale bead reference. Tighten validation (or normalize then validate) for bead-id syntax and add tests for malformed IDs.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

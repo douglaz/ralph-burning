@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr4-artifact",
+  "payload_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T20:33:53.968663576Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify genuine defects in review_classification.rs. Amendment fr-4-4878e972 correctly identifies that the internally-tagged enum silently discards cross-variant fields during deserialization, which is particularly dangerous for LLM-generated reviewer output. Amendment fr-4-673cabe8 correctly identifies that remediation_hint is never validated when present, which is inconsistent with the validation applied to every other string field in the same function.\n\n## Votes\n\n- `fr-4-4878e972`: Accept\n  The defect is real and practically dangerous. With serde's internally-tagged enum (line 50), a payload like {\"classification\":\"fix-now\",...,\"mapped_to_bead_id\":\"bead-2\"} will silently discard the cross-variant field and deserialize as FixNow. Since inputs come from LLM-generated reviewer output, field confusion across variants is a realistic failure mode. This violates the doc comment at line 46 stating 'every finding must be classified as exactly one variant' — silently discarding cross-variant fields means a misclassified finding passes deserialization without error. Note that the fix may require a custom deserializer since serde's deny_unknown_fields has known limitations with internally-tagged enums, but the defect itself is valid.\n- `fr-4-673cabe8`: Accept\n  Clear oversight. At line 130, remediation_hint is bound as `_` and completely ignored during validation. Every other string field in validate_classification is checked with .trim().is_empty(): finding_summary (lines 133-135), affected_files entries (lines 136-141), mapped_to_bead_id (line 153), rationale (lines 161-163), proposed_title (lines 175-177), proposed_scope (lines 179-181). The remediation_hint field is the only string field that escapes validation when present. Some(\"\") or Some(\"   \") will pass as valid data, which is inconsistent with the validation contract and allows meaningless hints to propagate downstream.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

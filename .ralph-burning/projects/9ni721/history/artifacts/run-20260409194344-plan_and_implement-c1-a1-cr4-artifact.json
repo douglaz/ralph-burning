@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260409194344-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-09T20:26:49.171250760Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded consecutive-dots rejection to validate_bead_id_syntax: values like 'a..b' are now rejected with a clear error message. This prevents malformed bead IDs from reaching downstream reconciliation (8.5.x) where they would produce confusing 'not found' errors. Added 1 new test.\n\n## Steps\n\n1. [Completed] Verified that normalize_bead_reference in bundle.rs does not explicitly check for consecutive dots but would produce invalid lookups for such IDs. Confirmed no legitimate bead IDs in the codebase use consecutive dots.\n2. [Completed] Added value.contains(\"..\") check to validate_bead_id_syntax, returning error 'must not contain consecutive dots'. Placed after the trailing-dot check for logical ordering.\n3. [Completed] Added planned_elsewhere_rejects_bead_id_with_consecutive_dots test asserting 'a..b' is rejected with mapped_to_bead_id and consecutive dots in the error message.\n4. [Completed] Ran cargo fmt --check (clean), ran full test suite: 758 passed 0 failed (45 review_classification tests, all green)\n\n## Validation Evidence\n\n- 45/45 review_classification tests pass (44 prior + 1 new: planned_elsewhere_rejects_bead_id_with_consecutive_dots)\n- Full suite: 758 passed, 0 failed across lib tests (739), integration tests (174+1), and doc-tests\n- cargo fmt --check passes with no diffs\n\n## Outstanding Risks\n\n- Pre-existing clippy warnings (19) in other modules remain; not introduced by this change\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

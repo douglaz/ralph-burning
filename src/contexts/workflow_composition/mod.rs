@@ -9,6 +9,7 @@ pub mod payloads;
 pub mod prompt_review;
 pub mod renderers;
 pub mod retry_policy;
+pub mod review_classification;
 pub mod validation;
 
 use crate::contexts::agent_execution::model::InvocationMetadata;

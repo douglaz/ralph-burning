@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr6-artifact",
+  "payload_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T21:03:39.510971841Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe amendment correctly identifies a real defense-in-depth gap: validate_classification_fields exists but is not wired into deserialization or the batch validate_classifications helper. Any caller using standard serde deserialization will silently accept cross-variant field contamination. Since the module is newly added and has no callers yet, this is the right time to close this gap before consumers depend on the unsafe API.\n\n## Votes\n\n- `fr-6-39e81076`: Accept\n  The defect is real and confirmed by code inspection. FindingClassification at line 49 derives plain Deserialize, so serde silently drops fields from other variants (e.g., mapped_to_bead_id on a fix-now payload). The JSON-level guard validate_classification_fields (line 161) detects this but is unreachable from normal API usage: it's only called in tests (lines 1007-1089), not from validate_classifications (line 288) or any deserialization path. This means the careful field-validation logic is effectively dead code for consumers. The fix — either a custom Deserialize impl that calls validate_classification_fields, a checked constructor that combines both validations, or wiring the JSON check into validate_classifications — is straightforward and closes the gap before any callers adopt the current unsafe API. A regression test for the cross-variant contamination scenario through the normal deserialization path would further solidify the fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 6
+}

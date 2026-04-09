@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260409194344-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T19:55:34.482582079Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the new `review_classification` module and adjacent final-review/planned-elsewhere code end-to-end, and found two contract-level validation gaps in the new schema.\n\n## Amendments\n\n1. src/contexts/workflow_composition/review_classification.rs:108-110 only rejects an empty `mapped_to_bead_id`, and the accompanying coverage at 350-360 exercises only that case. The bead contract says this field must be syntactically valid, but values such as `\"../bad\"`, `\"bad id\"`, or `\" 9ni.8.5.2 \"` currently pass `validate_classification()`. That lets malformed planned-elsewhere ownership references get serialized and carried forward until reconciliation, where they are indistinguishable from a legitimate-but-stale bead reference. Tighten validation (or normalize then validate) for bead-id syntax and add tests for malformed IDs.\n   Rationale: This is a direct acceptance-criteria gap in the new validation layer, and it weakens downstream reconciliation by allowing invalid ownership references to persist as if they were valid classifications.\n2. src/contexts/workflow_composition/review_classification.rs:130-131 treats `proposed_title` as valid as long as it is non-empty, and the only related test at 379-389 checks the empty-string case. The contract explicitly requires `proposed_title` to be non-empty and descriptive, so placeholder values like `\"x\"`, `\"todo\"`, or `\"follow-up\"` currently validate even though they are not actionable bead titles. The validator needs a concrete descriptiveness rule plus tests for obviously non-descriptive titles.\n   Rationale: Downstream new-bead creation depends on this field to produce usable backlog items. Accepting placeholder titles leaves a stated validation rule unimplemented and pushes low-quality data into later reconciliation steps.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

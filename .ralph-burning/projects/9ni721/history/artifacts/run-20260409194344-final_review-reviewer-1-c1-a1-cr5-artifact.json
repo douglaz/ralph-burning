@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260409194344-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T20:45:07.223760922Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 2 correctness issues in the new review-classification model. Targeted tests pass, but the main validator still misses cross-variant malformed JSON after deserialization, and bead-id syntax checking is too permissive to satisfy the contract safely.\n\n## Amendments\n\n1. Tighten the public validation path in `src/contexts/workflow_composition/review_classification.rs:143-191` and `src/contexts/workflow_composition/review_classification.rs:277-291` so malformed raw JSON cannot slip through after deserialization. Right now the code explicitly documents that internally tagged serde enums drop unknown fields, but `validate_classifications` only checks already-deserialized `FindingClassification` values. That means a payload like `{\"classification\":\"fix-now\",...,\"mapped_to_bead_id\":\"x\"}` can deserialize as `FixNow` and then pass batch validation unless every caller also remembered to run `validate_classification_fields` on the original `serde_json::Value` first.\n   Rationale: This is a real correctness gap in the validator API: cross-variant contamination is one of the malformed cases the module is trying to guard against, but the main batch validator cannot catch it in the common \"deserialize first, then validate\" flow.\n2. Strengthen bead-id syntax validation in `src/contexts/workflow_composition/review_classification.rs:81-114` and its use at `src/contexts/workflow_composition/review_classification.rs:238-239`. The current check accepts arbitrary non-whitespace strings such as `--help`, `:`, or `bead?x` as 'syntactically valid' bead IDs. That is too weak for the stated contract, and it is not harmless: `BrCommand::show` passes the ID straight through as a positional CLI arg in `src/adapters/br_process.rs:132-160`, so a value like `--help` is interpreted by `br` as a flag instead of an issue id during reconciliation.\n   Rationale: The schema is supposed to reject malformed `mapped_to_bead_id` values up front. As implemented, obviously invalid or flag-like ids survive validation and can misroute later `br show` calls, producing incorrect reconciliation behavior instead of a clean validation failure.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}
