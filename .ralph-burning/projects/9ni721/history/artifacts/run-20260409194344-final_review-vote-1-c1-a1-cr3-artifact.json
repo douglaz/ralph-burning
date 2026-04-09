@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260409194344-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T20:25:20.872112613Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed fr-3-867a9363 against the current bead-ID validation and planned-elsewhere reconciliation helpers. Consecutive dots create an empty segment that the local canonical/alias model does not handle cleanly, so rejecting them at validation time is justified.\n\n## Votes\n\n- `fr-3-867a9363`: Accept\n  `validate_bead_id_syntax` already rejects leading and trailing dots, but it still accepts `a..b`, which encodes an empty segment. That is inconsistent with the local bead-ID model: canonical IDs are documented as `{milestone_id}.{short_id}`, and `strip_milestone_prefix(\"a..b\")` would yield `.b`, a malformed short ID. In planned-elsewhere reconciliation this can surface later as a misleading stale/not-found path instead of being rejected at the contract boundary. A `value.contains(\"..\")` check is small, safe, and improves correctness without changing any valid IDs used elsewhere in the repo.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}
