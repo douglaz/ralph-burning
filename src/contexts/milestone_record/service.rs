@@ -2393,12 +2393,67 @@ pub fn record_planned_elsewhere_mapping(
 }
 
 /// Load all planned-elsewhere mappings for a milestone.
+///
+/// Reads the NDJSON sidecar first. If it's empty or missing, falls back to
+/// rebuilding from `PlannedElsewhereMapped` journal events so that mappings
+/// recorded before the NDJSON write succeeded are still visible.
 pub fn load_planned_elsewhere_mappings(
     mapping_store: &impl PlannedElsewhereMappingPort,
     base_dir: &Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<Vec<PlannedElsewhereMapping>> {
-    mapping_store.read_mappings(base_dir, milestone_id)
+    let mappings = mapping_store.read_mappings(base_dir, milestone_id)?;
+    if !mappings.is_empty() {
+        return Ok(mappings);
+    }
+
+    // Fallback: rebuild from journal events. This covers the case where the
+    // NDJSON sidecar was lost or the secondary write failed after the journal
+    // write succeeded.
+    rebuild_planned_elsewhere_from_journal(base_dir, milestone_id)
+}
+
+/// Rebuild planned-elsewhere mappings from journal `PlannedElsewhereMapped`
+/// events. Used as a fallback when the NDJSON sidecar is missing or empty.
+fn rebuild_planned_elsewhere_from_journal(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<Vec<PlannedElsewhereMapping>> {
+    use crate::adapters::fs::FsMilestoneJournalStore;
+
+    let events = FsMilestoneJournalStore.read_journal(base_dir, milestone_id)?;
+    let mut mappings = Vec::new();
+    for event in &events {
+        if event.event_type != MilestoneEventType::PlannedElsewhereMapped {
+            continue;
+        }
+        let metadata = match &event.metadata {
+            Some(m) => m,
+            None => continue,
+        };
+        let active_bead_id = match metadata.get("active_bead_id").and_then(|v| v.as_str()) {
+            Some(s) => s.to_owned(),
+            None => continue,
+        };
+        let mapped_to_bead_id = match metadata.get("mapped_to_bead_id").and_then(|v| v.as_str()) {
+            Some(s) => s.to_owned(),
+            None => continue,
+        };
+        let mapped_bead_verified = metadata
+            .get("mapped_bead_verified")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let finding_summary = event.details.clone().unwrap_or_default();
+
+        mappings.push(PlannedElsewhereMapping {
+            active_bead_id,
+            finding_summary,
+            mapped_to_bead_id,
+            recorded_at: event.timestamp,
+            mapped_bead_verified,
+        });
+    }
+    Ok(mappings)
 }
 
 #[cfg(test)]

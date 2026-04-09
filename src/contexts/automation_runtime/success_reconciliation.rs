@@ -26,7 +26,9 @@ use crate::adapters::fs::{
 };
 use crate::cli::run::{select_next_milestone_bead, select_next_milestone_bead_from_recommendation};
 use crate::contexts::milestone_record::controller as milestone_controller;
-use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus, TaskRunOutcome};
+use crate::contexts::milestone_record::model::{
+    MilestoneId, MilestoneStatus, PlannedElsewhereMapping, TaskRunOutcome,
+};
 use crate::contexts::milestone_record::service::{
     self as milestone_service, CompletionMilestoneDisposition,
 };
@@ -725,6 +727,46 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
                 warning = warning.as_str(),
                 "planned-elsewhere verification warning"
             );
+        }
+    }
+
+    // Flush any br mutations (comments) so they're persisted upstream.
+    let any_comments = outcomes.iter().any(|o| o.comment_posted);
+    if any_comments {
+        if let Err(e) = br_mutation.sync_flush().await {
+            tracing::warn!(
+                error = %e,
+                "failed to flush br mutations after planned-elsewhere comments (non-blocking)"
+            );
+        }
+    }
+
+    // Persist verified mappings back so they won't be re-verified on replay.
+    // We append a new record with `mapped_bead_verified: true` — the append-only
+    // NDJSON design means the latest record for a given mapping wins.
+    let now = Utc::now();
+    for outcome in &outcomes {
+        if outcome.verified {
+            let verified_mapping = PlannedElsewhereMapping {
+                active_bead_id: outcome.mapping.active_bead_id.clone(),
+                finding_summary: outcome.mapping.finding_summary.clone(),
+                mapped_to_bead_id: outcome.mapping.mapped_to_bead_id.clone(),
+                recorded_at: now,
+                mapped_bead_verified: true,
+            };
+            if let Err(e) = milestone_service::record_planned_elsewhere_mapping(
+                &FsMilestoneJournalStore,
+                &FsPlannedElsewhereMappingStore,
+                base_dir,
+                &milestone_id,
+                &verified_mapping,
+            ) {
+                tracing::warn!(
+                    mapped_to_bead_id = outcome.mapping.mapped_to_bead_id.as_str(),
+                    error = %e,
+                    "failed to persist verified planned-elsewhere mapping (non-blocking)"
+                );
+            }
         }
     }
 

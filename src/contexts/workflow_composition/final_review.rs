@@ -1500,7 +1500,10 @@ where
         .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
         .max(1);
 
-    if !final_accepted_amendments.is_empty() && final_review_restart_count >= max_restarts {
+    let has_non_pe_for_force_check = final_accepted_amendments
+        .iter()
+        .any(|a| a.mapped_to_bead_id.is_none());
+    if has_non_pe_for_force_check && final_review_restart_count >= max_restarts {
         let aggregate = FinalReviewAggregatePayload {
             restart_required: false,
             force_completed: true,
