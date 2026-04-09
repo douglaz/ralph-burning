@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260409075617-final_review-aggregate-c1-a1-cr10-artifact",
+  "payload_id": "run-20260409075617-final_review-aggregate-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T12:18:06.800800099Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 10/25\n\n## Accepted\n\n- `fr-10-91f7448a`\n- `fr-10-872f23a9`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-10-91f7448a`\n\n[success_reconciliation.rs](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/success_reconciliation.rs#L871) reconstructs missing planned-elsewhere mappings by scanning every `final_review` aggregate payload in the project history ([success_reconciliation.rs](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/success_reconciliation.rs#L882), [success_reconciliation.rs](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/success_reconciliation.rs#L913)). Because this code is not scoped to the current run or the latest committed review round, a later successful reconciliation can resurrect stale mappings from superseded restart rounds, older runs, or abandoned review attempts and then persist/comment them as if they still applied. Restrict reconstruction to the current run’s committed final-review outcome before recording any mapping.\n\n### `fr-10-872f23a9`\n\nThe new `mapped_to_bead_id` field has no reliable producer in the reviewer stage. `build_reviewer_prompt` still renders the generic reviewer template ([final_review.rs](/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/final_review.rs#L1838), [template_catalog.rs](/home/master/p/ralphs/ralph-burning/src/contexts/workspace_governance/template_catalog.rs#L220)) and that template never explains planned-elsewhere classification or asks reviewers to return a bead id. The only new prompt text about planned-elsewhere was added downstream in the voter/arbiter prompts ([final_review.rs](/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/final_review.rs#L1880), [final_review.rs](/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/final_review.rs#L1937)), after `mapped_to_bead_id` would already need to exist. Add explicit reviewer instructions for when to emit `mapped_to_bead_id` and how to choose it.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 10
+}

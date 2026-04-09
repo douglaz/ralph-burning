@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T12:12:41.564022850Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 2 correctness gaps: planned-elsewhere reconstruction can replay stale historical aggregates into the current reconciliation, and the reviewer prompt does not actually instruct reviewers to emit the new `mapped_to_bead_id` classification.\n\n## Amendments\n\n1. [success_reconciliation.rs](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/success_reconciliation.rs#L871) reconstructs missing planned-elsewhere mappings by scanning every `final_review` aggregate payload in the project history ([success_reconciliation.rs](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/success_reconciliation.rs#L882), [success_reconciliation.rs](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/success_reconciliation.rs#L913)). Because this code is not scoped to the current run or the latest committed review round, a later successful reconciliation can resurrect stale mappings from superseded restart rounds, older runs, or abandoned review attempts and then persist/comment them as if they still applied. Restrict reconstruction to the current run’s committed final-review outcome before recording any mapping.\n   Rationale: This can attach the wrong finding to the milestone journal and post misleading comments on unrelated beads after the active bead has already changed or resolved the concern.\n2. The new `mapped_to_bead_id` field has no reliable producer in the reviewer stage. `build_reviewer_prompt` still renders the generic reviewer template ([final_review.rs](/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/final_review.rs#L1838), [template_catalog.rs](/home/master/p/ralphs/ralph-burning/src/contexts/workspace_governance/template_catalog.rs#L220)) and that template never explains planned-elsewhere classification or asks reviewers to return a bead id. The only new prompt text about planned-elsewhere was added downstream in the voter/arbiter prompts ([final_review.rs](/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/final_review.rs#L1880), [final_review.rs](/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/final_review.rs#L1937)), after `mapped_to_bead_id` would already need to exist. Add explicit reviewer instructions for when to emit `mapped_to_bead_id` and how to choose it.\n   Rationale: Without reviewer-side guidance, the field will usually stay `None`, so planned-elsewhere findings keep flowing through the ordinary amendment path and still trigger restart loops.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 10
+}
