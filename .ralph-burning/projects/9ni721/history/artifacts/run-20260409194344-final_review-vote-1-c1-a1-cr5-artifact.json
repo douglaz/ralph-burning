@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260409194344-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T20:50:36.333036526Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nfr-5-7c4a47aa describes a real serde footgun, but in this code it is already documented and split into a separate JSON-level validator; I did not find a production path that relies on `validate_classifications` as a complete raw-input validator. fr-5-78f4e637 points at a genuine `br show` option-injection risk for IDs like `--help`, but the proposed fix is not robust in the place it targets: `review_classification.rs` is not the command boundary, its validator is not used by the current reconciliation path, and other direct `br show` call sites remain exposed.\n\n## Votes\n\n- `fr-5-7c4a47aa`: Reject\n  `validate_classification_fields` and `validate_classification(s)` are intentionally separate layers here. The former operates on raw `serde_json::Value` specifically because internally tagged serde enums drop unknown fields; the latter explicitly validates already-deserialized domain values. The doc comments in `review_classification.rs` already call this out, and I did not find any production caller using `validate_classifications` as though it were a complete raw-JSON validator. That makes this more of an API ergonomics concern than a demonstrated correctness bug in the current code.\n- `fr-5-78f4e637`: Reject\n  The underlying issue is real: `br show --help` is parsed as help rather than an issue lookup, so option-like bead IDs are unsafe to pass through unchecked. But this amendment hardens the wrong layer. The targeted validator in `review_classification.rs` is not used by the current reconciliation path, and the repository has other active call sites that invoke `br show` directly, including `BrCommand::show(...)` consumers and manual `Command::new(\"br\").args([\"show\", bead_id, \"--json\"])` in `src/cli/run.rs`. Tightening one unused validator also risks imposing an unproven global bead-id character policy. The robust fix belongs at the command-construction / execution boundary, for example by forcing `--` before positional IDs and/or validating IDs where they enter those call paths.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}

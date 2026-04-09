@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-vote-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260409194344-final_review-vote-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T20:47:16.448878329Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAmendment fr-5-7c4a47aa describes a documented, intentional two-layer validation design — not a bug. Amendment fr-5-78f4e637 identifies a real argument injection issue where bead IDs like '--help' pass syntax validation and get interpreted as CLI flags by br when passed through BrCommand::show, since build_args() places positional args before flags with no '--' separator.\n\n## Votes\n\n- `fr-5-7c4a47aa`: Reject\n  The two-layer validation is intentional and well-documented. Lines 143-149 explicitly explain why validate_classification_fields() exists as a separate JSON-level check from validate_classification(). The validate_classifications() function intentionally operates on deserialized values for domain-level concerns (empty strings, confidence ranges, bead-id syntax). Merging these layers would require threading the raw serde_json::Value alongside deserialized structs, coupling concerns that are deliberately separated. Callers processing raw LLM JSON output can call validate_classification_fields() first, and the actual call sites in final_review.rs already validate mapped_to_bead_id against an allowlist of known PE IDs as defense-in-depth. This is working as designed.\n- `fr-5-78f4e637`: Accept\n  Verified the full flow: validate_bead_id_syntax() (lines 88-114) only rejects empty, whitespace, dots, and path separators. A value like '--help' passes all checks. BrCommand::show(id) at line 159 adds the ID as a positional arg. build_args() at lines 133-146 produces ['show', '--help', '--json'], and OsProcessRunner::run() at line 302 passes these via cmd.args(&args) — direct process execution with no '--' separator before positional args. The br CLI will interpret '--help' as its own flag, not as a bead ID. This is a real argument confusion vulnerability in a public validation function. The fix is straightforward: reject IDs starting with '-' and optionally restrict to alphanumeric/dot/hyphen characters matching actual br bead ID format. While final_review.rs validates against an allowlist (blocking most bad values in practice), validate_bead_id_syntax is a general-purpose public function and should be correct on its own.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}
