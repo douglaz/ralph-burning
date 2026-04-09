@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T10:34:33.224551519Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccepted four amendments that identify real behavior or contract problems in planned-elsewhere handling and final-review routing. Rejected the unused-parameter amendment because the current load path explicitly documents the journal as the only read source and the ignored sidecar parameter appears intentional rather than a correctness defect.\n\n## Votes\n\n- `fr-5-2685c8be`: Reject\n  `load_planned_elsewhere_mappings` does ignore `_mapping_store`, but the surrounding contract already says the NDJSON sidecar is not consulted on reads because it can diverge from the authoritative journal. The underscore makes the non-use explicit, and changing the read path to depend on the sidecar would cut against that design. Hardcoding `FsMilestoneJournalStore` is a testability smell, but that is a refactor opportunity, not a substantive bug in the current behavior.\n- `fr-5-04638bb2`: Accept\n  The doc comment and the function's actual return contract are misaligned. The comment describes the NDJSON write as secondary and recoverable from the journal, but the code still returns `Err` if that secondary write fails. Even if callers currently tolerate that, the mismatch is misleading and should be resolved either by making the secondary failure non-fatal or by documenting that the function reports partial-write failure despite preserving the authoritative journal entry.\n- `fr-5-d945bb4c`: Accept\n  The restart decision depends on `mapped_to_bead_id`, but the planner/voter/arbiter prompt text only includes the amendment body. That means reviewers can approve the concern itself without ever seeing the planned-elsewhere classification or target bead that suppresses restart. If that metadata affects control flow, it needs to be part of what the panel reviews.\n- `fr-5-68df7f09`: Accept\n  This is a real durability bug. `comment_posted` becomes true as soon as `br comment` succeeds, `sync_flush()` failure is only logged, and the code still persists a `mapped_bead_verified: true` record afterward. On replay, verified mappings are skipped, so a failed flush can permanently suppress the retry path for the comment. Verification should not be recorded as complete until the associated mutation has been durably flushed.\n- `fr-5-bbf97352`: Accept\n  Treating every `BrExitError` from `br show` as definitive 'not found' is too broad. Non-zero exits can also represent corrupt state, malformed output, or other operational failures, and collapsing all of them into stale-bead fallback can let execution continue without a valid verification. The codebase already has a narrower missing-bead check based on the error message; this path should use the same distinction and propagate other failures as transient errors.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}

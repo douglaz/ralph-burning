@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T10:22:12.939351418Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all changed source files (planned_elsewhere.rs, success_reconciliation.rs, engine.rs, final_review.rs, panel_contracts.rs, model.rs, service.rs, fs.rs) and tests. The implementation is solid: correct write-ordering (journal first, NDJSON sidecar second), proper transient-vs-definitive error distinction for bead verification, conservative merge semantics for conflicting planned-elsewhere classifications, comprehensive test coverage (36 tests passing), and durable persistence via append-only NDJSON with journal rebuild. Two design concerns noted but neither causes a correctness bug in the current codebase.\n\n## Amendments\n\n1. In `load_planned_elsewhere_mappings` (service.rs:2406), the `_mapping_store` parameter is accepted but completely ignored — the function always calls `rebuild_planned_elsewhere_from_journal` which hardcodes `FsMilestoneJournalStore`. Either remove the parameter (making the function signature honest) or pass the journal store through so the rebuild path is testable with mocks. The current dead parameter misleads callers into thinking the mapping store matters for reads.\n   Rationale: This breaks the port/adapter abstraction pattern used consistently everywhere else in the codebase. Today it's harmless because tests use real temp directories, but it will bite when someone tries to unit-test a caller of `load_planned_elsewhere_mappings` with a mock store and finds it silently uses the real filesystem.\n2. In `record_planned_elsewhere_mapping` (service.rs:2353), the docstring says 'If the secondary NDJSON write fails, the journal still contains the mapping for audit purposes' but the function propagates the NDJSON error via `?` at line 2390. This means callers see `Err` even though the authoritative journal record was successfully written. Either (a) downgrade the NDJSON failure to a warning log and return `Ok`, consistent with the stated 'secondary' semantics, or (b) update the docstring to say the function returns an error on NDJSON failure despite the journal succeeding. Currently all callers handle the error gracefully (best-effort paths), so this is a documentation/contract clarity issue, not a data-loss bug.\n   Rationale: The docstring and behavior disagree. A future caller could rely on the docstring's claim that journal-write-success means the mapping is durably recorded, skip error handling on the return value, and miss that the NDJSON sidecar diverged — then wonder why `read_mappings` (if it ever reads the NDJSON directly) returns stale data.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}
