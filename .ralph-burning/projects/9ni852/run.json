@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 7
@@ -23,62 +23,14 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-6-2b17af9b",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "Make planned-elsewhere mapping persistence part of the durable final-review commit, or reconstruct it from the accepted final-review aggregate on replay. The stage is committed before `record_planned_elsewhere_amendments()` runs (`src/contexts/workflow_composition/engine.rs:2697-2712`, `src/contexts/workflow_composition/engine.rs:3081-3090`), and that helper only logs-and-continues on failures (`src/contexts/workflow_composition/engine.rs:7555-7658`). Later success reconciliation only loads whatever mappings already exist in milestone state (`src/contexts/automation_runtime/success_reconciliation.rs:686-704`). A crash or transient append failure in that window permanently drops the planned-elsewhere mapping even though the run proceeds or completes.",
-        "created_at": "2026-04-09T10:52:06.417766925Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "cae2d09f9f1194b7dc81476321f161c50fbab6668b23f5f2e0ad1fe01f05efc6"
-      },
-      {
-        "amendment_id": "fr-6-f0e1a47f",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "Validate and normalize `mapped_to_bead_id` before using it to suppress restarts. Reviewer payloads are only schema-deserialized (`src/contexts/workflow_composition/final_review.rs:474-513`), and the restart decision treats any `Some(...)` as planned-elsewhere (`src/contexts/workflow_composition/final_review.rs:1503-1558`). The engine then records the target verbatim (`src/contexts/workflow_composition/engine.rs:7610-7618`). That means `\"\"`, whitespace, or other garbage IDs from model output can incorrectly skip the reopen/fix loop and close the active bead with only a later warning.",
-        "created_at": "2026-04-09T10:52:06.417769099Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "92dff481f6ca160f096a07b503fd469b16d6878bf45af0866bb727c0360fb65f"
-      },
-      {
-        "amendment_id": "fr-6-bf0488dc",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "Make mapped-bead comments replay-safe. In `src/contexts/automation_runtime/success_reconciliation.rs:733-777`, comments are posted and `sync_flush()` is executed before the verified mapping row is appended. If the process crashes after the flush succeeds but before `record_planned_elsewhere_mapping()` writes the verified event, replay still sees the original unverified mapping and `verify_and_comment_mappings()` will post the same comment again (`src/contexts/automation_runtime/planned_elsewhere.rs:305-333`).",
-        "created_at": "2026-04-09T10:52:06.417770722Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "ac5b6a98ce3bf1f5c1ffe788c0c92e88416f4e432d179f220a3e3b8a423bc7e0"
-      }
-    ],
-    "processed_count": 20
+    "pending": [],
+    "processed_count": 23
   },
-  "status_summary": "running: final review restart round 7 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
-    "stage_id": "final_review",
-    "resolved_at": "2026-04-09T10:39:24.692290268Z",
-    "final_review_reviewers": [
-      {
-        "backend_family": "claude",
-        "model_id": "claude-opus-4-6"
-      },
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.4"
-      }
-    ],
-    "final_review_planner": {
-      "backend_family": "claude",
-      "model_id": "claude-opus-4-6"
-    },
-    "final_review_arbiter": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-09T10:52:06.558732895Z",
+    "primary_target": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }

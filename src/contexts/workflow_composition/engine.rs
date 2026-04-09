@@ -7610,6 +7610,10 @@ fn record_planned_elsewhere_amendments(
         let Some(mapped_to) = amendment.mapped_to_bead_id.as_deref() else {
             continue;
         };
+        let mapped_to = mapped_to.trim();
+        if mapped_to.is_empty() {
+            continue;
+        }
         let mapping = PlannedElsewhereMapping {
             active_bead_id: task_source.bead_id.clone(),
             finding_summary: amendment.queued.body.clone(),

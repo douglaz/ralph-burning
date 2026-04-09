@@ -151,6 +151,19 @@ pub fn consensus_status(
     }
 }
 
+/// Normalize a `mapped_to_bead_id` value: trim whitespace and convert
+/// empty/whitespace-only strings to `None` so they cannot suppress restarts.
+fn normalize_mapped_to_bead_id(id: Option<&String>) -> Option<String> {
+    id.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
+}
+
 fn merge_final_review_amendments(
     completion_round: u32,
     proposals: &[ReviewerProposalRecord],
@@ -172,6 +185,8 @@ fn merge_final_review_amendments(
                 model_id: proposal.model_id.clone(),
             };
 
+            let incoming_mapped = normalize_mapped_to_bead_id(amendment.mapped_to_bead_id.as_ref());
+
             match by_body.get_mut(&normalized_body) {
                 Some(existing) => {
                     if !existing.sources.contains(&source) {
@@ -182,7 +197,7 @@ fn merge_final_review_amendments(
                     //   clear the field so the amendment is treated as regular.
                     // - If reviewers disagree on WHICH bead owns it, clear the
                     //   field (conflicting targets → treat as regular).
-                    match (&existing.mapped_to_bead_id, &amendment.mapped_to_bead_id) {
+                    match (&existing.mapped_to_bead_id, &incoming_mapped) {
                         (Some(_), None) | (None, Some(_)) => {
                             // Reviewers disagree on whether this is
                             // planned-elsewhere. Conservative: treat as
@@ -208,7 +223,7 @@ fn merge_final_review_amendments(
                             amendment_id,
                             normalized_body,
                             sources: vec![source],
-                            mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
+                            mapped_to_bead_id: incoming_mapped,
                         },
                     );
                 }
