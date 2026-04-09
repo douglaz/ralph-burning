@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T13:52:52.823291689Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the planned-elsewhere reconciliation changes and found two remaining correctness gaps: mappings are still only scoped by `run_id`, so stale same-run review-round findings can be re-verified/commented, and the new `Unknown` enum variant does not actually preserve hard-rollback compatibility with older checkouts.\n\n## Amendments\n\n1. Persist enough provenance to distinguish planned-elsewhere mappings across final-review rounds/rollback branches within the same run, or defer writing them until the visible final-review result is known. The current change adds only `run_id` to `PlannedElsewhereMapping` in `src/contexts/milestone_record/model.rs:736-751`, rebuilds state with an identity key that still ignores round/rollback provenance in `src/contexts/milestone_record/service.rs:2407-2481`, records mappings eagerly on restart rounds in `src/contexts/workflow_composition/engine.rs:3082-3092` / `src/contexts/workflow_composition/engine.rs:7546-7626`, and later reprocesses any mapping whose `run_id` matches in `src/contexts/automation_runtime/success_reconciliation.rs:719-744`. A single run can span multiple completion rounds and rollback branches (`src/contexts/workflow_composition/engine.rs:7379-7392`), so stale planned-elsewhere findings from an earlier round of the same run will still be verified and commented even if the latest final-review aggregate no longer accepts them.\n   Rationale: The fix only isolates mappings across different run IDs. It does not isolate the common same-run restart path, so obsolete findings can still leak into the final success reconciliation and generate incorrect comments/audit records.\n2. Do not treat the new `MilestoneEventType::Unknown` arm as a rollback/downgrade compatibility fix. The variant is only present in the new checkout at `src/contexts/milestone_record/model.rs:296-301`, but hard rollback still resets the repository to an older SHA in `src/contexts/project_run_record/service.rs:1793-1810`. That older code will continue deserializing milestone journal lines directly with `serde_json::from_str` in `src/adapters/fs.rs:3064-3082`, so once `record_planned_elsewhere_mapping` starts appending `planned_elsewhere_mapped` events in `src/contexts/milestone_record/service.rs:2378-2389`, a rollback to a pre-feature commit will still make `milestones/*/journal.ndjson` unreadable. This needs a real migration/write-compatibility strategy, not just a catch-all enum variant in the new code.\n   Rationale: Current code can ignore future event types, but supported hard rollbacks to older checkouts are still broken by the newly persisted event type.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 14
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T14:08:39.307972243Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments identify real issues in the planned-elsewhere implementation: one abstraction/testability regression, two correctness bugs in run/round scoping, and one real rollback compatibility gap.\n\n## Votes\n\n- `fr-14-1378ea30`: Accept\n  `load_planned_elsewhere_mappings` ignores its `_mapping_store` parameter and `rebuild_planned_elsewhere_from_journal` directly uses `FsMilestoneJournalStore`, so the read path bypasses `MilestoneJournalPort`. That couples milestone service logic to the filesystem adapter and prevents isolated tests with injected journal stores or error conditions. Passing a journal port through is the correct, maintainable design.\n- `fr-14-0b26b2bc`: Accept\n  The filter `m.run_id.as_deref().is_none_or(|rid| rid == run_id)` does include unscoped mappings in every later run for the same bead. The amendment slightly overstates the effect because already-verified mappings are filtered out afterward, so this is not literally every `run_id: None` record on every run. But unverified legacy or direct-path `run_id: None` mappings are still mis-scoped into unrelated future runs, which can cause stale or repeated verification/comment work. That is a real correctness issue.\n- `fr-14-48dbcac3`: Accept\n  A single run can span multiple completion rounds and rollback branches, but persisted planned-elsewhere mappings carry only `run_id`, and the journal rebuild identity also ignores round/rollback provenance. Because mappings are written eagerly during restart rounds and later verification selects all mappings for the same run, a finding from an earlier superseded round survives unless it is overwritten by the exact same identity. That can verify/comment stale findings that the latest visible final-review result no longer accepts.\n- `fr-14-6ceff67a`: Accept\n  The new `MilestoneEventType::Unknown` arm only helps the new code read future event types. Hard rollback resets the repository to an older SHA whose `MilestoneEventType` lacks both `PlannedElsewhereMapped` and `Unknown`, while milestone journal loading still uses strict `serde_json::from_str` per line. Once a `planned_elsewhere_mapped` event is written, that older code will fail to read the journal. This requires a real write-compatibility or migration strategy, not just a catch-all in the current checkout.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 14
+}
