@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260409194344-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T21:20:32.570540780Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments identify real defects. The first leaves documented domain invariants unenforced when persisted classifications are read back, and the second leaves the new three-way classification model disconnected from the actual final-review pipeline.\n\n## Votes\n\n- `fr-7-b4fa5b1e`: Accept\n  The custom `Deserialize` for `FindingClassification` only runs `validate_classification_fields` and then deserializes the unchecked mirror, so it rejects cross-variant field leakage but still accepts domain-invalid values such as empty summaries/titles, whitespace-only rationale, invalid bead IDs, or `confidence` outside `0.0..=1.0`. The separate `validate_classification` function enforces those rules, but repository-wide usage shows no production caller is invoking it after deserialization. For a persistence-oriented type, that means invalid state can cross the read boundary unchecked, which is a correctness and safety gap.\n- `fr-7-bcc76861`: Accept\n  `FindingClassification` is not wired into the live final-review flow. The reviewer contract and schema routing still use `FinalReviewProposalPayload`, reviewer prompts still speak in terms of `mapped_to_bead_id`, and downstream orchestration only distinguishes `mapped_to_bead_id.is_some()` from `None` when deciding mapping vs restart. There is no producer or consumer that actually emits or handles `classification: fix-now|planned-elsewhere|propose-new-bead`, so the new enum is currently dead code and the intended three-way model is not exercised. An explicit adapter or contract migration is needed to keep the runtime behavior aligned with the new schema.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 7
+}

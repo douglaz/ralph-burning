@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260409194344",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 7
+      "completion_round": 8
     },
     "started_at": "2026-04-09T19:43:44.019387404Z",
     "prompt_hash_at_cycle_start": "1f97ea334523113f73c374e9c84685a59c2d807173de5424308e23f98cb73c59",
     "prompt_hash_at_stage_start": "1f97ea334523113f73c374e9c84685a59c2d807173de5424308e23f98cb73c59",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 6
+    "final_review_restart_count": 7
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 7,
+  "completion_rounds": 8,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-7-b4fa5b1e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "Enforce domain validation during deserialization in `src/contexts/workflow_composition/review_classification.rs:158-170`. The custom `Deserialize` impl only runs `validate_classification_fields`, so malformed persisted values like an empty `finding_summary`, empty `proposed_title`, or `confidence: 1.5` still deserialize into `FindingClassification` and are only rejected if every caller separately invokes `validate_classification` (`src/contexts/workflow_composition/review_classification.rs:306-378`). For a type whose stated purpose is JSON persistence, that leaves the domain invariant unenforced at the read boundary.",
+        "created_at": "2026-04-09T21:20:32.585018546Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "58536b648e38815778afef25a5947f4ed5a5a58c1370e2d124b0124f47efd944"
+      },
+      {
+        "amendment_id": "fr-7-bcc76861",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "Make `FindingClassification` the live review/final_review payload shape, or add an explicit adapter in the same change. The new enum is defined in `src/contexts/workflow_composition/review_classification.rs:49-77`, but the active final-review contract still emits `FinalReviewProposal { body, rationale, mapped_to_bead_id }` in `src/contexts/workflow_composition/panel_contracts.rs:136-160`, and the engine still only distinguishes `mapped_to_bead_id.is_some()` versus a regular amendment in `src/contexts/workflow_composition/engine.rs:2702-2714` and `src/contexts/workflow_composition/engine.rs:2871-2882`. As written, no stage can actually produce structured `fix-now` or `propose-new-bead` findings from this new model.",
+        "created_at": "2026-04-09T21:20:32.585021402Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "1f5bb04e5e9cd417b5316b1f6c517444e93aa73879b56cdb939114df890f4494"
+      }
+    ],
     "processed_count": 9
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 8 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-09T20:55:53.973410242Z",
+    "resolved_at": "2026-04-09T21:09:56.818629482Z",
     "final_review_reviewers": [
       {
         "backend_family": "claude",

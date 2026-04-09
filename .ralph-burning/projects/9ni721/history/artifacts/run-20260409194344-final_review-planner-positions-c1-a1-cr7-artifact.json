@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr7-artifact",
+  "payload_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T21:18:16.055027075Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real gaps in the current implementation. Amendment fr-7-b4fa5b1e correctly identifies that domain invariants (empty strings, out-of-range confidence) pass through deserialization unchecked — validate_classification has zero production callers, so the safety net it provides is purely theoretical. Amendment fr-7-bcc76861 correctly identifies that FindingClassification is completely disconnected from the live pipeline, which still operates on FinalReviewProposal with a binary mapped/unmapped distinction rather than the three-way classification model.\n\n## Votes\n\n- `fr-7-b4fa5b1e`: Accept\n  The custom Deserialize impl (lines 158-172) runs validate_classification_fields, which only checks for cross-variant field contamination (wrong fields on wrong variant). It does NOT enforce domain invariants: empty finding_summary, empty proposed_title, confidence outside 0.0..=1.0, empty rationale, etc. The separate validate_classification function (lines 306-378) covers these, but grep confirms it has ZERO production callers — it's only exercised in tests. Since FindingClassification's stated purpose is JSON persistence, any deserialized instance can carry domain-invalid state with no enforcement at the read boundary. This is a real defect: the type's invariants are documented and tested but not enforced where it matters.\n- `fr-7-bcc76861`: Accept\n  FindingClassification defines a three-way taxonomy (fix-now, planned-elsewhere, propose-new-bead) but the active final-review pipeline emits FinalReviewProposal { body, rationale, mapped_to_bead_id } — a flat string-based shape with only a binary distinction. The engine partitions solely on mapped_to_bead_id.is_some() (lines 2871-2874). Grep confirms FindingClassification appears nowhere in engine.rs. This means no code path can produce structured fix-now or propose-new-bead findings, making the new type untestable dead code in real pipeline conditions. While incremental delivery is fine in principle, shipping a persistence-oriented schema with no producer and no consumer means the real integration bugs (format mismatches, missing adapters) will only surface later. At minimum, an explicit adapter or a documented integration plan in the same change would mitigate this.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 7
+}
