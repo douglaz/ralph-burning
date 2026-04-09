@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T14:34:02.117544454Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the planned-elsewhere reconciliation changes and ran `cargo test planned_elsewhere --lib --tests`. The targeted tests pass, but I found two correctness regressions: stale mappings are not scoped to the final accepted review round, and milestone journal replay now drops malformed lines instead of surfacing corruption.\n\n## Amendments\n\n1. High: `src/contexts/workflow_composition/engine.rs:2697-2714` and `src/contexts/workflow_composition/engine.rs:3083-3094` persist planned-elsewhere mappings for every accepted final-review round, but `src/contexts/automation_runtime/success_reconciliation.rs:720-743` only filters by `active_bead_id` and `run_id` before verifying/commenting, and `src/contexts/milestone_record/service.rs:2491-2515` keeps every distinct mapping regardless of `completion_round`. If round 1 marks a finding as planned-elsewhere and round 2 later fixes or rejects it, the stale round-1 mapping still gets verified, journaled, and optionally commented after success. The reconciliation step needs to discard superseded mappings and only act on the latest accepted final-review state for the run.\n   Rationale: This produces false audit history and stray `br comments add` entries on beads that no longer own an outstanding concern.\n2. High: `src/adapters/fs.rs:3064-3093` now silently skips any malformed milestone journal line instead of returning `AppError::CorruptRecord`. A truncated or partially-written `journal.ndjson` entry will now disappear from the authoritative milestone history, so completion events or planned-elsewhere mappings can be lost during replay without any hard failure. Forward compatibility is already handled by `MilestoneEventType::Unknown` in `src/contexts/milestone_record/model.rs:296-300`; malformed non-trailing lines should still fail loudly.\n   Rationale: This weakens milestone durability and can hide real corruption behind a warning, leading to silent state loss instead of an operator-visible recovery path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 15
+}

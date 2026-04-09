@@ -2,35 +2,83 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 15
+      "completion_round": 16
     },
     "started_at": "2026-04-09T07:56:17.977024141Z",
     "prompt_hash_at_cycle_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "prompt_hash_at_stage_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 14
+    "final_review_restart_count": 15
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 15,
+  "completion_rounds": 16,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-15-917d5289",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 15,
+        "body": "The journal reader change in `read_journal_from_path` (src/adapters/fs.rs:3079-3090) silently skips ALL unparseable JSON lines, not just unknown event types. While the `#[serde(other)] Unknown` variant already handles forward-compatible event types (valid JSON with unrecognized event_type), this broader catch also silently drops genuinely corrupted lines (truncated JSON, encoding errors, disk corruption). For a journal that is the authoritative audit record and is replayed to reconstruct state (e.g., `rebuild_planned_elsewhere_from_journal`), silently dropping entries could lead to incorrect state reconstruction. Consider either: (a) only applying the lenient skip for the `planned_elsewhere.ndjson` sidecar reader (which is non-authoritative) while keeping the strict parse for the authoritative journal, or (b) adding a counter/metric for skipped lines so operators can detect corruption rather than silently losing events.",
+        "created_at": "2026-04-09T14:38:56.256888799Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "cd0370e5ddef8b74bfadd4fd759476e363cf68b757a0787b0eb007d6cbaf97c5"
+      },
+      {
+        "amendment_id": "fr-15-9d688895",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 15,
+        "body": "High: `src/contexts/workflow_composition/engine.rs:2697-2714` and `src/contexts/workflow_composition/engine.rs:3083-3094` persist planned-elsewhere mappings for every accepted final-review round, but `src/contexts/automation_runtime/success_reconciliation.rs:720-743` only filters by `active_bead_id` and `run_id` before verifying/commenting, and `src/contexts/milestone_record/service.rs:2491-2515` keeps every distinct mapping regardless of `completion_round`. If round 1 marks a finding as planned-elsewhere and round 2 later fixes or rejects it, the stale round-1 mapping still gets verified, journaled, and optionally commented after success. The reconciliation step needs to discard superseded mappings and only act on the latest accepted final-review state for the run.",
+        "created_at": "2026-04-09T14:38:56.256891804Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "dc557343a7c5c25483aa53847dc155f4b4e525ae69dd216da276509683554b3a"
+      },
+      {
+        "amendment_id": "fr-15-c925fee0",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 15,
+        "body": "High: `src/adapters/fs.rs:3064-3093` now silently skips any malformed milestone journal line instead of returning `AppError::CorruptRecord`. A truncated or partially-written `journal.ndjson` entry will now disappear from the authoritative milestone history, so completion events or planned-elsewhere mappings can be lost during replay without any hard failure. Forward compatibility is already handled by `MilestoneEventType::Unknown` in `src/contexts/milestone_record/model.rs:296-300`; malformed non-trailing lines should still fail loudly.",
+        "created_at": "2026-04-09T14:38:56.256893728Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "60e3beeaa22906bdad2eb8054eba44da3631e9e989e7fdb8ff79277928143d6f"
+      }
+    ],
     "processed_count": 45
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 16 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
-    "stage_id": "plan_and_implement",
-    "resolved_at": "2026-04-09T14:08:39.474540148Z",
-    "primary_target": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-09T14:22:29.408577733Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }

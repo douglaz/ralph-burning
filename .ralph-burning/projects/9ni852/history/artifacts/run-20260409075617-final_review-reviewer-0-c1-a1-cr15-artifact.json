@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr15-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T14:26:57.998828804Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed ~4400 lines of changes across 12 source files and 1 test file implementing planned-elsewhere reconciliation. The implementation is well-structured: PlannedElsewhereMapping model, dual-path journal events (ProgressUpdated with sub_type for rollback compatibility), conservative reviewer-merge logic for mapped_to_bead_id, engine partitioning of PE vs regular amendments, multi-phase verification in success_reconciliation (verify→persist→comment), and reconstruction from aggregate payloads as a failsafe. All 758 tests pass. Test coverage is thorough: verified/stale/closed beads, persistence across reload, journal rebuild when NDJSON sidecar is missing, verified-supersedes-unverified collapse, malformed metadata skipping, sidecar divergence, aggregate dedup by round, and merge disagreement scenarios. Found one moderate robustness concern worth discussing.\n\n## Amendments\n\n1. The journal reader change in `read_journal_from_path` (src/adapters/fs.rs:3079-3090) silently skips ALL unparseable JSON lines, not just unknown event types. While the `#[serde(other)] Unknown` variant already handles forward-compatible event types (valid JSON with unrecognized event_type), this broader catch also silently drops genuinely corrupted lines (truncated JSON, encoding errors, disk corruption). For a journal that is the authoritative audit record and is replayed to reconstruct state (e.g., `rebuild_planned_elsewhere_from_journal`), silently dropping entries could lead to incorrect state reconstruction. Consider either: (a) only applying the lenient skip for the `planned_elsewhere.ndjson` sidecar reader (which is non-authoritative) while keeping the strict parse for the authoritative journal, or (b) adding a counter/metric for skipped lines so operators can detect corruption rather than silently losing events.\n   Rationale: The journal is described throughout the code as the 'authoritative audit record' and source of truth for state rebuilds. Silently skipping corrupt lines in this critical path trades data integrity for forward-compatibility. The `#[serde(other)] Unknown` variant already provides forward-compat for well-formed but unrecognized events, so the additional lenient parsing only helps with truly malformed lines — which more likely indicate corruption than version skew. A tracing::warn is emitted but could easily be missed in production log volume.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 15
+}
