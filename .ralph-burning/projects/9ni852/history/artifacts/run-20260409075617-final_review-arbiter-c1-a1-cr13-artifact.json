@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-arbiter-c1-a1-cr13-artifact",
+  "payload_id": "run-20260409075617-final_review-arbiter-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T13:35:33.348662245Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected the DI/port-abstraction amendment (fr-13-3846db7d) as a design preference rather than a correctness issue — the hardcoded FsMilestoneJournalStore is in a private helper with no alternative implementation in production use. Accepted the dedup key inconsistency (fr-13-b76b3832) as a latent correctness defect where the 2-tuple identity key diverges from the canonical 3-tuple, warranting a trivial fix to maintain consistent identity semantics across the codebase.\n\n## Rulings\n\n- `fr-13-3846db7d`: Reject\n  Code verification confirms the hardcoding: rebuild_planned_elsewhere_from_journal (line 2433) directly instantiates FsMilestoneJournalStore. However, the function is a private helper (fn, not pub fn), there is only one production journal store implementation, and the existing test implementations (FailSecondJournalAppend, FailFirstJournalAppend) are specifically for testing append failure scenarios, not for round-tripping PE mapping reads. Reviewer 1's argument about round-trip inconsistency is theoretically valid but speculative — no non-FS journal adapter exists or is planned. The underscore-prefixed _mapping_store parameter shows the team deliberately chose journal-as-source-of-truth. This is architectural cleanup, not a correctness or safety defect. The 2-1 consensus (planner + Reviewer 0 reject) reflects the right priority: fix it when a second implementation materializes, not as part of this feature.\n- `fr-13-b76b3832`: Accept\n  Code verification confirms the inconsistency: reconstruct_missing_pe_mappings uses a 2-tuple (finding_summary, mapped_to_bead_id) at lines 915-918, while the canonical identity in rebuild_planned_elsewhere_from_journal uses a 3-tuple (active_bead_id, finding_summary, mapped_to_bead_id) at lines 2460-2464. While the current call site pre-filters by bead_id (lines 719-722) making this safe today, the inconsistency is a latent correctness defect: the identity semantics diverge from the canonical key used in the authoritative journal rebuild. Reviewer 1's argument that the 2-tuple is equivalent under the current bead-scoped contract is factually correct, but identity keys should be consistent across the codebase as a correctness invariant, not dependent on caller discipline. The fix is trivial (add active_bead_id to the seen_keys HashSet), eliminates a class of future bugs, and aligns with the canonical identity. The 2-1 consensus (planner + Reviewer 0 accept) is well-founded.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 13
+}
