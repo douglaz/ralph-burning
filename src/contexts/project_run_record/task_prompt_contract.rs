@@ -555,4 +555,47 @@ mod tests {
 
         assert!(validate_canonical_prompt_shape(&prompt).is_ok());
     }
+
+    #[test]
+    fn extract_pe_bead_ids_normal_bullets() {
+        let prompt = "## Already Planned Elsewhere\n\n- bead-A (some title) - relationship\n- bead-B (another) - relationship\n";
+        let ids = extract_pe_bead_ids(prompt);
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("bead-A"));
+        assert!(ids.contains("bead-B"));
+    }
+
+    #[test]
+    fn extract_pe_bead_ids_no_pe_section_returns_empty() {
+        let prompt = "## Milestone Summary\n\nSome text\n\n## Acceptance Criteria\n\nMore text\n";
+        let ids = extract_pe_bead_ids(prompt);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn extract_pe_bead_ids_pe_section_no_bullets_returns_empty() {
+        let prompt =
+            "## Already Planned Elsewhere\n\nNo explicit planned-elsewhere items were supplied.\n";
+        let ids = extract_pe_bead_ids(prompt);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn extract_pe_bead_ids_multiple_beads_captured() {
+        let prompt = "## Already Planned Elsewhere\n\n- alpha (Title A) - covers X\n- beta (Title B) - covers Y\n- gamma (Title C) - covers Z\n";
+        let ids = extract_pe_bead_ids(prompt);
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains("alpha"));
+        assert!(ids.contains("beta"));
+        assert!(ids.contains("gamma"));
+    }
+
+    #[test]
+    fn extract_pe_bead_ids_stops_at_next_heading() {
+        let prompt = "## Already Planned Elsewhere\n\n- bead-X (title) - rel\n\n## Review Policy\n\n- bead-Y (should not be captured)\n";
+        let ids = extract_pe_bead_ids(prompt);
+        assert_eq!(ids.len(), 1);
+        assert!(ids.contains("bead-X"));
+        assert!(!ids.contains("bead-Y"));
+    }
 }

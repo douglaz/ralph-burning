@@ -7612,7 +7612,8 @@ fn record_planned_elsewhere_amendments(
     };
 
     // Load the prompt to extract the allowed planned-elsewhere bead IDs.
-    // If the prompt cannot be read, skip validation (best-effort).
+    // Fail closed: if the prompt cannot be read or the allowed set is empty,
+    // reject ALL mappings rather than silently accepting them.
     let allowed_pe_ids = {
         let project_root = FileSystem::live_project_root(base_dir, project_id);
         let prompt_path = project_root.join(&project_record.prompt_reference);
@@ -7635,10 +7636,9 @@ fn record_planned_elsewhere_amendments(
             continue;
         }
         // Validate that mapped_to_bead_id is in the allowed PE set from the
-        // prompt.  A hallucinated but real bead ID could otherwise bypass the
-        // restart/fix loop.  If the allowed set is empty (prompt unreadable or
-        // no PE section), skip validation and accept the mapping.
-        if !allowed_pe_ids.is_empty() && !allowed_pe_ids.contains(mapped_to) {
+        // prompt.  Fail closed: when the allowed set is empty (prompt
+        // unreadable or no PE section), reject rather than accept.
+        if !allowed_pe_ids.contains(mapped_to) {
             let _ = log_write.append_runtime_log(
                 base_dir,
                 project_id,

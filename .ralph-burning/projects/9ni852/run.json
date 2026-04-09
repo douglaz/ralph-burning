@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 18
@@ -23,62 +23,14 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-17-fc75ff73",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 17,
-        "body": "Add unit tests for extract_pe_bead_ids in task_prompt_contract.rs. The function parses prompt text to build the allowed PE bead ID set and is used in record_planned_elsewhere_amendments to validate mapped_to_bead_id — a bug here could silently accept hallucinated bead IDs or reject legitimate ones. Tests should cover: (1) normal bullet format '- 9ni.8.5.3 (description)', (2) no PE section in prompt returns empty set, (3) PE section with no bullets returns empty set, (4) multiple beads are all captured, (5) stops at next ## heading.",
-        "created_at": "2026-04-09T15:34:29.144508938Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "d7a081bc1031ffd0e98a45f5694734bb62050d336fdbe79d215a9f0dc320480d"
-      },
-      {
-        "amendment_id": "fr-17-59a68d4c",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 17,
-        "body": "Validate `mapped_to_bead_id` before it can suppress a restart, and fail closed when there is no allowed mapping list. The current flow lets any accepted `mapped_to_bead_id` make `restart_required` false in `src/contexts/workflow_composition/final_review.rs:1569-1573`, but `record_planned_elsewhere_amendments()` explicitly skips validation when the extracted set is empty or the prompt cannot be read in `src/contexts/workflow_composition/engine.rs:7614-7641`. That is reachable on the normal \"no explicit planned-elsewhere items\" prompt text emitted by `src/contexts/project_run_record/service.rs:1047-1050`, so a hallucinated real bead ID can bypass the reopen/fix loop and drop a legitimate finding.",
-        "created_at": "2026-04-09T15:34:29.144511623Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "d9c1d011b00f3adf33184b7a91ddfafb6abb91b06cfb509a252fcf002400a43a"
-      },
-      {
-        "amendment_id": "fr-17-1292e667",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 17,
-        "body": "Do not rely on the post-commit recorder as the enforcement point for planned-elsewhere validity. If a mapping is not allowed, it must be stripped or converted back into a normal amendment before the final-review outcome is committed. Right now `record_planned_elsewhere_amendments()` can reject a mapping as not in the allowed set in `src/contexts/workflow_composition/engine.rs:7641-7656`, but the stage outcome has already been decided from the raw aggregate, and `reconstruct_missing_pe_mappings()` later recreates aggregate mappings without re-validating them in `src/contexts/automation_runtime/success_reconciliation.rs:975-1024`. An invalid planned-elsewhere classification can therefore still suppress a restart and even get written back into milestone state during reconciliation.",
-        "created_at": "2026-04-09T15:34:29.144514048Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "ed4958a2cbfe862fb711c4140d1b143f64b74a40f2f7b9d6fa78e3dfd64e84ea"
-      }
-    ],
-    "processed_count": 52
+    "pending": [],
+    "processed_count": 55
   },
-  "status_summary": "running: final review restart round 18 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
-    "stage_id": "final_review",
-    "resolved_at": "2026-04-09T15:18:03.844498504Z",
-    "final_review_reviewers": [
-      {
-        "backend_family": "claude",
-        "model_id": "claude-opus-4-6"
-      },
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.4"
-      }
-    ],
-    "final_review_planner": {
-      "backend_family": "claude",
-      "model_id": "claude-opus-4-6"
-    },
-    "final_review_arbiter": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-09T15:34:29.278417607Z",
+    "primary_target": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }

@@ -1503,11 +1503,25 @@ where
     final_accepted_ids.sort();
     final_accepted_ids.dedup();
 
-    let final_accepted_amendments: Vec<CanonicalAmendment> = amendments
+    let mut final_accepted_amendments: Vec<CanonicalAmendment> = amendments
         .iter()
         .filter(|amendment| final_accepted_ids.contains(&amendment.amendment_id))
         .cloned()
         .collect();
+
+    // Validate mapped_to_bead_id BEFORE the restart decision.
+    // Fail closed: if the allowed set is empty (no PE section in the prompt or
+    // prompt says "no explicit planned-elsewhere items"), strip ALL
+    // mapped_to_bead_id values so they cannot suppress a restart.
+    let allowed_pe_ids = task_prompt_contract::extract_pe_bead_ids(&project_prompt);
+    for amendment in &mut final_accepted_amendments {
+        if let Some(ref mapped_to) = amendment.mapped_to_bead_id {
+            let valid = !allowed_pe_ids.is_empty() && allowed_pe_ids.contains(mapped_to.trim());
+            if !valid {
+                amendment.mapped_to_bead_id = None;
+            }
+        }
+    }
 
     let total_all_exhausted =
         probe_exhausted_count + proposal_total_exhausted + vote_total_exhausted;
