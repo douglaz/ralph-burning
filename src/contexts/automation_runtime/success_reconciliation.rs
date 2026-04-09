@@ -718,8 +718,9 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     };
 
     let all_bead_mappings: Vec<_> = mappings
-        .into_iter()
+        .iter()
         .filter(|m| m.active_bead_id == bead_id && m.run_id.as_deref() == Some(run_id))
+        .cloned()
         .collect();
 
     // Reconstruct any planned-elsewhere amendments from persisted final-review
@@ -735,6 +736,19 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
         &all_bead_mappings,
         run_id,
     );
+
+    // Fall back to legacy mappings (run_id: None) when no current-run
+    // mappings exist and reconstruction found nothing.  Without this
+    // fallback, legacy unverified PE mappings would never be verified
+    // or receive comments.
+    let all_bead_mappings = if all_bead_mappings.is_empty() && reconstructed.is_empty() {
+        mappings
+            .into_iter()
+            .filter(|m| m.active_bead_id == bead_id && m.run_id.is_none())
+            .collect()
+    } else {
+        all_bead_mappings
+    };
 
     // Filter journal mappings to only the authoritative round.  If the
     // aggregates tell us the latest round is N, only mappings from round N

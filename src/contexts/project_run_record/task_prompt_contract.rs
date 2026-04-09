@@ -329,6 +329,22 @@ pub fn strip_milestone_prefix(canonical_id: &str) -> Option<&str> {
     }
 }
 
+/// Extract the milestone prefix from a canonical bead ID.
+///
+/// Canonical bead IDs have the form `{milestone_prefix}.{short_id}` where the
+/// milestone prefix is a short alphanumeric string (e.g. `9ni`).  Returns the
+/// prefix portion before the first dot, or `None` if the ID contains no dot
+/// or the prefix is empty.
+pub fn milestone_prefix_of(canonical_id: &str) -> Option<&str> {
+    let idx = canonical_id.find('.')?;
+    let prefix = &canonical_id[..idx];
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix)
+    }
+}
+
 /// Default review policy for canonical bead execution prompts.
 pub fn default_review_policy() -> Vec<String> {
     vec![
@@ -640,5 +656,14 @@ mod tests {
         assert_eq!(strip_milestone_prefix("ms-alpha.bead-4"), Some("bead-4"));
         assert_eq!(strip_milestone_prefix("no-dots"), None);
         assert_eq!(strip_milestone_prefix("trailing."), None);
+    }
+
+    #[test]
+    fn milestone_prefix_of_extracts_prefix() {
+        assert_eq!(milestone_prefix_of("9ni.8.5.3"), Some("9ni"));
+        assert_eq!(milestone_prefix_of("ms-alpha.bead-4"), Some("ms-alpha"));
+        assert_eq!(milestone_prefix_of("no-dots"), None);
+        assert_eq!(milestone_prefix_of(".leading-dot"), None);
+        assert_eq!(milestone_prefix_of("trailing."), Some("trailing"));
     }
 }

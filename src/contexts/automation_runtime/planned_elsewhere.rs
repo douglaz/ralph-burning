@@ -78,12 +78,13 @@ enum BeadVerification {
 async fn verify_bead_exists<R: ProcessRunner>(
     br_read: &BrAdapter<R>,
     bead_id: &str,
+    milestone_prefix: Option<&str>,
 ) -> BeadVerification {
     let result = try_br_show(br_read, bead_id).await;
     match &result {
         BeadVerification::Stale(_) => {
-            // The canonical ID was not found.  If it has a milestone prefix,
-            // retry with the short-form alias (e.g. "9ni.8.5.3" → "8.5.3").
+            // Direction 1 — canonical→short: strip the milestone prefix
+            // (e.g. "9ni.8.5.3" → "8.5.3").
             if let Some(short_id) =
                 crate::contexts::project_run_record::task_prompt_contract::strip_milestone_prefix(
                     bead_id,
@@ -92,6 +93,22 @@ async fn verify_bead_exists<R: ProcessRunner>(
                 let alias_result = try_br_show(br_read, short_id).await;
                 if matches!(alias_result, BeadVerification::Verified(_)) {
                     return alias_result;
+                }
+            }
+            // Direction 2 — short→canonical: prepend the milestone prefix
+            // (e.g. "8.5.3" → "9ni.8.5.3") when the bead_id doesn't
+            // already carry this prefix.
+            if let Some(prefix) = milestone_prefix {
+                let existing_prefix =
+                    crate::contexts::project_run_record::task_prompt_contract::milestone_prefix_of(
+                        bead_id,
+                    );
+                if existing_prefix != Some(prefix) {
+                    let canonical = format!("{prefix}.{bead_id}");
+                    let alias_result = try_br_show(br_read, &canonical).await;
+                    if matches!(alias_result, BeadVerification::Verified(_)) {
+                        return alias_result;
+                    }
                 }
             }
             result
@@ -159,8 +176,11 @@ pub async fn reconcile_planned_elsewhere<R: ProcessRunner>(
     let milestone_id = MilestoneId::new(milestone_id_str)?;
 
     // Step 1: Verify the mapped-to bead exists.
+    let prefix = crate::contexts::project_run_record::task_prompt_contract::milestone_prefix_of(
+        &input.active_bead_id,
+    );
     let (bead_verified, resolved_bead_id, stale_warning) =
-        match verify_bead_exists(br_read, &input.mapped_to_bead_id).await {
+        match verify_bead_exists(br_read, &input.mapped_to_bead_id, prefix).await {
             BeadVerification::Verified(resolved) => (true, Some(resolved), None),
             BeadVerification::Stale(warning) => {
                 tracing::warn!(
@@ -311,6 +331,9 @@ pub async fn verify_mappings<R: ProcessRunner>(
     active_bead_id: &str,
     mappings: &[PlannedElsewhereMapping],
 ) -> Vec<MappingVerificationOutcome> {
+    let prefix = crate::contexts::project_run_record::task_prompt_contract::milestone_prefix_of(
+        active_bead_id,
+    );
     let mut outcomes = Vec::with_capacity(mappings.len());
 
     for mapping in mappings {
@@ -320,7 +343,7 @@ pub async fn verify_mappings<R: ProcessRunner>(
         }
 
         let (verified, resolved_bead_id, warning) =
-            match verify_bead_exists(br_read, &mapping.mapped_to_bead_id).await {
+            match verify_bead_exists(br_read, &mapping.mapped_to_bead_id, prefix).await {
                 BeadVerification::Verified(resolved) => (true, Some(resolved), None),
                 BeadVerification::Stale(warning) => {
                     tracing::warn!(
@@ -821,6 +844,58 @@ mod tests {
             &milestone_id,
         )?;
         assert!(mappings.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn short_to_canonical_alias_resolves_bead() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // The reviewer uses the short form "8.5.3" which `br show` doesn't know,
+        // but "9ni.8.5.3" (canonical) succeeds.  Responses are popped from the
+        // back, so push in reverse order of calls:
+        //   1. br show 8.5.3       → not found
+        //   2. br show 5.3         → not found  (canonical→short strip attempt)
+        //   3. br show 9ni.8.5.3   → success    (short→canonical expansion)
+        let canonical_json = r#"{"id":"9ni.8.5.3","title":"Target","status":"open","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(canonical_json), // 3rd call (popped first)
+            MockBrRunner::error(1, "issue not found: 5.3"), // 2nd call
+            MockBrRunner::error(1, "issue not found: 8.5.3"), // 1st call
+        ]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        // active_bead_id has the "9ni" prefix so milestone_prefix_of can extract it
+        let input = PlannedElsewhereInput {
+            active_bead_id: "9ni.8.5.2".to_owned(),
+            finding_summary: "Short form alias test".to_owned(),
+            mapped_to_bead_id: "8.5.3".to_owned(),
+        };
+
+        let now = Utc::now();
+        let outcome = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            false,
+            now,
+        )
+        .await?;
+
+        assert!(
+            outcome.bead_verified,
+            "short→canonical alias should resolve"
+        );
+        assert!(outcome.stale_warning.is_none());
 
         Ok(())
     }

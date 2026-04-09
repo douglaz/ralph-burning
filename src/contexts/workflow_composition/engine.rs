@@ -7614,8 +7614,11 @@ fn record_planned_elsewhere_amendments(
     // Always write a PE round sentinel so that rebuild_planned_elsewhere_from_journal
     // knows this completion_round was processed — even if zero PE mappings exist.
     // This allows a later round with no PE findings to supersede an earlier round.
+    // Retry once on failure since the sentinel is the sole mechanism for zero-PE
+    // round supersession — a missing sentinel leaves stale mappings authoritative
+    // permanently (reconstruction from aggregates cannot synthesise sentinels).
     let now = Utc::now();
-    if let Err(e) = milestone_service::record_planned_elsewhere_round_sentinel(
+    let sentinel_result = milestone_service::record_planned_elsewhere_round_sentinel(
         &FsMilestoneJournalStore,
         base_dir,
         &milestone_id,
@@ -7623,18 +7626,35 @@ fn record_planned_elsewhere_amendments(
         run_id.as_str(),
         completion_round,
         now,
-    ) {
+    )
+    .or_else(|first_err| {
+        tracing::warn!(
+            error = %first_err,
+            completion_round,
+            "PE round sentinel write failed, retrying once"
+        );
+        milestone_service::record_planned_elsewhere_round_sentinel(
+            &FsMilestoneJournalStore,
+            base_dir,
+            &milestone_id,
+            &task_source.bead_id,
+            run_id.as_str(),
+            completion_round,
+            Utc::now(),
+        )
+    });
+    if let Err(e) = sentinel_result {
         let _ = log_write.append_runtime_log(
             base_dir,
             project_id,
             &RuntimeLogEntry {
                 timestamp: Utc::now(),
-                level: LogLevel::Warn,
+                level: LogLevel::Error,
                 source: "engine".to_owned(),
                 message: format!(
-                    "failed to write PE round sentinel for completion_round={completion_round}: \
-                     {e} — stale planned-elsewhere mappings from earlier rounds may not be \
-                     superseded"
+                    "failed to write PE round sentinel for completion_round={completion_round} \
+                     after retry: {e} — stale planned-elsewhere mappings from earlier rounds \
+                     may not be superseded"
                 ),
             },
         );
