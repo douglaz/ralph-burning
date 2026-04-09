@@ -717,34 +717,44 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
         }
     };
 
-    let bead_mappings: Vec<_> = {
-        let mut filtered: Vec<_> = mappings
-            .into_iter()
-            .filter(|m| m.active_bead_id == bead_id && m.run_id.as_deref() == Some(run_id))
-            .collect();
-        // Only act on mappings from the latest completion_round for this
-        // run.  Earlier rounds may have marked a finding as
-        // planned-elsewhere, but a later round could have fixed/rejected
-        // it — the latest round's state is authoritative.
-        if let Some(max_round) = filtered.iter().filter_map(|m| m.completion_round).max() {
-            filtered.retain(|m| m.completion_round == Some(max_round));
-        }
-        filtered
-    };
+    let all_bead_mappings: Vec<_> = mappings
+        .into_iter()
+        .filter(|m| m.active_bead_id == bead_id && m.run_id.as_deref() == Some(run_id))
+        .collect();
 
-    // Attempt to reconstruct any planned-elsewhere amendments from persisted
-    // final-review aggregates that are missing from the journal. This covers
-    // both the case where no mappings exist at all (complete failure of
-    // record_planned_elsewhere_amendments) and the case where some mappings
-    // exist from earlier rounds but a later round's mappings were lost.
-    let reconstructed = reconstruct_missing_pe_mappings(
+    // Reconstruct any planned-elsewhere amendments from persisted final-review
+    // aggregates that are missing from the journal.  Also returns the
+    // authoritative max completion_round from the aggregates — this is the
+    // source of truth for which round is "latest", even if that round wrote
+    // zero PE mappings (meaning the finding was fixed/rejected).
+    let (reconstructed, authoritative_max_round) = reconstruct_missing_pe_mappings(
         base_dir,
         project_id,
         bead_id,
         &milestone_id,
-        &bead_mappings,
+        &all_bead_mappings,
         run_id,
     );
+
+    // Filter journal mappings to only the authoritative round.  If the
+    // aggregates tell us the latest round is N, only mappings from round N
+    // survive — earlier rounds' PE decisions are superseded.  If no aggregate
+    // was found, fall back to the max round from the journal mappings
+    // themselves (legacy / no-aggregate scenario).
+    let effective_max_round = authoritative_max_round.or_else(|| {
+        all_bead_mappings
+            .iter()
+            .filter_map(|m| m.completion_round)
+            .max()
+    });
+    let bead_mappings: Vec<_> = if let Some(max_round) = effective_max_round {
+        all_bead_mappings
+            .into_iter()
+            .filter(|m| m.completion_round == Some(max_round))
+            .collect()
+    } else {
+        all_bead_mappings
+    };
 
     let mut unverified: Vec<_> = bead_mappings
         .into_iter()
@@ -886,6 +896,10 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
 /// in engine.rs failed or was interrupted — including for earlier restart
 /// rounds within the same run when the bead already has mappings from other
 /// rounds.
+/// Returns `(reconstructed_mappings, authoritative_max_round)`.
+/// `authoritative_max_round` is the highest `completion_round` among all
+/// final-review aggregates for this run — the source of truth for which
+/// round is latest, even if that round contains no PE amendments.
 fn reconstruct_missing_pe_mappings(
     base_dir: &Path,
     project_id: &str,
@@ -893,14 +907,14 @@ fn reconstruct_missing_pe_mappings(
     milestone_id: &MilestoneId,
     existing_mappings: &[PlannedElsewhereMapping],
     run_id: &str,
-) -> Vec<PlannedElsewhereMapping> {
+) -> (Vec<PlannedElsewhereMapping>, Option<u32>) {
     let pid = match ProjectId::new(project_id) {
         Ok(pid) => pid,
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), None),
     };
     let payloads = match FsArtifactStore.list_payloads(base_dir, &pid) {
         Ok(p) => p,
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), None),
     };
 
     // Collect final-review aggregates from the current run. For each
@@ -936,6 +950,11 @@ fn reconstruct_missing_pe_mappings(
         })
         .collect();
 
+    // The authoritative max round is the highest completion_round among all
+    // final-review aggregates for this run — even if that round's aggregate
+    // contains zero PE amendments (meaning findings were fixed/rejected).
+    let authoritative_max_round = latest_by_round.keys().copied().max();
+
     let now = Utc::now();
     let mut reconstructed = Vec::new();
 
@@ -943,9 +962,7 @@ fn reconstruct_missing_pe_mappings(
     // PE decisions may have been superseded by the latest final-review
     // aggregate (e.g. a finding was planned-elsewhere in round 1 but
     // fixed/rejected in round 2).
-    let mut rounds: Vec<u32> = latest_by_round.keys().copied().collect();
-    rounds.sort_unstable();
-    let rounds_to_scan: Vec<u32> = rounds.last().copied().into_iter().collect();
+    let rounds_to_scan: Vec<u32> = authoritative_max_round.into_iter().collect();
     for round in rounds_to_scan {
         let payload = latest_by_round[&round];
 
@@ -1015,7 +1032,7 @@ fn reconstruct_missing_pe_mappings(
         );
     }
 
-    reconstructed
+    (reconstructed, authoritative_max_round)
 }
 
 #[cfg(test)]
@@ -3098,7 +3115,7 @@ mod tests {
             serde_json::to_string(&payload_new)?,
         )?;
 
-        let reconstructed = reconstruct_missing_pe_mappings(
+        let (reconstructed, authoritative_max_round) = reconstruct_missing_pe_mappings(
             base,
             "proj-dedup",
             "active-bead",
@@ -3107,6 +3124,7 @@ mod tests {
             "run-dedup", // run_id — must match payload_id prefix with "-"
         );
 
+        assert_eq!(authoritative_max_round, Some(5));
         assert_eq!(
             reconstructed.len(),
             1,

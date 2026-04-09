@@ -2491,7 +2491,7 @@ fn rebuild_planned_elsewhere_from_journal(
         let completion_round = metadata
             .get("completion_round")
             .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
+            .and_then(|v| u32::try_from(v).ok());
         let finding_summary = event.details.clone().unwrap_or_default();
 
         let key = (

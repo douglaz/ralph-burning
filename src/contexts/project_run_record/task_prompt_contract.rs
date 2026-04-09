@@ -268,6 +268,43 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
     }
 }
 
+/// Extract bead IDs from the "Already Planned Elsewhere" section of a
+/// canonical bead execution prompt.  Returns the set of bead IDs that
+/// reviewers may reference as `mapped_to_bead_id`.
+///
+/// Each bullet line in the section starts with `- {bead_id} (...)`.
+/// The bead ID is the first whitespace-delimited token after `- `.
+pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
+    let mut result = std::collections::HashSet::new();
+    let section_header = format!("## {SECTION_ALREADY_PLANNED_ELSEWHERE}");
+    let mut in_section = false;
+
+    for line in prompt.lines() {
+        if in_section {
+            // Stop at the next `## ` heading.
+            if line.starts_with("## ") {
+                break;
+            }
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("- ") {
+                // The bead ID is the first token before space or '('.
+                let id = rest
+                    .split(|c: char| c.is_whitespace() || c == '(')
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if !id.is_empty() {
+                    result.insert(id.to_owned());
+                }
+            }
+        } else if line.trim() == section_header {
+            in_section = true;
+        }
+    }
+
+    result
+}
+
 /// Default review policy for canonical bead execution prompts.
 pub fn default_review_policy() -> Vec<String> {
     vec![

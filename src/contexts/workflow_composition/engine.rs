@@ -7611,6 +7611,20 @@ fn record_planned_elsewhere_amendments(
         }
     };
 
+    // Load the prompt to extract the allowed planned-elsewhere bead IDs.
+    // If the prompt cannot be read, skip validation (best-effort).
+    let allowed_pe_ids = {
+        let project_root = FileSystem::live_project_root(base_dir, project_id);
+        let prompt_path = project_root.join(&project_record.prompt_reference);
+        match std::fs::read_to_string(&prompt_path) {
+            Ok(prompt_text) => {
+                use crate::contexts::project_run_record::task_prompt_contract;
+                task_prompt_contract::extract_pe_bead_ids(&prompt_text)
+            }
+            Err(_) => std::collections::HashSet::new(),
+        }
+    };
+
     let now = Utc::now();
     for amendment in amendments {
         let Some(mapped_to) = amendment.mapped_to_bead_id.as_deref() else {
@@ -7618,6 +7632,27 @@ fn record_planned_elsewhere_amendments(
         };
         let mapped_to = mapped_to.trim();
         if mapped_to.is_empty() {
+            continue;
+        }
+        // Validate that mapped_to_bead_id is in the allowed PE set from the
+        // prompt.  A hallucinated but real bead ID could otherwise bypass the
+        // restart/fix loop.  If the allowed set is empty (prompt unreadable or
+        // no PE section), skip validation and accept the mapping.
+        if !allowed_pe_ids.is_empty() && !allowed_pe_ids.contains(mapped_to) {
+            let _ = log_write.append_runtime_log(
+                base_dir,
+                project_id,
+                &RuntimeLogEntry {
+                    timestamp: Utc::now(),
+                    level: LogLevel::Warn,
+                    source: "engine".to_owned(),
+                    message: format!(
+                        "ignoring planned-elsewhere mapping for amendment={}: \
+                         mapped_to_bead_id '{}' is not in the allowed planned-elsewhere set",
+                        amendment.queued.amendment_id, mapped_to
+                    ),
+                },
+            );
             continue;
         }
         let mapping = PlannedElsewhereMapping {

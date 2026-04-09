@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 17
@@ -23,55 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-16-554c5cb5",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 16,
-        "body": "In `rebuild_planned_elsewhere_from_journal` (service.rs), the `completion_round` field is read via `.as_u64().map(|v| v as u32)` which silently truncates values above `u32::MAX`. Use a checked cast: `.and_then(|v| u32::try_from(v).ok())` to avoid silent data loss. The same pattern appears in the rebuild reader but not in the write path (which uses `Number::from(u32)` correctly).",
-        "created_at": "2026-04-09T15:08:00.918450146Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "a219dc33c92fba3f49c9d87f38c621b9fffa69c56f44c36d73684b177fe4b4b5"
-      },
-      {
-        "amendment_id": "fr-16-7dda326b",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 16,
-        "body": "The `MilestoneEventType::Unknown` variant with `#[serde(other)]` changes deserialization behavior for ALL journal consumers: previously, unrecognized event types caused a parse error (detected corruption); now they silently deserialize as `Unknown`. Verify that no existing consumer of `read_journal` relies on deserialization failure as a corruption signal, and consider filtering out `Unknown` events in `read_journal_from_path` before returning them (or documenting the contract that consumers must handle `Unknown`).",
-        "created_at": "2026-04-09T15:08:00.918452109Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "343aafae07484a7b77b39d3c55c733c625c5b44becb56551732a1d24d6bb02d5"
-      },
-      {
-        "amendment_id": "fr-16-276bec97",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 16,
-        "body": "[/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/success_reconciliation.rs:720-747, 889-1018] Reconciliation decides the \"latest\" planned-elsewhere state from whatever mapping rows already exist, then only reconstructs missing rows from the newest final-review aggregate. That breaks when an earlier round recorded a planned-elsewhere mapping but the latest round fixed or rejected it: the latest round writes zero mapping rows, so `max_round` stays on the stale earlier round and the old mapping still gets verified/commented. The authoritative round needs to come from the latest final-review aggregate or run snapshot, and earlier-round mappings must be ignored when that latest aggregate contains no planned-elsewhere amendments.",
-        "created_at": "2026-04-09T15:08:00.918454534Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "454133242b1ec6207bc8555882e45adba85ef372456eeb7a101372d2a9ec9b0e"
-      },
-      {
-        "amendment_id": "fr-16-5920df5b",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 16,
-        "body": "[/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/final_review.rs:188-226, 1569-1604; /home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/engine.rs:7616-7638; /home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/planned_elsewhere.rs:70-96] `mapped_to_bead_id` is treated as restart-suppressing as soon as reviewers unanimously emit it: final review preserves the field, the aggregate turns off `restart_required` whenever every accepted amendment has a mapping, the engine persists that mapping unchanged, and reconciliation only checks that the bead exists. There is no validation that the bead ID was one of the \"Already Planned Elsewhere\" items supplied in the prompt, or otherwise an allowed owner for this finding. A hallucinated but real bead ID can therefore let a real bug bypass the restart/fix loop. Validate `mapped_to_bead_id` against the allowed planned-elsewhere set before honoring it; otherwise clear it and queue a normal amendment.",
-        "created_at": "2026-04-09T15:08:00.918457259Z",
-        "batch_sequence": 4,
-        "source": "workflow_stage",
-        "dedup_key": "1abcf0f88a9a7c97e90dd71271b54b0d937029b0fa3a65de6ae3bcd9d82bfbdc"
-      }
-    ],
-    "processed_count": 48
+    "pending": [],
+    "processed_count": 52
   },
-  "status_summary": "running: final review restart round 17 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-09T14:45:03.207713206Z",
