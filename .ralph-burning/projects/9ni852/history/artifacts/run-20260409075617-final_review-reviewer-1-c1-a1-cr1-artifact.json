@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T08:20:11.926139004Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound three correctness gaps: the new planned-elsewhere handler is not connected to the final-review/restart flow, the mapping write and journal write are not atomic, and verification currently downgrades every `br show` failure to a stale-bead warning.\n\n## Amendments\n\n1. Wire planned-elsewhere findings through the actual final-review/reconciliation path instead of only adding a standalone helper. `src/contexts/workflow_composition/panel_contracts.rs:137-154` still only allows free-form amendments, `src/contexts/workflow_composition/final_review.rs:1523-1553` still marks any accepted amendment as `restart_required`, and `src/contexts/workflow_composition/engine.rs:7359-7378` still turns every accepted final-review item into a `QueuedAmendment`. The new handler in `src/contexts/automation_runtime/planned_elsewhere.rs:81-158` is not invoked from that flow, so there is currently no way to carry `mapped_to_bead_id` through review or let the active bead complete without a reopen/restart loop.\n   Rationale: This is the core feature gap: as shipped, planned-elsewhere findings are still processed as ordinary amendments, so the acceptance criteria around mapping and completion behavior are not met.\n2. Make `record_planned_elsewhere_mapping` transactional across `planned_elsewhere.ndjson` and the milestone journal. In `src/contexts/milestone_record/service.rs:2352-2380` the mapping file is appended first and the `PlannedElsewhereMapped` journal event is appended second, with no rollback if `append_event` fails. A journal write error will therefore leave a persisted mapping with no audit event.\n   Rationale: That violates the requirement that mappings are also recorded in the milestone journal and leaves restart state inconsistent after partial I/O failure.\n3. Tighten stale-bead fallback so only definitive missing/closed bead results are downgraded to warnings. In `src/contexts/automation_runtime/planned_elsewhere.rs:55-73`, any `br show` failure is treated as `bead_verified = false` and reconciliation proceeds. Timeouts, parse failures, or repo/configuration errors would therefore be misclassified as stale-bead cases instead of surfacing an operator-visible failure.\n   Rationale: This can silently suppress a real review concern and let the active bead complete based on an infrastructure error rather than a verified planned-elsewhere mapping.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T08:13:05.022511081Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all source changes: new planned_elsewhere.rs handler, model additions (PlannedElsewhereMapping struct, PlannedElsewhereMapped event type), service layer (record + load functions with PlannedElsewhereMappingPort), fs adapter (FsPlannedElsewhereMappingStore with NDJSON persistence and advisory locking), and br_process adapter (comment_bead method). All 6 new tests pass. The implementation is clean, follows existing codebase patterns (port-based DI at service layer, concrete types at runtime layer, advisory file locking, NDJSON append-only stores), and handles stale beads gracefully. No security issues — br comment uses process args, not shell. No correctness bugs found. Two minor robustness observations that don't rise to amendment level: (1) dual-write between mapping NDJSON and journal is non-atomic, but this matches existing patterns and both are append-only, (2) no deduplication guard prevents recording the same mapping twice, but the append-only design and batch caller make this unlikely in practice.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

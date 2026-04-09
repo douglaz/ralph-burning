@@ -2,29 +2,85 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-09T07:56:17.977024141Z",
     "prompt_hash_at_cycle_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "prompt_hash_at_stage_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-df6316d5",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Wire planned-elsewhere findings through the actual final-review/reconciliation path instead of only adding a standalone helper. `src/contexts/workflow_composition/panel_contracts.rs:137-154` still only allows free-form amendments, `src/contexts/workflow_composition/final_review.rs:1523-1553` still marks any accepted amendment as `restart_required`, and `src/contexts/workflow_composition/engine.rs:7359-7378` still turns every accepted final-review item into a `QueuedAmendment`. The new handler in `src/contexts/automation_runtime/planned_elsewhere.rs:81-158` is not invoked from that flow, so there is currently no way to carry `mapped_to_bead_id` through review or let the active bead complete without a reopen/restart loop.",
+        "created_at": "2026-04-09T08:25:58.024314077Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "abce149ad06611fc5f7a15081b4cb0d3b6228f4a94ab3db28dcbb59ef50757de"
+      },
+      {
+        "amendment_id": "fr-1-170d2fcc",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Make `record_planned_elsewhere_mapping` transactional across `planned_elsewhere.ndjson` and the milestone journal. In `src/contexts/milestone_record/service.rs:2352-2380` the mapping file is appended first and the `PlannedElsewhereMapped` journal event is appended second, with no rollback if `append_event` fails. A journal write error will therefore leave a persisted mapping with no audit event.",
+        "created_at": "2026-04-09T08:25:58.024315820Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "f3ec8aa0e796b035fc497474994492aea6d0acd9e8556cda637b422efeb74271"
+      },
+      {
+        "amendment_id": "fr-1-4eed62c2",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Tighten stale-bead fallback so only definitive missing/closed bead results are downgraded to warnings. In `src/contexts/automation_runtime/planned_elsewhere.rs:55-73`, any `br show` failure is treated as `bead_verified = false` and reconciliation proceeds. Timeouts, parse failures, or repo/configuration errors would therefore be misclassified as stale-bead cases instead of surfacing an operator-visible failure.",
+        "created_at": "2026-04-09T08:25:58.024317303Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "817fc369965b6aae59528f38b6ede135d08b10f49c27c79d1ba40267091b3f62"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-09T08:10:47.818818835Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
 }
