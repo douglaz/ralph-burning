@@ -224,9 +224,9 @@ impl BrCommand {
         Self::new("dep").arg("remove").arg(from).arg(to)
     }
 
-    /// `br comment <id> <text>`
+    /// `br comments add <id> <text>`
     pub fn comment(id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self::new("comment").arg(id).arg(text)
+        Self::new("comments").arg("add").arg(id).arg(text)
     }
 
     /// `br create --title=<title> --type=<bead_type> --priority=<priority>`

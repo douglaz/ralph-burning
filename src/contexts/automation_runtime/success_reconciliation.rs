@@ -710,22 +710,29 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
         }
     };
 
-    let has_any_for_bead = mappings.iter().any(|m| m.active_bead_id == bead_id);
-    let mut unverified: Vec<_> = mappings
+    let bead_mappings: Vec<_> = mappings
         .into_iter()
-        .filter(|m| m.active_bead_id == bead_id && !m.mapped_bead_verified)
+        .filter(|m| m.active_bead_id == bead_id)
         .collect();
 
-    // If no mappings exist at all for this bead, try to reconstruct from the
-    // persisted final-review aggregate. This covers the case where
-    // record_planned_elsewhere_amendments() failed after the durable stage commit.
-    if !has_any_for_bead {
-        if let Some(reconstructed) =
-            reconstruct_pe_mappings_from_aggregate(base_dir, project_id, bead_id, &milestone_id)
-        {
-            unverified = reconstructed;
-        }
-    }
+    // Attempt to reconstruct any planned-elsewhere amendments from persisted
+    // final-review aggregates that are missing from the journal. This covers
+    // both the case where no mappings exist at all (complete failure of
+    // record_planned_elsewhere_amendments) and the case where some mappings
+    // exist from earlier rounds but a later round's mappings were lost.
+    let reconstructed = reconstruct_missing_pe_mappings(
+        base_dir,
+        project_id,
+        bead_id,
+        &milestone_id,
+        &bead_mappings,
+    );
+
+    let mut unverified: Vec<_> = bead_mappings
+        .into_iter()
+        .filter(|m| !m.mapped_bead_verified)
+        .collect();
+    unverified.extend(reconstructed);
 
     if unverified.is_empty() {
         return;
@@ -735,12 +742,16 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
         .map(|v| v != "0" && v.to_lowercase() != "false")
         .unwrap_or(true);
 
+    // Phase 1: Verify only — do NOT post comments yet. This lets us persist
+    // verified records to the journal before any comments are posted, closing
+    // the crash window where a comment is posted but the verified record is
+    // not yet written (which would cause duplicate comments on replay).
     let outcomes = super::planned_elsewhere::verify_and_comment_mappings(
         br_mutation,
         br_read,
         bead_id,
         &unverified,
-        post_comments,
+        false, // post_comments=false — comments posted in phase 3
     )
     .await;
 
@@ -754,11 +765,10 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
         }
     }
 
-    // Persist verified mappings BEFORE flushing comments. This ensures that
-    // if the process crashes after flush but before this write, replay will
-    // see the mapping as already verified and skip re-verification (and thus
-    // not re-post duplicate comments). Comments are best-effort; the verified
-    // record is the authoritative state.
+    // Phase 2: Persist verified mappings to the journal BEFORE posting any
+    // comments. On replay, these mappings will be filtered out by
+    // `!m.mapped_bead_verified`, preventing re-verification and duplicate
+    // comments regardless of when a crash occurs.
     let now = Utc::now();
     for outcome in &outcomes {
         if outcome.verified {
@@ -785,11 +795,46 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
         }
     }
 
-    // Flush any br mutations (comments) so they're persisted upstream.
-    // Best-effort: if flush fails, comments may be lost but the mapping
-    // is already recorded as verified above.
-    let any_comments = outcomes.iter().any(|o| o.comment_posted);
-    if any_comments {
+    // Phase 3: Post comments on verified mapped-to beads. Because verified
+    // records are already durable, a crash here cannot cause duplicate
+    // comments on replay — the mapping is already marked verified.
+    let mut commented_count = 0usize;
+    if post_comments {
+        for outcome in &outcomes {
+            if !outcome.verified {
+                continue;
+            }
+            let comment_text = format!(
+                "Planned-elsewhere mapping from {}: {}",
+                outcome.mapping.active_bead_id, outcome.mapping.finding_summary
+            );
+            match br_mutation
+                .comment_bead(&outcome.mapping.mapped_to_bead_id, &comment_text)
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!(
+                        mapped_to_bead_id = outcome.mapping.mapped_to_bead_id.as_str(),
+                        active_bead_id = bead_id,
+                        "posted planned-elsewhere comment on mapped-to bead"
+                    );
+                    commented_count += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        mapped_to_bead_id = outcome.mapping.mapped_to_bead_id.as_str(),
+                        error = %e,
+                        "failed to post planned-elsewhere comment (non-blocking)"
+                    );
+                }
+            }
+        }
+    }
+
+    // Phase 4: Flush any br mutations (comments) so they're persisted upstream.
+    // Best-effort: if flush fails, comments may be lost but the mapping is
+    // already recorded as verified above.
+    if commented_count > 0 {
         if let Err(e) = br_mutation.sync_flush().await {
             tracing::warn!(
                 error = %e,
@@ -799,7 +844,6 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     }
 
     let verified_count = outcomes.iter().filter(|o| o.verified).count();
-    let commented_count = outcomes.iter().filter(|o| o.comment_posted).count();
     if !outcomes.is_empty() {
         tracing::info!(
             bead_id = bead_id,
@@ -811,85 +855,109 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     }
 }
 
-/// Attempt to reconstruct planned-elsewhere mappings from the persisted
-/// final-review aggregate payload. Returns `Some(mappings)` if reconstruction
-/// succeeds with at least one mapping, `None` otherwise.
+/// Reconstruct any planned-elsewhere mappings from persisted final-review
+/// aggregate payloads that are missing from the journal. Scans ALL final-review
+/// aggregates (not just the latest) and compares against existing journal
+/// mappings to find gaps.
 ///
 /// This covers the failure window where the durable stage commit (which
 /// includes the aggregate) succeeded but `record_planned_elsewhere_amendments`
-/// in engine.rs failed or was interrupted.
-fn reconstruct_pe_mappings_from_aggregate(
+/// in engine.rs failed or was interrupted — including for earlier restart
+/// rounds when the bead already has mappings from other rounds.
+fn reconstruct_missing_pe_mappings(
     base_dir: &Path,
     project_id: &str,
     bead_id: &str,
     milestone_id: &MilestoneId,
-) -> Option<Vec<PlannedElsewhereMapping>> {
-    let pid = ProjectId::new(project_id).ok()?;
-    let payloads = FsArtifactStore.list_payloads(base_dir, &pid).ok()?;
+    existing_mappings: &[PlannedElsewhereMapping],
+) -> Vec<PlannedElsewhereMapping> {
+    let pid = match ProjectId::new(project_id) {
+        Ok(pid) => pid,
+        Err(_) => return Vec::new(),
+    };
+    let payloads = match FsArtifactStore.list_payloads(base_dir, &pid) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
 
-    // Find the latest final-review stage aggregate payload.
-    let aggregate_payload = payloads.iter().rev().find(|p| {
-        p.stage_id == StageId::FinalReview && p.record_kind == RecordKind::StageAggregate
-    })?;
-
-    let aggregate: FinalReviewAggregatePayload =
-        serde_json::from_value(aggregate_payload.payload.clone()).ok()?;
+    // Build a set of existing identity keys for dedup.
+    let existing_keys: std::collections::HashSet<(&str, &str)> = existing_mappings
+        .iter()
+        .map(|m| (m.finding_summary.as_str(), m.mapped_to_bead_id.as_str()))
+        .collect();
 
     let now = Utc::now();
     let mut reconstructed = Vec::new();
-    for amendment in &aggregate.final_accepted_amendments {
-        let mapped_to = match amendment.mapped_to_bead_id.as_deref() {
-            Some(id) => {
-                let trimmed = id.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                trimmed
-            }
-            None => continue,
-        };
 
-        let mapping = PlannedElsewhereMapping {
-            active_bead_id: bead_id.to_owned(),
-            finding_summary: amendment.normalized_body.clone(),
-            mapped_to_bead_id: mapped_to.to_owned(),
-            recorded_at: now,
-            mapped_bead_verified: false,
-        };
-
-        // Record the reconstructed mapping to the journal so subsequent
-        // replays don't need to reconstruct again.
-        if let Err(e) = milestone_service::record_planned_elsewhere_mapping(
-            &FsMilestoneJournalStore,
-            &FsPlannedElsewhereMappingStore,
-            base_dir,
-            milestone_id,
-            &mapping,
-        ) {
-            tracing::warn!(
-                mapped_to_bead_id = mapped_to,
-                error = %e,
-                "failed to persist reconstructed planned-elsewhere mapping (non-blocking)"
-            );
+    // Scan ALL final-review aggregates, not just the latest, so that
+    // mappings lost in any restart round are recovered.
+    for payload in &payloads {
+        if payload.stage_id != StageId::FinalReview
+            || payload.record_kind != RecordKind::StageAggregate
+        {
+            continue;
         }
 
-        reconstructed.push(mapping);
+        let aggregate: FinalReviewAggregatePayload =
+            match serde_json::from_value(payload.payload.clone()) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+
+        for amendment in &aggregate.final_accepted_amendments {
+            let mapped_to = match amendment.mapped_to_bead_id.as_deref() {
+                Some(id) => {
+                    let trimmed = id.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    trimmed
+                }
+                None => continue,
+            };
+
+            let identity_key = (amendment.normalized_body.as_str(), mapped_to);
+            if existing_keys.contains(&identity_key) {
+                continue;
+            }
+
+            let mapping = PlannedElsewhereMapping {
+                active_bead_id: bead_id.to_owned(),
+                finding_summary: amendment.normalized_body.clone(),
+                mapped_to_bead_id: mapped_to.to_owned(),
+                recorded_at: now,
+                mapped_bead_verified: false,
+            };
+
+            // Record the reconstructed mapping to the journal so subsequent
+            // replays don't need to reconstruct again.
+            if let Err(e) = milestone_service::record_planned_elsewhere_mapping(
+                &FsMilestoneJournalStore,
+                &FsPlannedElsewhereMappingStore,
+                base_dir,
+                milestone_id,
+                &mapping,
+            ) {
+                tracing::warn!(
+                    mapped_to_bead_id = mapped_to,
+                    error = %e,
+                    "failed to persist reconstructed planned-elsewhere mapping (non-blocking)"
+                );
+            }
+
+            reconstructed.push(mapping);
+        }
     }
 
-    if reconstructed.is_empty() {
-        tracing::debug!(
-            bead_id = bead_id,
-            "no planned-elsewhere amendments found in final-review aggregate"
-        );
-        None
-    } else {
+    if !reconstructed.is_empty() {
         tracing::info!(
             bead_id = bead_id,
             count = reconstructed.len(),
-            "reconstructed planned-elsewhere mappings from final-review aggregate"
+            "reconstructed missing planned-elsewhere mappings from final-review aggregates"
         );
-        Some(reconstructed)
     }
+
+    reconstructed
 }
 
 #[cfg(test)]
