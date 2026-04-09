@@ -3063,7 +3063,7 @@ impl FsMilestoneJournalStore {
 
     fn read_journal_from_path(
         path: &Path,
-        milestone_id: &MilestoneId,
+        _milestone_id: &MilestoneId,
     ) -> AppResult<Vec<MilestoneJournalEvent>> {
         let raw = match fs::read_to_string(path) {
             Ok(content) => content,
@@ -3076,12 +3076,22 @@ impl FsMilestoneJournalStore {
             if trimmed.is_empty() {
                 continue;
             }
-            let event: MilestoneJournalEvent =
-                serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
-                    file: format!("milestones/{}/journal.ndjson", milestone_id),
-                    details: format!("line {}: {}", i + 1, e),
-                })?;
-            events.push(event);
+            match serde_json::from_str::<MilestoneJournalEvent>(trimmed) {
+                Ok(event) => events.push(event),
+                Err(e) => {
+                    // Skip unparseable lines with a warning instead of
+                    // failing.  This makes the reader forward-compatible
+                    // with event types added in newer versions (the
+                    // #[serde(other)] Unknown variant handles known
+                    // structural changes, but truly malformed or
+                    // future-schema lines are safely skipped here).
+                    tracing::warn!(
+                        line = i + 1,
+                        error = %e,
+                        "skipping unparseable milestone journal line"
+                    );
+                }
+            }
         }
         Ok(events)
     }

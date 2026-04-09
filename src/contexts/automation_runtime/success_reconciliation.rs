@@ -703,6 +703,7 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     };
     let mappings = match milestone_service::load_planned_elsewhere_mappings(
         &FsPlannedElsewhereMappingStore,
+        &FsMilestoneJournalStore,
         base_dir,
         &milestone_id,
     ) {
@@ -718,9 +719,7 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
 
     let bead_mappings: Vec<_> = mappings
         .into_iter()
-        .filter(|m| {
-            m.active_bead_id == bead_id && m.run_id.as_deref().is_none_or(|rid| rid == run_id)
-        })
+        .filter(|m| m.active_bead_id == bead_id && m.run_id.as_deref() == Some(run_id))
         .collect();
 
     // Attempt to reconstruct any planned-elsewhere amendments from persisted
@@ -785,6 +784,7 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
                 recorded_at: now,
                 mapped_bead_verified: true,
                 run_id: outcome.mapping.run_id.clone(),
+                completion_round: outcome.mapping.completion_round,
             };
             if let Err(e) = milestone_service::record_planned_elsewhere_mapping(
                 &FsMilestoneJournalStore,
@@ -971,6 +971,7 @@ fn reconstruct_missing_pe_mappings(
                 recorded_at: now,
                 mapped_bead_verified: false,
                 run_id: Some(run_id.to_owned()),
+                completion_round: Some(round),
             };
 
             // Record the reconstructed mapping to the journal so subsequent

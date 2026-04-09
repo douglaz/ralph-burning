@@ -153,6 +153,7 @@ pub async fn reconcile_planned_elsewhere<R: ProcessRunner>(
         recorded_at: now,
         mapped_bead_verified: bead_verified,
         run_id: None,
+        completion_round: None,
     };
 
     milestone_service::record_planned_elsewhere_mapping(
@@ -432,6 +433,7 @@ mod tests {
         // Verify persistence: read back mappings
         let mappings = milestone_service::load_planned_elsewhere_mappings(
             &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
             base_dir,
             &milestone_id,
         )?;
@@ -439,11 +441,19 @@ mod tests {
         assert_eq!(mappings[0].active_bead_id, "active-bead");
         assert!(mappings[0].mapped_bead_verified);
 
-        // Verify journal event was recorded
+        // Verify journal event was recorded (written as ProgressUpdated
+        // with sub_type metadata for rollback compatibility).
         let journal = FsMilestoneJournalStore.read_journal(base_dir, &milestone_id)?;
         let pe_events: Vec<_> = journal
             .iter()
-            .filter(|e| e.event_type == MilestoneEventType::PlannedElsewhereMapped)
+            .filter(|e| {
+                e.event_type == MilestoneEventType::ProgressUpdated
+                    && e.metadata
+                        .as_ref()
+                        .and_then(|m| m.get("sub_type"))
+                        .and_then(|v| v.as_str())
+                        == Some("planned_elsewhere_mapped")
+            })
             .collect();
         assert_eq!(pe_events.len(), 1);
         assert_eq!(pe_events[0].bead_id.as_deref(), Some("active-bead"));
@@ -498,6 +508,7 @@ mod tests {
         // Mapping is still persisted with verified=false
         let mappings = milestone_service::load_planned_elsewhere_mappings(
             &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
             base_dir,
             &milestone_id,
         )?;
@@ -688,6 +699,7 @@ mod tests {
         // "Restart": read back from fresh store instance
         let mappings = milestone_service::load_planned_elsewhere_mappings(
             &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
             base_dir,
             &milestone_id,
         )?;
@@ -699,11 +711,18 @@ mod tests {
         mapped_ids.sort();
         assert_eq!(mapped_ids, vec!["bead-a", "bead-b"]);
 
-        // Journal also has both events
+        // Journal also has both events (written as ProgressUpdated with sub_type)
         let journal = FsMilestoneJournalStore.read_journal(base_dir, &milestone_id)?;
         let pe_events: Vec<_> = journal
             .iter()
-            .filter(|e| e.event_type == MilestoneEventType::PlannedElsewhereMapped)
+            .filter(|e| {
+                e.event_type == MilestoneEventType::ProgressUpdated
+                    && e.metadata
+                        .as_ref()
+                        .and_then(|m| m.get("sub_type"))
+                        .and_then(|v| v.as_str())
+                        == Some("planned_elsewhere_mapped")
+            })
             .collect();
         assert_eq!(pe_events.len(), 2);
 
@@ -756,6 +775,7 @@ mod tests {
         // No mapping should have been persisted
         let mappings = milestone_service::load_planned_elsewhere_mappings(
             &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
             base_dir,
             &milestone_id,
         )?;
@@ -815,6 +835,7 @@ mod tests {
         // No mapping should have been persisted
         let mappings = milestone_service::load_planned_elsewhere_mappings(
             &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
             base_dir,
             &milestone_id,
         )?;

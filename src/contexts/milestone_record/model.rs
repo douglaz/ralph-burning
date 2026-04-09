@@ -749,6 +749,11 @@ pub struct PlannedElsewhereMapping {
     /// rolled-back or abandoned runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// The final-review completion round that accepted this mapping.
+    /// Used to filter out stale mappings from earlier rounds when a
+    /// later round no longer accepts them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_round: Option<u32>,
 }
 
 impl PlannedElsewhereMapping {
