@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 19
+      "completion_round": 20
     },
     "started_at": "2026-04-09T07:56:17.977024141Z",
     "prompt_hash_at_cycle_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "prompt_hash_at_stage_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 18
+    "final_review_restart_count": 19
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 19,
+  "completion_rounds": 20,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-19-ff125949",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 19,
+        "body": "In `src/contexts/automation_runtime/success_reconciliation.rs`, the `reconstruct_missing_pe_mappings` function (around line 975) does NOT validate `mapped_to_bead_id` against the allowed PE set from the prompt, unlike both `engine.rs` (line 7641) and `final_review.rs` (line 1516-1519) which explicitly do. The reconstructed mappings go through `verify_bead_exists()` (which checks the bead exists in `br`) but this is not equivalent — a bead could exist but not be in the prompt's allowed PE set. While the final-review aggregate that the reconstruction reads from should already have been validated by `final_review.rs`, adding the same `extract_pe_bead_ids` check here would maintain the fail-closed invariant and protect against corrupted or tampered aggregate files on disk.",
+        "created_at": "2026-04-09T16:24:26.145803161Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "703642c4adce745babf6be35d0b10fb9ef77a55588433817de6f6ba22e054c29"
+      },
+      {
+        "amendment_id": "fr-19-731dc375",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 19,
+        "body": "Validate `mapped_to_bead_id` before any planner/reviewer/arbiter voting prompts are built. In `src/contexts/workflow_composition/final_review.rs:644-651` and `src/contexts/workflow_composition/final_review.rs:879-886`, the panel is asked to vote on amendments before the allowlist check runs. `build_voter_prompt` and `build_arbiter_prompt` then treat any non-empty mapping as planned-elsewhere at `src/contexts/workflow_composition/final_review.rs:1894-1911` and `src/contexts/workflow_composition/final_review.rs:1951-1968`, including the promise that accepting it will not restart the bead. The actual validation only happens later at `src/contexts/workflow_composition/final_review.rs:1516-1522`. A hallucinated or out-of-scope bead ID can therefore bias the panel into accepting an amendment under 'no restart' semantics, then get stripped and turned into a restart-required amendment afterward.",
+        "created_at": "2026-04-09T16:24:26.145805866Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "184311a48b7661ed54bf365d9bc0c2be7cab70a790b793113ee7c0e1abc9daef"
+      },
+      {
+        "amendment_id": "fr-19-434f4f1d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 19,
+        "body": "Fix planned-elsewhere reconstruction so later rounds can reconstruct the same finding/target pair. In `src/contexts/automation_runtime/success_reconciliation.rs:942-951` and `src/contexts/automation_runtime/success_reconciliation.rs:987-995`, `reconstruct_missing_pe_mappings` deduplicates only on `(active_bead_id, finding_summary, mapped_to_bead_id)`. But `src/contexts/automation_runtime/success_reconciliation.rs:744-763` then throws away journal mappings from older completion rounds once a newer authoritative round exists. If round N recorded mapping X, round N+1 accepted the same X again, and only the round N+1 journal write failed, reconstruction skips it as 'already seen' and the latest-round mapping disappears entirely.",
+        "created_at": "2026-04-09T16:24:26.145808531Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "fefc996d171f03e477bc4fd162e9b087d254b0ba944f3db5db7a366d7f0f71ab"
+      }
+    ],
     "processed_count": 58
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 20 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-09T15:42:03.389868101Z",
+    "resolved_at": "2026-04-09T16:05:43.732823475Z",
     "final_review_reviewers": [
       {
         "backend_family": "claude",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-arbiter-c1-a1-cr19-artifact",
+  "payload_id": "run-20260409075617-final_review-arbiter-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T16:24:26.130798321Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAmendment fr-19-434f4f1d is ACCEPTED. Code inspection reveals a genuine dedup-vs-round-filtering interaction bug. The planner and Reviewer 0 both made the same analytical error — they focused on whether round N+1's failed journal entry would appear in seen_keys, but overlooked that round N's successfully persisted entry has the identical identity key (completion_round is excluded from the dedup triple). This causes round N's entry to block reconstruction from round N+1's aggregate, and then the round filter discards round N's entry, leaving the mapping absent. Reviewer 1 correctly identified this interaction.\n\n## Rulings\n\n- `fr-19-434f4f1d`: Accept\n  The bug is real. Code inspection confirms Reviewer 1's analysis. The key insight both the planner and Reviewer 0 missed: `existing_mappings` passed to `reconstruct_missing_pe_mappings` (line 735) contains ALL journal entries across ALL rounds (line 720-723, no round filtering). `seen_keys` (lines 942-951) is built from these using `(active_bead_id, finding_summary, mapped_to_bead_id)` without `completion_round`. In the scenario where round N successfully persisted mapping X and round N+1 accepted the same X but its journal write failed: (1) round N's entry IS in `seen_keys` with the same identity key as round N+1's aggregate entry, (2) reconstruction at line 992 skips round N+1's aggregate entry because the key is already seen, (3) the caller at lines 750-754 filters `all_bead_mappings` to only round N+1 entries, dropping round N's journal entry, (4) `reconstructed` is empty. The mapping disappears entirely. The planner's rejection stated 'if round N+1's journal write failed, that mapping won't be in existing_mappings' — this is true for round N+1's entry, but irrelevant because round N's entry (which DID persist) has the same dedup key and blocks reconstruction. The fix is clear: include `completion_round` in the identity key or filter `existing_mappings` to the authoritative round before building `seen_keys`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 19
+}

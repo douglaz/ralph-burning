@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr19-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T16:22:49.489241358Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll three amendments identify technically valid issues in the planned-elsewhere pipeline. Two are clear validation-order/invariant problems, and the third is a real reconstruction bug caused by deduplicating against pre-filtered historical mappings without considering completion round.\n\n## Votes\n\n- `fr-19-ff125949`: Accept\n  `reconstruct_missing_pe_mappings` rebuilds mappings from persisted final-review aggregates and only later relies on `verify_bead_exists`, which checks existence in `br` but not membership in the prompt’s allowed planned-elsewhere set. `engine.rs` and `final_review.rs` both enforce that stronger allowlist invariant, so this path is currently trusting on-disk aggregate data more than the main write paths do. Even if current aggregates should already be sanitized, revalidating during reconstruction is the correct fail-closed behavior for corrupted, tampered, or legacy aggregate payloads.\n- `fr-19-731dc375`: Accept\n  The ordering bug is real. `build_voter_prompt` and `build_arbiter_prompt` add the explicit planned-elsewhere/no-restart note for any non-empty `mapped_to_bead_id`, but the allowlist check that can clear that field does not run until later at `final_review.rs:1516`. That means the panel can be asked to vote under materially false semantics, then the accepted amendment is transformed afterward into a restart-triggering one once the invalid mapping is stripped.\n- `fr-19-434f4f1d`: Accept\n  The dedup/round interaction is genuinely wrong. `verify_planned_elsewhere_after_success` passes all bead mappings from all rounds into `reconstruct_missing_pe_mappings`, and that function seeds `seen_keys` from those mappings using only `(active_bead_id, finding_summary, mapped_to_bead_id)`, omitting `completion_round`. If round N recorded mapping X, round N+1 accepted the same X, and only the round N+1 journal write is missing, the older round-N entry suppresses reconstruction from the authoritative round-N+1 aggregate; the caller then filters journal mappings down to authoritative round N+1 and drops the older entry, leaving the mapping absent entirely.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 19
+}
