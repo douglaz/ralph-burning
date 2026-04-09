@@ -2408,6 +2408,7 @@ const MILESTONE_PLAN_JSON_FILE: &str = "plan.json";
 const MILESTONE_PLAN_MD_FILE: &str = "plan.md";
 const MILESTONE_PLAN_SHAPE_FILE: &str = "plan.shape.json";
 const MILESTONE_TASK_RUNS_FILE: &str = "task-runs.ndjson";
+const MILESTONE_PLANNED_ELSEWHERE_FILE: &str = "planned_elsewhere.ndjson";
 const MILESTONE_STATE_COMMIT_FILE: &str = ".state-commit.json";
 const MILESTONE_MUTATION_LOCK_FILE: &str = "mutation.lock";
 const MILESTONE_LOCKS_DIR: &str = ".locks";
@@ -4431,6 +4432,70 @@ impl MilestonePlanPort for FsMilestonePlanStore {
         let path =
             FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_PLAN_SHAPE_FILE);
         FileSystem::write_atomic(&path, content)
+    }
+}
+
+// ── Planned-elsewhere mapping store ──────────────────────────────────────────
+
+use crate::contexts::milestone_record::model::PlannedElsewhereMapping;
+use crate::contexts::milestone_record::service::PlannedElsewhereMappingPort;
+
+pub struct FsPlannedElsewhereMappingStore;
+
+impl FsPlannedElsewhereMappingStore {
+    fn mappings_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_PLANNED_ELSEWHERE_FILE)
+    }
+
+    fn mappings_lock_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        FileSystem::milestone_lock_root(base_dir, milestone_id)
+            .join(format!("{MILESTONE_PLANNED_ELSEWHERE_FILE}.lock"))
+    }
+}
+
+impl PlannedElsewhereMappingPort for FsPlannedElsewhereMappingStore {
+    fn read_mappings(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<Vec<PlannedElsewhereMapping>> {
+        let path = Self::mappings_path(base_dir, milestone_id);
+        let raw = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut mappings = Vec::new();
+        for (i, line) in raw.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let mapping: PlannedElsewhereMapping =
+                serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
+                    file: format!(
+                        "milestones/{}/{}",
+                        milestone_id, MILESTONE_PLANNED_ELSEWHERE_FILE
+                    ),
+                    details: format!("line {}: {}", i + 1, e),
+                })?;
+            mappings.push(mapping);
+        }
+        Ok(mappings)
+    }
+
+    fn append_mapping(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        mapping: &PlannedElsewhereMapping,
+    ) -> AppResult<()> {
+        let path = Self::mappings_path(base_dir, milestone_id);
+        let lock_path = Self::mappings_lock_path(base_dir, milestone_id);
+        let line = serde_json::to_string(mapping)?;
+        let _lock = AdvisoryFileLock::acquire(&lock_path)?;
+        FileSystem::append_line(&path, &line)?;
+        Ok(())
     }
 }
 

@@ -8,6 +8,7 @@ pub mod daemon_loop;
 pub mod github_intake;
 pub mod lease_service;
 pub mod model;
+pub mod planned_elsewhere;
 pub mod pr_review;
 pub mod pr_runtime;
 pub mod repo_registry;

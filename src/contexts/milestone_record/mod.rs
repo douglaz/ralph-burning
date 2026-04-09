@@ -9,5 +9,5 @@ pub const CONTEXT_NAME: &str = "milestone_record";
 // Re-export ports for adapter implementation
 pub use service::{
     MilestoneJournalPort, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
-    TaskRunLineagePort,
+    PlannedElsewhereMappingPort, TaskRunLineagePort,
 };

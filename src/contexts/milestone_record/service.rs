@@ -16,8 +16,8 @@ use super::bundle::{
 use super::model::{
     collapse_task_run_attempts, latest_task_runs_per_bead, CompletionJournalDetails,
     MilestoneEventType, MilestoneId, MilestoneJournalEvent, MilestoneProgress, MilestoneRecord,
-    MilestoneSnapshot, MilestoneStatus, PendingLineageReset, StartJournalDetails, TaskRunEntry,
-    TaskRunOutcome,
+    MilestoneSnapshot, MilestoneStatus, PendingLineageReset, PlannedElsewhereMapping,
+    StartJournalDetails, TaskRunEntry, TaskRunOutcome,
 };
 
 // ── Ports ───────────────────────────────────────────────────────────────────
@@ -274,6 +274,21 @@ pub trait MilestonePlanPort {
         base_dir: &Path,
         milestone_id: &MilestoneId,
         content: &str,
+    ) -> AppResult<()>;
+}
+
+/// Port for reading and writing planned-elsewhere mappings.
+pub trait PlannedElsewhereMappingPort {
+    fn read_mappings(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<Vec<PlannedElsewhereMapping>>;
+    fn append_mapping(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        mapping: &PlannedElsewhereMapping,
     ) -> AppResult<()>;
 }
 
@@ -2320,6 +2335,59 @@ pub fn repair_task_run_with_disposition(
 
         Ok(())
     })
+}
+
+// ── Planned-elsewhere mapping ────────────────────────────────────────────────
+
+/// Record a planned-elsewhere mapping: the finding in `active_bead_id` is
+/// already covered by `mapped_to_bead_id`. Persists to both the dedicated
+/// NDJSON file and the milestone journal for audit.
+pub fn record_planned_elsewhere_mapping(
+    journal_store: &impl MilestoneJournalPort,
+    mapping_store: &impl PlannedElsewhereMappingPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    mapping: &PlannedElsewhereMapping,
+) -> AppResult<()> {
+    // 1. Persist to planned_elsewhere.ndjson for durable storage.
+    mapping_store.append_mapping(base_dir, milestone_id, mapping)?;
+
+    // 2. Emit a journal event for audit.
+    let mut metadata = JsonMap::new();
+    metadata.insert(
+        "active_bead_id".to_owned(),
+        JsonValue::String(mapping.active_bead_id.clone()),
+    );
+    metadata.insert(
+        "mapped_to_bead_id".to_owned(),
+        JsonValue::String(mapping.mapped_to_bead_id.clone()),
+    );
+    metadata.insert(
+        "mapped_bead_verified".to_owned(),
+        JsonValue::Bool(mapping.mapped_bead_verified),
+    );
+
+    let event = MilestoneJournalEvent::new(
+        MilestoneEventType::PlannedElsewhereMapped,
+        mapping.recorded_at,
+    )
+    .with_bead(mapping.active_bead_id.clone())
+    .with_details(mapping.finding_summary.clone());
+    let mut event_with_metadata = event;
+    event_with_metadata.metadata = Some(metadata);
+
+    let line = event_with_metadata.to_ndjson_line()?;
+    journal_store.append_event(base_dir, milestone_id, &line)?;
+    Ok(())
+}
+
+/// Load all planned-elsewhere mappings for a milestone.
+pub fn load_planned_elsewhere_mappings(
+    mapping_store: &impl PlannedElsewhereMappingPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<Vec<PlannedElsewhereMapping>> {
+    mapping_store.read_mappings(base_dir, milestone_id)
 }
 
 #[cfg(test)]
