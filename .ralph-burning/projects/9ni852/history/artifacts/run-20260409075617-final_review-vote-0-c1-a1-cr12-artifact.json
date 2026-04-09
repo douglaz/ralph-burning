@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-0-c1-a1-cr12-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-0-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T12:57:14.596305372Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll four amendments are well-founded. The doc-comment fix (fr-12-17971d78) corrects a factual inconsistency between the enum comments and the implementation at lines 59-67. The test addition (fr-12-5c7d808c) covers non-trivial dedup recovery logic. The prefix-collision bug (fr-12-0eb370dc) is a real correctness issue since RunId accepts any non-empty string. The cycle-scoped dedup key (fr-12-50625e05) addresses a genuine data-loss scenario given that advance_cycle explicitly preserves completion_round.\n\n## Votes\n\n- `fr-12-17971d78`: Accept\n  Confirmed: line 51 says 'Bead exists and is open/in-progress — verified' and line 53 says 'not found or already closed', but the verify_bead_exists function comment at lines 60-64 explicitly states 'A bead in any status (open, in-progress, closed) is considered verified' and 'Closed beads are legitimate planned-elsewhere targets'. The enum doc comments are factually wrong. This is a straightforward, zero-risk fix.\n- `fr-12-5c7d808c`: Accept\n  The round-dedup logic at lines 896-910 selects the latest aggregate per completion_round during recovery. This is a non-trivial recovery path: if an earlier aggregate is incorrectly chosen, wrong planned-elsewhere mappings get reconstructed. A test exercising this with two aggregates at the same round but different timestamps and amendments is a valuable regression guard.\n- `fr-12-0eb370dc`: Accept\n  Verified at line 900: the filter uses `payload.payload_id.starts_with(run_id)`. RunId::new (line 875-882) accepts any non-empty trimmed string with no delimiter constraints. A run named 'run-1' would match payloads from 'run-10', 'run-100', etc., causing cross-run contamination during recovery reconstruction. This is a real prefix-collision bug. Tightening to an exact run-id boundary (e.g., `format!(\"{run_id}-\")`) is the correct fix.\n- `fr-12-50625e05`: Accept\n  Confirmed: advance_cycle at line 824 calls `Self::new(stage, cycle, 1, self.completion_round)`, preserving the current completion_round when incrementing the cycle. The dedup map at line 896 is keyed only by u32 completion_round. PayloadRecord carries a `cycle` field (line 377). If the same run reaches final review at the same completion_round in different cycles, the later cycle's aggregate overwrites the earlier committed one, losing accepted planned-elsewhere mappings from the earlier cycle during recovery. Keying by `(cycle, completion_round)` is a straightforward fix using data already available on PayloadRecord.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 12
+}

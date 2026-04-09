@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T13:00:58.669483835Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccepted the doc-comment fix, the round-dedup regression test, and the run-id boundary fix. Rejected the cycle-plus-round dedup change because later cycles at the same completion round represent superseding or abandoned execution, and reconstructing mappings from all such cycles would recover stale state.\n\n## Votes\n\n- `fr-12-17971d78`: Accept\n  `planned_elsewhere.rs` now treats any existing bead, including closed beads, as verified: the module docs and `verify_bead_exists` behavior both reflect that. The enum variant comments still describe the old semantics, so updating them is a straightforward correctness and maintainability fix.\n- `fr-12-5c7d808c`: Accept\n  `reconstruct_missing_pe_mappings` has intentional latest-by-`created_at` dedup within a completion round, and that recovery behavior is subtle enough to deserve direct test coverage. A focused test with two aggregates for the same round would materially reduce regression risk.\n- `fr-12-0eb370dc`: Accept\n  The current filter uses `payload.payload_id.starts_with(run_id)`, while `RunId::new` only rejects empty strings. That allows prefix collisions such as `test-run-1` matching payloads for `test-run-10`, which can cross-contaminate reconstruction across runs. Adding an exact run-id boundary or a dedicated persisted run-id field is the correct fix.\n- `fr-12-50625e05`: Reject\n  The existing latest-by-`completion_round` collapse is consistent with the stated intent to skip pre-rollback or abandoned review attempts. Cycle restarts explicitly preserve `completion_round`, so multiple cycles at the same round are superseding branches of the same round, not independent histories that should all be reconstructed. Keying by `(cycle, completion_round)` would risk reviving planned-elsewhere mappings from abandoned cycles rather than restoring the final committed state for that round.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 12
+}
