@@ -705,8 +705,12 @@ mod tests {
             &milestone_id,
         )?;
         assert_eq!(mappings.len(), 2);
-        assert_eq!(mappings[0].mapped_to_bead_id, "bead-a");
-        assert_eq!(mappings[1].mapped_to_bead_id, "bead-b");
+        let mut mapped_ids: Vec<&str> = mappings
+            .iter()
+            .map(|m| m.mapped_to_bead_id.as_str())
+            .collect();
+        mapped_ids.sort();
+        assert_eq!(mapped_ids, vec!["bead-a", "bead-b"]);
 
         // Journal also has both events
         let journal = FsMilestoneJournalStore.read_journal(base_dir, &milestone_id)?;

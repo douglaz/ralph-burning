@@ -2394,35 +2394,40 @@ pub fn record_planned_elsewhere_mapping(
 
 /// Load all planned-elsewhere mappings for a milestone.
 ///
-/// Reads the NDJSON sidecar first. If it's empty or missing, falls back to
-/// rebuilding from `PlannedElsewhereMapped` journal events so that mappings
-/// recorded before the NDJSON write succeeded are still visible.
+/// Rebuilds authoritative state from the journal `PlannedElsewhereMapped`
+/// events, collapsed by identity `(active_bead_id, finding_summary,
+/// mapped_to_bead_id)` so that later verification events (with
+/// `mapped_bead_verified=true`) supersede earlier unverified records.
+///
+/// The journal is always the source of truth. The NDJSON sidecar is a
+/// write-through projection for convenience; it is not consulted during reads
+/// because it can diverge from the journal when `append_mapping()` fails
+/// after a successful `append_event()`.
 pub fn load_planned_elsewhere_mappings(
-    mapping_store: &impl PlannedElsewhereMappingPort,
+    _mapping_store: &impl PlannedElsewhereMappingPort,
     base_dir: &Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<Vec<PlannedElsewhereMapping>> {
-    let mappings = mapping_store.read_mappings(base_dir, milestone_id)?;
-    if !mappings.is_empty() {
-        return Ok(mappings);
-    }
-
-    // Fallback: rebuild from journal events. This covers the case where the
-    // NDJSON sidecar was lost or the secondary write failed after the journal
-    // write succeeded.
     rebuild_planned_elsewhere_from_journal(base_dir, milestone_id)
 }
 
 /// Rebuild planned-elsewhere mappings from journal `PlannedElsewhereMapped`
-/// events. Used as a fallback when the NDJSON sidecar is missing or empty.
+/// events. Collapses rows by identity key `(active_bead_id, finding_summary,
+/// mapped_to_bead_id)`, keeping the latest (newest `recorded_at`) row for
+/// each key. This ensures that a verification event appended after the
+/// original unverified record supersedes it.
 fn rebuild_planned_elsewhere_from_journal(
     base_dir: &Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<Vec<PlannedElsewhereMapping>> {
     use crate::adapters::fs::FsMilestoneJournalStore;
+    use std::collections::HashMap;
 
     let events = FsMilestoneJournalStore.read_journal(base_dir, milestone_id)?;
-    let mut mappings = Vec::new();
+    // Key: (active_bead_id, finding_summary, mapped_to_bead_id) → latest mapping.
+    let mut by_identity: HashMap<(String, String, String), PlannedElsewhereMapping> =
+        HashMap::new();
+
     for event in &events {
         if event.event_type != MilestoneEventType::PlannedElsewhereMapped {
             continue;
@@ -2445,15 +2450,23 @@ fn rebuild_planned_elsewhere_from_journal(
             .unwrap_or(false);
         let finding_summary = event.details.clone().unwrap_or_default();
 
-        mappings.push(PlannedElsewhereMapping {
+        let key = (
+            active_bead_id.clone(),
+            finding_summary.clone(),
+            mapped_to_bead_id.clone(),
+        );
+        let mapping = PlannedElsewhereMapping {
             active_bead_id,
             finding_summary,
             mapped_to_bead_id,
             recorded_at: event.timestamp,
             mapped_bead_verified,
-        });
+        };
+        // Later journal events always supersede earlier ones.
+        by_identity.insert(key, mapping);
     }
-    Ok(mappings)
+
+    Ok(by_identity.into_values().collect())
 }
 
 #[cfg(test)]
@@ -2466,7 +2479,7 @@ mod tests {
 
     use crate::adapters::fs::{
         FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
-        FsTaskRunLineageStore,
+        FsPlannedElsewhereMappingStore, FsTaskRunLineageStore,
     };
     use crate::contexts::milestone_record::model::render_completion_journal_details;
 
@@ -8988,6 +9001,269 @@ mod tests {
             Some("hash-abc"),
             "plan_hash must be stored in the lineage entry"
         );
+        Ok(())
+    }
+
+    // ── Planned-elsewhere rebuild / collapse tests ──────────────────────
+
+    #[test]
+    fn planned_elsewhere_rebuild_from_journal_when_ndjson_missing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pe-rebuild".to_owned(),
+                name: "PE rebuild".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        // Write a mapping via the service (writes to both journal and NDJSON).
+        let mapping = PlannedElsewhereMapping {
+            active_bead_id: "bead-A".to_owned(),
+            finding_summary: "concern about X".to_owned(),
+            mapped_to_bead_id: "bead-B".to_owned(),
+            recorded_at: now,
+            mapped_bead_verified: false,
+        };
+        record_planned_elsewhere_mapping(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            base,
+            &record.id,
+            &mapping,
+        )?;
+
+        // Delete the NDJSON sidecar to simulate loss.
+        let ndjson_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("planned_elsewhere.ndjson");
+        std::fs::remove_file(&ndjson_path)?;
+
+        // Load should rebuild from journal.
+        let loaded =
+            load_planned_elsewhere_mappings(&FsPlannedElsewhereMappingStore, base, &record.id)?;
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].active_bead_id, "bead-A");
+        assert_eq!(loaded[0].finding_summary, "concern about X");
+        assert_eq!(loaded[0].mapped_to_bead_id, "bead-B");
+        assert!(!loaded[0].mapped_bead_verified);
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_collapse_verified_supersedes_unverified(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pe-collapse".to_owned(),
+                name: "PE collapse".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        // Write an unverified mapping.
+        let unverified = PlannedElsewhereMapping {
+            active_bead_id: "bead-A".to_owned(),
+            finding_summary: "concern about X".to_owned(),
+            mapped_to_bead_id: "bead-B".to_owned(),
+            recorded_at: now,
+            mapped_bead_verified: false,
+        };
+        record_planned_elsewhere_mapping(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            base,
+            &record.id,
+            &unverified,
+        )?;
+
+        // Write a verified mapping for the same identity.
+        let verified = PlannedElsewhereMapping {
+            active_bead_id: "bead-A".to_owned(),
+            finding_summary: "concern about X".to_owned(),
+            mapped_to_bead_id: "bead-B".to_owned(),
+            recorded_at: now + chrono::Duration::seconds(10),
+            mapped_bead_verified: true,
+        };
+        record_planned_elsewhere_mapping(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            base,
+            &record.id,
+            &verified,
+        )?;
+
+        // Load should return only the verified record (collapsed).
+        let loaded =
+            load_planned_elsewhere_mappings(&FsPlannedElsewhereMappingStore, base, &record.id)?;
+        assert_eq!(loaded.len(), 1, "should be collapsed to one record");
+        assert!(loaded[0].mapped_bead_verified, "verified record should win");
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_journal_events_with_missing_metadata_skipped(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pe-missing".to_owned(),
+                name: "PE missing".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        // Write a valid mapping first so the journal has at least one good event.
+        let mapping = PlannedElsewhereMapping {
+            active_bead_id: "bead-A".to_owned(),
+            finding_summary: "valid concern".to_owned(),
+            mapped_to_bead_id: "bead-B".to_owned(),
+            recorded_at: now,
+            mapped_bead_verified: false,
+        };
+        record_planned_elsewhere_mapping(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            base,
+            &record.id,
+            &mapping,
+        )?;
+
+        // Manually append a malformed PlannedElsewhereMapped event (missing mapped_to_bead_id).
+        let mut bad_metadata = serde_json::Map::new();
+        bad_metadata.insert(
+            "active_bead_id".to_owned(),
+            serde_json::Value::String("bead-C".to_owned()),
+        );
+        // No mapped_to_bead_id — should be skipped.
+        let mut bad_event =
+            MilestoneJournalEvent::new(MilestoneEventType::PlannedElsewhereMapped, now)
+                .with_bead("bead-C".to_owned())
+                .with_details("bad concern".to_owned());
+        bad_event.metadata = Some(bad_metadata);
+        let line = bad_event.to_ndjson_line()?;
+        FsMilestoneJournalStore.append_event(base, &record.id, &line)?;
+
+        // Also append an event with no metadata at all.
+        let no_meta_event =
+            MilestoneJournalEvent::new(MilestoneEventType::PlannedElsewhereMapped, now);
+        let line2 = no_meta_event.to_ndjson_line()?;
+        FsMilestoneJournalStore.append_event(base, &record.id, &line2)?;
+
+        // Load should only return the valid mapping, skipping the malformed ones.
+        let loaded =
+            load_planned_elsewhere_mappings(&FsPlannedElsewhereMappingStore, base, &record.id)?;
+        assert_eq!(loaded.len(), 1, "only valid mapping should be returned");
+        assert_eq!(loaded[0].active_bead_id, "bead-A");
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_sidecar_divergence_resolved_by_journal(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pe-diverge".to_owned(),
+                name: "PE diverge".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        // Write a mapping normally (both journal + NDJSON).
+        let mapping1 = PlannedElsewhereMapping {
+            active_bead_id: "bead-A".to_owned(),
+            finding_summary: "first concern".to_owned(),
+            mapped_to_bead_id: "bead-B".to_owned(),
+            recorded_at: now,
+            mapped_bead_verified: false,
+        };
+        record_planned_elsewhere_mapping(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            base,
+            &record.id,
+            &mapping1,
+        )?;
+
+        // Simulate: journal append succeeds but NDJSON append fails for a second mapping.
+        // Write only to journal (not NDJSON).
+        let mapping2 = PlannedElsewhereMapping {
+            active_bead_id: "bead-A".to_owned(),
+            finding_summary: "second concern".to_owned(),
+            mapped_to_bead_id: "bead-C".to_owned(),
+            recorded_at: now + chrono::Duration::seconds(5),
+            mapped_bead_verified: false,
+        };
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            "active_bead_id".to_owned(),
+            serde_json::Value::String(mapping2.active_bead_id.clone()),
+        );
+        metadata.insert(
+            "mapped_to_bead_id".to_owned(),
+            serde_json::Value::String(mapping2.mapped_to_bead_id.clone()),
+        );
+        metadata.insert(
+            "mapped_bead_verified".to_owned(),
+            serde_json::Value::Bool(false),
+        );
+        let mut event = MilestoneJournalEvent::new(
+            MilestoneEventType::PlannedElsewhereMapped,
+            mapping2.recorded_at,
+        )
+        .with_bead(mapping2.active_bead_id.clone())
+        .with_details(mapping2.finding_summary.clone());
+        event.metadata = Some(metadata);
+        let line = event.to_ndjson_line()?;
+        FsMilestoneJournalStore.append_event(base, &record.id, &line)?;
+        // Deliberately skip NDJSON write — simulating sidecar failure.
+
+        // Load should see both mappings (from journal), not just the one in NDJSON.
+        let loaded =
+            load_planned_elsewhere_mappings(&FsPlannedElsewhereMappingStore, base, &record.id)?;
+        assert_eq!(loaded.len(), 2, "journal-only mapping must be visible");
+        let bead_ids: Vec<&str> = loaded
+            .iter()
+            .map(|m| m.mapped_to_bead_id.as_str())
+            .collect();
+        assert!(bead_ids.contains(&"bead-B"), "first mapping present");
+        assert!(bead_ids.contains(&"bead-C"), "journal-only mapping present");
         Ok(())
     }
 }
