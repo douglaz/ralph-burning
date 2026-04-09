@@ -2429,6 +2429,7 @@ pub fn record_planned_elsewhere_round_sentinel(
     active_bead_id: &str,
     run_id: &str,
     completion_round: u32,
+    now: DateTime<Utc>,
 ) -> AppResult<()> {
     let mut metadata = JsonMap::new();
     metadata.insert(
@@ -2445,7 +2446,7 @@ pub fn record_planned_elsewhere_round_sentinel(
         JsonValue::String("pe_round_sentinel".to_owned()),
     );
 
-    let mut event = MilestoneJournalEvent::new(MilestoneEventType::ProgressUpdated, Utc::now())
+    let mut event = MilestoneJournalEvent::new(MilestoneEventType::ProgressUpdated, now)
         .with_bead(active_bead_id.to_owned())
         .with_details("planned-elsewhere round sentinel".to_owned());
     event.metadata = Some(metadata);
@@ -2496,6 +2497,11 @@ fn rebuild_planned_elsewhere_from_journal(
     // Also track max completion_round from PE round sentinels so that a
     // later round with zero PE mappings can still supersede earlier rounds.
     let mut sentinel_max_round: HashMap<(String, String), u32> = HashMap::new();
+    // Track the latest (most recent journal entry) run_id per active_bead_id
+    // from sentinel events.  Since the journal is append-only, the last
+    // sentinel for a bead carries the authoritative run_id.  Mappings from
+    // earlier runs are superseded by the latest run.
+    let mut latest_run_by_bead: HashMap<String, String> = HashMap::new();
 
     for event in &events {
         let sub_type = event
@@ -2521,6 +2527,9 @@ fn rebuild_planned_elsewhere_from_journal(
                     if cr > *entry {
                         *entry = cr;
                     }
+                    // Append-only: last sentinel wins, giving us the
+                    // authoritative run for cross-run supersession.
+                    latest_run_by_bead.insert(bead.to_owned(), rid.to_owned());
                 }
             }
             continue;
@@ -2604,6 +2613,15 @@ fn rebuild_planned_elsewhere_from_journal(
         .filter(|m| {
             match (&m.run_id, m.completion_round) {
                 (Some(rid), Some(cr)) => {
+                    // Cross-run supersession: if a sentinel identifies the
+                    // authoritative run for this bead, discard mappings from
+                    // any other (abandoned/earlier) run.
+                    if let Some(auth_run) = latest_run_by_bead.get(&m.active_bead_id) {
+                        if rid != auth_run {
+                            return false;
+                        }
+                    }
+                    // Within-run round supersession: keep only the max round.
                     let key = (m.active_bead_id.clone(), rid.clone());
                     max_round_by_bead_run.get(&key) == Some(&cr)
                 }

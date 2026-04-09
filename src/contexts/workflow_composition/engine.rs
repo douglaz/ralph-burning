@@ -7614,16 +7614,31 @@ fn record_planned_elsewhere_amendments(
     // Always write a PE round sentinel so that rebuild_planned_elsewhere_from_journal
     // knows this completion_round was processed — even if zero PE mappings exist.
     // This allows a later round with no PE findings to supersede an earlier round.
-    let _ = milestone_service::record_planned_elsewhere_round_sentinel(
+    let now = Utc::now();
+    if let Err(e) = milestone_service::record_planned_elsewhere_round_sentinel(
         &FsMilestoneJournalStore,
         base_dir,
         &milestone_id,
         &task_source.bead_id,
         run_id.as_str(),
         completion_round,
-    );
-
-    let now = Utc::now();
+        now,
+    ) {
+        let _ = log_write.append_runtime_log(
+            base_dir,
+            project_id,
+            &RuntimeLogEntry {
+                timestamp: Utc::now(),
+                level: LogLevel::Warn,
+                source: "engine".to_owned(),
+                message: format!(
+                    "failed to write PE round sentinel for completion_round={completion_round}: \
+                     {e} — stale planned-elsewhere mappings from earlier rounds may not be \
+                     superseded"
+                ),
+            },
+        );
+    }
     for amendment in amendments {
         let Some(mapped_to) = amendment.mapped_to_bead_id.as_deref() else {
             continue;
