@@ -46,7 +46,7 @@ impl std::fmt::Display for Severity {
 /// Every finding must be classified as exactly one variant. Downstream
 /// reconciliation (8.5.x) and prompt rendering (7.2.2) depend on this
 /// schema.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "classification", rename_all = "kebab-case")]
 pub enum FindingClassification {
     /// The finding is within the active bead's scope and should be
@@ -74,6 +74,101 @@ pub enum FindingClassification {
         severity: Severity,
         rationale: String,
     },
+}
+
+// ── Checked deserialization ─────────────────────────────────────────
+
+/// Private mirror of [`FindingClassification`] with a derived
+/// `Deserialize`. The public enum uses a custom `Deserialize` impl
+/// that runs [`validate_classification_fields`] first, making
+/// cross-variant field contamination a deserialization error instead
+/// of a silent field drop.
+mod unchecked {
+    use super::Severity;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    #[serde(tag = "classification", rename_all = "kebab-case")]
+    pub(super) enum FindingClassificationUnchecked {
+        FixNow {
+            finding_summary: String,
+            severity: Severity,
+            affected_files: Vec<String>,
+            #[serde(default)]
+            remediation_hint: Option<String>,
+        },
+        PlannedElsewhere {
+            finding_summary: String,
+            mapped_to_bead_id: String,
+            confidence: f64,
+            rationale: String,
+        },
+        ProposeNewBead {
+            finding_summary: String,
+            proposed_title: String,
+            proposed_scope: String,
+            severity: Severity,
+            rationale: String,
+        },
+    }
+
+    impl From<FindingClassificationUnchecked> for super::FindingClassification {
+        fn from(raw: FindingClassificationUnchecked) -> Self {
+            match raw {
+                FindingClassificationUnchecked::FixNow {
+                    finding_summary,
+                    severity,
+                    affected_files,
+                    remediation_hint,
+                } => super::FindingClassification::FixNow {
+                    finding_summary,
+                    severity,
+                    affected_files,
+                    remediation_hint,
+                },
+                FindingClassificationUnchecked::PlannedElsewhere {
+                    finding_summary,
+                    mapped_to_bead_id,
+                    confidence,
+                    rationale,
+                } => super::FindingClassification::PlannedElsewhere {
+                    finding_summary,
+                    mapped_to_bead_id,
+                    confidence,
+                    rationale,
+                },
+                FindingClassificationUnchecked::ProposeNewBead {
+                    finding_summary,
+                    proposed_title,
+                    proposed_scope,
+                    severity,
+                    rationale,
+                } => super::FindingClassification::ProposeNewBead {
+                    finding_summary,
+                    proposed_title,
+                    proposed_scope,
+                    severity,
+                    rationale,
+                },
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for FindingClassification {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let field_errors = validate_classification_fields(&value);
+        if !field_errors.is_empty() {
+            return Err(serde::de::Error::custom(field_errors.join("; ")));
+        }
+        let unchecked: unchecked::FindingClassificationUnchecked =
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(unchecked.into())
+    }
 }
 
 // ── Bead ID syntax ───────────────────────────────────────────────────
@@ -1088,6 +1183,61 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(r#""just a string""#)?;
         let errors = validate_classification_fields(&json);
         assert!(errors.iter().any(|e| e.contains("must be a JSON object")));
+        Ok(())
+    }
+
+    // ── Deserialization rejects cross-variant contamination ──────────
+
+    #[test]
+    fn deserialization_rejects_cross_variant_field_contamination(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{"classification":"fix-now","finding_summary":"s","severity":"high","affected_files":[],"mapped_to_bead_id":"bead-2"}"#;
+        let result = serde_json::from_str::<FindingClassification>(json);
+        assert!(
+            result.is_err(),
+            "should reject cross-variant field during deserialization"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("mapped_to_bead_id"),
+            "error should mention the cross-variant field: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn deserialization_rejects_multiple_cross_variant_fields(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{"classification":"fix-now","finding_summary":"s","severity":"high","affected_files":[],"mapped_to_bead_id":"x","confidence":0.5}"#;
+        let result = serde_json::from_str::<FindingClassification>(json);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("mapped_to_bead_id"), "error: {err}");
+        assert!(err.contains("confidence"), "error: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn deserialization_accepts_clean_fix_now() -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{"classification":"fix-now","finding_summary":"s","severity":"high","affected_files":["src/a.rs"]}"#;
+        let c: FindingClassification = serde_json::from_str(json)?;
+        assert!(matches!(c, FindingClassification::FixNow { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn deserialization_accepts_clean_planned_elsewhere() -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{"classification":"planned-elsewhere","finding_summary":"s","mapped_to_bead_id":"m1.b1","confidence":0.9,"rationale":"r"}"#;
+        let c: FindingClassification = serde_json::from_str(json)?;
+        assert!(matches!(c, FindingClassification::PlannedElsewhere { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn deserialization_accepts_clean_propose_new_bead() -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{"classification":"propose-new-bead","finding_summary":"s","proposed_title":"t","proposed_scope":"s","severity":"low","rationale":"r"}"#;
+        let c: FindingClassification = serde_json::from_str(json)?;
+        assert!(matches!(c, FindingClassification::ProposeNewBead { .. }));
         Ok(())
     }
 

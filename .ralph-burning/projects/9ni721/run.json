@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409194344",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 7
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-6-39e81076",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "Make cross-variant field contamination impossible to accept through the normal API. In `src/contexts/workflow_composition/review_classification.rs:49-50`, `FindingClassification` still derives plain `Deserialize` as an internally tagged enum, so a payload like `{\"classification\":\"fix-now\",...,\"mapped_to_bead_id\":\"x\"}` will deserialize as `FixNow` and silently drop the extra field. The JSON-level guard at `src/contexts/workflow_composition/review_classification.rs:161-202` detects this, but it is not wired into deserialization or the batch helper at `src/contexts/workflow_composition/review_classification.rs:288-302`. Add a checked constructor/custom `Deserialize` path (and a regression test) so malformed JSON is rejected instead of being reclassified.",
-        "created_at": "2026-04-09T21:04:41.081374625Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "5eb9c1cc4c88805d265257ac7df54c80c2f72618fac487f851743d5e5925eba2"
-      }
-    ],
-    "processed_count": 8
+    "pending": [],
+    "processed_count": 9
   },
-  "status_summary": "running: final review restart round 7 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-09T20:55:53.973410242Z",
