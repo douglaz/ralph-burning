@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T15:29:35.199120174Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the planned-elsewhere reconciliation changes across final review, engine commit handling, success reconciliation, and milestone persistence. I found two correctness issues: planned-elsewhere validation currently fails open when no allowed targets are present, and the late validation path is bypassed by the committed aggregate/reconstruction flow, so invalid mappings can still suppress restarts and be recorded.\n\n## Amendments\n\n1. Validate `mapped_to_bead_id` before it can suppress a restart, and fail closed when there is no allowed mapping list. The current flow lets any accepted `mapped_to_bead_id` make `restart_required` false in `src/contexts/workflow_composition/final_review.rs:1569-1573`, but `record_planned_elsewhere_amendments()` explicitly skips validation when the extracted set is empty or the prompt cannot be read in `src/contexts/workflow_composition/engine.rs:7614-7641`. That is reachable on the normal \"no explicit planned-elsewhere items\" prompt text emitted by `src/contexts/project_run_record/service.rs:1047-1050`, so a hallucinated real bead ID can bypass the reopen/fix loop and drop a legitimate finding.\n   Rationale: This is a correctness hole: the safety check is fail-open in the exact case where there are zero approved planned-elsewhere targets, so the active bead can complete even though no mapped owner was actually authorized by the prompt.\n2. Do not rely on the post-commit recorder as the enforcement point for planned-elsewhere validity. If a mapping is not allowed, it must be stripped or converted back into a normal amendment before the final-review outcome is committed. Right now `record_planned_elsewhere_amendments()` can reject a mapping as not in the allowed set in `src/contexts/workflow_composition/engine.rs:7641-7656`, but the stage outcome has already been decided from the raw aggregate, and `reconstruct_missing_pe_mappings()` later recreates aggregate mappings without re-validating them in `src/contexts/automation_runtime/success_reconciliation.rs:975-1024`. An invalid planned-elsewhere classification can therefore still suppress a restart and even get written back into milestone state during reconciliation.\n   Rationale: The current validation is not authoritative. Once the aggregate says 'planned elsewhere', the engine has already taken the no-restart path, and the reconciliation recovery code can resurrect mappings that the recorder tried to drop.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 17
+}
