@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260409075617-final_review-aggregate-c1-a1-cr20-artifact",
+  "payload_id": "run-20260409075617-final_review-aggregate-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T16:53:50.836428511Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 20/25\n\n## Accepted\n\n- `fr-20-dc14e164`\n- `fr-20-39844465`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-20-dc14e164`\n\nUse the already-validated final-review result (or an immutable prompt snapshot/hash from the run) when persisting/reconstructing planned-elsewhere mappings instead of re-reading the mutable project prompt from disk. `src/contexts/workflow_composition/final_review.rs:644-656` and `src/contexts/workflow_composition/final_review.rs:1526-1536` already strip invalid `mapped_to_bead_id` values before acceptance, but `src/contexts/workflow_composition/engine.rs:7614-7642` and `src/contexts/automation_runtime/success_reconciliation.rs:968-1015` fail closed if that later prompt read is empty or changed. A transient read error, prompt rewrite, or prompt-reference change after final review can therefore cause accepted planned-elsewhere findings to be silently dropped instead of being journaled and sidecar-persisted.\n\n### `fr-20-39844465`\n\nFix the milestone-state loader so later completion rounds that contain zero planned-elsewhere mappings can still supersede earlier rounds. Right now `src/contexts/milestone_record/service.rs:2516-2535` computes the max round only from mappings that exist, so a round-1 mapping survives forever if round 2 resolved the concern and emitted no mapping. `src/contexts/automation_runtime/success_reconciliation.rs:741-759` has to paper over this by consulting final-review aggregates, which means the public `load_planned_elsewhere_mappings` API and the `planned_elsewhere.ndjson` projection can still report stale state to any other caller.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 20
+}

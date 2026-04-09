@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr20-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T16:36:31.197065583Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the planned-elsewhere reconciliation feature across 12 modified source files. The implementation is well-structured with clear separation of concerns: data model in milestone_record/model.rs, persistence in service.rs and fs.rs, br adapter extension, final-review panel integration with conservative merge semantics, engine routing that partitions PE amendments from the amendment queue, post-success verification with 4-phase (verify → persist → comment → flush) ordering, and aggregate-based reconstruction for the crash window between stage commit and journal write. Test coverage is comprehensive (37+ passing tests covering successful mapping, stale bead fallback, transient error propagation, persistence across reload, comment posting, merge disagreement, bead ID extraction, and serialization round-trips). The fail-closed security model that validates mapped_to_bead_id against the prompt's 'Already Planned Elsewhere' section at three points (pre-voting, post-voting, reconstruction) is a strong defense-in-depth pattern. No bugs or safety issues found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 20
+}

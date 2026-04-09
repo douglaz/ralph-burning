@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T16:53:50.822657364Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments describe confirmed correctness bugs in planned-elsewhere handling. One is a TOCTOU/data-loss path caused by re-validating against a mutable prompt after final review already accepted the mapping, and the other leaves stale mappings visible because the canonical loader cannot let a later zero-mapping round supersede earlier rounds.\n\n## Votes\n\n- `fr-20-dc14e164`: Accept\n  `final_review.rs` validates `mapped_to_bead_id` against the prompt before voting and again on the accepted subset, so the accepted final-review result is already the authoritative validated state. `engine.rs:7614-7642` and `success_reconciliation.rs:968-1015` then re-read the project prompt from disk and treat read failure or changed contents as an empty allow-list, which causes previously accepted planned-elsewhere mappings to be skipped. That is a real late-stage data-loss bug, especially on prompt rewrites, prompt-reference drift, or transient I/O failure. Persisting/reconstructing from the validated result or from an immutable run-scoped prompt snapshot is the correct fix because it removes the mutable re-read while preserving deterministic validation.\n- `fr-20-39844465`: Accept\n  `service.rs:2516-2535` computes the max completion round only from mappings that exist, so a later round that emits zero planned-elsewhere mappings never appears in that calculation. As a result, an older round's mapping remains visible even when a newer round resolved or rejected the finding. `success_reconciliation.rs:741-759` already has to compensate by consulting final-review aggregates for the authoritative latest round, which confirms the canonical loader is stale. The loader/projection should encode that supersession centrally rather than requiring consumer-specific workarounds, whether by consulting authoritative round data or by persisting an explicit no-mapping supersession signal.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 20
+}

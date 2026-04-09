@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-0-c1-a1-cr20-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-0-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T16:51:05.048399334Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real, code-verified bugs. Amendment dc14e164 targets a silent data-loss path where engine.rs and success_reconciliation.rs re-read the mutable prompt from disk independently of final_review.rs's single validated read, silently dropping accepted PE mappings if the prompt becomes unreadable or changes. Amendment 39844465 targets a loader bug where max_round is computed only from existing mappings, causing stale round-1 data to persist when a later round resolves the concern with zero mappings; the workaround exists in one consumer but the public API contract is violated.\n\n## Votes\n\n- `fr-20-dc14e164`: Accept\n  Verified in code. final_review.rs reads the prompt once (line 273-277) and validates mapped_to_bead_id values consistently at lines 648-656 and 1530-1537 using the same allowed_pe_ids set. However, engine.rs at lines 7618-7627 and success_reconciliation.rs at lines 974-982 each independently re-read the prompt from disk. Both silently produce an empty HashSet on read failure (no error logging for the actual I/O failure). engine.rs logs a misleading 'not in allowed set' warning per skipped mapping but never logs that the prompt read itself failed. success_reconciliation.rs logs nothing at all when skipping mappings. This means a transient I/O error, prompt deletion, or prompt modification after final-review completion causes all accepted PE findings to be silently dropped — a genuine data-loss defect. The fix of using the already-validated FinalReviewResult (which has been validated twice and persisted in the aggregate) is correct and eliminates the TOCTOU window entirely.\n- `fr-20-39844465`: Accept\n  Verified in code. service.rs at lines 2523-2532 builds max_round_by_bead_run exclusively by iterating over existing mappings. If round 2 resolves a PE concern by emitting zero mappings, it never inserts into the HashMap, so the filter at line 2539 still matches round-1 mappings as the max. The workaround in success_reconciliation.rs at lines 741-759 correctly uses authoritative_max_round from final-review aggregates, but this fix only applies to that one consumer. The public load_planned_elsewhere_mappings function (pub at service.rs:2429) delegates to the buggy rebuild_planned_elsewhere_from_journal without any aggregate consultation. While only success_reconciliation.rs is a known production caller today, the public API's contract is violated: it claims to return current planned-elsewhere state but can return superseded round-1 mappings. The fix belongs in the canonical loader, not papered over in consumers.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 20
+}
