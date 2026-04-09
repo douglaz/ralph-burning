@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-planner-positions-c1-a1-cr11-artifact",
+  "payload_id": "run-20260409075617-final_review-planner-positions-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T12:33:58.969179198Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real bugs. Amendment fr-11-11949bb2 correctly identifies that reconstruct_missing_pe_mappings can replay abandoned aggregates after rollbacks since the run_id prefix check is insufficient to exclude uncommitted rounds. Amendment fr-11-fa8dbab2 correctly identifies that treating Closed beads as Stale is wrong — a closed bead means the planned-elsewhere work was completed, which is a success, not staleness.\n\n## Votes\n\n- `fr-11-11949bb2`: Accept\n  The bug is real. The aggregate files are persisted BEFORE the journal commit (engine.rs:2632-2669 for Complete, 2843-2864 for Restart). If a crash occurs between persist_final_review_aggregate_records and the journal's stage_completed/completion_round_advanced event, or after a rollback resets the run to an earlier state, the aggregate file remains on disk. The current filter in reconstruct_missing_pe_mappings (line 910: payload_id.starts_with(run_id)) will match ALL aggregates from the run regardless of rollback_count or whether the round was committed. The rollback_count suffix in the payload_id (engine.rs:7386-7389) means different rollback rounds produce different payload_ids that all start with run_id. After a rollback, abandoned aggregates from pre-rollback rounds will be scanned and their planned-elsewhere mappings reconstructed and persisted — corrupting the mapping state with data from review attempts that were never committed to the journal. The fix should cross-reference aggregates against committed journal events or filter by the current rollback_count.\n- `fr-11-fa8dbab2`: Accept\n  This is a clear semantic bug. A planned-elsewhere mapping says 'this concern is already covered by bead X'. If bead X has status Closed, that means the work was completed — the concern IS addressed. Treating Closed as Stale (line 74-77) means a legitimate, successfully-completed planned-elsewhere reference gets downgraded to a warning, never marked verified, and the comment is never posted (line 170: comment posting is gated on bead_verified). On every subsequent replay the unverified mapping will be re-checked and again fail verification, creating repeated warning noise. The correct behavior is that Closed should be treated as Verified (or at least as a non-stale, valid state). A closed bead confirms the planned-elsewhere classification was correct — the work was done.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 11
+}

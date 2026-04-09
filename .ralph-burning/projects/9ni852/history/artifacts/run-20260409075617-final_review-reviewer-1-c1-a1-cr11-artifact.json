@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T12:32:39.567777081Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 2 correctness issues: reconstruction can resurrect planned-elsewhere mappings from abandoned/uncommitted final-review aggregates, and closed mapped-to beads are incorrectly treated as stale instead of valid existing ownership.\n\n## Amendments\n\n1. Restrict `reconstruct_missing_pe_mappings` so it only replays final-review aggregates that are actually committed on the current run branch; the current scan in `src/contexts/automation_runtime/success_reconciliation.rs:865-963` accepts any `final_review` stage aggregate whose `payload_id` starts with the `run_id`, but final-review aggregate files are written before the journal commit (`src/contexts/workflow_composition/engine.rs:2632-2669`, `src/contexts/workflow_composition/engine.rs:7499-7535`) and are also branch-scoped by `rollback_count` (`src/contexts/workflow_composition/engine.rs:7377-7390`). After a rollback, or after a crash between aggregate persistence and `stage_completed`/`completion_round_advanced`, this code will reconstruct and persist planned-elsewhere mappings from abandoned or never-committed review attempts.\n   Rationale: This can create false milestone mappings and comments for findings that were explicitly discarded or never durably committed. Reconstruction needs to key off journal-committed aggregates for the active rollback branch, not raw payload files selected by `run_id` prefix alone.\n2. Do not treat a closed mapped-to bead as a stale reference in `src/contexts/automation_runtime/planned_elsewhere.rs:60-80`. The new `verify_bead_exists` helper currently marks `BeadStatus::Closed` as `Stale`, which means a legitimate planned-elsewhere classification pointing at already-completed work is downgraded to a warning and will never be marked verified.\n   Rationale: The acceptance criteria only call for graceful fallback when the mapped-to bead does not exist. A closed bead still proves that the concern was already owned elsewhere; misclassifying it as stale produces false warnings and leaves `mapped_bead_verified` permanently incorrect for valid mappings to completed beads.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 11
+}
