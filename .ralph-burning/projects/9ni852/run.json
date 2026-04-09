@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 23
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-22-fc433550",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 22,
-        "body": "Handle explicit-id aliases when validating and verifying `mapped_to_bead_id`. The prompt builder canonicalizes explicit bead IDs to `milestone_id.short_id` in [src/cli/project.rs:1179](/home/master/p/ralphs/ralph-burning/src/cli/project.rs#L1179), `extract_pe_bead_ids` and final-review validation only accept that exact token from the prompt in [src/contexts/project_run_record/task_prompt_contract.rs:277](/home/master/p/ralphs/ralph-burning/src/contexts/project_run_record/task_prompt_contract.rs#L277) and [src/contexts/workflow_composition/final_review.rs:648](/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/final_review.rs#L648), and `verify_bead_exists` later passes the stored value straight to `br show` in [src/contexts/automation_runtime/planned_elsewhere.rs:70](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/planned_elsewhere.rs#L70). For explicit beads that still exist in `.beads` under their authored short ID, a valid planned-elsewhere mapping will be treated as stale and its comment will never post. Resolve both the qualified and short-ID forms here; the alias requirement is already acknowledged in [src/contexts/milestone_record/bundle.rs:494](/home/master/p/ralphs/ralph-burning/src/contexts/milestone_record/bundle.rs#L494).",
-        "created_at": "2026-04-09T17:53:01.287820847Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "8da9ba7a2d6e3b1bdd79a6184ccf3211b8250dedf0ba8ad247b07e72825ecb63"
-      }
-    ],
-    "processed_count": 66
+    "pending": [],
+    "processed_count": 67
   },
-  "status_summary": "running: final review restart round 23 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-09T17:32:22.926836733Z",

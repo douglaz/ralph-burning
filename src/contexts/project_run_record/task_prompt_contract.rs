@@ -274,6 +274,10 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
 ///
 /// Each bullet line in the section starts with `- {bead_id} (...)`.
 /// The bead ID is the first whitespace-delimited token after `- `.
+///
+/// For each canonical (qualified) bead ID like `milestone.short_id`, the
+/// short-form alias `short_id` is also included so reviewers can reference
+/// either form.  This mirrors `planned_bead_membership_refs` in bundle.rs.
 pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
     let mut result = std::collections::HashSet::new();
     let section_header = format!("## {SECTION_ALREADY_PLANNED_ELSEWHERE}");
@@ -295,6 +299,11 @@ pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
                     .trim();
                 if !id.is_empty() {
                     result.insert(id.to_owned());
+                    // Also accept the short-form alias: strip the milestone
+                    // prefix (everything up to and including the first dot).
+                    if let Some(short) = strip_milestone_prefix(id) {
+                        result.insert(short.to_owned());
+                    }
                 }
             }
         } else if line.trim() == section_header {
@@ -303,6 +312,21 @@ pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
     }
 
     result
+}
+
+/// Strip the milestone-id prefix from a canonical bead ID.
+///
+/// Canonical bead IDs have the form `{milestone_id}.{short_id}` where
+/// `milestone_id` does not contain dots.  Returns the `short_id` portion
+/// if a dot separator is found, or `None` if the ID has no prefix.
+pub fn strip_milestone_prefix(canonical_id: &str) -> Option<&str> {
+    let idx = canonical_id.find('.')?;
+    let short = &canonical_id[idx + 1..];
+    if short.is_empty() {
+        None
+    } else {
+        Some(short)
+    }
 }
 
 /// Default review policy for canonical bead execution prompts.
@@ -597,5 +621,24 @@ mod tests {
         assert_eq!(ids.len(), 1);
         assert!(ids.contains("bead-X"));
         assert!(!ids.contains("bead-Y"));
+    }
+
+    #[test]
+    fn extract_pe_bead_ids_includes_short_form_aliases() {
+        let prompt = "## Already Planned Elsewhere\n\n- 9ni.8.5.3 (Handle missing work) - downstream\n- plain-id (No prefix) - adjacent\n";
+        let ids = extract_pe_bead_ids(prompt);
+        // 9ni.8.5.3 produces both canonical and short form; plain-id has no dot prefix
+        assert!(ids.contains("9ni.8.5.3"));
+        assert!(ids.contains("8.5.3"));
+        assert!(ids.contains("plain-id"));
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn strip_milestone_prefix_extracts_short_id() {
+        assert_eq!(strip_milestone_prefix("9ni.8.5.3"), Some("8.5.3"));
+        assert_eq!(strip_milestone_prefix("ms-alpha.bead-4"), Some("bead-4"));
+        assert_eq!(strip_milestone_prefix("no-dots"), None);
+        assert_eq!(strip_milestone_prefix("trailing."), None);
     }
 }

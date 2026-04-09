@@ -838,8 +838,14 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
                 "Planned-elsewhere mapping from {}: {}",
                 outcome.mapping.active_bead_id, outcome.mapping.finding_summary
             );
+            // Use the resolved bead ID (which may be the short-form alias
+            // that `br show` succeeded with) for the comment target.
+            let comment_target = outcome
+                .resolved_bead_id
+                .as_deref()
+                .unwrap_or(&outcome.mapping.mapped_to_bead_id);
             match br_mutation
-                .comment_bead(&outcome.mapping.mapped_to_bead_id, &comment_text)
+                .comment_bead(comment_target, &comment_text)
                 .await
             {
                 Ok(_) => {

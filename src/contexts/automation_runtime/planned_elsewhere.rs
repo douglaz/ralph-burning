@@ -49,14 +49,22 @@ pub struct PlannedElsewhereOutcome {
 /// Result of verifying a mapped-to bead.
 enum BeadVerification {
     /// Bead exists (any status: open, in-progress, or closed).
-    Verified,
+    /// Carries the resolved bead ID that `br show` succeeded with — this
+    /// may be the short-form alias if the canonical ID was not found.
+    Verified(String),
     /// Bead is definitively stale (not found).
     Stale(String),
     /// A transient/infrastructure error prevented verification.
     TransientError(String),
 }
 
-/// Check whether a bead exists.
+/// Check whether a bead exists, trying both the canonical ID and a
+/// short-form alias.
+///
+/// Canonical bead IDs have the form `{milestone_id}.{short_id}`.  Explicit
+/// beads may exist in `.beads/` under the authored short ID, so if
+/// `br show <canonical>` fails with "not found", we retry with the short
+/// form (strip everything up to and including the first dot).
 ///
 /// A bead in any status (open, in-progress, closed) is considered verified.
 /// Closed beads are legitimate planned-elsewhere targets: the mapped-to
@@ -71,10 +79,33 @@ async fn verify_bead_exists<R: ProcessRunner>(
     br_read: &BrAdapter<R>,
     bead_id: &str,
 ) -> BeadVerification {
+    let result = try_br_show(br_read, bead_id).await;
+    match &result {
+        BeadVerification::Stale(_) => {
+            // The canonical ID was not found.  If it has a milestone prefix,
+            // retry with the short-form alias (e.g. "9ni.8.5.3" → "8.5.3").
+            if let Some(short_id) =
+                crate::contexts::project_run_record::task_prompt_contract::strip_milestone_prefix(
+                    bead_id,
+                )
+            {
+                let alias_result = try_br_show(br_read, short_id).await;
+                if matches!(alias_result, BeadVerification::Verified(_)) {
+                    return alias_result;
+                }
+            }
+            result
+        }
+        _ => result,
+    }
+}
+
+/// Single `br show` attempt for a bead ID.
+async fn try_br_show<R: ProcessRunner>(br_read: &BrAdapter<R>, bead_id: &str) -> BeadVerification {
     use crate::adapters::br_models::BeadDetail;
     let cmd = BrCommand::show(bead_id);
     match br_read.exec_json::<BeadDetail>(&cmd).await {
-        Ok(_detail) => BeadVerification::Verified,
+        Ok(_detail) => BeadVerification::Verified(bead_id.to_owned()),
         Err(
             ref e @ BrError::BrExitError {
                 ref stderr,
@@ -128,9 +159,9 @@ pub async fn reconcile_planned_elsewhere<R: ProcessRunner>(
     let milestone_id = MilestoneId::new(milestone_id_str)?;
 
     // Step 1: Verify the mapped-to bead exists.
-    let (bead_verified, stale_warning) =
+    let (bead_verified, resolved_bead_id, stale_warning) =
         match verify_bead_exists(br_read, &input.mapped_to_bead_id).await {
-            BeadVerification::Verified => (true, None),
+            BeadVerification::Verified(resolved) => (true, Some(resolved), None),
             BeadVerification::Stale(warning) => {
                 tracing::warn!(
                     active_bead_id = input.active_bead_id.as_str(),
@@ -138,7 +169,7 @@ pub async fn reconcile_planned_elsewhere<R: ProcessRunner>(
                     warning = warning.as_str(),
                     "planned-elsewhere mapping references stale bead"
                 );
-                (false, Some(warning))
+                (false, None, Some(warning))
             }
             BeadVerification::TransientError(details) => {
                 return Err(AppError::Io(std::io::Error::other(details)));
@@ -165,13 +196,18 @@ pub async fn reconcile_planned_elsewhere<R: ProcessRunner>(
     )?;
 
     // Step 3: Optionally post a comment on the mapped-to bead.
+    // Use the resolved bead ID (which may be the short-form alias)
+    // since that is the form that `br show` succeeded with.
+    let comment_target = resolved_bead_id
+        .as_deref()
+        .unwrap_or(&input.mapped_to_bead_id);
     let comment_posted = if post_comment && bead_verified {
         let comment_text = format!(
             "Planned-elsewhere mapping from {}: {}",
             input.active_bead_id, input.finding_summary
         );
         match br_mutation
-            .comment_bead(&input.mapped_to_bead_id, &comment_text)
+            .comment_bead(comment_target, &comment_text)
             .await
         {
             Ok(_) => {
@@ -250,6 +286,10 @@ pub struct MappingVerificationOutcome {
     pub mapping: PlannedElsewhereMapping,
     /// Whether the bead was verified.
     pub verified: bool,
+    /// The bead ID that `br show` succeeded with.  May differ from
+    /// `mapping.mapped_to_bead_id` when the short-form alias was used.
+    /// `None` when verification failed.
+    pub resolved_bead_id: Option<String>,
     /// Whether a comment was posted.
     pub comment_posted: bool,
     /// Warning if the bead is stale or a transient error occurred.
@@ -279,9 +319,9 @@ pub async fn verify_mappings<R: ProcessRunner>(
             continue;
         }
 
-        let (verified, warning) =
+        let (verified, resolved_bead_id, warning) =
             match verify_bead_exists(br_read, &mapping.mapped_to_bead_id).await {
-                BeadVerification::Verified => (true, None),
+                BeadVerification::Verified(resolved) => (true, Some(resolved), None),
                 BeadVerification::Stale(warning) => {
                     tracing::warn!(
                         active_bead_id = active_bead_id,
@@ -289,7 +329,7 @@ pub async fn verify_mappings<R: ProcessRunner>(
                         warning = warning.as_str(),
                         "planned-elsewhere mapping references stale bead (post-run verification)"
                     );
-                    (false, Some(warning))
+                    (false, None, Some(warning))
                 }
                 BeadVerification::TransientError(details) => {
                     tracing::warn!(
@@ -298,13 +338,14 @@ pub async fn verify_mappings<R: ProcessRunner>(
                         error = details.as_str(),
                         "transient error during planned-elsewhere verification (non-blocking)"
                     );
-                    (false, Some(details))
+                    (false, None, Some(details))
                 }
             };
 
         outcomes.push(MappingVerificationOutcome {
             mapping: mapping.clone(),
             verified,
+            resolved_bead_id,
             comment_posted: false,
             warning,
         });
