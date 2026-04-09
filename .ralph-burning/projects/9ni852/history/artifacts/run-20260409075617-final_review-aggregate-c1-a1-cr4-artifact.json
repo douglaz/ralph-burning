@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260409075617-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260409075617-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T10:13:31.975673767Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 4/25\n\n## Accepted\n\n- `fr-4-291dd0ae`\n- `fr-4-1a01895e`\n- `fr-4-766dd780`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-4-5b7bcf96`\n\n## Final Accepted Amendments\n\n### `fr-4-291dd0ae`\n\nAdd tests for rebuild_planned_elsewhere_from_journal (service.rs:2418) covering: (1) successful rebuild from journal events when NDJSON sidecar is missing, (2) correct extraction of all PlannedElsewhereMapping fields from journal event metadata, (3) graceful handling of journal events with missing metadata fields (active_bead_id, mapped_to_bead_id). Also add a test for the verified-mapping re-persistence loop in verify_planned_elsewhere_after_success (success_reconciliation.rs:744-771).\n\n### `fr-4-1a01895e`\n\nsrc/contexts/automation_runtime/success_reconciliation.rs:744-756 and src/contexts/milestone_record/service.rs:2400-2413: post-success verification appends a second `PlannedElsewhereMapping` row with `mapped_bead_verified=true` and assumes \"the latest record for a given mapping wins\", but `load_planned_elsewhere_mappings()` just returns every NDJSON row verbatim. After a restart, the original `mapped_bead_verified=false` row is still loaded, so the same finding is re-verified and can post duplicate `br comment`s on every replay. Collapse mappings by identity when loading (for example by `(active_bead_id, finding_summary, mapped_to_bead_id)` keeping the newest row), or update the existing record instead of append-only writes.\n\n### `fr-4-766dd780`\n\nsrc/contexts/milestone_record/service.rs:2385-2390 and src/contexts/milestone_record/service.rs:2400-2413: the recovery path does not actually honor the journal-first durability model. If `append_event()` succeeds but `append_mapping()` fails after `planned_elsewhere.ndjson` already contains older rows, `load_planned_elsewhere_mappings()` returns the non-empty sidecar and never rebuilds from the authoritative journal, so the newly journaled mapping disappears after restart. The loader needs to merge/reconcile journal events with the sidecar, or rebuild current state from the journal whenever they can diverge.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

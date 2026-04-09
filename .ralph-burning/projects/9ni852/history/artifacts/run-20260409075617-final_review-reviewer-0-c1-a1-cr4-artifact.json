@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T09:53:07.217253341Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the three changed source files (success_reconciliation.rs, service.rs, final_review.rs). All 758 existing tests pass. The journal fallback rebuild and the final_review PE-aware force-completion logic are correct in design. However, the NDJSON append-only dedup claim is not backed by implementation — read_mappings returns all records including stale unverified duplicates, which can cause re-verification, duplicate journal writes, and duplicate br comments on replay. Additionally, the new code paths have no test coverage.\n\n## Amendments\n\n1. In load_planned_elsewhere_mappings (service.rs) or read_mappings (fs.rs), deduplicate returned mappings by (active_bead_id, mapped_to_bead_id) key, keeping only the record with the latest recorded_at timestamp. Currently read_mappings returns ALL NDJSON lines without deduplication, so after a verified mapping is appended, the original unverified entry is still returned. The filter at success_reconciliation.rs:701-704 (`!m.mapped_bead_verified`) then picks up the stale unverified entry on replay, causing duplicate verification work, duplicate journal events, and potential duplicate br comments on the mapped-to bead.\n   Rationale: The comment at success_reconciliation.rs:745 claims 'the append-only NDJSON design means the latest record for a given mapping wins' but no code implements this contract. This is a correctness bug that will cause duplicate side effects on controller restart or replay.\n2. Add tests for rebuild_planned_elsewhere_from_journal (service.rs:2418) covering: (1) successful rebuild from journal events when NDJSON sidecar is missing, (2) correct extraction of all PlannedElsewhereMapping fields from journal event metadata, (3) graceful handling of journal events with missing metadata fields (active_bead_id, mapped_to_bead_id). Also add a test for the verified-mapping re-persistence loop in verify_planned_elsewhere_after_success (success_reconciliation.rs:744-771).\n   Rationale: The acceptance criteria require 'deterministic tests cover: successful mapping, stale bead fallback, journal recording, and persistence across reload.' The new rebuild_planned_elsewhere_from_journal function and the verified-mapping persistence loop are untested — these are the paths most likely to regress since they involve parsing journal event metadata by string keys.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

@@ -2,35 +2,83 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
     "started_at": "2026-04-09T07:56:17.977024141Z",
     "prompt_hash_at_cycle_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "prompt_hash_at_stage_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-291dd0ae",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "Add tests for rebuild_planned_elsewhere_from_journal (service.rs:2418) covering: (1) successful rebuild from journal events when NDJSON sidecar is missing, (2) correct extraction of all PlannedElsewhereMapping fields from journal event metadata, (3) graceful handling of journal events with missing metadata fields (active_bead_id, mapped_to_bead_id). Also add a test for the verified-mapping re-persistence loop in verify_planned_elsewhere_after_success (success_reconciliation.rs:744-771).",
+        "created_at": "2026-04-09T10:13:31.975663428Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "aacfa69e63ebb99685c17412065243e979513bc823eea4226a3f83a4a155759e"
+      },
+      {
+        "amendment_id": "fr-4-1a01895e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "src/contexts/automation_runtime/success_reconciliation.rs:744-756 and src/contexts/milestone_record/service.rs:2400-2413: post-success verification appends a second `PlannedElsewhereMapping` row with `mapped_bead_verified=true` and assumes \"the latest record for a given mapping wins\", but `load_planned_elsewhere_mappings()` just returns every NDJSON row verbatim. After a restart, the original `mapped_bead_verified=false` row is still loaded, so the same finding is re-verified and can post duplicate `br comment`s on every replay. Collapse mappings by identity when loading (for example by `(active_bead_id, finding_summary, mapped_to_bead_id)` keeping the newest row), or update the existing record instead of append-only writes.",
+        "created_at": "2026-04-09T10:13:31.975666283Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "78eb4de9642ff45f68bfca612779cc2defdc5b554d74dff6244a179b4d72e241"
+      },
+      {
+        "amendment_id": "fr-4-766dd780",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "src/contexts/milestone_record/service.rs:2385-2390 and src/contexts/milestone_record/service.rs:2400-2413: the recovery path does not actually honor the journal-first durability model. If `append_event()` succeeds but `append_mapping()` fails after `planned_elsewhere.ndjson` already contains older rows, `load_planned_elsewhere_mappings()` returns the non-empty sidecar and never rebuilds from the authoritative journal, so the newly journaled mapping disappears after restart. The loader needs to merge/reconcile journal events with the sidecar, or rebuild current state from the journal whenever they can diverge.",
+        "created_at": "2026-04-09T10:13:31.975668347Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "0bf194048c368eadec5cd066f4b4b746c5a581df6d821b73190ec62a053c512f"
+      }
+    ],
     "processed_count": 13
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
-    "stage_id": "plan_and_implement",
-    "resolved_at": "2026-04-09T09:39:35.003957781Z",
-    "primary_target": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-09T09:45:55.641856448Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }
