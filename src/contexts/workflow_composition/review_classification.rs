@@ -47,7 +47,7 @@ impl std::fmt::Display for Severity {
 /// reconciliation (8.5.x) and prompt rendering (7.2.2) depend on this
 /// schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "classification", rename_all = "snake_case")]
+#[serde(tag = "classification", rename_all = "kebab-case")]
 pub enum FindingClassification {
     /// The finding is within the active bead's scope and should be
     /// remediated immediately.
@@ -104,6 +104,9 @@ fn validate_bead_id_syntax(value: &str) -> Result<(), String> {
         return Err(format!(
             "'{value}' must not contain path separators ('/' or '\\\\')"
         ));
+    }
+    if value.ends_with('.') {
+        return Err(format!("'{value}' must not end with a dot"));
     }
     Ok(())
 }
@@ -317,18 +320,34 @@ mod tests {
     }
 
     #[test]
-    fn classification_tag_field_is_present_in_json() -> Result<(), serde_json::Error> {
+    fn classification_tag_field_uses_kebab_case() -> Result<(), serde_json::Error> {
         let fix_now = fix_now_valid();
         let json: serde_json::Value = serde_json::to_value(&fix_now)?;
-        assert_eq!(json["classification"], "fix_now");
+        assert_eq!(json["classification"], "fix-now");
 
         let planned = planned_elsewhere_valid();
         let json: serde_json::Value = serde_json::to_value(&planned)?;
-        assert_eq!(json["classification"], "planned_elsewhere");
+        assert_eq!(json["classification"], "planned-elsewhere");
 
         let propose = propose_new_bead_valid();
         let json: serde_json::Value = serde_json::to_value(&propose)?;
-        assert_eq!(json["classification"], "propose_new_bead");
+        assert_eq!(json["classification"], "propose-new-bead");
+        Ok(())
+    }
+
+    #[test]
+    fn classification_deserializes_from_kebab_case_tag() -> Result<(), serde_json::Error> {
+        let json = r#"{"classification":"fix-now","finding_summary":"test","severity":"high","affected_files":[]}"#;
+        let c: FindingClassification = serde_json::from_str(json)?;
+        assert!(matches!(c, FindingClassification::FixNow { .. }));
+
+        let json = r#"{"classification":"planned-elsewhere","finding_summary":"test","mapped_to_bead_id":"m1.b1","confidence":0.5,"rationale":"r"}"#;
+        let c: FindingClassification = serde_json::from_str(json)?;
+        assert!(matches!(c, FindingClassification::PlannedElsewhere { .. }));
+
+        let json = r#"{"classification":"propose-new-bead","finding_summary":"test","proposed_title":"t","proposed_scope":"s","severity":"low","rationale":"r"}"#;
+        let c: FindingClassification = serde_json::from_str(json)?;
+        assert!(matches!(c, FindingClassification::ProposeNewBead { .. }));
         Ok(())
     }
 
@@ -735,6 +754,35 @@ mod tests {
         let errors = validate_classification(&c);
         assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
         assert!(errors.iter().any(|e| e.contains("dot")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_with_trailing_dot(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "9ni.".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        assert!(errors.iter().any(|e| e.contains("end with a dot")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_bare_word_trailing_dot(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "bead.".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
         Ok(())
     }
 

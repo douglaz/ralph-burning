@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260409194344-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-09T20:16:05.244778937Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAddressed two pending amendments: (1) Changed FindingClassification serde tag from rename_all snake_case to kebab-case so serialized discriminators emit fix-now/planned-elsewhere/propose-new-bead matching the bead spec. Updated tag assertion test and added explicit kebab-case deserialization test. (2) Added trailing-dot rejection to validate_bead_id_syntax so values like '9ni.' or 'bead.' are rejected, consistent with strip_milestone_prefix (returns None for trailing.) and normalize_bead_reference (rejects empty suffix after prefix). Added 2 trailing-dot tests.\n\n## Steps\n\n1. [Completed] Read current file state and verified the bead spec defines fix-now/planned-elsewhere/propose-new-bead (kebab-case), while code emitted fix_now/planned_elsewhere/propose_new_bead (snake_case)\n2. [Completed] Changed #[serde(tag = \"classification\", rename_all = \"snake_case\")] to rename_all = \"kebab-case\" on FindingClassification enum at line 50\n3. [Completed] Updated classification_tag_field_is_present_in_json test to classification_tag_field_uses_kebab_case, asserting fix-now/planned-elsewhere/propose-new-bead. Added classification_deserializes_from_kebab_case_tag test that deserializes raw JSON with kebab-case tags for all 3 variants.\n4. [Completed] Studied strip_milestone_prefix (returns None for 'trailing.') and normalize_bead_reference (rejects empty suffix after milestone prefix). Added ends_with('.') check to validate_bead_id_syntax.\n5. [Completed] Added 2 new tests: planned_elsewhere_rejects_bead_id_with_trailing_dot (9ni.) and planned_elsewhere_rejects_bead_id_bare_word_trailing_dot (bead.)\n6. [Completed] Ran cargo fmt, verified cargo fmt --check clean, ran full test suite: 758 passed 0 failed (44 review_classification tests, all green)\n\n## Validation Evidence\n\n- 44/44 review_classification tests pass (41 prior + 3 new: classification_tag_field_uses_kebab_case, classification_deserializes_from_kebab_case_tag, planned_elsewhere_rejects_bead_id_with_trailing_dot, planned_elsewhere_rejects_bead_id_bare_word_trailing_dot)\n- Full suite: 758 passed, 0 failed across lib tests (738), integration tests (174+1), and doc-tests\n- cargo fmt --check passes with no diffs\n- Serialized tags now match bead spec: fix-now, planned-elsewhere, propose-new-bead (kebab-case)\n- validate_bead_id_syntax now rejects trailing dots, consistent with strip_milestone_prefix and normalize_bead_reference patterns\n\n## Outstanding Risks\n\n- Pre-existing clippy warnings (19) in other modules remain; not introduced by this change\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}
