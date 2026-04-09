@@ -897,7 +897,7 @@ fn reconstruct_missing_pe_mappings(
     for payload in &payloads {
         if payload.stage_id != StageId::FinalReview
             || payload.record_kind != RecordKind::StageAggregate
-            || !payload.payload_id.starts_with(run_id)
+            || !payload.payload_id.starts_with(&format!("{run_id}-"))
         {
             continue;
         }
@@ -2965,6 +2965,132 @@ mod tests {
             post_replay_controller.active_bead_id.as_deref(),
             Some("bead-second"),
             "controller should still track bead-second after replay"
+        );
+
+        Ok(())
+    }
+
+    /// Two aggregates for the same completion_round but different created_at:
+    /// only the latest aggregate's PE amendments should be reconstructed.
+    #[test]
+    fn reconstruct_pe_mappings_deduplicates_by_round_latest_wins(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::FileSystem;
+        use crate::contexts::project_run_record::model::PayloadRecord;
+        use crate::contexts::workflow_composition::panel_contracts::{
+            FinalReviewAggregatePayload, FinalReviewCanonicalAmendment, RecordKind,
+        };
+        use chrono::Utc;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+
+        // Set up .git dir so FileSystem::project_root resolves
+        let git_dir = base.join(".git");
+        std::fs::create_dir_all(&git_dir)?;
+
+        let project_id = ProjectId::new("proj-dedup")?;
+        let project_root = FileSystem::project_root(base, &project_id);
+        let payloads_dir = project_root.join("history/payloads");
+        std::fs::create_dir_all(&payloads_dir)?;
+
+        // Also create milestone dir for journal writes during reconstruction
+        let milestone_id = MilestoneId::new("ms-dedup")?;
+        let milestone_root = base
+            .join(".ralph-burning/milestones")
+            .join(milestone_id.as_str());
+        std::fs::create_dir_all(&milestone_root)?;
+
+        let now = Utc::now();
+
+        // Build two aggregates for the same completion_round (5) with
+        // different created_at timestamps and different PE amendments.
+        let make_aggregate = |mapped_to: &str, body: &str| -> FinalReviewAggregatePayload {
+            FinalReviewAggregatePayload {
+                restart_required: false,
+                force_completed: false,
+                total_reviewers: 1,
+                total_proposed_amendments: 1,
+                unique_amendment_count: 1,
+                accepted_amendment_ids: vec!["a1".to_owned()],
+                rejected_amendment_ids: vec![],
+                disputed_amendment_ids: vec![],
+                amendments: vec![],
+                final_accepted_amendments: vec![FinalReviewCanonicalAmendment {
+                    amendment_id: "a1".to_owned(),
+                    normalized_body: body.to_owned(),
+                    sources: vec![],
+                    mapped_to_bead_id: Some(mapped_to.to_owned()),
+                }],
+                final_review_restart_count: 0,
+                max_restarts: 3,
+                summary: "test".to_owned(),
+                exhausted_count: 0,
+                probe_exhausted_count: 0,
+                effective_min_reviewers: 1,
+            }
+        };
+
+        let earlier = now - chrono::Duration::seconds(60);
+        let later = now - chrono::Duration::seconds(10);
+
+        // Earlier aggregate (pre-rollback): maps to "old-bead"
+        let payload_old = PayloadRecord {
+            payload_id: "run-dedup-final_review-aggregate-c1-a1-cr5-old-payload".to_owned(),
+            stage_id: StageId::FinalReview,
+            cycle: 1,
+            attempt: 1,
+            created_at: earlier,
+            payload: serde_json::to_value(make_aggregate("old-bead", "old finding"))?,
+            record_kind: RecordKind::StageAggregate,
+            producer: None,
+            completion_round: 5,
+        };
+
+        // Later aggregate (post-rollback): maps to "new-bead"
+        let payload_new = PayloadRecord {
+            payload_id: "run-dedup-final_review-aggregate-c1-a1-cr5-rb1-payload".to_owned(),
+            stage_id: StageId::FinalReview,
+            cycle: 1,
+            attempt: 1,
+            created_at: later,
+            payload: serde_json::to_value(make_aggregate("new-bead", "new finding"))?,
+            record_kind: RecordKind::StageAggregate,
+            producer: None,
+            completion_round: 5,
+        };
+
+        // Write both payload files
+        std::fs::write(
+            payloads_dir.join("old-aggregate.json"),
+            serde_json::to_string(&payload_old)?,
+        )?;
+        std::fs::write(
+            payloads_dir.join("new-aggregate.json"),
+            serde_json::to_string(&payload_new)?,
+        )?;
+
+        let reconstructed = reconstruct_missing_pe_mappings(
+            base,
+            "proj-dedup",
+            "active-bead",
+            &milestone_id,
+            &[],         // no existing mappings
+            "run-dedup", // run_id — must match payload_id prefix with "-"
+        );
+
+        assert_eq!(
+            reconstructed.len(),
+            1,
+            "should reconstruct exactly one mapping from the latest aggregate"
+        );
+        assert_eq!(
+            reconstructed[0].mapped_to_bead_id, "new-bead",
+            "should use amendment from the later aggregate"
+        );
+        assert_eq!(
+            reconstructed[0].finding_summary, "new finding",
+            "should use body from the later aggregate"
         );
 
         Ok(())

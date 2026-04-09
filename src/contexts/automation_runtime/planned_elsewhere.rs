@@ -48,9 +48,9 @@ pub struct PlannedElsewhereOutcome {
 
 /// Result of verifying a mapped-to bead.
 enum BeadVerification {
-    /// Bead exists and is open/in-progress — verified.
+    /// Bead exists (any status: open, in-progress, or closed).
     Verified,
-    /// Bead is definitively stale (not found or already closed).
+    /// Bead is definitively stale (not found).
     Stale(String),
     /// A transient/infrastructure error prevented verification.
     TransientError(String),

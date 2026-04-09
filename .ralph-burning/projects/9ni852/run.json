@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 13
@@ -23,62 +23,14 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-12-17971d78",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 12,
-        "body": "Update the doc comments on BeadVerification::Verified (line 51) and BeadVerification::Stale (line 53) in planned_elsewhere.rs to match the new behavior. Verified should say 'Bead exists (any status) — verified' and Stale should say 'Bead is definitively stale (not found)' removing the 'or already closed' clause. These comments currently describe the old behavior where closed beads were treated as stale.",
-        "created_at": "2026-04-09T13:03:39.654699551Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "e813edb4be77df67061500e43ca7ac0a224ab8dafa1d3353fa660c3230300d34"
-      },
-      {
-        "amendment_id": "fr-12-5c7d808c",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 12,
-        "body": "Add a test for reconstruct_missing_pe_mappings that exercises the round-dedup logic: create two final-review aggregates for the same completion_round with different created_at timestamps and different amendments, and verify only the amendments from the latest aggregate are reconstructed.",
-        "created_at": "2026-04-09T13:03:39.654700984Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "eea0944a5b3d9556eaf33e6a1b118ad211c5d61bd4e0a1c12d7e2914bca22794"
-      },
-      {
-        "amendment_id": "fr-12-0eb370dc",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 12,
-        "body": "In `src/contexts/automation_runtime/success_reconciliation.rs:898-901`, `reconstruct_missing_pe_mappings` accepts any payload whose `payload_id` merely `starts_with(run_id)`. `RunId` itself is unconstrained (`src/shared/domain.rs:875-882`), so histories containing runs like `test-run-1` and `test-run-10` will cross-match and let one run reconstruct planned-elsewhere mappings from another. Tighten this to an exact run-id boundary (for example `format!(\"{run_id}-\")`) or persist an explicit run-id field on payload records.",
-        "created_at": "2026-04-09T13:03:39.654702857Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "8705c79d91c2468c9470fbe803ed0848808766bf6e7c38340fc259ffcb4984fa"
-      }
-    ],
-    "processed_count": 35
+    "pending": [],
+    "processed_count": 38
   },
-  "status_summary": "running: final review restart round 13 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
-    "stage_id": "final_review",
-    "resolved_at": "2026-04-09T12:44:03.836718577Z",
-    "final_review_reviewers": [
-      {
-        "backend_family": "claude",
-        "model_id": "claude-opus-4-6"
-      },
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.4"
-      }
-    ],
-    "final_review_planner": {
-      "backend_family": "claude",
-      "model_id": "claude-opus-4-6"
-    },
-    "final_review_arbiter": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-09T13:03:39.789794972Z",
+    "primary_target": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }
