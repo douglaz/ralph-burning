@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr16-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T14:48:58.133681149Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the planned-elsewhere reconciliation feature. The implementation is well-structured across 12 modified source files, covering the full lifecycle: reviewer proposal → amendment merge → engine routing → milestone journal persistence → post-run verification → br comment posting. Key design decisions are sound: journal-first write ordering, conservative merge (any disagreement clears PE classification), transient vs. stale error distinction, and reconstruction from aggregates for crash recovery. All 40+ new tests pass. No critical bugs or safety issues found. Two minor observations noted as amendments.\n\n## Amendments\n\n1. In `rebuild_planned_elsewhere_from_journal` (service.rs), the `completion_round` field is read via `.as_u64().map(|v| v as u32)` which silently truncates values above `u32::MAX`. Use a checked cast: `.and_then(|v| u32::try_from(v).ok())` to avoid silent data loss. The same pattern appears in the rebuild reader but not in the write path (which uses `Number::from(u32)` correctly).\n   Rationale: While completion rounds will practically never exceed u32::MAX, a silent truncating cast is a latent correctness issue. A checked cast costs nothing and makes the intent explicit. If a corrupted journal contains a huge number, the current code silently produces a wrong round number; with try_from it would skip the malformed event (the existing `continue` fallthrough handles this).\n2. The `MilestoneEventType::Unknown` variant with `#[serde(other)]` changes deserialization behavior for ALL journal consumers: previously, unrecognized event types caused a parse error (detected corruption); now they silently deserialize as `Unknown`. Verify that no existing consumer of `read_journal` relies on deserialization failure as a corruption signal, and consider filtering out `Unknown` events in `read_journal_from_path` before returning them (or documenting the contract that consumers must handle `Unknown`).\n   Rationale: The `#[serde(other)]` catch-all is the right pattern for forward compatibility, but it's a semantic change to an existing public enum. If any existing code uses exhaustive matching on `MilestoneEventType` without a wildcard arm, it will get a compile error (good). But if any code relies on parse failure for unknown types as a corruption signal (e.g., data validation pipelines), that invariant is now silently broken. The risk is low given this is an internal codebase, but worth a quick audit of `read_journal` consumers.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 16
+}

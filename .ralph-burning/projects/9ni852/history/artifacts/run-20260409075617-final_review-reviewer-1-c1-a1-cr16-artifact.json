@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T14:56:24.175829987Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the planned-elsewhere final-review, engine, milestone, and reconciliation paths and found 2 correctness gaps: stale earlier-round mappings can still be replayed when the latest round has no planned-elsewhere findings, and arbitrary existing bead IDs can suppress restarts because `mapped_to_bead_id` is never validated against the allowed planned-elsewhere set. Targeted `cargo test planned_elsewhere -- --nocapture` and `cargo test final_review -- --nocapture` both passed.\n\n## Amendments\n\n1. [/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/success_reconciliation.rs:720-747, 889-1018] Reconciliation decides the \"latest\" planned-elsewhere state from whatever mapping rows already exist, then only reconstructs missing rows from the newest final-review aggregate. That breaks when an earlier round recorded a planned-elsewhere mapping but the latest round fixed or rejected it: the latest round writes zero mapping rows, so `max_round` stays on the stale earlier round and the old mapping still gets verified/commented. The authoritative round needs to come from the latest final-review aggregate or run snapshot, and earlier-round mappings must be ignored when that latest aggregate contains no planned-elsewhere amendments.\n   Rationale: As written, a superseded round-1 mapping can still survive into success reconciliation and annotate another bead even though the final accepted review state no longer says the concern is planned elsewhere.\n2. [/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/final_review.rs:188-226, 1569-1604; /home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/engine.rs:7616-7638; /home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/planned_elsewhere.rs:70-96] `mapped_to_bead_id` is treated as restart-suppressing as soon as reviewers unanimously emit it: final review preserves the field, the aggregate turns off `restart_required` whenever every accepted amendment has a mapping, the engine persists that mapping unchanged, and reconciliation only checks that the bead exists. There is no validation that the bead ID was one of the \"Already Planned Elsewhere\" items supplied in the prompt, or otherwise an allowed owner for this finding. A hallucinated but real bead ID can therefore let a real bug bypass the restart/fix loop. Validate `mapped_to_bead_id` against the allowed planned-elsewhere set before honoring it; otherwise clear it and queue a normal amendment.\n   Rationale: Existence-only verification is not enough here because the field changes control flow. An unrelated existing bead should not be able to suppress a restart just because the model named it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 16
+}
