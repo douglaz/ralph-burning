@@ -1250,7 +1250,10 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
     .join("\n\n")
 }
 
-fn default_project_id_for_bead(milestone_id: &str, bead_id: &str) -> AppResult<ProjectId> {
+pub(crate) fn default_project_id_for_bead(
+    milestone_id: &str,
+    bead_id: &str,
+) -> AppResult<ProjectId> {
     let bead_segment = bead_id
         .strip_prefix(milestone_id)
         .and_then(|suffix| suffix.strip_prefix('.'))
