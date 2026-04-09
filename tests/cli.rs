@@ -576,6 +576,10 @@ cat <<'EOF'
 EOF
 exit 0
 fi
+if [ "$1" = "ready" ] && [ "$2" = "--json" ]; then
+echo '[]'
+exit 0
+fi
 if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
 cat <<'EOF'
 {list_payload}

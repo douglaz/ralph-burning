@@ -923,8 +923,12 @@ impl MilestoneControllerResumePort for ProjectMilestoneControllerRuntime<'_> {
             });
         }
 
-        let detail: BeadDetail =
-            serde_json::from_slice(&output.stdout).map_err(|error| AppError::ResumeFailed {
+        let detail: BeadDetail = serde_json::from_slice::<BrShowResponse>(&output.stdout)
+            .map(|response| match response {
+                BrShowResponse::Single(detail) => detail,
+                BrShowResponse::Many(mut details) => details.remove(0),
+            })
+            .map_err(|error| AppError::ResumeFailed {
                 reason: format!(
                     "milestone controller resume could not parse bead '{bead_id}': {error}"
                 ),
