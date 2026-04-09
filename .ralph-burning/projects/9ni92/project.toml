@@ -1,0 +1,7 @@
+id = "9ni92"
+name = "task-aliases"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "e4f2dcba7ecd8317b1a44fdb2e2f9c44adf524d64957d27dda5c0ab1e02ade39"
+created_at = "2026-04-09T05:50:52.128332712Z"
+status_summary = "created"

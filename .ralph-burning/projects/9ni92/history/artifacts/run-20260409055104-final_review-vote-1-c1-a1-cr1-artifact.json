@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409055104-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260409055104-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T06:08:47.189821498Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments are technically valid. The task alias implementation is currently a thin wrapper over project commands, so it misses the stated requirement to keep users in task vocabulary and to explain the task↔project mapping in output/remediation. The existing new tests are parser-level only; they do not exercise handler behavior or output. The missing `prompt_file` assertion is lower severity than the others, but it is still a legitimate parity gap in the alias test coverage.\n\n## Votes\n\n- `fr-1-ee57a8b1`: Accept\n  The acceptance criteria explicitly require task-command output to explain the task↔project relationship where useful. `src/cli/task.rs` currently forwards directly to `project::handle`, so `task select` and `task show` inherit project-oriented messages such as `Selected project ...` and `Project: ...`, and the no-active-project path still tells the user to run `ralph-burning project select <id>`. That is a real behavior gap, not just wording preference. Either the task wrapper needs task-aware output/error handling, or the criterion would need to be weakened.\n- `fr-1-df1751ba`: Accept\n  This is a small but sound test-coverage fix. `TaskCreateArgs` and `CreateFromBeadArgs` both include `prompt_file`, and the task handler copies that field, but the parity test does not assert it. Leaving one field out means alias-schema drift on that option would go unnoticed by the equivalence test. Low severity, but technically correct and worth tightening. It would be strongest if the test also exercised a non-default `--prompt-file` value.\n- `fr-1-f7e2dae5`: Accept\n  This identifies the same core defect as `fr-1-ee57a8b1` with useful implementation detail. The `task` namespace currently inherits project-only strings from `project.rs` and shared error text, so the alias surface does not actually keep users in task vocabulary. That conflicts with the bead goal of letting users talk about tasks while the internal substrate remains projects, and it creates misleading remediation text for task users. The cited call sites are concrete and actionable.\n- `fr-1-0f05076d`: Accept\n  The current new coverage in `src/cli/task.rs` is limited to clap parsing and struct comparison. It does not execute the task handlers, compare resulting workspace state to the project namespace, or verify emitted stdout/stderr. Because the acceptance criteria explicitly call for deterministic tests proving task aliases route to the same behavior as project commands, parser-only tests are insufficient. Behavioral integration tests, especially around `task create`, `task show/select`, and the no-active-project error path, are justified and would catch the output defects noted in the other amendments.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

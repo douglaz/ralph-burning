@@ -287,7 +287,12 @@ async fn handle_create_from_requirements(run_id: String) -> AppResult<()> {
     Ok(())
 }
 
-async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
+/// Core logic for `project create-from-bead` / `task create`.
+///
+/// Performs all side effects (bead claiming, project creation, milestone controller
+/// linking, active-project selection) and returns the created project's ID.
+/// Callers are responsible for loading the detail and formatting output.
+pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppResult<ProjectId> {
     let current_dir = std::env::current_dir()?;
 
     let config = workspace_governance::load_workspace_config(&current_dir)?;
@@ -504,7 +509,13 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
     }
 
     set_active_project_after_create(&current_dir, &record.id)?;
-    let detail = load_project_detail(&current_dir, &record.id)?;
+    Ok(record.id)
+}
+
+async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
+    let project_id = execute_create_from_bead(args).await?;
+    let current_dir = std::env::current_dir()?;
+    let detail = load_project_detail(&current_dir, &project_id)?;
     print_project_detail(&detail);
     Ok(())
 }
@@ -646,7 +657,10 @@ async fn handle_delete(id: String) -> AppResult<()> {
     Ok(())
 }
 
-fn load_project_detail(base_dir: &Path, project_id: &ProjectId) -> AppResult<ProjectDetail> {
+pub(crate) fn load_project_detail(
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<ProjectDetail> {
     let store = FsProjectStore;
     let run_store = FsRunSnapshotStore;
     let journal_store = FsJournalStore;

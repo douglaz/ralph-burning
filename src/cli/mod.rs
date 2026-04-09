@@ -7,6 +7,7 @@ pub mod init;
 pub mod project;
 pub mod requirements;
 pub mod run;
+pub mod task;
 
 use clap::{Parser, Subcommand};
 
@@ -34,6 +35,7 @@ pub enum Commands {
     Daemon(daemon::DaemonCommand),
     Backend(backend::BackendCommand),
     Conformance(conformance::ConformanceCommand),
+    Task(task::TaskCommand),
 }
 
 pub async fn run(cli: Cli) -> AppResult<()> {
@@ -47,5 +49,6 @@ pub async fn run(cli: Cli) -> AppResult<()> {
         Commands::Daemon(command) => daemon::handle(command).await,
         Commands::Backend(command) => backend::handle(command).await,
         Commands::Conformance(command) => conformance::handle(command).await,
+        Commands::Task(command) => task::handle(command).await,
     }
 }

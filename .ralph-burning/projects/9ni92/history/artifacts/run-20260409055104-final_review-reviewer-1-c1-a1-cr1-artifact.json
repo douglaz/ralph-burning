@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409055104-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260409055104-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T06:03:25.420672802Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff and the new `task` CLI implementation. I found two substantive issues: the wrappers still emit project-only output/errors instead of task-oriented UX, and the added tests only validate clap parsing rather than real alias behavior.\n\n## Amendments\n\n1. Make the `task` namespace render task-aware output and remediation text instead of forwarding directly to `project::handle`. Right now `src/cli/task.rs:52-83` delegates every subcommand unchanged, so `task select`, `task list`, `task show`, and `task create` inherit project-only strings from `src/cli/project.rs:154-159`, `src/cli/project.rs:578-607`, `src/cli/project.rs:506-508`, `src/cli/project.rs:665-675`, and `src/cli/project.rs:1993-1999`, plus project-only fallback errors from `src/shared/error.rs:38-47`. On this branch, `ralph-burning task show 9ni92` prints `Project: 9ni92 (active)` and `ralph-burning task select 9ni92` prints `Selected project 9ni92`, so the new command surface does not actually explain the task<->project mapping or keep users in task vocabulary.\n   Rationale: This is a user-visible correctness gap against the bead acceptance criteria. The alias exists, but the UX immediately falls back to project terminology, including recovery instructions.\n2. Add deterministic behavioral tests for the new `task` namespace. The only new coverage is the parser-focused unit tests in `src/cli/task.rs:95-272`, and the strongest equivalence check in `src/cli/task.rs:206-257` only compares parsed argument structs. There is no end-to-end CLI coverage proving that `task create/show/select/list` execute the same behavior as their project counterparts or that the task-facing output stays correct. Add integration tests that run both namespaces against a temp workspace and compare resulting state/output, especially for `task create` and the no-active-project path.\n   Rationale: The acceptance criteria explicitly call for deterministic tests of alias behavior. Without runtime coverage, the current output regression shipped unnoticed and future changes to `project` can silently break `task`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

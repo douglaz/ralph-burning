@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409055104-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260409055104-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T05:58:57.957457207Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is clean, correct, and well-tested. The task module properly aliases project commands by constructing equivalent ProjectCommand structs and delegating to project::handle(). All 757 tests pass, no clippy warnings in the new code, and the compiler enforces field-level parity between TaskCreateArgs and CreateFromBeadArgs. Two issues found: (1) the acceptance criterion requiring output that explains the task↔project mapping is not met — task commands print 'Selected project X' rather than 'Task X (project X)'; (2) the deterministic equivalence test omits prompt_file from its assertions (minor, since compiler guards against drift).\n\n## Amendments\n\n1. The acceptance criterion states: 'Output from task commands explains the task↔project mapping where useful (e.g., Task foo (project foo))'. Currently task commands delegate directly to project::handle() which prints project-oriented messages (e.g., 'Selected project {id}'). The task handler should intercept at least the select/show/create output paths to add task-aware messaging, or the acceptance criterion should be explicitly relaxed.\n   Rationale: This is a stated acceptance criterion that is not satisfied. Users invoking 'task select foo' will see 'Selected project foo' with no indication they're in the task namespace, which defeats the purpose of the alias vocabulary.\n2. In src/cli/task.rs test task_create_maps_to_project_create_from_bead_args (line 209), the assertion set checks milestone_id, bead_id, project_id, and flow but omits prompt_file. Add `assert_eq!(task_args.prompt_file, project_args.prompt_file);` for completeness.\n   Rationale: Minor: the compiler already guards against field omission in the handle() function, but the test's stated purpose is to prove deterministic equivalence of all arguments. Omitting one field weakens that claim.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}
