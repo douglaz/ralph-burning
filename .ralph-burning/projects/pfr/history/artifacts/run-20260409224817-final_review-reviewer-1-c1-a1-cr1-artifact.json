@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409224817-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260409224817-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T22:53:35.280787548Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nNo substantive correctness, safety, or robustness issues were identified in the reviewed final-review concurrency change. The diff in `src/contexts/workflow_composition/final_review.rs` preserves per-reviewer failure handling and journal/error semantics while running proposal and vote invocations concurrently, and event emission remains consistent with the existing processing model.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}
