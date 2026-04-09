@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408204915-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260408204915-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T22:19:27.354203460Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff against `master`, read the changed claim/controller code paths and supporting tests, and ran targeted cargo tests for the new claim and controller sync behavior. I found one substantive correctness issue: the idempotent-claim fallback uses pre-claim controller state as proof of ownership, which is unsound and can create a duplicate project if another operator claims the bead between selection and `br update`.\n\n## Amendments\n\n1. `claim_bead_in_br` misclassifies another operator's claim as an idempotent retry. In `src/cli/project.rs:831-859` and `src/cli/project.rs:892-899`, the fallback treats `br update <bead> --status=in_progress` failing with the bead already `in_progress` as success whenever the controller is already `claimed` for that bead. But `select_next_milestone_bead` writes that `claimed` controller state before any `br update` happens (`src/cli/run.rs:589-599`), so this check does not prove we previously claimed the bead in `br`; it only proves we selected it locally. If another operator claims the bead after selection but before our update, this branch will still proceed to create a Ralph project instead of moving to `needs_operator`. Remove this fallback or replace it with stronger post-claim evidence, and add a test for the \"selection already marked claimed, but another process won the race\" case.\n   Rationale: This is a real correctness bug in the intended flow. It can create a duplicate Ralph task for a bead that `br` already considers claimed by someone else, directly violating the requirement that an already-claimed bead must not create a task.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

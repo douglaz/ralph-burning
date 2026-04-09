@@ -1,0 +1,18 @@
+{
+  "run_id": "req-20260408-203618",
+  "idea": "Implement ralph-burning-9ni.8.3: Claim a bead and create a corresponding Ralph task. Turn a selected bead into an owned task run by claiming it in br and creating the corresponding Ralph project/task. After the selector transitions to claimed state, the controller should: (1) claim the bead via br update --status=in_progress, (2) generate the bead-backed prompt, (3) create a Ralph task/project from the prompt linking it to the milestone and bead via task_source metadata, (4) update milestone state recording the claim and linked task_id, (5) transition controller from claimed to running. If br claim fails, transition to needs_operator. Claiming and task creation should be as atomic as possible.",
+  "mode": "quick",
+  "status": "failed",
+  "question_round": 0,
+  "latest_question_set_id": null,
+  "latest_draft_id": "req-20260408-203618-draft-1",
+  "latest_review_id": null,
+  "latest_seed_id": null,
+  "output_kind": "project_seed",
+  "recommended_flow": "minimal",
+  "created_at": "2026-04-08T20:36:18.275027428Z",
+  "updated_at": "2026-04-08T20:45:12.239966976Z",
+  "status_summary": "failed: review: backend invocation timed out for contract 'requirements:requirements_review' via 'codex' after 300000 ms: codex exceeded timeout of 300s",
+  "quick_revision_count": 0,
+  "last_transition_cached": false
+}

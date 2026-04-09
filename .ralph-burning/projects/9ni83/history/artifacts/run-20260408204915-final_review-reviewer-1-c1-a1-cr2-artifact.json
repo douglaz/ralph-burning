@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408204915-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260408204915-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T22:01:36.043041641Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff against `master`, read the changed controller/project code paths and the new tests, and ran the targeted `cargo test` slices for the new claim/controller behavior. I found two robustness/correctness issues: idempotent claim retries currently skip `br sync --flush-only`, and controller-link failures after project creation are not recovered, which can orphan a claimed bead and created project.\n\n## Amendments\n\n1. In `src/cli/project.rs` at lines 822-825, do not `return Ok(())` from the \"already in_progress and this is our own prior claim\" branch. That branch currently exits before the `br.sync_flush()` call at lines 838-844, so a retry after `br update` succeeded but `br sync --flush-only` did not will report success without ever flushing the claim into the `.beads` export that `bv` reads. Keep the idempotent-own-claim detection, but continue into `sync_flush()` so the bead actually disappears from ready triage on recovery.\n   Rationale: This is a real correctness bug in the recovery path: the function claims success while skipping the flush that makes the claim durable/visible to `bv`.\n2. In `src/cli/project.rs` at lines 413-464, handle failures from `milestone_controller::sync_controller_task_claimed` the same way project-creation failures are handled at lines 425-450. Right now the code creates the Ralph project and leaves the bead claimed in `br`, then immediately returns on any controller-write/alignment error without transitioning the controller to `needs_operator` or rolling back the new project. That leaves an orphan claimed bead/project pair and allows duplicate project creation on retry. Wrap the controller-link step in explicit recovery logic (at minimum transition to `needs_operator`; ideally also avoid leaving the newly created project live if the link cannot be recorded).\n   Rationale: This is an unhandled post-create failure path that can leave durable state inconsistent even though the command exits with an error.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

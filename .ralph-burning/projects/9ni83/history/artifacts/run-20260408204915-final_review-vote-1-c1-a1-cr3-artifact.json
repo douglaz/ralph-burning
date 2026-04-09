@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408204915-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260408204915-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T22:25:04.174402077Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nfr-3-ffaa74f7 identifies a real ownership race in the bead-claim flow and should be addressed. fr-3-3d3a1ecd points at a real retry hole after `sync_flush` failure, but the proposed blanket `NeedsOperator` check is not safe because that controller state is reused for multiple failure modes and does not by itself prove prior successful `br` ownership.\n\n## Votes\n\n- `fr-3-3d3a1ecd`: Reject\n  The retry gap after a `sync_flush` failure is real, but the amendment's proposed fix is too broad. `NeedsOperator` is used for several distinct situations, including claim failure, project-creation failure, and task-link failure, all with the same `active_bead_id`. A blanket `Claimed | NeedsOperator` check would therefore treat states that do not prove prior successful `br update` ownership as idempotent retries. That can reintroduce misclassification of another operator's claim and can also permit duplicate project creation on retry after post-claim failures (for example when a prior run created a project under a custom `--project-id` but failed before the controller linked it). The fix needs stronger persisted evidence of a completed local bead claim than controller state alone.\n- `fr-3-ffaa74f7`: Accept\n  `select_next_milestone_bead` records `MilestoneControllerState::Claimed` before `claim_bead_in_br` performs `br update --status=in_progress`, so `Claimed + active_bead_id` is not proof that we previously won the bead in `br`. In `claim_bead_in_br`, when `br update` fails and `br show` reports the bead already `in_progress`, the current fallback accepts that as our own retry if `is_our_active_bead` returns true. Another operator can win the race after local selection but before our first `br update`, and this branch would still proceed to project creation for a bead we do not own. That is a real correctness and isolation bug; the code needs stronger post-claim evidence and a regression test for the selection-before-claim race.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

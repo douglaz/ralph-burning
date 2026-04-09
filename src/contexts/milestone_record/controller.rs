@@ -345,7 +345,19 @@ pub fn sync_controller_task_claimed(
         match current.state {
             MilestoneControllerState::Claimed => {
                 validate_active_context_alignment(&current, milestone_id, bead_id, task_id)?;
-                checkpoint_existing_controller_locked(store, base_dir, milestone_id, current, now)
+                // Use sync_existing_state_locked so that adopting a task_id
+                // (when the controller was claimed without one) appends a
+                // durable journal event. Pure same-bead/same-task checkpoints
+                // also pass through safely (sync detects no-change and
+                // checkpoints without a new event).
+                sync_existing_state_locked(
+                    store,
+                    base_dir,
+                    milestone_id,
+                    current,
+                    claim_request,
+                    now,
+                )
             }
             MilestoneControllerState::Idle
             | MilestoneControllerState::Selecting
@@ -614,11 +626,20 @@ fn same_state_context_error_details(
             state_name(state),
             current
         )),
-        (None, Some(next)) => Some(format!(
-            "same-state sync for '{}' must not introduce active task identifier '{}'",
-            state_name(state),
-            next
-        )),
+        (None, Some(next)) => {
+            // Claimed state allows task_id to be None (selection sets bead_id
+            // before a project exists). Adopting the task_id during a same-
+            // state sync is the expected way to link the project after creation.
+            if state == MilestoneControllerState::Claimed {
+                None
+            } else {
+                Some(format!(
+                    "same-state sync for '{}' must not introduce active task identifier '{}'",
+                    state_name(state),
+                    next
+                ))
+            }
+        }
         _ => None,
     }
 }
@@ -2448,5 +2469,57 @@ mod tests {
 
         assert!(matches!(error, AppError::CorruptRecord { .. }));
         assert!(error.to_string().contains("line 2"));
+    }
+
+    #[test]
+    fn sync_task_claimed_adopts_task_id_when_claimed_without_one() -> AppResult<()> {
+        let store = FakeControllerStore::default();
+        let mid = milestone_id();
+        let base_dir = Path::new("/tmp/fake");
+
+        // Initialize controller in Claimed state with bead_id but no task_id
+        initialize_controller_with_request(
+            &store,
+            base_dir,
+            &mid,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Claimed,
+                "selection picked bead-x",
+            )
+            .with_bead("bead-x"),
+            ts(1),
+        )?;
+
+        // Verify: task_id is None after initialization
+        let before = store
+            .controller
+            .borrow()
+            .clone()
+            .expect("controller exists");
+        assert_eq!(before.active_task_id, None);
+
+        // Call sync_controller_task_claimed with a task_id
+        let result = sync_controller_task_claimed(
+            &store,
+            base_dir,
+            &mid,
+            "bead-x",
+            "project-99",
+            "adopting project as task owner",
+            ts(2),
+        )?;
+
+        assert_eq!(result.state, MilestoneControllerState::Claimed);
+        assert_eq!(result.active_bead_id.as_deref(), Some("bead-x"));
+        assert_eq!(result.active_task_id.as_deref(), Some("project-99"));
+
+        // Also verify persisted state
+        let persisted = store
+            .controller
+            .borrow()
+            .clone()
+            .expect("controller exists");
+        assert_eq!(persisted.active_task_id.as_deref(), Some("project-99"));
+        Ok(())
     }
 }

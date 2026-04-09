@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Requirements review payload.",
+  "properties": {
+    "evidence": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "findings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "follow_ups": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "outcome": {
+      "description": "Requirements review outcome — distinct from workflow `ReviewOutcome`.",
+      "enum": [
+        "approved",
+        "conditionally_approved",
+        "request_changes",
+        "rejected"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "evidence",
+    "findings",
+    "outcome",
+    "follow_ups"
+  ],
+  "title": "RequirementsReviewPayload",
+  "type": "object"
+}

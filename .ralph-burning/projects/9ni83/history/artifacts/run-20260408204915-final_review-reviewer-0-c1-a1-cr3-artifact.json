@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408204915-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260408204915-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T22:13:26.591506721Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation correctly wires `br update --status=in_progress` before project creation, handles claim failure by transitioning to `NeedsOperator`, records the linked task_id via `sync_controller_task_claimed`, and relaxes the `same_state_context_error_details` validation to allow the Claimed state to adopt a task_id. All 7 new tests pass, and all 28 existing `project_create_from_bead` integration tests pass. The code is clean and well-documented. One correctness gap was found in the idempotent-retry logic.\n\n## Amendments\n\n1. In `is_our_active_bead` (src/cli/project.rs:892-900), the check `ctrl.state == MilestoneControllerState::Claimed` is too strict for idempotent retries. After a `sync_flush` failure, `handle_create_from_bead` transitions the controller to `NeedsOperator` (line 390-406). On retry, the bead is locally `in_progress` (br update succeeded earlier) but the controller is now in `NeedsOperator` with the same `active_bead_id`. Since `is_our_active_bead` only accepts `Claimed`, it returns `false`, causing the retry to fail with 'claimed by another process' instead of being idempotent. Fix: also accept `NeedsOperator` state in the `is_our_active_bead` check, e.g. `matches!(ctrl.state, MilestoneControllerState::Claimed | MilestoneControllerState::NeedsOperator)`.\n   Rationale: A sync_flush failure is a transient network error. The operator will investigate, see the controller is NeedsOperator due to sync failure, and re-run the claim. But the retry path incorrectly rejects the bead as 'claimed by another process' because the controller state is no longer Claimed. This makes the claim non-retryable after a sync_flush failure without manual controller state repair.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

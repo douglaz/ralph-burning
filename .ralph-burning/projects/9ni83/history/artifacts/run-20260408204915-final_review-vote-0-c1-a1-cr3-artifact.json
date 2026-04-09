@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260408204915-final_review-vote-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260408204915-final_review-vote-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T22:21:34.206251631Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify real, code-verified bugs in the bead claiming flow. fr-3-3d3a1ecd correctly identifies a broken idempotent retry path when sync_flush fails: the controller transitions to NeedsOperator but is_our_active_bead only accepts Claimed. fr-3-ffaa74f7 correctly identifies a race condition where the Claimed controller state is written before br update, so is_our_active_bead cannot distinguish 'we selected locally' from 'we previously won the br-level claim', allowing another operator's claim to be misclassified as our own retry.\n\n## Votes\n\n- `fr-3-3d3a1ecd`: Accept\n  Verified in code: (1) sync_flush failure at line 879 causes claim_bead_in_br to return Err, (2) handle_create_from_bead at lines 390-398 transitions controller to NeedsOperator via with_bead(&bead.id), preserving active_bead_id, (3) on retry, br update fails (bead already in_progress), fallback at line 852 checks is_our_active_bead, (4) line 897 checks ctrl.state == MilestoneControllerState::Claimed which is false since state is NeedsOperator, (5) returns false, causing the 'claimed by another process' error instead of idempotent retry. The fix of accepting NeedsOperator in the match is correct — NeedsOperator with matching active_bead_id is exactly the state produced by a prior failed sync_flush, making it valid evidence of our own prior claim that needs to be retried.\n- `fr-3-ffaa74f7`: Accept\n  Verified in code: select_next_milestone_bead at run.rs:588-599 writes Claimed state with active_bead_id before claim_bead_in_br is ever called. This means the Claimed state in the controller only proves local selection, not br-level ownership. The race window: (1) select_next_milestone_bead writes Claimed + active_bead_id, (2) another operator runs br update --status=in_progress on the same bead and succeeds, (3) our claim_bead_in_br runs br update which fails (bead already in_progress), (4) fallback at line 852 sees bead is in_progress, (5) is_our_active_bead finds Claimed state with matching active_bead_id and returns true — incorrectly treating another operator's claim as our own retry. This proceeds to create a duplicate Ralph project. The fallback needs stronger evidence (e.g., a persistent flag set only after a successful br update) to distinguish 'we won the br race previously' from 'we merely selected this bead locally'.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260408204915-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260408204915-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-08T22:08:02.366536879Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 2/25\n\n## Accepted\n\n- `fr-2-c0e0b581`\n- `fr-2-405b8bde`\n- `fr-2-6d39965e`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-2-7c8db4fb`\n\n## Final Accepted Amendments\n\n### `fr-2-c0e0b581`\n\nIn `claim_bead_in_br` (src/cli/project.rs:822-832), when `update_bead_status` fails and `load_bead_detail` also fails, the code falls through to the generic error at line 833 which wraps `update_error`. However, `load_bead_detail` can fail for various reasons (network, br binary unavailable, JSON parse error). The `update_error` is reported but the `load_bead_detail` failure is silently swallowed. Consider logging the `load_bead_detail` error at debug/trace level so operators can diagnose why the fallback check failed, especially in scenarios where `br show` itself is broken.\n\n### `fr-2-405b8bde`\n\nIn `src/cli/project.rs` at lines 822-825, do not `return Ok(())` from the \"already in_progress and this is our own prior claim\" branch. That branch currently exits before the `br.sync_flush()` call at lines 838-844, so a retry after `br update` succeeded but `br sync --flush-only` did not will report success without ever flushing the claim into the `.beads` export that `bv` reads. Keep the idempotent-own-claim detection, but continue into `sync_flush()` so the bead actually disappears from ready triage on recovery.\n\n### `fr-2-6d39965e`\n\nIn `src/cli/project.rs` at lines 413-464, handle failures from `milestone_controller::sync_controller_task_claimed` the same way project-creation failures are handled at lines 425-450. Right now the code creates the Ralph project and leaves the bead claimed in `br`, then immediately returns on any controller-write/alignment error without transitioning the controller to `needs_operator` or rolling back the new project. That leaves an orphan claimed bead/project pair and allows duplicate project creation on retry. Wrap the controller-link step in explicit recovery logic (at minimum transition to `needs_operator`; ideally also avoid leaving the newly created project live if the link cannot be recorded).\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}
