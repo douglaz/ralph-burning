@@ -766,9 +766,12 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     // posts comments for those — if persist fails, skipping the comment
     // prevents duplicates on replay (the mapping stays unverified so replay
     // will re-verify and re-attempt both persist and comment).
+    // Gate by outcome index (not just mapped_to_bead_id) so two findings
+    // mapped to the same bead are tracked independently.
     let now = Utc::now();
-    let mut durably_verified: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for outcome in &outcomes {
+    let mut durably_verified_indices: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
+    for (idx, outcome) in outcomes.iter().enumerate() {
         if outcome.verified {
             let verified_mapping = PlannedElsewhereMapping {
                 active_bead_id: outcome.mapping.active_bead_id.clone(),
@@ -790,7 +793,7 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
                     "failed to persist verified planned-elsewhere mapping (non-blocking)"
                 );
             } else {
-                durably_verified.insert(outcome.mapping.mapped_to_bead_id.as_str());
+                durably_verified_indices.insert(idx);
             }
         }
     }
@@ -801,8 +804,8 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     // will re-attempt both persist and comment together.
     let mut commented_count = 0usize;
     if post_comments {
-        for outcome in &outcomes {
-            if !durably_verified.contains(outcome.mapping.mapped_to_bead_id.as_str()) {
+        for (idx, outcome) in outcomes.iter().enumerate() {
+            if !durably_verified_indices.contains(&idx) {
                 continue;
             }
             let comment_text = format!(

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 10
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-9-a9fe286e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "`src/contexts/automation_runtime/success_reconciliation.rs:770-805` still keys the new `durably_verified` gate only by `mapped_to_bead_id`. That is too coarse. If one active bead has two planned-elsewhere findings that both map to the same existing bead, and persisting the verified row succeeds for the first finding but fails for the second, line 793 inserts the shared bead id and line 805 will still post the second comment. The second mapping remains unverified in milestone state, so replay will comment it again. The same bug also lets a transiently failed verification slip through once another mapping to the same bead was persisted. Phase 3 needs to gate on the full mapping identity (for example `(active_bead_id, finding_summary, mapped_to_bead_id)`) and/or retain an explicit per-outcome `verified` check.",
-        "created_at": "2026-04-09T11:57:20.372025127Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "dbb177d0e1919dd121fd28cce5523b6ad851c4f1d83917b061e5a7846bc04910"
-      }
-    ],
-    "processed_count": 30
+    "pending": [],
+    "processed_count": 31
   },
-  "status_summary": "running: final review restart round 10 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-09T11:48:36.635220937Z",
