@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T10:46:41.001422083Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nFound 3 robustness/correctness issues: planned-elsewhere mappings can be lost after final-review commit, malformed `mapped_to_bead_id` values can suppress required restarts, and the new comment flow can duplicate comments after a crash/replay window.\n\n## Amendments\n\n1. Make planned-elsewhere mapping persistence part of the durable final-review commit, or reconstruct it from the accepted final-review aggregate on replay. The stage is committed before `record_planned_elsewhere_amendments()` runs (`src/contexts/workflow_composition/engine.rs:2697-2712`, `src/contexts/workflow_composition/engine.rs:3081-3090`), and that helper only logs-and-continues on failures (`src/contexts/workflow_composition/engine.rs:7555-7658`). Later success reconciliation only loads whatever mappings already exist in milestone state (`src/contexts/automation_runtime/success_reconciliation.rs:686-704`). A crash or transient append failure in that window permanently drops the planned-elsewhere mapping even though the run proceeds or completes.\n   Rationale: This breaks the bead’s core durability/audit requirement: accepted planned-elsewhere findings can be silently lost.\n2. Validate and normalize `mapped_to_bead_id` before using it to suppress restarts. Reviewer payloads are only schema-deserialized (`src/contexts/workflow_composition/final_review.rs:474-513`), and the restart decision treats any `Some(...)` as planned-elsewhere (`src/contexts/workflow_composition/final_review.rs:1503-1558`). The engine then records the target verbatim (`src/contexts/workflow_composition/engine.rs:7610-7618`). That means `\"\"`, whitespace, or other garbage IDs from model output can incorrectly skip the reopen/fix loop and close the active bead with only a later warning.\n   Rationale: Because this field is model-generated, semantic validation is required; otherwise malformed IDs become false planned-elsewhere classifications.\n3. Make mapped-bead comments replay-safe. In `src/contexts/automation_runtime/success_reconciliation.rs:733-777`, comments are posted and `sync_flush()` is executed before the verified mapping row is appended. If the process crashes after the flush succeeds but before `record_planned_elsewhere_mapping()` writes the verified event, replay still sees the original unverified mapping and `verify_and_comment_mappings()` will post the same comment again (`src/contexts/automation_runtime/planned_elsewhere.rs:305-333`).\n   Rationale: This introduces a deterministic duplicate-comment window in a path that otherwise aims to be idempotent across replay.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 6
+}
