@@ -2,29 +2,96 @@
   "active_run": {
     "run_id": "run-20260409055104",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-09T05:51:04.199625768Z",
     "prompt_hash_at_cycle_start": "e4f2dcba7ecd8317b1a44fdb2e2f9c44adf524d64957d27dda5c0ab1e02ade39",
     "prompt_hash_at_stage_start": "e4f2dcba7ecd8317b1a44fdb2e2f9c44adf524d64957d27dda5c0ab1e02ade39",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-ee57a8b1",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "The acceptance criterion states: 'Output from task commands explains the task↔project mapping where useful (e.g., Task foo (project foo))'. Currently task commands delegate directly to project::handle() which prints project-oriented messages (e.g., 'Selected project {id}'). The task handler should intercept at least the select/show/create output paths to add task-aware messaging, or the acceptance criterion should be explicitly relaxed.",
+        "created_at": "2026-04-09T06:08:47.202663714Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "ab5d57278ee27e19d5f7404eb2f7ffb024da145fe0a0e6cbefffb71825c656f0"
+      },
+      {
+        "amendment_id": "fr-1-df1751ba",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "In src/cli/task.rs test task_create_maps_to_project_create_from_bead_args (line 209), the assertion set checks milestone_id, bead_id, project_id, and flow but omits prompt_file. Add `assert_eq!(task_args.prompt_file, project_args.prompt_file);` for completeness.",
+        "created_at": "2026-04-09T06:08:47.202665718Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "f91c2765ecbbcc277973f3a0f312f2600a52e5b57c43ae9ac19f71f2a17c4aa3"
+      },
+      {
+        "amendment_id": "fr-1-f7e2dae5",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Make the `task` namespace render task-aware output and remediation text instead of forwarding directly to `project::handle`. Right now `src/cli/task.rs:52-83` delegates every subcommand unchanged, so `task select`, `task list`, `task show`, and `task create` inherit project-only strings from `src/cli/project.rs:154-159`, `src/cli/project.rs:578-607`, `src/cli/project.rs:506-508`, `src/cli/project.rs:665-675`, and `src/cli/project.rs:1993-1999`, plus project-only fallback errors from `src/shared/error.rs:38-47`. On this branch, `ralph-burning task show 9ni92` prints `Project: 9ni92 (active)` and `ralph-burning task select 9ni92` prints `Selected project 9ni92`, so the new command surface does not actually explain the task<->project mapping or keep users in task vocabulary.",
+        "created_at": "2026-04-09T06:08:47.202670236Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "e62a90e845ac3d8231c9aedf319cecaf70f5f6206c623780a0ef75dd4c55c5a4"
+      },
+      {
+        "amendment_id": "fr-1-0f05076d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Add deterministic behavioral tests for the new `task` namespace. The only new coverage is the parser-focused unit tests in `src/cli/task.rs:95-272`, and the strongest equivalence check in `src/cli/task.rs:206-257` only compares parsed argument structs. There is no end-to-end CLI coverage proving that `task create/show/select/list` execute the same behavior as their project counterparts or that the task-facing output stays correct. Add integration tests that run both namespaces against a temp workspace and compare resulting state/output, especially for `task create` and the no-active-project path.",
+        "created_at": "2026-04-09T06:08:47.202674053Z",
+        "batch_sequence": 4,
+        "source": "workflow_stage",
+        "dedup_key": "82fe0c72f4cfa58fbb68e6656f75327c953d582114b42b38857028125922e184"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-09T05:57:19.383528963Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
 }
