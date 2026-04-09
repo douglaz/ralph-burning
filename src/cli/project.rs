@@ -380,6 +380,17 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
     // malformed --project-id doesn't leave the bead claimed with no task.
     let project_id = args.project_id.map(ProjectId::new).transpose()?;
 
+    // Check for duplicate project ID before claiming the bead. A collision
+    // after claiming would leave the bead in_progress with no linked task,
+    // requiring manual recovery for a preventable input error.
+    if let Some(ref id) = project_id {
+        if FsProjectStore.project_exists(&current_dir, id)? {
+            return Err(AppError::DuplicateProject {
+                project_id: id.as_str().to_owned(),
+            });
+        }
+    }
+
     // Claim the bead in br before creating the project. If the claim
     // fails, transition the milestone controller to needs_operator so
     // the operator can investigate before any Ralph task is created.
