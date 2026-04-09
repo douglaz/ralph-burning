@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409055104-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260409055104-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T06:28:22.363576760Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nThe amendment identifies a real semantic defect: the CLI's `task` namespace currently treats every project as a task even though the persisted model and top-level task help text distinguish bead-backed tasks via `task_source`. The planner is right that some tests and comments intentionally implemented alias behavior, but that only proves the mismatch was codified, not that it is correct.\n\n## Votes\n\n- `fr-2-8f6c5dbb`: Accept\n  `task create` is specifically bead-backed, `ProjectRecord` has an explicit discriminator (`task_source` / `is_milestone_task()`), and `src/cli/task.rs` describes tasks as bead-created projects, so `task show`, `task select`, and `task list` silently relabeling arbitrary standalone projects is a user-visible misclassification. `task list` especially loses the distinction because `ProjectListEntry` drops lineage, and the new tests hard-code that conflation. Even if the current branch intended `task` as a vocabulary alias, baking that equivalence into output and selection semantics is brittle and misleading for operators and scripts that reasonably expect the task namespace to refer to actual bead-backed tasks. The exact implementation can vary—filter, reject, or clearly distinguish non-tasks—but the amendment's core correction is technically sound and improves correctness and maintainability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409055104-final_review-arbiter-c1-a1-cr2-artifact",
+  "payload_id": "run-20260409055104-final_review-arbiter-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T06:29:02.898080070Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected the amendment to restrict the task namespace to bead-backed projects only. While the mismatch between the doc comment ('a task is a project created from a bead') and the runtime behavior (all projects shown as tasks) is real, the implementation is an intentional alias layer as evidenced by the branch name, command metadata, delegation pattern, and tests that explicitly verify task-project equivalence. The behavior is conservative (shows all projects rather than hiding some) and non-destructive. The amendment requests structural changes that constitute feature design territory, not a defect fix. The doc comment should be corrected to match the alias semantics, but that's a minor documentation issue, not a blocking concern.\n\n## Rulings\n\n- `fr-2-8f6c5dbb`: Reject\n  The amendment's factual observations are all correct: task.rs never checks task_source, list_projects() drops lineage from ProjectListEntry, and the tests explicitly assert task list == project list output. The doc comment ('A task is a project that was created from a bead') does conflict with the runtime behavior. However, the weight of evidence shows this is an intentional design choice for this feature branch, not a defect. The branch is named 'feat/9ni-9-2-task-aliases', the #[command(about)] says 'aliases for bead-backed project operations', and the code at task.rs:57-63 deliberately delegates every subcommand to the same project infrastructure without filtering. The integration test at cli.rs:11409 (`assert_eq!(task_stdout, project_stdout)`) was written to explicitly verify alias equivalence — this isn't accidental conflation, it's the specified behavior. The dissenting reviewer argues this is 'user-visible misclassification', but the current behavior is conservative (shows more, not less) and non-destructive. Implementing the amendment would require non-trivial design decisions (error vs filter vs annotate) that constitute feature design, not defect correction. The doc comment imprecision should be fixed (either update the comment to match the alias semantics, or note that strict filtering is planned), but that's a one-line documentation fix, not the structural refactoring the amendment demands. This is a valid future enhancement but not a blocking defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

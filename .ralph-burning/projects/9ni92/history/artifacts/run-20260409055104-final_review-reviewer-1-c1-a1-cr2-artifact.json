@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409055104-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260409055104-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T06:23:04.892831812Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the CLI/task alias changes and found one semantic correctness issue: the new `task` commands treat every project as a task because they never check milestone/task lineage.\n\n## Amendments\n\n1. Correct the `task` namespace so it only presents bead-backed projects as tasks. In `src/cli/task.rs:81-149`, `task show`, `task select`, and `task list` unconditionally relabel any project as a task, even though `ProjectRecord` defines a task as a project with `task_source` set in `src/contexts/project_run_record/model.rs:17-19` and `src/contexts/project_run_record/model.rs:43-57`. `list_projects()` currently drops that lineage in `src/contexts/project_run_record/service.rs:1338-1360`, so a plain `project create` record is shown/selected/listed as a task; the new tests in `tests/cli.rs:11249-11490` even codify that behavior. Carry an `is_task`/`task_source` bit through the list/show path and have `task show`/`task select` reject non-task projects (or at minimum avoid printing them as tasks), and have `task list` filter or clearly distinguish non-task projects instead of silently treating every project as a task.\n   Rationale: This is a semantic correctness bug in mixed workspaces: operators can use `task` commands on ad hoc projects and get output claiming they are milestone tasks when they are not. That conflicts with the task model in the prompt and makes task-oriented workflows/debugging ambiguous.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

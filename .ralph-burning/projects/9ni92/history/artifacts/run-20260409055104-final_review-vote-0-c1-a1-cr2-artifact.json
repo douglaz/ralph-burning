@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409055104-final_review-vote-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260409055104-final_review-vote-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T06:25:38.418439147Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the amendment against the actual code. The factual claims are accurate: task.rs handlers never check task_source, list_projects() drops the task_source field from ProjectListEntry, and the tests explicitly verify that task list == project list for all projects (including non-bead ones). There is a genuine inconsistency between the doc comment ('A task is a project that was created from a bead') and the implementation (all projects shown as tasks). However, the branch name 'feat/9ni-9-2-task-aliases' and the command about text ('aliases for bead-backed project operations') confirm the intent is an alias layer. The mismatch is a doc-comment imprecision, not a correctness defect. The current behavior is safe — it errs on showing more data rather than silently hiding projects. Implementing the amendment would require design decisions (error on non-task show? filter silently? annotate differently?) that go beyond a defect fix into feature design territory. Agreeing with planner position to reject.\n\n## Votes\n\n- `fr-2-8f6c5dbb`: Reject\n  The inconsistency between the doc comment ('A task is a project that was created from a bead') and the runtime behavior (all projects treated as tasks) is real but not a correctness defect. The feature branch name ('task-aliases'), the #[command(about)] text ('aliases for bead-backed project operations'), and the tests all confirm the deliberate design intent: task commands are a vocabulary alias layer over projects. The doc comment is imprecise, not the implementation. The current behavior is safe — it shows all projects rather than hiding some, which is the conservative default. Implementing this amendment would require non-trivial design decisions (should task show error on non-bead projects? should task list silently filter them? should it annotate them differently?) that constitute feature design, not bug fixing. Additionally, ProjectListEntry would need schema changes to carry task_source, and all existing tests would break. This is a valid future enhancement (tightening the task namespace to only bead-backed projects) but not a blocking defect in the current implementation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}
