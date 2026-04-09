@@ -240,6 +240,7 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         bead_id,
         milestone_id_str,
         project_id,
+        run_id,
     )
     .await;
 
@@ -695,6 +696,7 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     bead_id: &str,
     milestone_id_str: &str,
     project_id: &str,
+    run_id: &str,
 ) {
     let Ok(milestone_id) = MilestoneId::new(milestone_id_str) else {
         return;
@@ -730,6 +732,7 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
         bead_id,
         &milestone_id,
         &bead_mappings,
+        run_id,
     );
 
     let mut unverified: Vec<_> = bead_mappings
@@ -860,20 +863,23 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
 }
 
 /// Reconstruct any planned-elsewhere mappings from persisted final-review
-/// aggregate payloads that are missing from the journal. Scans ALL final-review
-/// aggregates (not just the latest) and compares against existing journal
-/// mappings to find gaps.
+/// aggregate payloads that are missing from the journal. Only considers
+/// aggregates from the current run (payload_id starts with run_id) to
+/// prevent resurrecting stale mappings from superseded restart rounds,
+/// older runs, or abandoned review attempts.
 ///
 /// This covers the failure window where the durable stage commit (which
 /// includes the aggregate) succeeded but `record_planned_elsewhere_amendments`
 /// in engine.rs failed or was interrupted — including for earlier restart
-/// rounds when the bead already has mappings from other rounds.
+/// rounds within the same run when the bead already has mappings from other
+/// rounds.
 fn reconstruct_missing_pe_mappings(
     base_dir: &Path,
     project_id: &str,
     bead_id: &str,
     milestone_id: &MilestoneId,
     existing_mappings: &[PlannedElsewhereMapping],
+    run_id: &str,
 ) -> Vec<PlannedElsewhereMapping> {
     let pid = match ProjectId::new(project_id) {
         Ok(pid) => pid,
@@ -895,11 +901,13 @@ fn reconstruct_missing_pe_mappings(
     let now = Utc::now();
     let mut reconstructed = Vec::new();
 
-    // Scan ALL final-review aggregates, not just the latest, so that
-    // mappings lost in any restart round are recovered.
+    // Scan final-review aggregates from the current run only, so that
+    // mappings lost in any restart round within this run are recovered
+    // without resurrecting stale mappings from older runs.
     for payload in &payloads {
         if payload.stage_id != StageId::FinalReview
             || payload.record_kind != RecordKind::StageAggregate
+            || !payload.payload_id.starts_with(run_id)
         {
             continue;
         }
