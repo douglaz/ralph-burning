@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T09:39:34.833540821Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll five amendments identify real defects in the planned-elsewhere/final-review flow. Two amendments describe the same underlying persistence bug from different angles, while the other three cover distinct correctness and durability problems.\n\n## Votes\n\n- `fr-3-1efa3b60`: Accept\n  `verify_and_comment_mappings` computes `verified=true` outcomes, but neither it nor `verify_planned_elsewhere_after_success` persists that state back to durable storage. The reconciliation path reloads mappings from `planned_elsewhere.ndjson` and filters on `!mapped_bead_verified`, so the same mapping will be re-verified and re-commented on later runs. That is a concrete idempotency bug; persisting the updated flag or introducing an append-only superseding record would address it.\n- `fr-3-3bd1a49d`: Accept\n  The early restart-cap branch in `final_review.rs` triggers on any accepted amendment, but the normal path later distinguishes planned-elsewhere amendments with `mapped_to_bead_id.is_none()`. If all accepted amendments are planned-elsewhere, the current early return incorrectly sets `force_completed=true` and emits a restart-cap summary even though no restart is actually required. The predicate should match the later non-planned-elsewhere check.\n- `fr-3-46f7f076`: Accept\n  The reconciliation flow performs `sync_flush` before planned-elsewhere comments are posted, not after. `comment_bead` is a tracked mutation that leaves the adapter dirty until `sync_flush` succeeds, and this code path does not flush again after posting comments. That leaves comment persistence non-durable and non-idempotent across crashes or exits; batching comments into a final sync or flushing after comment posting is the correct fix.\n- `fr-3-d9102962`: Accept\n  This is the same core defect as `fr-3-1efa3b60`, viewed from the engine/journal side, and it is still valid. The engine records planned-elsewhere mappings with `mapped_bead_verified: false`, reconciliation selects work from that persisted flag, and no code path writes back a verified result. Without durable post-run verification state, replay will keep treating already-verified mappings as unverified and will repeat the verification/comment side effects.\n- `fr-3-a1a9ae8d`: Accept\n  `record_planned_elsewhere_mapping` explicitly documents the journal as authoritative and says the sidecar can be rebuilt from it, but `load_planned_elsewhere_mappings` only reads the sidecar and there is no rebuild fallback. Because the engine logs and continues when the sidecar append fails, a partial write can leave a mapping present in audit history but invisible to later reload and reconciliation logic. That is a real recoverability gap and should be fixed either with journal-based recovery or stronger atomicity guarantees.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

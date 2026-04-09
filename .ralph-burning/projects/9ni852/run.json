@@ -2,34 +2,90 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-09T07:56:17.977024141Z",
     "prompt_hash_at_cycle_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "prompt_hash_at_stage_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-1efa3b60",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "verify_and_comment_mappings (planned_elsewhere.rs:247) and verify_planned_elsewhere_after_success (success_reconciliation.rs:674) compute verification outcomes but never persist the updated mapped_bead_verified=true back to the NDJSON file. This means every subsequent call to verify_planned_elsewhere_after_success will re-process the same mappings (re-verifying via br show and re-posting the same br comment on the mapped-to bead). Fix: after verify_and_comment_mappings returns, update the NDJSON entries for mappings whose verified field changed to true, or adopt an append-only design where a verification event supersedes the original unverified record.",
+        "created_at": "2026-04-09T09:39:34.846171940Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "b7a171ec1e127d6b728bd36d44b8d185b51fa1b507d03b2d6ed84d994dd05d86"
+      },
+      {
+        "amendment_id": "fr-3-3bd1a49d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "In final_review.rs:1503, the force-completed early return checks `!final_accepted_amendments.is_empty() && final_review_restart_count >= max_restarts` without distinguishing planned-elsewhere amendments. When ALL accepted amendments are planned-elsewhere and restart_count >= max_restarts (from prior rounds), this path triggers unnecessarily, setting force_completed=true and emitting a misleading 'restart cap reached' summary. The check should be `final_accepted_amendments.iter().any(|a| a.mapped_to_bead_id.is_none()) && final_review_restart_count >= max_restarts` to only force-complete when there are actual regular amendments that would require a restart.",
+        "created_at": "2026-04-09T09:39:34.846174264Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "9d0f32d6e152b3b70b956086d0473179023857194e26c5bcdb96dd25310fd36b"
+      },
+      {
+        "amendment_id": "fr-3-46f7f076",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "After posting a planned-elsewhere `br comment`, run `br sync --flush-only` (or batch comments before a final sync) so the comment mutation is durable. Reconciliation syncs at `src/contexts/automation_runtime/success_reconciliation.rs:200-209` and only then posts comments via `src/contexts/automation_runtime/planned_elsewhere.rs:285-313`; `comment_bead` marks the adapter dirty until `sync_flush` runs (`src/adapters/br_process.rs:510-512`, `src/adapters/br_process.rs:607-617`), so successful comments can be lost on exit.",
+        "created_at": "2026-04-09T09:39:34.846176077Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "edd590f0dbbe20b022c0e5836bbcb014fb54566bb7e48321b6ead342ffdd5be6"
+      },
+      {
+        "amendment_id": "fr-3-d9102962",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "Persist post-run verification results back into milestone state/journal. The engine records every mapping as `mapped_bead_verified: false` (`src/contexts/workflow_composition/engine.rs:7613-7618`), and reconciliation filters on that flag (`src/contexts/automation_runtime/success_reconciliation.rs:699-718`), but `verify_and_comment_mappings` only returns outcomes and never updates `planned_elsewhere.ndjson` or the journal (`src/contexts/automation_runtime/planned_elsewhere.rs:247-323`). As written, a verified mapping stays permanently 'unverified', so any reconciliation replay will re-verify and re-comment the same bead.",
+        "created_at": "2026-04-09T09:39:34.846177881Z",
+        "batch_sequence": 4,
+        "source": "workflow_stage",
+        "dedup_key": "4a85bc13a99291dcadcade23dcb3eec4223bb11a41d15488bdede4a65dd72516"
+      },
+      {
+        "amendment_id": "fr-3-a1a9ae8d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "Make the journal and `planned_elsewhere.ndjson` writes recoverable/atomic. `record_planned_elsewhere_mapping` writes the journal first and says the sidecar can be rebuilt from it (`src/contexts/milestone_record/service.rs:2348-2390`), but `load_planned_elsewhere_mappings` only reads the sidecar (`src/contexts/milestone_record/service.rs:2395-2401`) and the engine merely logs and continues on sidecar-write failure (`src/contexts/workflow_composition/engine.rs:7621-7657`). A crash or I/O error after the journal append leaves a mapping present in audit history but invisible to later reload/comment processing (`src/contexts/automation_runtime/success_reconciliation.rs:684-702`).",
+        "created_at": "2026-04-09T09:39:34.846179724Z",
+        "batch_sequence": 5,
+        "source": "workflow_stage",
+        "dedup_key": "e3227199799e38df2fc10d1faf93afbf623bbaa0526f8ba0a132eef43b4190ea"
+      }
+    ],
     "processed_count": 8
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-09T08:44:44.809493758Z",
+    "resolved_at": "2026-04-09T09:19:43.552008530Z",
     "final_review_reviewers": [
       {
         "backend_family": "claude",
