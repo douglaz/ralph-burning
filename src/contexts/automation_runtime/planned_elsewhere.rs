@@ -83,29 +83,35 @@ async fn verify_bead_exists<R: ProcessRunner>(
     let result = try_br_show(br_read, bead_id).await;
     match &result {
         BeadVerification::Stale(_) => {
-            // Direction 1 — canonical→short: strip the milestone prefix
-            // (e.g. "9ni.8.5.3" → "8.5.3").
-            if let Some(short_id) =
-                crate::contexts::project_run_record::task_prompt_contract::strip_milestone_prefix(
-                    bead_id,
-                )
-            {
-                let alias_result = try_br_show(br_read, short_id).await;
-                if matches!(alias_result, BeadVerification::Verified(_)) {
-                    return alias_result;
-                }
-            }
-            // Direction 2 — short→canonical: prepend the milestone prefix
-            // (e.g. "8.5.3" → "9ni.8.5.3") when the bead_id doesn't
-            // already carry this prefix.
+            use crate::contexts::project_run_record::task_prompt_contract::{
+                milestone_prefix_of, strip_milestone_prefix,
+            };
+            let existing_prefix = milestone_prefix_of(bead_id);
+
             if let Some(prefix) = milestone_prefix {
-                let existing_prefix =
-                    crate::contexts::project_run_record::task_prompt_contract::milestone_prefix_of(
-                        bead_id,
-                    );
-                if existing_prefix != Some(prefix) {
+                if existing_prefix == Some(prefix) {
+                    // Direction 1 — canonical→short: bead_id starts with
+                    // our milestone prefix (e.g. "9ni.8.5.3" → "8.5.3").
+                    if let Some(short_id) = strip_milestone_prefix(bead_id) {
+                        let alias_result = try_br_show(br_read, short_id).await;
+                        if matches!(alias_result, BeadVerification::Verified(_)) {
+                            return alias_result;
+                        }
+                    }
+                } else {
+                    // Direction 2 — short→canonical: bead_id does NOT
+                    // start with our prefix (e.g. "8.5.3" → "9ni.8.5.3").
                     let canonical = format!("{prefix}.{bead_id}");
                     let alias_result = try_br_show(br_read, &canonical).await;
+                    if matches!(alias_result, BeadVerification::Verified(_)) {
+                        return alias_result;
+                    }
+                }
+            } else {
+                // No milestone prefix available — fall back to stripping
+                // only (original pre-bidirectional behaviour).
+                if let Some(short_id) = strip_milestone_prefix(bead_id) {
+                    let alias_result = try_br_show(br_read, short_id).await;
                     if matches!(alias_result, BeadVerification::Verified(_)) {
                         return alias_result;
                     }
@@ -856,15 +862,14 @@ mod tests {
         setup_milestone(base_dir, &milestone_id);
 
         // The reviewer uses the short form "8.5.3" which `br show` doesn't know,
-        // but "9ni.8.5.3" (canonical) succeeds.  Responses are popped from the
-        // back, so push in reverse order of calls:
+        // but "9ni.8.5.3" (canonical) succeeds.  The resolver sees that "8.5.3"
+        // does NOT start with prefix "9ni", so it skips Direction 1 and goes
+        // straight to Direction 2 (short→canonical expansion).
         //   1. br show 8.5.3       → not found
-        //   2. br show 5.3         → not found  (canonical→short strip attempt)
-        //   3. br show 9ni.8.5.3   → success    (short→canonical expansion)
+        //   2. br show 9ni.8.5.3   → success    (short→canonical expansion)
         let canonical_json = r#"{"id":"9ni.8.5.3","title":"Target","status":"open","priority":2,"bead_type":"task"}"#;
         let read_runner = MockBrRunner::new(vec![
-            MockBrRunner::success(canonical_json), // 3rd call (popped first)
-            MockBrRunner::error(1, "issue not found: 5.3"), // 2nd call
+            MockBrRunner::success(canonical_json), // 2nd call (popped first)
             MockBrRunner::error(1, "issue not found: 8.5.3"), // 1st call
         ]);
         let br_read = BrAdapter::with_runner(read_runner);
@@ -894,6 +899,62 @@ mod tests {
         assert!(
             outcome.bead_verified,
             "short→canonical alias should resolve"
+        );
+        assert!(outcome.stale_warning.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn alias_resolver_does_not_collide_with_different_prefix_bead(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Scenario: bead_id "8.5.3" is stale.  Naïvely stripping the first
+        // segment yields "5.3", which happens to exist as a DIFFERENT bead.
+        // The resolver must NOT verify "5.3" — it should skip Direction 1
+        // (because "8" ≠ milestone prefix "9ni") and go straight to
+        // Direction 2, resolving "9ni.8.5.3".
+        //
+        // Call sequence:
+        //   1. br show 8.5.3       → not found
+        //   2. br show 9ni.8.5.3   → success  (Direction 2)
+        // "5.3" must never be queried.
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        let canonical_json = r#"{"id":"9ni.8.5.3","title":"Target","status":"open","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(canonical_json), // 2nd call (Direction 2)
+            MockBrRunner::error(1, "issue not found: 8.5.3"), // 1st call
+        ]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let input = PlannedElsewhereInput {
+            active_bead_id: "9ni.8.5.2".to_owned(),
+            finding_summary: "Alias collision avoidance test".to_owned(),
+            mapped_to_bead_id: "8.5.3".to_owned(),
+        };
+
+        let now = Utc::now();
+        let outcome = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            false,
+            now,
+        )
+        .await?;
+
+        // If 5.3 were queried, MockBrRunner would panic (no 3rd response).
+        assert!(
+            outcome.bead_verified,
+            "should resolve via Direction 2 to 9ni.8.5.3, never touching 5.3"
         );
         assert!(outcome.stale_warning.is_none());
 

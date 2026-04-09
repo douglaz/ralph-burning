@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 25
@@ -23,40 +23,14 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-24-5f171b75",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 24,
-        "body": "Fix the planned-elsewhere alias resolver so it only rewrites IDs when the input is actually in the expected form. In `src/contexts/automation_runtime/planned_elsewhere.rs:85-108`, `verify_bead_exists()` now applies `strip_milestone_prefix()` to any stale dotted ID, but `strip_milestone_prefix()` in `src/contexts/project_run_record/task_prompt_contract.rs:322-345` blindly drops the first segment from any string containing a dot. That means a short ID like `8.5.3` is retried as `5.3` before `9ni.8.5.3`; if `5.3` exists, the code will mark the mapping as verified and post the comment on the wrong bead. The new regression at `src/contexts/automation_runtime/planned_elsewhere.rs:858-868` documents this call order but does not cover the collision case. Restrict canonical→short fallback to IDs that actually start with the active bead's known prefix, and only do short→canonical expansion when the input has no canonical prefix at all. Add a test where `8.5.3` is stale, `5.3` exists, and the resolver must still target `9ni.8.5.3`.",
-        "created_at": "2026-04-09T18:42:10.838117895Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "b39a2a01c97ddbdfca7e12e388afcd87ffe049bce8ca8ad1f0c420bda7696af4"
-      }
-    ],
-    "processed_count": 70
+    "pending": [],
+    "processed_count": 71
   },
-  "status_summary": "running: final review restart round 25 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
-    "stage_id": "final_review",
-    "resolved_at": "2026-04-09T18:30:56.598775040Z",
-    "final_review_reviewers": [
-      {
-        "backend_family": "claude",
-        "model_id": "claude-opus-4-6"
-      },
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.4"
-      }
-    ],
-    "final_review_planner": {
-      "backend_family": "claude",
-      "model_id": "claude-opus-4-6"
-    },
-    "final_review_arbiter": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-09T18:42:10.962621397Z",
+    "primary_target": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }
