@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr2-artifact",
+  "payload_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T20:10:22.310008010Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAssessed three amendments against the review_classification.rs implementation and the bead spec (prompt-9ni721.md). One amendment (empty affected_files) targets a valid design choice that the spec doesn't prohibit; rejecting. The serialization format mismatch (snake_case vs kebab-case) is a genuine interop risk since downstream prompt-facing stages and specs consistently use kebab-case; accepting. The trailing-dot bead ID gap is a real validation inconsistency already enforced by other parts of the codebase; accepting.\n\n## Votes\n\n- `fr-2-6b0eea03`: Reject\n  The spec (prompt-9ni721.md:15) defines affected_files as Vec<String> with no non-empty constraint. An empty vec is semantically valid for findings about missing files that don't exist yet, project-level configuration issues, or findings about absent test coverage. The validation already rejects individual empty/whitespace-only entries within the vec — the current behavior is a deliberate, defensible design choice. The amendment itself frames this as 'consider whether' rather than identifying a concrete bug. Adding a non-empty constraint would over-constrain the schema for legitimate use cases.\n- `fr-2-059e43c0`: Accept\n  Real interop bug. The bead spec (prompt-9ni721.md:13-23) and downstream bead specs (prompt-9ni852.md) consistently use kebab-case labels: fix-now, planned-elsewhere, propose-new-bead. The code at line 50 uses `rename_all = \"snake_case\"` producing fix_now, planned_elsewhere, propose_new_bead. Since downstream stages (7.2.2 prompt rendering, 7.3/7.5 review, 8.5.x reconciliation) will be built against the spec's kebab-case labels — and crucially, LLM-facing prompts will instruct models to produce kebab-case values — the deserializer will reject valid classifications. This should use `rename_all = \"kebab-case\"` and the round-trip tests updated accordingly.\n- `fr-2-34d512f1`: Accept\n  Genuine validation gap. validate_bead_id_syntax allows trailing-dot IDs like '9ni.' and 'bead.' which pass all current checks (non-empty, no whitespace, no leading dot, no path separators). But strip_milestone_prefix (task_prompt_contract.rs:322-329) returns None for 'trailing.' (confirmed by test at line 658), and bundle.rs:567-570 explicitly rejects empty suffixes after a milestone prefix. This means validation passes IDs that downstream code treats as malformed. Adding a check for trailing dots (and empty segments between dots) would make validate_bead_id_syntax consistent with the rest of the codebase's bead ID handling.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

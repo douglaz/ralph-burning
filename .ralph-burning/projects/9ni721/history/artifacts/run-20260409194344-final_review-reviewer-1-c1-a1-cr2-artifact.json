@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260409194344-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T20:09:09.707562713Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff against `origin/master`, with end-to-end inspection of `src/contexts/workflow_composition/review_classification.rs` and related bead-ID helpers. Two correctness gaps remain: the serialized classification names do not match the documented schema, and bead-ID syntax validation still accepts malformed IDs with empty suffixes. `cargo test review_classification --lib` and `cargo test --lib` both passed.\n\n## Amendments\n\n1. Align `FindingClassification`’s serialized discriminator with the documented schema. `src/contexts/workflow_composition/review_classification.rs:50` uses `rename_all = \"snake_case\"`, and `src/contexts/workflow_composition/review_classification.rs:320-331` asserts `fix_now` / `planned_elsewhere` / `propose_new_bead`, but the bead spec defines the three classes as `fix-now`, `planned-elsewhere`, and `propose-new-bead` in `prompt-9ni721.md:13-23`. As written, persisted JSON using the documented labels will fail to deserialize, and this type will emit the wrong wire values for downstream prompt/rendering work.\n   Rationale: This is a schema mismatch, not just naming preference. The Rust model should serialize the same classification identifiers the spec and surrounding workflow text use.\n2. Tighten `mapped_to_bead_id` syntax validation so obviously malformed IDs are rejected. `validate_bead_id_syntax` in `src/contexts/workflow_composition/review_classification.rs:88-108` currently allows values like `9ni.` or `bead.` because it only checks emptiness, whitespace, leading dot, and path separators. Elsewhere the codebase already treats an empty suffix after the milestone prefix as invalid (`src/contexts/milestone_record/bundle.rs:567-570`), and `strip_milestone_prefix` also rejects empty short IDs (`src/contexts/project_run_record/task_prompt_contract.rs:322-329`). That means `validate_classification` does not actually enforce the promised “syntactically valid” rule for `mapped_to_bead_id`.\n   Rationale: The bead explicitly requires schema-level syntax validation before reconciliation-time existence checks. Accepting `9ni.` as valid undermines that contract and leaves a malformed ID to fail later in a less precise place.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

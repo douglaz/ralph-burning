@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260409194344",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
     "started_at": "2026-04-09T19:43:44.019387404Z",
     "prompt_hash_at_cycle_start": "1f97ea334523113f73c374e9c84685a59c2d807173de5424308e23f98cb73c59",
     "prompt_hash_at_stage_start": "1f97ea334523113f73c374e9c84685a59c2d807173de5424308e23f98cb73c59",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-059e43c0",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "Align `FindingClassification`’s serialized discriminator with the documented schema. `src/contexts/workflow_composition/review_classification.rs:50` uses `rename_all = \"snake_case\"`, and `src/contexts/workflow_composition/review_classification.rs:320-331` asserts `fix_now` / `planned_elsewhere` / `propose_new_bead`, but the bead spec defines the three classes as `fix-now`, `planned-elsewhere`, and `propose-new-bead` in `prompt-9ni721.md:13-23`. As written, persisted JSON using the documented labels will fail to deserialize, and this type will emit the wrong wire values for downstream prompt/rendering work.",
+        "created_at": "2026-04-09T20:13:56.184881522Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "fb50bc8e6364d270cb95dc38001eeabf01110f9193f3a5888373e3708633b0ed"
+      },
+      {
+        "amendment_id": "fr-2-34d512f1",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "Tighten `mapped_to_bead_id` syntax validation so obviously malformed IDs are rejected. `validate_bead_id_syntax` in `src/contexts/workflow_composition/review_classification.rs:88-108` currently allows values like `9ni.` or `bead.` because it only checks emptiness, whitespace, leading dot, and path separators. Elsewhere the codebase already treats an empty suffix after the milestone prefix as invalid (`src/contexts/milestone_record/bundle.rs:567-570`), and `strip_milestone_prefix` also rejects empty short IDs (`src/contexts/project_run_record/task_prompt_contract.rs:322-329`). That means `validate_classification` does not actually enforce the promised “syntactically valid” rule for `mapped_to_bead_id`.",
+        "created_at": "2026-04-09T20:13:56.184884518Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "00a4d246fdcb665d2191ddda804fa1047e300ab9436831e5e68159609b586c95"
+      }
+    ],
     "processed_count": 2
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-09T19:49:51.916514394Z",
+    "resolved_at": "2026-04-09T20:03:24.040303414Z",
     "final_review_reviewers": [
       {
         "backend_family": "claude",
