@@ -258,18 +258,20 @@ pub struct MappingVerificationOutcome {
     pub warning: Option<String>,
 }
 
-/// Verify unverified planned-elsewhere mappings and optionally post comments.
+/// Verify unverified planned-elsewhere mappings by checking that each
+/// mapped-to bead exists via `br show`.
 ///
 /// Called from success_reconciliation after a run completes to perform
-/// the stale-bead lookups and br comment postings that the engine cannot
-/// do (it lacks BrAdapter access). Best-effort: individual failures are
-/// logged but do not prevent the active bead from completing.
-pub async fn verify_and_comment_mappings<R: ProcessRunner>(
-    br_mutation: &BrMutationAdapter<R>,
+/// the stale-bead lookups that the engine cannot do (it lacks BrAdapter
+/// access). Comment posting is handled separately by the caller after
+/// persisting verified records, to avoid duplicate comments on replay.
+///
+/// Best-effort: individual failures are logged but do not prevent the
+/// active bead from completing.
+pub async fn verify_mappings<R: ProcessRunner>(
     br_read: &BrAdapter<R>,
     active_bead_id: &str,
     mappings: &[PlannedElsewhereMapping],
-    post_comments: bool,
 ) -> Vec<MappingVerificationOutcome> {
     let mut outcomes = Vec::with_capacity(mappings.len());
 
@@ -302,40 +304,10 @@ pub async fn verify_and_comment_mappings<R: ProcessRunner>(
                 }
             };
 
-        let comment_posted = if post_comments && verified {
-            let comment_text = format!(
-                "Planned-elsewhere mapping from {}: {}",
-                mapping.active_bead_id, mapping.finding_summary
-            );
-            match br_mutation
-                .comment_bead(&mapping.mapped_to_bead_id, &comment_text)
-                .await
-            {
-                Ok(_) => {
-                    tracing::info!(
-                        mapped_to_bead_id = mapping.mapped_to_bead_id.as_str(),
-                        active_bead_id = active_bead_id,
-                        "posted planned-elsewhere comment on mapped-to bead"
-                    );
-                    true
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        mapped_to_bead_id = mapping.mapped_to_bead_id.as_str(),
-                        error = %e,
-                        "failed to post planned-elsewhere comment (non-blocking)"
-                    );
-                    false
-                }
-            }
-        } else {
-            false
-        };
-
         outcomes.push(MappingVerificationOutcome {
             mapping: mapping.clone(),
             verified,
-            comment_posted,
+            comment_posted: false,
             warning,
         });
     }

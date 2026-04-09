@@ -675,10 +675,14 @@ fn delete_stale_hint(base_dir: &Path, milestone_id_str: &str) {
 
 /// Best-effort verification and commenting for planned-elsewhere mappings.
 ///
-/// Loads the NDJSON mappings for this milestone, filters for unverified ones
-/// belonging to this bead, and calls `verify_and_comment_mappings` to perform
-/// the stale-bead lookup and optional `br comment`. Failures are logged but
-/// never block reconciliation.
+/// Loads mappings for this milestone from the journal, filters for unverified
+/// ones belonging to this bead, then runs four phases:
+/// 1. Verify mapped-to beads exist via `br show`
+/// 2. Persist verified records to journal (durable before commenting)
+/// 3. Post `br comments add` on verified beads (only if Phase 2 succeeded)
+/// 4. Flush br mutations
+///
+/// Failures are logged but never block reconciliation.
 ///
 /// If no mappings exist at all for this bead (e.g. because
 /// `record_planned_elsewhere_amendments` in engine.rs failed after the stage
@@ -742,18 +746,10 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
         .map(|v| v != "0" && v.to_lowercase() != "false")
         .unwrap_or(true);
 
-    // Phase 1: Verify only — do NOT post comments yet. This lets us persist
-    // verified records to the journal before any comments are posted, closing
-    // the crash window where a comment is posted but the verified record is
-    // not yet written (which would cause duplicate comments on replay).
-    let outcomes = super::planned_elsewhere::verify_and_comment_mappings(
-        br_mutation,
-        br_read,
-        bead_id,
-        &unverified,
-        false, // post_comments=false — comments posted in phase 3
-    )
-    .await;
+    // Phase 1: Verify only — no comments. Comment posting happens in Phase 3
+    // after verified records are durably persisted, preventing duplicate
+    // comments on replay.
+    let outcomes = super::planned_elsewhere::verify_mappings(br_read, bead_id, &unverified).await;
 
     for outcome in &outcomes {
         if let Some(warning) = &outcome.warning {
@@ -766,10 +762,12 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     }
 
     // Phase 2: Persist verified mappings to the journal BEFORE posting any
-    // comments. On replay, these mappings will be filtered out by
-    // `!m.mapped_bead_verified`, preventing re-verification and duplicate
-    // comments regardless of when a crash occurs.
+    // comments. Track which mappings were durably persisted so Phase 3 only
+    // posts comments for those — if persist fails, skipping the comment
+    // prevents duplicates on replay (the mapping stays unverified so replay
+    // will re-verify and re-attempt both persist and comment).
     let now = Utc::now();
+    let mut durably_verified: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for outcome in &outcomes {
         if outcome.verified {
             let verified_mapping = PlannedElsewhereMapping {
@@ -791,17 +789,20 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
                     error = %e,
                     "failed to persist verified planned-elsewhere mapping (non-blocking)"
                 );
+            } else {
+                durably_verified.insert(outcome.mapping.mapped_to_bead_id.as_str());
             }
         }
     }
 
-    // Phase 3: Post comments on verified mapped-to beads. Because verified
-    // records are already durable, a crash here cannot cause duplicate
-    // comments on replay — the mapping is already marked verified.
+    // Phase 3: Post comments only for mappings whose verified state was
+    // durably recorded in Phase 2. This prevents duplicate comments on
+    // replay: if persist failed, the mapping stays unverified and replay
+    // will re-attempt both persist and comment together.
     let mut commented_count = 0usize;
     if post_comments {
         for outcome in &outcomes {
-            if !outcome.verified {
+            if !durably_verified.contains(outcome.mapping.mapped_to_bead_id.as_str()) {
                 continue;
             }
             let comment_text = format!(
@@ -880,10 +881,12 @@ fn reconstruct_missing_pe_mappings(
         Err(_) => return Vec::new(),
     };
 
-    // Build a set of existing identity keys for dedup.
-    let existing_keys: std::collections::HashSet<(&str, &str)> = existing_mappings
+    // Build a mutable set of existing identity keys for dedup. Updated as
+    // new mappings are reconstructed so the same identity appearing in
+    // multiple aggregates is only reconstructed once.
+    let mut seen_keys: std::collections::HashSet<(String, String)> = existing_mappings
         .iter()
-        .map(|m| (m.finding_summary.as_str(), m.mapped_to_bead_id.as_str()))
+        .map(|m| (m.finding_summary.clone(), m.mapped_to_bead_id.clone()))
         .collect();
 
     let now = Utc::now();
@@ -916,10 +919,11 @@ fn reconstruct_missing_pe_mappings(
                 None => continue,
             };
 
-            let identity_key = (amendment.normalized_body.as_str(), mapped_to);
-            if existing_keys.contains(&identity_key) {
+            let identity_key = (amendment.normalized_body.clone(), mapped_to.to_owned());
+            if seen_keys.contains(&identity_key) {
                 continue;
             }
+            seen_keys.insert(identity_key);
 
             let mapping = PlannedElsewhereMapping {
                 active_bead_id: bead_id.to_owned(),

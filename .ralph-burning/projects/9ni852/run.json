@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 9
@@ -23,73 +23,14 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-8-88f788ba",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "In `verify_planned_elsewhere_after_success` (success_reconciliation.rs), Phase 3 posts comments for all outcomes where `outcome.verified == true`, regardless of whether Phase 2 successfully persisted that mapping as verified. If Phase 2's `record_planned_elsewhere_mapping` call fails (logged as non-blocking warn) but Phase 3's `comment_bead` succeeds, and the process later restarts, the mapping is still unverified in the journal, so it will be re-verified and the comment posted again. Fix: only post the comment in Phase 3 if Phase 2 succeeded for that specific mapping. Track per-mapping Phase 2 success (e.g., a `HashSet` of successfully persisted `mapped_to_bead_id` values) and gate Phase 3 on it.",
-        "created_at": "2026-04-09T11:42:00.838775969Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "f236bac0828fe12b11d0830fb499fc31b9c57b184556a95b11fd09c529ad9fe0"
-      },
-      {
-        "amendment_id": "fr-8-dc90abe2",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "The commenting logic in `verify_planned_elsewhere_after_success` (success_reconciliation.rs, Phase 3) duplicates the commenting logic inside `verify_and_comment_mappings` (planned_elsewhere.rs, lines 305-333). The success_reconciliation path calls `verify_and_comment_mappings` with `post_comments=false` then reimplements commenting separately. Refactor: either (a) split `verify_and_comment_mappings` into `verify_mappings` and a separate `post_mapping_comments` that success_reconciliation calls in Phase 3, or (b) keep the current structure but add a comment noting the intentional duplication and linking the two sites so future editors keep them in sync.",
-        "created_at": "2026-04-09T11:42:00.838778353Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "befee0e581cd674c0d0b4d3d74c58e1d6e9d695efdf87370058567c9595502f0"
-      },
-      {
-        "amendment_id": "fr-8-02afe4b6",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "`src/contexts/automation_runtime/success_reconciliation.rs:772-813` still posts mapped-bead comments even when writing the verified mapping fails at `:782-788`. If `record_planned_elsewhere_mapping(...)` returns an error, phase 3 still calls `comment_bead(...)`, so a retry/replay sees no durable `mapped_bead_verified=true` record and can post the same comment again. Only mappings whose verified state was durably recorded should advance to comment posting.",
-        "created_at": "2026-04-09T11:42:00.838779906Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "3cbf56cb41acb92706a02407832fd0a478bcafcc3080cb49d6a842fe128340c2"
-      },
-      {
-        "amendment_id": "fr-8-f4e46f89",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "`src/contexts/automation_runtime/success_reconciliation.rs:883-948` deduplicates reconstructed mappings only against the journal snapshot loaded at entry. Because `existing_keys` is never updated after a new mapping is reconstructed, the same `(finding_summary, mapped_to_bead_id)` present in multiple final-review aggregates will be reconstructed once per aggregate, then verified/commented once per copy in the same reconciliation run. Insert each newly reconstructed identity into the dedup set before continuing.",
-        "created_at": "2026-04-09T11:42:00.838781439Z",
-        "batch_sequence": 4,
-        "source": "workflow_stage",
-        "dedup_key": "63c277952effa9b1d12aab8028fd1aaeb10aa7c981b4d5c27234b9715fd3653a"
-      }
-    ],
-    "processed_count": 26
+    "pending": [],
+    "processed_count": 30
   },
-  "status_summary": "running: final review restart round 9 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
-    "stage_id": "final_review",
-    "resolved_at": "2026-04-09T11:30:35.096704833Z",
-    "final_review_reviewers": [
-      {
-        "backend_family": "claude",
-        "model_id": "claude-opus-4-6"
-      },
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.4"
-      }
-    ],
-    "final_review_planner": {
-      "backend_family": "claude",
-      "model_id": "claude-opus-4-6"
-    },
-    "final_review_arbiter": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-09T11:42:00.983027308Z",
+    "primary_target": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }
