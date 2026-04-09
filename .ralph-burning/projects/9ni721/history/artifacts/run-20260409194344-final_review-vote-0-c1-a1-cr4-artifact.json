@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-vote-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260409194344-final_review-vote-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T20:34:46.108022404Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify genuine, independently verifiable defects in review_classification.rs. Amendment fr-4-4878e972 correctly identifies that serde's internally-tagged enum silently discards cross-variant fields — a real data integrity risk given LLM-generated input. Amendment fr-4-673cabe8 correctly identifies that remediation_hint is the sole string field excluded from the validation sweep applied to every other string field in the same function.\n\n## Votes\n\n- `fr-4-4878e972`: Accept\n  Verified in source. Line 50 uses `#[serde(tag = \"classification\", rename_all = \"kebab-case\")]` with no `deny_unknown_fields`. Serde's internally-tagged enum will silently discard fields that belong to other variants during deserialization. A payload like `{\"classification\":\"fix-now\",\"finding_summary\":\"x\",\"severity\":\"high\",\"affected_files\":[],\"mapped_to_bead_id\":\"bead-2\"}` deserializes as FixNow with no error, silently dropping `mapped_to_bead_id`. This directly violates the doc comment at line 46 ('Every finding must be classified as exactly one variant') because a confused/multi-variant payload is accepted rather than rejected. The risk is practical: these payloads come from LLM-generated reviewer output where field confusion across variants is a realistic failure mode. I note that `deny_unknown_fields` has known limitations with serde's internally-tagged enums and the fix likely requires a custom deserializer or post-deserialization cross-variant field check, but the defect itself is clearly valid.\n- `fr-4-673cabe8`: Accept\n  Verified in source. At line 131, `remediation_hint` is bound as `_` and entirely skipped during validation. Every other string field in `validate_classification` is checked with `.trim().is_empty()`: finding_summary (lines 133, 150, 172), affected_files entries (lines 136-141), mapped_to_bead_id (line 153 via validate_bead_id_syntax), rationale (lines 161, 181), proposed_title (line 175), proposed_scope (line 179). The remediation_hint is the only string field that escapes this validation. When present, `Some(\"\")` or `Some(\"   \")` passes as valid data, which is semantically worse than `None` — it signals content exists when it doesn't. This is an inconsistency in the validation contract that should be fixed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

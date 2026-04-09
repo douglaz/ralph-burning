@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260409194344-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T20:32:44.547444469Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the branch diff against `master...HEAD`, read the new review-classification implementation end-to-end, and ran `cargo test --quiet` successfully. I found 2 correctness gaps in the new schema/validation code.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/review_classification.rs:49-76` does not reject unknown or cross-variant fields during deserialization. Because `FindingClassification` is an internally tagged enum without any `deny_unknown_fields` guard, a payload like `{\"classification\":\"fix-now\",...,\"mapped_to_bead_id\":\"bead-2\"}` will deserialize as `FixNow` and silently discard the planned-elsewhere field. That violates the stated rule that each finding must have exactly one classification and lets malformed reviewer output take the wrong downstream path instead of being rejected.\n   Rationale: This is a correctness issue in the core schema boundary: mixed or mistyped classifier payloads can be accepted as valid and then reconciled incorrectly.\n2. `src/contexts/workflow_composition/review_classification.rs:127-143` never validates `remediation_hint` when it is present on `FixNow`. `Some(\"\")` and whitespace-only hints currently pass `validate_classification`, even though the bead explicitly calls for rejecting malformed classifications and empty-string edge cases. That means persisted/classified findings can carry a meaningless remediation hint as if it were valid data.\n   Rationale: This leaves one of the schema fields outside the domain-validation contract, so malformed `fix-now` findings are accepted instead of rejected.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

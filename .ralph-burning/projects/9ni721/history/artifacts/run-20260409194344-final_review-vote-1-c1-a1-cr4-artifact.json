@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260409194344-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T20:35:36.447912385Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments describe real defects in the review classification contract. The enum currently deserializes malformed mixed-field payloads without rejecting them, and FixNow validation skips an optional string field that should still be non-empty when present.\n\n## Votes\n\n- `fr-4-4878e972`: Accept\n  `FindingClassification` is an internally tagged serde enum with no strict unknown-field handling, so a payload tagged as `fix-now` can include `planned-elsewhere` fields and still deserialize as `FixNow` with the extra data silently discarded. That is a real robustness bug for reviewer-generated JSON because malformed mixed-variant payloads are accepted and then routed down the wrong path instead of being rejected at the boundary.\n- `fr-4-673cabe8`: Accept\n  `validate_classification` matches `remediation_hint` as `_` and never inspects it, so `Some(\"\")` and whitespace-only values pass validation. Given the module's stated goal of rejecting malformed classifications and its existing empty-string checks on the other string fields, this is a genuine validation gap that allows meaningless data to be treated as valid.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}
