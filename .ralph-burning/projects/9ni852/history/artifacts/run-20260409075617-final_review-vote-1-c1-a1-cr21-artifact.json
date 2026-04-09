@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr21-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T17:27:25.366110154Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nThree amendments identify real defects in planned-elsewhere persistence and supersession. The journal trailing-line amendment correctly notes a broader scope change, but the underlying behavior is an intentional, logged crash-recovery policy rather than a clear correctness bug.\n\n## Votes\n\n- `fr-21-b77babca`: Accept\n  `record_planned_elsewhere_round_sentinel` is the outlier that hardcodes `Utc::now()` instead of taking an injected timestamp. That breaks the module's established testability pattern and can give the sentinel a different timestamp from the mappings recorded for the same round. Passing `now` from the caller is the cleaner and more maintainable design.\n- `fr-21-e3de83bb`: Reject\n  The amendment is right that the malformed-trailing-line tolerance applies to all milestone journal reads, not only planned-elsewhere flows, but that appears to be an intentional global recovery policy. The code logs a warning for a malformed last line and still fails hard on non-trailing corruption, which matches the existing controller-journal pattern. That broader scope may merit documentation, but it is not by itself a defect that requires code change.\n- `fr-21-34e4e881`: Accept\n  `rebuild_planned_elsewhere_from_journal()` currently computes max rounds per `(active_bead_id, run_id)`, so it preserves the latest mapping from every run rather than collapsing to the authoritative run for a bead. That conflicts with the documented purpose of `run_id` and leaves stale mappings visible after a newer run supersedes them with zero planned-elsewhere findings. The loader needs either authoritative-run collapse or an explicit run-scoped API.\n- `fr-21-66be0b00`: Accept\n  The round sentinel is load-bearing for zero-mapping supersession, but both engine call sites currently discard append failures with `let _ =`. If that write fails, stale mappings can remain authoritative with no warning or retry path. At minimum the failure needs to be surfaced; ideally it should be propagated or retried because it affects correctness, not just observability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 21
+}

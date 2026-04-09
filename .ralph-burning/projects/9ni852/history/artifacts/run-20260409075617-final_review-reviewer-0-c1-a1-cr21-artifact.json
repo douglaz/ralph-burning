@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr21-artifact",
+  "payload_id": "run-20260409075617-final_review-reviewer-0-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T17:09:08.910326841Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the planned-elsewhere reconciliation feature. The implementation is well-designed with journal-first writes, fail-closed PE validation, conservative merge for disagreeing reviewers, and comprehensive test coverage. The multi-phase verify→persist→comment→flush approach in success_reconciliation prevents duplicate comments on replay. The round supersession logic (sentinels + aggregate reconstruction) handles crash recovery correctly. No critical bugs found; two minor concerns below.\n\n## Amendments\n\n1. In `record_planned_elsewhere_round_sentinel` (service.rs ~line 2407), `Utc::now()` is called directly for the event timestamp instead of accepting a `now: DateTime<Utc>` parameter like every other event-writing function in this module. This breaks the testability pattern used throughout the codebase (e.g., `reconcile_planned_elsewhere` accepts `now`, `record_planned_elsewhere_mapping` uses `mapping.recorded_at`). Change the signature to accept a `now` parameter and pass it from `record_planned_elsewhere_amendments` in engine.rs, which already has `Utc::now()` in scope.\n   Rationale: Inconsistent testability pattern. The sentinel timestamp doesn't affect correctness today (only completion_round matters for supersession), but this makes the function harder to unit test and breaks the module's established convention. Low risk but easy to fix now before it becomes load-bearing.\n2. In `read_journal_from_path` (fs.rs ~line 3085), the `_milestone_id` parameter is now unused and the error message for non-trailing corrupt lines changed from `format!(\"milestones/{}/journal.ndjson\", milestone_id)` to `path.display().to_string()`. This is a broader behavioral change to ALL journal reading, not just PE-related reads. The trailing-line tolerance is reasonable crash recovery, but the change should be noted as intentionally broader than the PE feature scope — it silently drops the last line of any journal if it's malformed, which could mask data loss from non-crash causes (e.g., disk corruption, concurrent writes without proper locking).\n   Rationale: The trailing-line tolerance is a reasonable defensive measure, but it's a cross-cutting change that affects all milestone journal consumers, not just planned-elsewhere. If the last line happens to be the only completion event for a bead, silently dropping it could lead to a bead being re-executed. The warning log is good, but consider gating this tolerance behind a flag or limiting it to explicitly PE-related code paths if the broader change wasn't intentional.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 21
+}

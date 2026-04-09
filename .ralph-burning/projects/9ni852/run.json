@@ -2,35 +2,83 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 21
+      "completion_round": 22
     },
     "started_at": "2026-04-09T07:56:17.977024141Z",
     "prompt_hash_at_cycle_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "prompt_hash_at_stage_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 20
+    "final_review_restart_count": 21
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 21,
+  "completion_rounds": 22,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-21-b77babca",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 21,
+        "body": "In `record_planned_elsewhere_round_sentinel` (service.rs ~line 2407), `Utc::now()` is called directly for the event timestamp instead of accepting a `now: DateTime<Utc>` parameter like every other event-writing function in this module. This breaks the testability pattern used throughout the codebase (e.g., `reconcile_planned_elsewhere` accepts `now`, `record_planned_elsewhere_mapping` uses `mapping.recorded_at`). Change the signature to accept a `now` parameter and pass it from `record_planned_elsewhere_amendments` in engine.rs, which already has `Utc::now()` in scope.",
+        "created_at": "2026-04-09T17:27:25.380840441Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "424a062ad78da370d6e617ad0068ce51d1fa2d0a1480bdca2fced78db06274ae"
+      },
+      {
+        "amendment_id": "fr-21-34e4e881",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 21,
+        "body": "Fix `load_planned_elsewhere_mappings()` so a newer run can supersede mappings from an abandoned run. `PlannedElsewhereMapping.run_id` is documented as the way to ignore stale mappings from rolled-back or abandoned runs (`src/contexts/milestone_record/model.rs:747-749`), but `rebuild_planned_elsewhere_from_journal()` still computes max rounds per `(active_bead_id, run_id)` and then keeps the latest mapping from every run (`src/contexts/milestone_record/service.rs:2583-2611`). If bead `A` records a planned-elsewhere mapping in `run-1` and a later `run-2` completes with no planned-elsewhere findings, `load_planned_elsewhere_mappings()` will still return the stale `run-1` mapping forever. Collapse milestone state to the latest authoritative run per bead, or make the loader require the authoritative run id instead of exposing superseded cross-run data as current state.",
+        "created_at": "2026-04-09T17:27:25.380843316Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "708b726bc55786e6f06077a2e22f68becbac134bf834e599fd4aac8a1cd5f936"
+      },
+      {
+        "amendment_id": "fr-21-66be0b00",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 21,
+        "body": "Do not silently discard failures from `record_planned_elsewhere_round_sentinel()`. Both completion paths call it and ignore the result (`src/contexts/workflow_composition/engine.rs:7617-7624` and `src/contexts/workflow_composition/engine.rs:3088-3094` via `record_planned_elsewhere_amendments()`), but the zero-PE supersession logic in `rebuild_planned_elsewhere_from_journal()` depends on those sentinel journal entries (`src/contexts/milestone_record/service.rs:2496-2526` and `src/contexts/milestone_record/service.rs:2590-2608`). A journal append failure in a later round with zero planned-elsewhere findings will therefore silently resurrect stale mappings, and today there is no warning or retry path for operators to notice.",
+        "created_at": "2026-04-09T17:27:25.380845290Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "5139a92e2fb8da99194aabbd415dc0a6d5f431a4ecd04dd1db31ad5d1afedea8"
+      }
+    ],
     "processed_count": 63
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 22 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
-    "stage_id": "plan_and_implement",
-    "resolved_at": "2026-04-09T16:53:50.968381343Z",
-    "primary_target": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-09T17:06:17.808396274Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }
