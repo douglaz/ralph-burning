@@ -277,12 +277,19 @@ where
             details: format!("failed to read prompt for final review: {e}"),
         })?;
 
-    // --- Proposal phase: prepare and emit started events ---
+    // --- Proposal phase: prepare all reviewers first, then emit started events ---
+    // We collect all prep data before emitting any started events so that a
+    // prep failure (e.g. build_reviewer_prompt) does not leave orphaned
+    // started events for reviewers that were never invoked.
     let mut proposal_preps = Vec::new();
     for (idx, member) in panel.reviewers.iter().enumerate() {
         let reviewer_id = final_review_reviewer_id(idx);
         let reviewer_prompt =
             build_reviewer_prompt(&project_prompt, &member.target, base_dir, Some(project_id))?;
+        proposal_preps.push((idx, member, reviewer_id, reviewer_prompt));
+    }
+    // All preps succeeded — now emit started events for the entire batch.
+    for (_, member, reviewer_id, _) in &proposal_preps {
         append_panel_member_started_event(
             journal_store,
             base_dir,
@@ -291,7 +298,7 @@ where
             run_id,
             cursor,
             "proposal",
-            &reviewer_id,
+            reviewer_id,
             "reviewer",
             &member.target,
         )?;
@@ -301,14 +308,13 @@ where
             project_id,
             "started",
             "proposal",
-            &reviewer_id,
+            reviewer_id,
             "reviewer",
             &member.target,
             None,
             None,
             None,
         );
-        proposal_preps.push((idx, member, reviewer_id, reviewer_prompt));
     }
 
     // --- Proposal phase: invoke all reviewers concurrently ---
@@ -930,6 +936,8 @@ where
             })
             .collect::<Vec<_>>(),
     });
+    // Collect all vote preps before emitting started events (same rationale
+    // as the proposal phase: avoid orphaned started events on prep failure).
     let mut vote_preps = Vec::new();
     for reviewer in reviewer_records.iter() {
         let vote_prompt = build_voter_prompt(
@@ -940,6 +948,9 @@ where
             base_dir,
             Some(project_id),
         )?;
+        vote_preps.push((reviewer, vote_prompt));
+    }
+    for (reviewer, _) in &vote_preps {
         append_panel_member_started_event(
             journal_store,
             base_dir,
@@ -965,7 +976,6 @@ where
             None,
             None,
         );
-        vote_preps.push((reviewer, vote_prompt));
     }
 
     // --- Vote phase: invoke all voters concurrently ---
@@ -1282,7 +1292,7 @@ where
             continue;
         }
 
-        reviewer_votes.push(votes);
+        reviewer_votes.push((reviewer.member_index, votes));
     }
 
     // Now that all vote futures have been drained, propagate deferred errors.
@@ -1292,6 +1302,11 @@ where
     if let Some(error) = deferred_vote_processing_error {
         return Err(error);
     }
+
+    // Restore deterministic panel order for votes (same as proposals).
+    reviewer_votes.sort_by_key(|(idx, _)| *idx);
+    let reviewer_votes: Vec<FinalReviewVotePayload> =
+        reviewer_votes.into_iter().map(|(_, v)| v).collect();
 
     // Reduce vote quorum only when exhaustion makes the configured
     // minimum impossible.  reviewer_records is the post-proposal panel;
