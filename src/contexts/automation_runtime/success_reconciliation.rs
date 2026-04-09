@@ -21,8 +21,9 @@ use crate::adapters::br_process::{
 };
 use crate::adapters::bv_process::{BvAdapter, BvProcessRunner, NextBeadResponse};
 use crate::adapters::fs::{
-    FsArtifactStore, FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestoneSnapshotStore,
-    FsPlannedElsewhereMappingStore, FsTaskRunLineageStore,
+    FileSystem, FsArtifactStore, FsMilestoneControllerStore, FsMilestoneJournalStore,
+    FsMilestoneSnapshotStore, FsPlannedElsewhereMappingStore, FsProjectStore,
+    FsTaskRunLineageStore,
 };
 use crate::cli::run::{select_next_milestone_bead, select_next_milestone_bead_from_recommendation};
 use crate::contexts::milestone_record::controller as milestone_controller;
@@ -32,7 +33,8 @@ use crate::contexts::milestone_record::model::{
 use crate::contexts::milestone_record::service::{
     self as milestone_service, CompletionMilestoneDisposition,
 };
-use crate::contexts::project_run_record::service::ArtifactStorePort;
+use crate::contexts::project_run_record::service::{ArtifactStorePort, ProjectStorePort};
+use crate::contexts::project_run_record::task_prompt_contract;
 use crate::contexts::workflow_composition::panel_contracts::{
     FinalReviewAggregatePayload, RecordKind,
 };
@@ -938,17 +940,22 @@ fn reconstruct_missing_pe_mappings(
 
     // Build a mutable set of existing identity keys for dedup. Updated as
     // new mappings are reconstructed so the same identity appearing in
-    // multiple aggregates is only reconstructed once.
-    let mut seen_keys: std::collections::HashSet<(String, String, String)> = existing_mappings
-        .iter()
-        .map(|m| {
-            (
-                m.active_bead_id.clone(),
-                m.finding_summary.clone(),
-                m.mapped_to_bead_id.clone(),
-            )
-        })
-        .collect();
+    // multiple aggregates is only reconstructed once. Includes
+    // completion_round so that later rounds can reconstruct the same
+    // finding/target pair independently (e.g. round N succeeded in journal
+    // but round N+1's journal write failed).
+    let mut seen_keys: std::collections::HashSet<(String, String, String, Option<u32>)> =
+        existing_mappings
+            .iter()
+            .map(|m| {
+                (
+                    m.active_bead_id.clone(),
+                    m.finding_summary.clone(),
+                    m.mapped_to_bead_id.clone(),
+                    m.completion_round,
+                )
+            })
+            .collect();
 
     // The authoritative max round is the highest completion_round among all
     // final-review aggregates for this run — even if that round's aggregate
@@ -957,6 +964,24 @@ fn reconstruct_missing_pe_mappings(
 
     let now = Utc::now();
     let mut reconstructed = Vec::new();
+
+    // Load the prompt to extract the allowed planned-elsewhere bead IDs.
+    // Fail closed: if the prompt cannot be read or the allowed set is empty,
+    // skip all PE-mapped reconstructions (defense-in-depth against corrupted
+    // or tampered aggregate files on disk).
+    let allowed_pe_ids = {
+        let project_root = FileSystem::project_root(base_dir, &pid);
+        match FsProjectStore.read_project_record(base_dir, &pid) {
+            Ok(record) => {
+                let prompt_path = project_root.join(&record.prompt_reference);
+                match std::fs::read_to_string(&prompt_path) {
+                    Ok(prompt_text) => task_prompt_contract::extract_pe_bead_ids(&prompt_text),
+                    Err(_) => std::collections::HashSet::new(),
+                }
+            }
+            Err(_) => std::collections::HashSet::new(),
+        }
+    };
 
     // Only reconstruct from the highest completion_round — earlier rounds'
     // PE decisions may have been superseded by the latest final-review
@@ -984,10 +1009,17 @@ fn reconstruct_missing_pe_mappings(
                 None => continue,
             };
 
+            // Validate mapped_to_bead_id against the allowed PE set from the
+            // prompt. Fail closed: if the allowed set is empty, skip this mapping.
+            if !allowed_pe_ids.contains(mapped_to) {
+                continue;
+            }
+
             let identity_key = (
                 bead_id.to_owned(),
                 amendment.normalized_body.clone(),
                 mapped_to.to_owned(),
+                Some(round),
             );
             if seen_keys.contains(&identity_key) {
                 continue;
@@ -3038,6 +3070,30 @@ mod tests {
         let project_root = FileSystem::project_root(base, &project_id);
         let payloads_dir = project_root.join("history/payloads");
         std::fs::create_dir_all(&payloads_dir)?;
+
+        // Set up project record and prompt so PE validation can extract allowed IDs
+        {
+            use crate::contexts::project_run_record::model::{ProjectRecord, ProjectStatusSummary};
+            use crate::shared::domain::FlowPreset;
+            let record = ProjectRecord {
+                id: project_id.clone(),
+                name: "dedup-test".to_owned(),
+                flow: FlowPreset::Minimal,
+                prompt_reference: "prompt.md".to_owned(),
+                prompt_hash: "test".to_owned(),
+                created_at: Utc::now(),
+                status_summary: ProjectStatusSummary::Active,
+                task_source: None,
+            };
+            std::fs::write(
+                project_root.join("project.toml"),
+                toml::to_string_pretty(&record)?,
+            )?;
+            std::fs::write(
+                project_root.join("prompt.md"),
+                "## Already Planned Elsewhere\n- old-bead\n- new-bead\n",
+            )?;
+        }
 
         // Also create milestone dir for journal writes during reconstruction
         let milestone_id = MilestoneId::new("ms-dedup")?;
