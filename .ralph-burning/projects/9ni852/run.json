@@ -2,35 +2,61 @@
   "active_run": {
     "run_id": "run-20260409075617",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 9
+      "completion_round": 10
     },
     "started_at": "2026-04-09T07:56:17.977024141Z",
     "prompt_hash_at_cycle_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "prompt_hash_at_stage_start": "0b54da8411d5ebbaf90bf1d91258a40795362891514908f54278d063ab4150e6",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 8
+    "final_review_restart_count": 9
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 9,
+  "completion_rounds": 10,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-9-a9fe286e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "`src/contexts/automation_runtime/success_reconciliation.rs:770-805` still keys the new `durably_verified` gate only by `mapped_to_bead_id`. That is too coarse. If one active bead has two planned-elsewhere findings that both map to the same existing bead, and persisting the verified row succeeds for the first finding but fails for the second, line 793 inserts the shared bead id and line 805 will still post the second comment. The second mapping remains unverified in milestone state, so replay will comment it again. The same bug also lets a transiently failed verification slip through once another mapping to the same bead was persisted. Phase 3 needs to gate on the full mapping identity (for example `(active_bead_id, finding_summary, mapped_to_bead_id)`) and/or retain an explicit per-outcome `verified` check.",
+        "created_at": "2026-04-09T11:57:20.372025127Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "dbb177d0e1919dd121fd28cce5523b6ad851c4f1d83917b061e5a7846bc04910"
+      }
+    ],
     "processed_count": 30
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 10 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
-    "stage_id": "plan_and_implement",
-    "resolved_at": "2026-04-09T11:42:00.983027308Z",
-    "primary_target": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-09T11:48:36.635220937Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"
     }
