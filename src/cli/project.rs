@@ -29,8 +29,9 @@ use crate::contexts::milestone_record::service::{
 };
 use crate::contexts::project_run_record::model::{ProjectDetail, ProjectStatusSummary, RunStatus};
 use crate::contexts::project_run_record::service::{
-    self, BeadDependencyPromptContext, BeadProjectContext, CreateProjectFromBeadContextInput,
-    CreateProjectInput, PlannedElsewherePromptContext, ProjectStorePort, RunSnapshotPort,
+    self, default_project_id_for_bead, BeadDependencyPromptContext, BeadProjectContext,
+    CreateProjectFromBeadContextInput, CreateProjectInput, PlannedElsewherePromptContext,
+    ProjectStorePort, RunSnapshotPort,
 };
 use crate::contexts::requirements_drafting::model::{
     ProjectSeedPayload, RequirementsOutputKind, RequirementsStatus, SUPPORTED_SEED_VERSIONS,
@@ -379,6 +380,19 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
     // Validate project_id before any external side effects so that a
     // malformed --project-id doesn't leave the bead claimed with no task.
     let project_id = args.project_id.map(ProjectId::new).transpose()?;
+
+    // Resolve the effective project ID (explicit or auto-generated) and check
+    // for duplicates before claiming the bead. A collision after claiming would
+    // leave the bead in_progress with no linked task, requiring manual recovery.
+    let effective_project_id = match &project_id {
+        Some(id) => id.clone(),
+        None => default_project_id_for_bead(&milestone_id.to_string(), &bead.id)?,
+    };
+    if FsProjectStore.project_exists(&current_dir, &effective_project_id)? {
+        return Err(AppError::DuplicateProject {
+            project_id: effective_project_id.as_str().to_owned(),
+        });
+    }
 
     // Claim the bead in br before creating the project. If the claim
     // fails, transition the milestone controller to needs_operator so
