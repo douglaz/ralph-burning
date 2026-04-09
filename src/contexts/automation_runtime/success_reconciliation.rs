@@ -22,7 +22,7 @@ use crate::adapters::br_process::{
 use crate::adapters::bv_process::{BvAdapter, BvProcessRunner, NextBeadResponse};
 use crate::adapters::fs::{
     FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestoneSnapshotStore,
-    FsTaskRunLineageStore,
+    FsPlannedElsewhereMappingStore, FsTaskRunLineageStore,
 };
 use crate::cli::run::{select_next_milestone_bead, select_next_milestone_bead_from_recommendation};
 use crate::contexts::milestone_record::controller as milestone_controller;
@@ -221,6 +221,19 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         now,
         controller_already_advanced,
     )?;
+
+    // Step 3b: Verify planned-elsewhere mappings and post comments (best-effort).
+    // The engine records unverified mappings during final-review; this step
+    // performs the actual stale-bead lookup and optional br comment posting
+    // that the engine cannot do (it lacks BrAdapter access).
+    verify_planned_elsewhere_after_success(
+        br_mutation,
+        br_read,
+        base_dir,
+        bead_id,
+        milestone_id_str,
+    )
+    .await;
 
     // Step 4: Capture next-step hints (best-effort, never blocks reconciliation).
     let (next_step_hint, prefetched_selection) = if let Some(bv_adapter) = bv {
@@ -649,6 +662,82 @@ fn delete_stale_hint(base_dir: &Path, milestone_id_str: &str) {
                 "failed to remove stale next_step_hint (non-blocking)"
             );
         }
+    }
+}
+
+/// Best-effort verification and commenting for planned-elsewhere mappings.
+///
+/// Loads the NDJSON mappings for this milestone, filters for unverified ones
+/// belonging to this bead, and calls `verify_and_comment_mappings` to perform
+/// the stale-bead lookup and optional `br comment`. Failures are logged but
+/// never block reconciliation.
+async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
+    br_mutation: &BrMutationAdapter<R>,
+    br_read: &BrAdapter<R>,
+    base_dir: &Path,
+    bead_id: &str,
+    milestone_id_str: &str,
+) {
+    let Ok(milestone_id) = MilestoneId::new(milestone_id_str) else {
+        return;
+    };
+    let mappings = match milestone_service::load_planned_elsewhere_mappings(
+        &FsPlannedElsewhereMappingStore,
+        base_dir,
+        &milestone_id,
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                "failed to load planned-elsewhere mappings for verification (non-blocking)"
+            );
+            return;
+        }
+    };
+
+    let unverified: Vec<_> = mappings
+        .into_iter()
+        .filter(|m| m.active_bead_id == bead_id && !m.mapped_bead_verified)
+        .collect();
+
+    if unverified.is_empty() {
+        return;
+    }
+
+    let post_comments = std::env::var("RALPH_BURNING_PLANNED_ELSEWHERE_COMMENTS")
+        .map(|v| v != "0" && v.to_lowercase() != "false")
+        .unwrap_or(true);
+
+    let outcomes = super::planned_elsewhere::verify_and_comment_mappings(
+        br_mutation,
+        br_read,
+        bead_id,
+        &unverified,
+        post_comments,
+    )
+    .await;
+
+    for outcome in &outcomes {
+        if let Some(warning) = &outcome.warning {
+            tracing::warn!(
+                mapped_to_bead_id = outcome.mapping.mapped_to_bead_id.as_str(),
+                warning = warning.as_str(),
+                "planned-elsewhere verification warning"
+            );
+        }
+    }
+
+    let verified_count = outcomes.iter().filter(|o| o.verified).count();
+    let commented_count = outcomes.iter().filter(|o| o.comment_posted).count();
+    if !outcomes.is_empty() {
+        tracing::info!(
+            bead_id = bead_id,
+            total = outcomes.len(),
+            verified = verified_count,
+            commented = commented_count,
+            "planned-elsewhere post-run verification complete"
+        );
     }
 }
 

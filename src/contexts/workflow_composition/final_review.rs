@@ -177,9 +177,27 @@ fn merge_final_review_amendments(
                     if !existing.sources.contains(&source) {
                         existing.sources.push(source);
                     }
-                    // Prefer the first non-None mapped_to_bead_id across duplicates.
-                    if existing.mapped_to_bead_id.is_none() {
-                        existing.mapped_to_bead_id = amendment.mapped_to_bead_id.clone();
+                    // Conservative merge for planned-elsewhere classification:
+                    // - If ANY reviewer says "not planned-elsewhere" (None),
+                    //   clear the field so the amendment is treated as regular.
+                    // - If reviewers disagree on WHICH bead owns it, clear the
+                    //   field (conflicting targets → treat as regular).
+                    match (&existing.mapped_to_bead_id, &amendment.mapped_to_bead_id) {
+                        (Some(_), None) | (None, Some(_)) => {
+                            // Reviewers disagree on whether this is
+                            // planned-elsewhere. Conservative: treat as
+                            // regular amendment.
+                            existing.mapped_to_bead_id = None;
+                        }
+                        (Some(existing_target), Some(new_target))
+                            if existing_target != new_target =>
+                        {
+                            // Conflicting targets — treat as regular amendment.
+                            existing.mapped_to_bead_id = None;
+                        }
+                        _ => {
+                            // Agreement: both None or both same Some.
+                        }
                     }
                 }
                 None => {
@@ -2589,6 +2607,106 @@ mod tests {
         assert_eq!(merged[0].sources[1].reviewer_id, "reviewer-2");
         assert_eq!(merged[0].sources[0].model_id, "claude-opus");
         assert_eq!(merged[0].sources[1].model_id, "claude-opus");
+    }
+
+    fn proposal_record_with_mapping(
+        reviewer_id: &str,
+        body: &str,
+        mapped_to_bead_id: Option<&str>,
+    ) -> ReviewerProposalRecord {
+        ReviewerProposalRecord {
+            member_index: reviewer_id
+                .rsplit_once('-')
+                .and_then(|(_, value)| value.parse::<usize>().ok())
+                .unwrap_or(1)
+                .saturating_sub(1),
+            reviewer_id: reviewer_id.to_owned(),
+            required: true,
+            backend_family: "claude".to_owned(),
+            model_id: format!("model-{reviewer_id}"),
+            target: ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                format!("model-{reviewer_id}"),
+            ),
+            payload: FinalReviewProposalPayload {
+                summary: format!("proposal from {reviewer_id}"),
+                amendments: vec![FinalReviewProposal {
+                    body: body.to_owned(),
+                    rationale: None,
+                    mapped_to_bead_id: mapped_to_bead_id.map(|s| s.to_owned()),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn merge_planned_elsewhere_unanimous_preserves_mapping() {
+        // Both reviewers agree the amendment is planned-elsewhere to the same bead.
+        let merged = merge_final_review_amendments(
+            1,
+            &[
+                proposal_record_with_mapping("reviewer-a", "fix error handling", Some("bead-42")),
+                proposal_record_with_mapping("reviewer-b", "fix error handling", Some("bead-42")),
+            ],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].mapped_to_bead_id.as_deref(),
+            Some("bead-42"),
+            "unanimous planned-elsewhere should preserve mapping"
+        );
+    }
+
+    #[test]
+    fn merge_planned_elsewhere_disagreement_clears_mapping() {
+        // Reviewer A says planned-elsewhere, reviewer B says regular amendment.
+        let merged = merge_final_review_amendments(
+            1,
+            &[
+                proposal_record_with_mapping("reviewer-a", "fix error handling", Some("bead-42")),
+                proposal_record_with_mapping("reviewer-b", "fix error handling", None),
+            ],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].mapped_to_bead_id, None,
+            "disagreement on planned-elsewhere should clear mapping"
+        );
+    }
+
+    #[test]
+    fn merge_planned_elsewhere_conflicting_targets_clears_mapping() {
+        // Both say planned-elsewhere but point to different beads.
+        let merged = merge_final_review_amendments(
+            1,
+            &[
+                proposal_record_with_mapping("reviewer-a", "fix error handling", Some("bead-42")),
+                proposal_record_with_mapping("reviewer-b", "fix error handling", Some("bead-99")),
+            ],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].mapped_to_bead_id, None,
+            "conflicting targets should clear mapping"
+        );
+    }
+
+    #[test]
+    fn merge_first_none_then_some_clears_mapping() {
+        // Reviewer A proposes as regular, reviewer B says planned-elsewhere.
+        // Conservative: any disagreement clears the mapping.
+        let merged = merge_final_review_amendments(
+            1,
+            &[
+                proposal_record_with_mapping("reviewer-a", "fix error handling", None),
+                proposal_record_with_mapping("reviewer-b", "fix error handling", Some("bead-42")),
+            ],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].mapped_to_bead_id, None,
+            "first-None then-Some should clear mapping (disagreement)"
+        );
     }
 
     #[test]

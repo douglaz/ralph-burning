@@ -2652,21 +2652,6 @@ where
                         .await;
                     }
 
-                    // Record any planned-elsewhere amendments as mappings.
-                    let pe_amendments: Vec<_> = commit_data
-                        .accepted_amendments
-                        .iter()
-                        .filter(|a| a.mapped_to_bead_id.is_some())
-                        .collect();
-                    if !pe_amendments.is_empty() {
-                        record_planned_elsewhere_amendments(
-                            log_write,
-                            base_dir,
-                            project_id,
-                            &pe_amendments,
-                        );
-                    }
-
                     *seq += 1;
                     let stage_completed = journal::stage_completed_event(
                         *seq,
@@ -2707,6 +2692,23 @@ where
                             origin,
                         )
                         .await;
+                    }
+
+                    // Record planned-elsewhere amendments as mappings AFTER the
+                    // stage commit succeeds, so a later failure does not leave
+                    // orphaned mappings for an uncommitted stage.
+                    let pe_amendments: Vec<_> = commit_data
+                        .accepted_amendments
+                        .iter()
+                        .filter(|a| a.mapped_to_bead_id.is_some())
+                        .collect();
+                    if !pe_amendments.is_empty() {
+                        record_planned_elsewhere_amendments(
+                            log_write,
+                            base_dir,
+                            project_id,
+                            &pe_amendments,
+                        );
                     }
 
                     if stage_index + 1 == stage_plan.len() {
@@ -2861,21 +2863,13 @@ where
                         .await;
                     }
 
-                    // Partition: planned-elsewhere amendments are recorded as
-                    // mappings; only regular amendments enter the queue.
+                    // Partition: planned-elsewhere amendments are routed to
+                    // the mapping handler; only regular amendments enter the queue.
+                    // Recording is deferred until after the stage commit succeeds.
                     let (planned_elsewhere, regular_amendments): (Vec<_>, Vec<_>) = commit_data
                         .accepted_amendments
                         .iter()
                         .partition(|a| a.mapped_to_bead_id.is_some());
-
-                    if !planned_elsewhere.is_empty() {
-                        record_planned_elsewhere_amendments(
-                            log_write,
-                            base_dir,
-                            project_id,
-                            &planned_elsewhere,
-                        );
-                    }
 
                     let mut written_ids: Vec<String> = Vec::new();
                     for amendment in &regular_amendments {
@@ -3082,6 +3076,18 @@ where
                             origin,
                         )
                         .await;
+                    }
+
+                    // Record planned-elsewhere amendments AFTER the stage commit
+                    // and round-advance event succeed, so failures do not leave
+                    // orphaned mappings for an uncommitted restart.
+                    if !planned_elsewhere.is_empty() {
+                        record_planned_elsewhere_amendments(
+                            log_write,
+                            base_dir,
+                            project_id,
+                            &planned_elsewhere,
+                        );
                     }
 
                     let _ = log_write.append_runtime_log(

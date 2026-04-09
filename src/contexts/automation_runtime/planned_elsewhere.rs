@@ -225,6 +225,104 @@ pub async fn reconcile_planned_elsewhere_batch<R: ProcessRunner>(
     outcomes
 }
 
+/// Outcome of verifying and commenting on a single unverified mapping.
+#[derive(Debug, Clone)]
+pub struct MappingVerificationOutcome {
+    /// The original mapping.
+    pub mapping: PlannedElsewhereMapping,
+    /// Whether the bead was verified.
+    pub verified: bool,
+    /// Whether a comment was posted.
+    pub comment_posted: bool,
+    /// Warning if the bead is stale or a transient error occurred.
+    pub warning: Option<String>,
+}
+
+/// Verify unverified planned-elsewhere mappings and optionally post comments.
+///
+/// Called from success_reconciliation after a run completes to perform
+/// the stale-bead lookups and br comment postings that the engine cannot
+/// do (it lacks BrAdapter access). Best-effort: individual failures are
+/// logged but do not prevent the active bead from completing.
+pub async fn verify_and_comment_mappings<R: ProcessRunner>(
+    br_mutation: &BrMutationAdapter<R>,
+    br_read: &BrAdapter<R>,
+    active_bead_id: &str,
+    mappings: &[PlannedElsewhereMapping],
+    post_comments: bool,
+) -> Vec<MappingVerificationOutcome> {
+    let mut outcomes = Vec::with_capacity(mappings.len());
+
+    for mapping in mappings {
+        // Only process mappings for this bead that are not yet verified.
+        if mapping.active_bead_id != active_bead_id || mapping.mapped_bead_verified {
+            continue;
+        }
+
+        let (verified, warning) =
+            match verify_bead_exists(br_read, &mapping.mapped_to_bead_id).await {
+                BeadVerification::Verified => (true, None),
+                BeadVerification::Stale(warning) => {
+                    tracing::warn!(
+                        active_bead_id = active_bead_id,
+                        mapped_to_bead_id = mapping.mapped_to_bead_id.as_str(),
+                        warning = warning.as_str(),
+                        "planned-elsewhere mapping references stale bead (post-run verification)"
+                    );
+                    (false, Some(warning))
+                }
+                BeadVerification::TransientError(details) => {
+                    tracing::warn!(
+                        active_bead_id = active_bead_id,
+                        mapped_to_bead_id = mapping.mapped_to_bead_id.as_str(),
+                        error = details.as_str(),
+                        "transient error during planned-elsewhere verification (non-blocking)"
+                    );
+                    (false, Some(details))
+                }
+            };
+
+        let comment_posted = if post_comments && verified {
+            let comment_text = format!(
+                "Planned-elsewhere mapping from {}: {}",
+                mapping.active_bead_id, mapping.finding_summary
+            );
+            match br_mutation
+                .comment_bead(&mapping.mapped_to_bead_id, &comment_text)
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!(
+                        mapped_to_bead_id = mapping.mapped_to_bead_id.as_str(),
+                        active_bead_id = active_bead_id,
+                        "posted planned-elsewhere comment on mapped-to bead"
+                    );
+                    true
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        mapped_to_bead_id = mapping.mapped_to_bead_id.as_str(),
+                        error = %e,
+                        "failed to post planned-elsewhere comment (non-blocking)"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
+        outcomes.push(MappingVerificationOutcome {
+            mapping: mapping.clone(),
+            verified,
+            comment_posted,
+            warning,
+        });
+    }
+
+    outcomes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
