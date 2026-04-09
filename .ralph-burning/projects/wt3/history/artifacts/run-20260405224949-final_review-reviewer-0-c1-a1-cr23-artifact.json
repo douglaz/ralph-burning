@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-reviewer-0-c1-a1-cr23-artifact",
+  "payload_id": "run-20260405224949-final_review-reviewer-0-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T11:44:22.100783374Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed all 19 changed source files implementing graceful backend degradation (BackendExhausted). The implementation is well-structured: FailureClass::BackendExhausted is correctly added, retry policy marks it terminal, pattern detection in is_backend_exhausted is thorough with 35+ tests, panel degradation logic is consistent across final_review and completion (with intentional non-degradation for prompt_review), and the engine-level preflight/resume-drift handling is correct. All 754 tests pass. The quorum reduction math is sound — probe-exhausted members are filtered before panel execution, invocation-time exhaustion further reduces effective_min, and all-exhausted scenarios correctly propagate the BackendExhausted error. One minor false-positive concern in the pattern matching; no critical bugs found.\n\n## Amendments\n\n1. In `src/adapters/process_backend.rs` around line 1872, the RESET_TIME_INDICATORS entry `\"until 20\"` (intended to match ISO year prefixes like \"until 2026-...\") could false-positive on messages like \"rate limit reached, until 2000 requests are processed\" or \"until 200 more attempts\". Consider tightening to `\"until 20\"` followed by a digit check (e.g. matching `until 20\\d\\d-` for ISO dates) or using a regex, to avoid misclassifying retryable messages as BackendExhausted.\n   Rationale: While unlikely in practice (backends rarely phrase messages this way), the current substring match is too broad. A false positive here would mark a retryable rate-limit as terminal BackendExhausted, permanently removing the backend from the panel for the rest of the run. The existing test suite covers \"until 5 retries\" and \"until 100 requests\" (which don't match \"until 20\"), but misses \"until 2000 requests\" which would incorrectly trigger.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 23
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-reviewer-0-c1-a1-cr18-artifact",
+  "payload_id": "run-20260405224949-final_review-reviewer-0-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T08:36:17.002769125Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the BackendExhausted graceful degradation feature across 19 files, ~2145 lines added. The core feature is well-implemented: FailureClass::BackendExhausted is correctly added as a non-retryable terminal variant, pattern detection in is_backend_exhausted is robust with good false-positive avoidance (transient 429s, short retry-after durations), and panel degradation logic correctly reduces quorum with .min(panel.len() - exhausted).max(1) across all three panel types (final_review, completion, prompt_review). All-exhausted cases correctly propagate BackendExhausted so the engine doesn't retry. Process group kill improvement, snapshot/journal reconciliation, and OpenRouter exhaustion detection are correct. Tests cover all critical paths (26 exhaustion-specific tests pass). Two tangential changes are bundled (unwrap_claude_structured_output_transport_payload fix, max restarts 20→25) but are correct. No bugs, safety problems, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 18
+}

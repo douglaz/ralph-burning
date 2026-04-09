@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-reviewer-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260405224949-final_review-reviewer-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T07:18:49.193292944Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the backend-exhaustion changes in `process_backend`, `completion`, `final_review`, `prompt_review`, `engine`, `retry_policy`, and the related tests. `cargo test --quiet` passes. I found one remaining correctness gap: the OpenRouter adapter only treats 429 exhaustion responses as terminal, so quota/billing exhaustion returned under other 4xx statuses will still retry instead of degrading.\n\n## Amendments\n\n1. `src/adapters/openrouter_backend.rs:205-220` and `src/adapters/openrouter_backend.rs:345-377` only upgrade exhaustion to `FailureClass::BackendExhausted` for HTTP 429. Any credit/billing exhaustion that comes back as another 4xx (for example 402/403 with quota text in the body) still falls through to retryable `TransportFailure`/generic `BackendUnavailable`, so the run will keep retrying instead of degrading gracefully. The body-pattern check should run before the status-specific split, or at least cover the other billing/quota statuses in both `send_probe` and `map_http_error`.\n   Rationale: The feature goal is graceful degradation on persistent backend exhaustion. Leaving non-429 quota/billing responses retryable means one class of real exhaustion failures is still handled incorrectly for OpenRouter-backed panels.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 15
+}

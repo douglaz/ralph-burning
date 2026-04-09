@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-reviewer-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260405224949-final_review-reviewer-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T10:28:20.310941528Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nTwo substantive issues remain: engine-level quorum is now relaxed for any probe-time optional availability failure, not just `BackendExhausted`, and prompt-review was also weakened to degrade on exhaustion even though the feature was scoped to completion/final_review.\n\n## Amendments\n\n1. src/contexts/workflow_composition/engine.rs:6579-6597, 6881-6900, 7134-7152, 1477-1608: preserve the configured quorum for non-exhaustion availability failures. The new `effective_min_* = min(configured_min, available.len()).max(1)` calculation runs after optional members are dropped for any failed availability probe, not just `BackendExhausted`. That makes the `available.len() < effective_min_*` guard false whenever at least one member survives, so a plain optional `BackendUnavailable`/`BinaryNotFound` now silently relaxes completion/final-review (and prompt-review/resume) to a single participant. Only members skipped specifically for `BackendExhausted` should lower quorum; other probe-time unavailability should still enforce the original minimum or fail with `InsufficientPanelMembers`.\n   Rationale: This weakens consensus guarantees outside the requested degradation case. A misconfigured or ordinarily unavailable optional backend can now reduce a 2-of-N or 3-of-N panel to 1-of-1, which is a real behavior regression.\n2. src/contexts/workflow_composition/prompt_review.rs:180-188, 315-329 and src/contexts/workflow_composition/engine.rs:6548-6599: remove the new prompt-review degradation path, or gate it behind an explicit policy flag. The bead only called for graceful degradation in `completion` and `final_review`, but this change also lets `prompt_review` accept a refined prompt with fewer validators whenever one backend exhausts credits.\n   Rationale: `prompt_review` is the safety gate for the prompt itself; lowering it to a single surviving validator changes workflow guarantees and can let a bad prompt rewrite through with reduced scrutiny. That is a robustness regression beyond the requested scope.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 20
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260405224949-final_review-arbiter-c1-a1-cr13-artifact",
+  "payload_id": "run-20260405224949-final_review-arbiter-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-06T06:19:01.684213347Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected the amendment. The wrap side (wrap_claude_structured_output_schema) has always produced a plain {\"data\": ...} envelope without the __rb_wrapped sentinel, so the new transport unwrap function correctly matches the actual wire format. The old sentinel-based unwrap was never reachable for transport payloads since Claude never receives __rb_wrapped in its schema. The legacy function is retained as a fallback for backwards compatibility. No demonstrated contract-breakage risk exists because all contract payloads are nested inside the transport wrapper.\n\n## Rulings\n\n- `fr-13-6e433448`: Reject\n  The behavioral change is intentional and correct. The send side (wrap_claude_structured_output_schema at line 1665) wraps all Claude schemas as {\"data\": <original>} with NO __rb_wrapped sentinel — it never included one. Tests explicitly assert the sentinel is absent from the schema sent to Claude (lines 594, 1773-1775). Since Claude never receives a schema with __rb_wrapped, it will never produce __rb_wrapped in its response, making the old sentinel-based unwrap effectively dead code for the transport path. The new unwrap_claude_structured_output_transport_payload correctly mirrors the actual wrapping: strip a single-key {\"data\": ...} envelope, then fall back to the legacy sentinel check for any pre-existing wrapped payloads. The concern about legitimate {\"data\": <value>} contract payloads being incorrectly stripped is not a demonstrated risk — every contract payload flowing through the Claude path is already wrapped in the transport {\"data\": ...} envelope by processed_contract_schema_value, so the inner contract payload is always nested inside that wrapper and cannot itself be a bare single-key {\"data\": ...} object at the top level. Reviewer 3 correctly identified that there is no current-contract breakage, and the code aligns wrap/unwrap symmetry that was previously broken.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 13
+}
