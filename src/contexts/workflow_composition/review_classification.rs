@@ -108,6 +108,9 @@ fn validate_bead_id_syntax(value: &str) -> Result<(), String> {
     if value.ends_with('.') {
         return Err(format!("'{value}' must not end with a dot"));
     }
+    if value.contains("..") {
+        return Err(format!("'{value}' must not contain consecutive dots"));
+    }
     Ok(())
 }
 
@@ -783,6 +786,21 @@ mod tests {
         };
         let errors = validate_classification(&c);
         assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_with_consecutive_dots(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "a..b".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        assert!(errors.iter().any(|e| e.contains("consecutive dots")));
         Ok(())
     }
 
