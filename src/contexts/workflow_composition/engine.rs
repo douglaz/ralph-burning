@@ -9,7 +9,8 @@ use uuid::Uuid;
 
 use crate::adapters::fs::{
     FileSystem, FsArtifactStore, FsMilestoneControllerStore, FsMilestoneJournalStore,
-    FsMilestoneSnapshotStore, FsProjectStore, FsRollbackPointStore, FsTaskRunLineageStore,
+    FsMilestoneSnapshotStore, FsPlannedElsewhereMappingStore, FsProjectStore, FsRollbackPointStore,
+    FsTaskRunLineageStore,
 };
 use crate::adapters::process_backend::processed_contract_schema_value;
 use crate::adapters::worktree::WorktreeAdapter;
@@ -26,7 +27,7 @@ use crate::contexts::agent_execution::service::{
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::milestone_record::controller as milestone_controller;
-use crate::contexts::milestone_record::model::MilestoneId;
+use crate::contexts::milestone_record::model::{MilestoneId, PlannedElsewhereMapping};
 use crate::contexts::milestone_record::service as milestone_service;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
@@ -2651,6 +2652,21 @@ where
                         .await;
                     }
 
+                    // Record any planned-elsewhere amendments as mappings.
+                    let pe_amendments: Vec<_> = commit_data
+                        .accepted_amendments
+                        .iter()
+                        .filter(|a| a.mapped_to_bead_id.is_some())
+                        .collect();
+                    if !pe_amendments.is_empty() {
+                        record_planned_elsewhere_amendments(
+                            log_write,
+                            base_dir,
+                            project_id,
+                            &pe_amendments,
+                        );
+                    }
+
                     *seq += 1;
                     let stage_completed = journal::stage_completed_event(
                         *seq,
@@ -2845,8 +2861,24 @@ where
                         .await;
                     }
 
+                    // Partition: planned-elsewhere amendments are recorded as
+                    // mappings; only regular amendments enter the queue.
+                    let (planned_elsewhere, regular_amendments): (Vec<_>, Vec<_>) = commit_data
+                        .accepted_amendments
+                        .iter()
+                        .partition(|a| a.mapped_to_bead_id.is_some());
+
+                    if !planned_elsewhere.is_empty() {
+                        record_planned_elsewhere_amendments(
+                            log_write,
+                            base_dir,
+                            project_id,
+                            &planned_elsewhere,
+                        );
+                    }
+
                     let mut written_ids: Vec<String> = Vec::new();
-                    for amendment in &commit_data.accepted_amendments {
+                    for amendment in &regular_amendments {
                         if let Err(error) = amendment_queue_port.write_amendment(
                             base_dir,
                             project_id,
@@ -2885,7 +2917,7 @@ where
                     }
 
                     let mut last_journaled_amendment_index = None;
-                    for (index, amendment) in commit_data.accepted_amendments.iter().enumerate() {
+                    for (index, amendment) in regular_amendments.iter().enumerate() {
                         *seq += 1;
                         let amendment_event = journal::amendment_queued_event(
                             *seq,
@@ -2903,8 +2935,7 @@ where
                             journal_store.append_event(base_dir, project_id, &event_line)
                         {
                             *seq -= 1;
-                            let cleanup_errors: Vec<String> = commit_data.accepted_amendments
-                                [index..]
+                            let cleanup_errors: Vec<String> = regular_amendments[index..]
                                 .iter()
                                 .filter_map(|pending| {
                                     amendment_queue_port
@@ -2925,14 +2956,13 @@ where
                             snapshot.completion_rounds = snapshot.completion_rounds.max(to_round);
                             if let Some(last_index) = last_journaled_amendment_index {
                                 snapshot.amendment_queue.pending.extend(
-                                    commit_data.accepted_amendments[..=last_index]
+                                    regular_amendments[..=last_index]
                                         .iter()
                                         .map(|amendment| amendment.queued.clone()),
                                 );
                             } else {
                                 snapshot.amendment_queue.pending.extend(
-                                    commit_data
-                                        .accepted_amendments
+                                    regular_amendments
                                         .iter()
                                         .map(|amendment| amendment.queued.clone()),
                                 );
@@ -2971,8 +3001,7 @@ where
                         .as_ref()
                         .and_then(|active_run| active_run.stage_resolution_snapshot.clone());
                     snapshot.amendment_queue.pending.extend(
-                        commit_data
-                            .accepted_amendments
+                        regular_amendments
                             .iter()
                             .map(|amendment| amendment.queued.clone()),
                     );
@@ -6578,6 +6607,9 @@ struct FinalReviewQueuedAmendment {
     queued: QueuedAmendment,
     reviewer_sources:
         Vec<crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource>,
+    /// When set, this amendment is planned-elsewhere and should be routed to
+    /// the mapping handler instead of the amendment queue.
+    mapped_to_bead_id: Option<String>,
 }
 
 enum FinalReviewPanelOutcome {
@@ -7376,6 +7408,7 @@ where
                     dedup_key,
                 },
                 reviewer_sources: amendment.sources.clone(),
+                mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
             }
         })
         .collect::<Vec<_>>();
@@ -7497,6 +7530,127 @@ fn persist_final_review_aggregate_records(
         &artifact_record,
     )?;
     Ok(())
+}
+
+/// Record planned-elsewhere mappings for amendments that are classified as
+/// belonging to another bead. Best-effort: failures are logged but do not
+/// block the active bead from proceeding.
+fn record_planned_elsewhere_amendments(
+    log_write: &dyn RuntimeLogWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    amendments: &[&FinalReviewQueuedAmendment],
+) {
+    if amendments.is_empty() {
+        return;
+    }
+
+    // Read project record to get task_source (milestone_id + bead_id).
+    let project_record = match FsProjectStore.read_project_record(base_dir, project_id) {
+        Ok(record) => record,
+        Err(e) => {
+            let _ = log_write.append_runtime_log(
+                base_dir,
+                project_id,
+                &RuntimeLogEntry {
+                    timestamp: Utc::now(),
+                    level: LogLevel::Warn,
+                    source: "engine".to_owned(),
+                    message: format!(
+                        "cannot record planned-elsewhere mappings: failed to read project record: {e}"
+                    ),
+                },
+            );
+            return;
+        }
+    };
+
+    let Some(task_source) = project_record.task_source.as_ref() else {
+        let _ = log_write.append_runtime_log(
+            base_dir,
+            project_id,
+            &RuntimeLogEntry {
+                timestamp: Utc::now(),
+                level: LogLevel::Warn,
+                source: "engine".to_owned(),
+                message: "cannot record planned-elsewhere mappings: no task_source on project"
+                    .to_owned(),
+            },
+        );
+        return;
+    };
+
+    let milestone_id = match MilestoneId::new(&task_source.milestone_id) {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = log_write.append_runtime_log(
+                base_dir,
+                project_id,
+                &RuntimeLogEntry {
+                    timestamp: Utc::now(),
+                    level: LogLevel::Warn,
+                    source: "engine".to_owned(),
+                    message: format!(
+                        "cannot record planned-elsewhere mappings: invalid milestone ID: {e}"
+                    ),
+                },
+            );
+            return;
+        }
+    };
+
+    let now = Utc::now();
+    for amendment in amendments {
+        let Some(mapped_to) = amendment.mapped_to_bead_id.as_deref() else {
+            continue;
+        };
+        let mapping = PlannedElsewhereMapping {
+            active_bead_id: task_source.bead_id.clone(),
+            finding_summary: amendment.queued.body.clone(),
+            mapped_to_bead_id: mapped_to.to_owned(),
+            recorded_at: now,
+            mapped_bead_verified: false, // Verification deferred to automation_runtime
+        };
+
+        match milestone_service::record_planned_elsewhere_mapping(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            base_dir,
+            &milestone_id,
+            &mapping,
+        ) {
+            Ok(()) => {
+                let _ = log_write.append_runtime_log(
+                    base_dir,
+                    project_id,
+                    &RuntimeLogEntry {
+                        timestamp: Utc::now(),
+                        level: LogLevel::Info,
+                        source: "engine".to_owned(),
+                        message: format!(
+                            "recorded planned-elsewhere mapping: amendment={} mapped_to={}",
+                            amendment.queued.amendment_id, mapped_to
+                        ),
+                    },
+                );
+            }
+            Err(e) => {
+                let _ = log_write.append_runtime_log(
+                    base_dir,
+                    project_id,
+                    &RuntimeLogEntry {
+                        timestamp: Utc::now(),
+                        level: LogLevel::Warn,
+                        source: "engine".to_owned(),
+                        message: format!(
+                            "failed to record planned-elsewhere mapping for amendment={}: {e}",
+                            amendment.queued.amendment_id
+                        ),
+                    },
+                );
+            }
+        }
+    }
 }
 
 /// Clean up aggregate payload/artifact files that were persisted by

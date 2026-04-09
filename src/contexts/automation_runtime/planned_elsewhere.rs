@@ -15,11 +15,13 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 
 use crate::adapters::br_models::BeadStatus;
-use crate::adapters::br_process::{BrAdapter, BrCommand, BrMutationAdapter, ProcessRunner};
+use crate::adapters::br_process::{
+    BrAdapter, BrCommand, BrError, BrMutationAdapter, ProcessRunner,
+};
 use crate::adapters::fs::{FsMilestoneJournalStore, FsPlannedElsewhereMappingStore};
 use crate::contexts::milestone_record::model::{MilestoneId, PlannedElsewhereMapping};
 use crate::contexts::milestone_record::service as milestone_service;
-use crate::shared::error::AppResult;
+use crate::shared::error::{AppError, AppResult};
 
 /// Input for recording a single planned-elsewhere finding.
 #[derive(Debug, Clone)]
@@ -45,32 +47,52 @@ pub struct PlannedElsewhereOutcome {
     pub stale_warning: Option<String>,
 }
 
+/// Result of verifying a mapped-to bead.
+enum BeadVerification {
+    /// Bead exists and is open/in-progress — verified.
+    Verified,
+    /// Bead is definitively stale (not found or already closed).
+    Stale(String),
+    /// A transient/infrastructure error prevented verification.
+    TransientError(String),
+}
+
 /// Check whether a bead exists and is not closed.
+///
+/// Distinguishes definitive stale-bead results (bead not found or closed)
+/// from transient/infrastructure errors (timeouts, parse failures, binary
+/// not found, I/O errors). Only definitive results are downgraded to
+/// warnings; transient errors propagate so the operator can investigate.
 async fn verify_bead_exists<R: ProcessRunner>(
     br_read: &BrAdapter<R>,
     bead_id: &str,
-) -> (bool, Option<String>) {
+) -> BeadVerification {
     use crate::adapters::br_models::BeadDetail;
     let cmd = BrCommand::show(bead_id);
     match br_read.exec_json::<BeadDetail>(&cmd).await {
         Ok(detail) => {
             if detail.status == BeadStatus::Closed {
-                (
-                    false,
-                    Some(format!(
-                        "mapped-to bead '{bead_id}' exists but is already closed"
-                    )),
-                )
+                BeadVerification::Stale(format!(
+                    "mapped-to bead '{bead_id}' exists but is already closed"
+                ))
             } else {
-                (true, None)
+                BeadVerification::Verified
             }
         }
-        Err(e) => (
-            false,
-            Some(format!(
-                "mapped-to bead '{bead_id}' could not be verified: {e}"
-            )),
-        ),
+        Err(BrError::BrExitError { .. }) => {
+            // Non-zero exit from `br show` is definitive: the bead does
+            // not exist or is otherwise unresolvable. Treat as stale.
+            BeadVerification::Stale(format!("mapped-to bead '{bead_id}' not found"))
+        }
+        Err(e @ BrError::BrNotFound { .. })
+        | Err(e @ BrError::BrTimeout { .. })
+        | Err(e @ BrError::BrParseError { .. })
+        | Err(e @ BrError::Io(_)) => {
+            // Infrastructure / transient error — cannot determine bead state.
+            BeadVerification::TransientError(format!(
+                "could not verify mapped-to bead '{bead_id}': {e}"
+            ))
+        }
     }
 }
 
@@ -91,16 +113,21 @@ pub async fn reconcile_planned_elsewhere<R: ProcessRunner>(
 
     // Step 1: Verify the mapped-to bead exists.
     let (bead_verified, stale_warning) =
-        verify_bead_exists(br_read, &input.mapped_to_bead_id).await;
-
-    if let Some(ref warning) = stale_warning {
-        tracing::warn!(
-            active_bead_id = input.active_bead_id.as_str(),
-            mapped_to_bead_id = input.mapped_to_bead_id.as_str(),
-            warning = warning.as_str(),
-            "planned-elsewhere mapping references stale bead"
-        );
-    }
+        match verify_bead_exists(br_read, &input.mapped_to_bead_id).await {
+            BeadVerification::Verified => (true, None),
+            BeadVerification::Stale(warning) => {
+                tracing::warn!(
+                    active_bead_id = input.active_bead_id.as_str(),
+                    mapped_to_bead_id = input.mapped_to_bead_id.as_str(),
+                    warning = warning.as_str(),
+                    "planned-elsewhere mapping references stale bead"
+                );
+                (false, Some(warning))
+            }
+            BeadVerification::TransientError(details) => {
+                return Err(AppError::Io(std::io::Error::other(details)));
+            }
+        };
 
     // Step 2: Build and persist the mapping.
     let mapping = PlannedElsewhereMapping {
@@ -590,6 +617,60 @@ mod tests {
             .filter(|e| e.event_type == MilestoneEventType::PlannedElsewhereMapped)
             .collect();
         assert_eq!(pe_events.len(), 2);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn transient_error_propagates_instead_of_stale_fallback(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // br show returns a timeout (transient error, not definitive bead-not-found)
+        let read_runner = MockBrRunner::new(vec![Err(BrError::BrTimeout {
+            command: "br show ghost-bead".to_owned(),
+            timeout_ms: 30000,
+        })]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let input = PlannedElsewhereInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Edge case".to_owned(),
+            mapped_to_bead_id: "ghost-bead".to_owned(),
+        };
+
+        let now = Utc::now();
+        let result = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            false,
+            now,
+        )
+        .await;
+
+        assert!(result.is_err(), "transient errors should propagate");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("ghost-bead"),
+            "error should mention the bead: {err}"
+        );
+
+        // No mapping should have been persisted
+        let mappings = milestone_service::load_planned_elsewhere_mappings(
+            &FsPlannedElsewhereMappingStore,
+            base_dir,
+            &milestone_id,
+        )?;
+        assert!(mappings.is_empty());
 
         Ok(())
     }

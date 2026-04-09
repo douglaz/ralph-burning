@@ -2340,8 +2340,16 @@ pub fn repair_task_run_with_disposition(
 // ── Planned-elsewhere mapping ────────────────────────────────────────────────
 
 /// Record a planned-elsewhere mapping: the finding in `active_bead_id` is
-/// already covered by `mapped_to_bead_id`. Persists to both the dedicated
-/// NDJSON file and the milestone journal for audit.
+/// already covered by `mapped_to_bead_id`. Persists to both the milestone
+/// journal (authoritative audit record) and the dedicated NDJSON file.
+///
+/// # Write ordering
+///
+/// The journal event is written first because it is the authoritative audit
+/// record. If the secondary NDJSON write fails, the journal still contains
+/// the mapping for audit purposes, and the NDJSON file can be rebuilt from
+/// the journal. The reverse ordering (NDJSON first) would leave a mapping
+/// with no audit trail on journal failure.
 pub fn record_planned_elsewhere_mapping(
     journal_store: &impl MilestoneJournalPort,
     mapping_store: &impl PlannedElsewhereMappingPort,
@@ -2349,10 +2357,7 @@ pub fn record_planned_elsewhere_mapping(
     milestone_id: &MilestoneId,
     mapping: &PlannedElsewhereMapping,
 ) -> AppResult<()> {
-    // 1. Persist to planned_elsewhere.ndjson for durable storage.
-    mapping_store.append_mapping(base_dir, milestone_id, mapping)?;
-
-    // 2. Emit a journal event for audit.
+    // 1. Build the journal event (authoritative audit record).
     let mut metadata = JsonMap::new();
     metadata.insert(
         "active_bead_id".to_owned(),
@@ -2367,17 +2372,23 @@ pub fn record_planned_elsewhere_mapping(
         JsonValue::Bool(mapping.mapped_bead_verified),
     );
 
-    let event = MilestoneJournalEvent::new(
+    let mut event = MilestoneJournalEvent::new(
         MilestoneEventType::PlannedElsewhereMapped,
         mapping.recorded_at,
     )
     .with_bead(mapping.active_bead_id.clone())
     .with_details(mapping.finding_summary.clone());
-    let mut event_with_metadata = event;
-    event_with_metadata.metadata = Some(metadata);
+    event.metadata = Some(metadata);
 
-    let line = event_with_metadata.to_ndjson_line()?;
+    let line = event.to_ndjson_line()?;
+
+    // 2. Write journal first — this is the authoritative record.
     journal_store.append_event(base_dir, milestone_id, &line)?;
+
+    // 3. Write to dedicated NDJSON file (secondary, queryable index).
+    // If this fails, the journal still has the mapping for audit.
+    mapping_store.append_mapping(base_dir, milestone_id, mapping)?;
+
     Ok(())
 }
 

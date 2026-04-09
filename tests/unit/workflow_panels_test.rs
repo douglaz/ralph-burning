@@ -137,6 +137,7 @@ fn final_review_proposal_payload_round_trips() {
         amendments: vec![FinalReviewProposal {
             body: "Tighten the final wording.".to_string(),
             rationale: Some("Clarifies the edge case.".to_string()),
+            mapped_to_bead_id: None,
         }],
     };
     let json = serde_json::to_string(&payload).expect("serializes");
@@ -180,6 +181,7 @@ fn final_review_aggregate_payload_round_trips() {
         amendment_id: "fr-1-deadbeef".to_string(),
         normalized_body: "Tighten the final wording.".to_string(),
         sources: vec![],
+        mapped_to_bead_id: None,
     };
     let payload = FinalReviewAggregatePayload {
         restart_required: true,

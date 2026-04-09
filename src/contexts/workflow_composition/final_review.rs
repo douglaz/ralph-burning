@@ -54,6 +54,8 @@ pub struct CanonicalAmendment {
     pub amendment_id: String,
     pub normalized_body: String,
     pub sources: Vec<FinalReviewAmendmentSource>,
+    /// When set, this amendment is a planned-elsewhere finding.
+    pub mapped_to_bead_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +78,8 @@ pub struct FinalReviewAcceptedAmendment {
     pub amendment_id: String,
     pub normalized_body: String,
     pub sources: Vec<FinalReviewAmendmentSource>,
+    /// When set, this amendment is classified as "planned-elsewhere".
+    pub mapped_to_bead_id: Option<String>,
 }
 
 struct ReviewerProposalRecord {
@@ -173,6 +177,10 @@ fn merge_final_review_amendments(
                     if !existing.sources.contains(&source) {
                         existing.sources.push(source);
                     }
+                    // Prefer the first non-None mapped_to_bead_id across duplicates.
+                    if existing.mapped_to_bead_id.is_none() {
+                        existing.mapped_to_bead_id = amendment.mapped_to_bead_id.clone();
+                    }
                 }
                 None => {
                     order.push(normalized_body.clone());
@@ -182,6 +190,7 @@ fn merge_final_review_amendments(
                             amendment_id,
                             normalized_body,
                             sources: vec![source],
+                            mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
                         },
                     );
                 }
@@ -1513,6 +1522,7 @@ where
                     amendment_id: amendment.amendment_id,
                     normalized_body: amendment.normalized_body,
                     sources: amendment.sources,
+                    mapped_to_bead_id: amendment.mapped_to_bead_id,
                 })
                 .collect(),
             restart_required: false,
@@ -1520,8 +1530,11 @@ where
         });
     }
 
+    let has_non_planned_elsewhere = final_accepted_amendments
+        .iter()
+        .any(|a| a.mapped_to_bead_id.is_none());
     let aggregate = FinalReviewAggregatePayload {
-        restart_required: !final_accepted_amendments.is_empty(),
+        restart_required: has_non_planned_elsewhere,
         force_completed: false,
         total_reviewers: reviewer_votes.len(),
         total_proposed_amendments: reviewer_records
@@ -1537,17 +1550,22 @@ where
             .iter()
             .map(canonical_to_payload)
             .collect(),
-        final_review_restart_count: if final_accepted_amendments.is_empty() {
-            final_review_restart_count
-        } else {
+        final_review_restart_count: if has_non_planned_elsewhere {
             final_review_restart_count.saturating_add(1)
+        } else {
+            final_review_restart_count
         },
         max_restarts,
         summary: if final_accepted_amendments.is_empty() {
             "Final review accepted no amendments.".to_owned()
-        } else {
+        } else if has_non_planned_elsewhere {
             format!(
                 "Final review accepted {} amendment(s); restart required.",
+                final_accepted_amendments.len()
+            )
+        } else {
+            format!(
+                "Final review accepted {} amendment(s), all planned-elsewhere; no restart required.",
                 final_accepted_amendments.len()
             )
         },
@@ -1567,9 +1585,10 @@ where
                 amendment_id: amendment.amendment_id,
                 normalized_body: amendment.normalized_body,
                 sources: amendment.sources,
+                mapped_to_bead_id: amendment.mapped_to_bead_id,
             })
             .collect(),
-        restart_required: !aggregate.final_accepted_amendments.is_empty(),
+        restart_required: has_non_planned_elsewhere,
         force_completed: false,
     })
 }
@@ -1776,6 +1795,7 @@ fn canonical_to_payload(amendment: &CanonicalAmendment) -> FinalReviewCanonicalA
         amendment_id: amendment.amendment_id.clone(),
         normalized_body: amendment.normalized_body.clone(),
         sources: amendment.sources.clone(),
+        mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
     }
 }
 
@@ -2448,6 +2468,7 @@ mod tests {
                 amendments: vec![FinalReviewProposal {
                     body: body.to_owned(),
                     rationale: None,
+                    mapped_to_bead_id: None,
                 }],
             },
         }
@@ -2536,6 +2557,7 @@ mod tests {
                         amendments: vec![FinalReviewProposal {
                             body: " tighten wording ".to_owned(),
                             rationale: None,
+                            mapped_to_bead_id: None,
                         }],
                     },
                 },
@@ -2554,6 +2576,7 @@ mod tests {
                         amendments: vec![FinalReviewProposal {
                             body: "tighten wording".to_owned(),
                             rationale: None,
+                            mapped_to_bead_id: None,
                         }],
                     },
                 },
