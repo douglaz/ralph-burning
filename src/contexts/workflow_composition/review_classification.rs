@@ -167,7 +167,12 @@ impl<'de> Deserialize<'de> for FindingClassification {
         }
         let unchecked: unchecked::FindingClassificationUnchecked =
             serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-        Ok(unchecked.into())
+        let classification: Self = unchecked.into();
+        let domain_errors = validate_classification(&classification);
+        if !domain_errors.is_empty() {
+            return Err(serde::de::Error::custom(domain_errors.join("; ")));
+        }
+        Ok(classification)
     }
 }
 
@@ -1238,6 +1243,60 @@ mod tests {
         let json = r#"{"classification":"propose-new-bead","finding_summary":"s","proposed_title":"t","proposed_scope":"s","severity":"low","rationale":"r"}"#;
         let c: FindingClassification = serde_json::from_str(json)?;
         assert!(matches!(c, FindingClassification::ProposeNewBead { .. }));
+        Ok(())
+    }
+
+    // ── Domain validation during deserialization ─────────────────────
+
+    #[test]
+    fn deserialization_rejects_empty_finding_summary() -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{"classification":"fix-now","finding_summary":"","severity":"high","affected_files":[]}"#;
+        let result = serde_json::from_str::<FindingClassification>(json);
+        assert!(
+            result.is_err(),
+            "empty finding_summary should be rejected at deserialization"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("finding_summary"), "error: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn deserialization_rejects_out_of_range_confidence() -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{"classification":"planned-elsewhere","finding_summary":"s","mapped_to_bead_id":"m1.b1","confidence":1.5,"rationale":"r"}"#;
+        let result = serde_json::from_str::<FindingClassification>(json);
+        assert!(
+            result.is_err(),
+            "confidence 1.5 should be rejected at deserialization"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("confidence"), "error: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn deserialization_rejects_empty_proposed_title() -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{"classification":"propose-new-bead","finding_summary":"s","proposed_title":"","proposed_scope":"s","severity":"low","rationale":"r"}"#;
+        let result = serde_json::from_str::<FindingClassification>(json);
+        assert!(
+            result.is_err(),
+            "empty proposed_title should be rejected at deserialization"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("proposed_title"), "error: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn deserialization_rejects_invalid_bead_id() -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{"classification":"planned-elsewhere","finding_summary":"s","mapped_to_bead_id":"--help","confidence":0.9,"rationale":"r"}"#;
+        let result = serde_json::from_str::<FindingClassification>(json);
+        assert!(
+            result.is_err(),
+            "invalid bead ID should be rejected at deserialization"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("mapped_to_bead_id"), "error: {err}");
         Ok(())
     }
 
