@@ -17,7 +17,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use futures_util::future::join_all;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -312,8 +312,8 @@ where
     }
 
     // --- Proposal phase: invoke all reviewers concurrently ---
-    let mut proposal_futures = Vec::with_capacity(proposal_preps.len());
-    for (_, member, reviewer_id, reviewer_prompt) in &proposal_preps {
+    let mut proposal_futures = FuturesUnordered::new();
+    for (prep_idx, (_, member, reviewer_id, reviewer_prompt)) in proposal_preps.iter().enumerate() {
         let cancellation_token = cancellation_token.clone();
         let target = member.target.clone();
         let reviewer_id = reviewer_id.clone();
@@ -338,10 +338,9 @@ where
                 cancellation_token,
             )
             .await;
-            (started_at, result)
+            (prep_idx, started_at, result)
         });
     }
-    let proposal_results = join_all(proposal_futures).await;
 
     // --- Proposal phase: process results sequentially ---
     let mut reviewer_records = Vec::new();
@@ -349,9 +348,8 @@ where
     let mut last_proposal_exhaustion_error: Option<AppError> = None;
     let mut first_required_proposal_failure: Option<AppError> = None;
     let mut first_optional_proposal_failure: Option<AppError> = None;
-    for ((idx, member, reviewer_id, _), (started_at, reviewer_payload)) in
-        proposal_preps.iter().zip(proposal_results)
-    {
+    while let Some((prep_idx, started_at, reviewer_payload)) = proposal_futures.next().await {
+        let (idx, member, reviewer_id, _) = &proposal_preps[prep_idx];
         let idx = *idx;
         let (reviewer_payload, producer) = match reviewer_payload {
             Ok(payload) => payload,
@@ -936,8 +934,8 @@ where
     }
 
     // --- Vote phase: invoke all voters concurrently ---
-    let mut vote_futures = Vec::with_capacity(vote_preps.len());
-    for (reviewer, vote_prompt) in &vote_preps {
+    let mut vote_futures = FuturesUnordered::new();
+    for (prep_idx, (reviewer, vote_prompt)) in vote_preps.iter().enumerate() {
         let cancellation_token = cancellation_token.clone();
         let target = reviewer.target.clone();
         let reviewer_id = reviewer.reviewer_id.clone();
@@ -963,10 +961,9 @@ where
                 cancellation_token,
             )
             .await;
-            (started_at, result)
+            (prep_idx, started_at, result)
         });
     }
-    let vote_results = join_all(vote_futures).await;
 
     // --- Vote phase: process results sequentially ---
     let mut reviewer_votes = Vec::new();
@@ -974,7 +971,8 @@ where
     let mut last_vote_exhaustion_error: Option<AppError> = None;
     let mut first_required_vote_failure: Option<AppError> = None;
     let mut first_optional_vote_failure: Option<AppError> = None;
-    for ((reviewer, _), (started_at, vote_payload)) in vote_preps.iter().zip(vote_results) {
+    while let Some((prep_idx, started_at, vote_payload)) = vote_futures.next().await {
+        let (reviewer, _) = &vote_preps[prep_idx];
         let (vote_payload, producer) = match vote_payload {
             Ok(payload) => payload,
             // BackendExhausted is handled first regardless of required/optional
@@ -2218,6 +2216,7 @@ mod tests {
         vote_failures: Arc<HashSet<String>>,
         /// Members whose proposal invocations fail with BackendExhausted.
         proposal_exhausted: Arc<HashSet<String>>,
+        invocation_delays: Arc<HashMap<String, Duration>>,
         actual_targets: Arc<HashMap<String, ResolvedBackendTarget>>,
         deferred_template_override: Arc<Mutex<Option<DeferredTemplateOverride>>>,
     }
@@ -2247,6 +2246,18 @@ mod tests {
         fn with_proposal_exhausted(keys: &[&str]) -> Self {
             Self {
                 proposal_exhausted: Arc::new(keys.iter().map(|k| (*k).to_owned()).collect()),
+                ..Default::default()
+            }
+        }
+
+        fn with_invocation_delays(entries: &[(&str, Duration)]) -> Self {
+            Self {
+                invocation_delays: Arc::new(
+                    entries
+                        .iter()
+                        .map(|(fragment, delay)| ((*fragment).to_owned(), *delay))
+                        .collect(),
+                ),
                 ..Default::default()
             }
         }
@@ -2354,6 +2365,11 @@ mod tests {
                     failure_class: crate::shared::domain::FailureClass::TransportFailure,
                     details: "optional reviewer failed during voting".to_owned(),
                 });
+            }
+            if let Some(delay) = self.invocation_delays.iter().find_map(|(fragment, delay)| {
+                request.invocation_id.contains(fragment).then_some(*delay)
+            }) {
+                tokio::time::sleep(delay).await;
             }
 
             let amendment_id = canonical_amendment_id(1, "tighten wording");
@@ -3228,6 +3244,105 @@ mod tests {
                 && event.details["phase"] == "proposal"
                 && event.details["outcome"] == "proposed_amendments"
         }));
+    }
+
+    #[tokio::test]
+    async fn final_review_emits_reviewer_completion_events_in_finish_order() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-completion-order");
+        let adapter = RecordingFinalReviewAdapter::with_invocation_delays(&[
+            ("reviewer-reviewer-1", Duration::from_millis(40)),
+            ("reviewer-reviewer-2", Duration::from_millis(5)),
+            ("voter-reviewer-1", Duration::from_millis(40)),
+            ("voter-reviewer-2", Duration::from_millis(5)),
+        ]);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-completion-order").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
+            reviewers: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                    required: true,
+                    configured_index: 0,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-2-model"),
+                    required: true,
+                    configured_index: 1,
+                },
+            ],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &crate::adapters::fs::FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            2,
+            0,
+            0.66,
+            2,
+            0,
+            "prompt.md",
+            0,
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("final review should succeed");
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        let proposal_completions: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.event_type
+                    == crate::contexts::project_run_record::model::JournalEventType::ReviewerCompleted
+                    && event.details["phase"] == "proposal"
+                    && event.details["role"] == "reviewer"
+                    && event.details["outcome"] == "proposed_amendments"
+            })
+            .map(|event| event.details["reviewer_id"].as_str().unwrap().to_owned())
+            .collect();
+        let vote_completions: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.event_type
+                    == crate::contexts::project_run_record::model::JournalEventType::ReviewerCompleted
+                    && event.details["phase"] == "vote"
+                    && event.details["role"] == "reviewer"
+                    && event.details["outcome"] == "reviewer_votes_recorded"
+            })
+            .map(|event| event.details["reviewer_id"].as_str().unwrap().to_owned())
+            .collect();
+
+        assert_eq!(
+            proposal_completions,
+            vec!["reviewer-2".to_owned(), "reviewer-1".to_owned()],
+            "proposal completion events should follow actual finish order"
+        );
+        assert_eq!(
+            vote_completions,
+            vec!["reviewer-2".to_owned(), "reviewer-1".to_owned()],
+            "vote completion events should follow actual finish order"
+        );
     }
 
     #[tokio::test]

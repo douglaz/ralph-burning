@@ -1,13 +1,13 @@
 {
   "active_run": {
-    "run_id": "run-20260409221130",
+    "run_id": "run-20260409224817",
     "stage_cursor": {
       "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 1
     },
-    "started_at": "2026-04-09T22:11:30.771981448Z",
+    "started_at": "2026-04-09T22:48:17.772829966Z",
     "prompt_hash_at_cycle_start": "94bb17826fb62c202f712175259fc84755dddf2707fcc0d3267edc41ca4b45a0",
     "prompt_hash_at_stage_start": "94bb17826fb62c202f712175259fc84755dddf2707fcc0d3267edc41ca4b45a0",
     "qa_iterations_current_cycle": 0,
