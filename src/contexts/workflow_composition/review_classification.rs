@@ -76,6 +76,38 @@ pub enum FindingClassification {
     },
 }
 
+// ── Bead ID syntax ───────────────────────────────────────────────────
+
+/// Validates that a string is a syntactically valid bead identifier.
+///
+/// Bead IDs are non-empty, contain no whitespace, no path separators
+/// (`/`, `\`), and do not start with a dot. Dotted forms like
+/// `milestone.bead-name` are allowed (qualified IDs). This does NOT
+/// check whether the bead actually exists — that happens at
+/// reconciliation time.
+fn validate_bead_id_syntax(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("must not be empty".to_owned());
+    }
+    if value != value.trim() {
+        return Err(format!(
+            "'{value}' must not contain leading or trailing whitespace"
+        ));
+    }
+    if value.contains(char::is_whitespace) {
+        return Err(format!("'{value}' must not contain whitespace characters"));
+    }
+    if value.starts_with('.') {
+        return Err(format!("'{value}' must not start with a dot"));
+    }
+    if value.contains('/') || value.contains('\\') {
+        return Err(format!(
+            "'{value}' must not contain path separators ('/' or '\\\\')"
+        ));
+    }
+    Ok(())
+}
+
 // ── Validation ───────────────────────────────────────────────────────
 
 /// Validates a `FindingClassification` against domain rules.
@@ -89,11 +121,18 @@ pub fn validate_classification(classification: &FindingClassification) -> Vec<St
         FindingClassification::FixNow {
             finding_summary,
             severity: _,
-            affected_files: _,
+            affected_files,
             remediation_hint: _,
         } => {
             if finding_summary.trim().is_empty() {
                 errors.push("fix_now: finding_summary must not be empty".to_owned());
+            }
+            for (i, file) in affected_files.iter().enumerate() {
+                if file.trim().is_empty() {
+                    errors.push(format!(
+                        "fix_now: affected_files[{i}] must not be empty or whitespace-only"
+                    ));
+                }
             }
         }
         FindingClassification::PlannedElsewhere {
@@ -105,8 +144,8 @@ pub fn validate_classification(classification: &FindingClassification) -> Vec<St
             if finding_summary.trim().is_empty() {
                 errors.push("planned_elsewhere: finding_summary must not be empty".to_owned());
             }
-            if mapped_to_bead_id.trim().is_empty() {
-                errors.push("planned_elsewhere: mapped_to_bead_id must not be empty".to_owned());
+            if let Err(reason) = validate_bead_id_syntax(mapped_to_bead_id) {
+                errors.push(format!("planned_elsewhere: mapped_to_bead_id {reason}"));
             }
             if !(*confidence >= 0.0 && *confidence <= 1.0) {
                 errors.push(format!(
@@ -533,6 +572,209 @@ mod tests {
         ];
         let results = validate_classifications(&list);
         assert!(results.is_empty());
+        Ok(())
+    }
+
+    // ── Validation: affected_files entries ─────────────────────────
+
+    #[test]
+    fn fix_now_rejects_empty_affected_file_entry() -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::FixNow {
+            finding_summary: "Valid summary".to_owned(),
+            severity: Severity::High,
+            affected_files: vec!["src/valid.rs".to_owned(), "".to_owned()],
+            remediation_hint: None,
+        };
+        let errors = validate_classification(&c);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("affected_files[1]"));
+        Ok(())
+    }
+
+    #[test]
+    fn fix_now_rejects_whitespace_only_affected_file_entry(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::FixNow {
+            finding_summary: "Valid summary".to_owned(),
+            severity: Severity::Medium,
+            affected_files: vec!["  ".to_owned()],
+            remediation_hint: None,
+        };
+        let errors = validate_classification(&c);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("affected_files[0]"));
+        Ok(())
+    }
+
+    #[test]
+    fn fix_now_accepts_empty_affected_files_vec() -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::FixNow {
+            finding_summary: "Valid summary".to_owned(),
+            severity: Severity::Low,
+            affected_files: vec![],
+            remediation_hint: None,
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn fix_now_reports_multiple_bad_affected_files() -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::FixNow {
+            finding_summary: "Valid summary".to_owned(),
+            severity: Severity::High,
+            affected_files: vec!["".to_owned(), "  ".to_owned(), "valid.rs".to_owned()],
+            remediation_hint: None,
+        };
+        let errors = validate_classification(&c);
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].contains("affected_files[0]"));
+        assert!(errors[1].contains("affected_files[1]"));
+        Ok(())
+    }
+
+    // ── Validation: bead ID syntax ──────────────────────────────────
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_with_leading_whitespace(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: " 9ni.8.5.2".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        assert!(errors.iter().any(|e| e.contains("whitespace")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_with_trailing_whitespace(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "9ni.8.5.2 ".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_with_internal_space(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "bad id".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        assert!(errors.iter().any(|e| e.contains("whitespace")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_with_path_traversal(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "../bad".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_with_forward_slash(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "some/path".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        assert!(errors.iter().any(|e| e.contains("path separator")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_with_backslash() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "some\\path".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_rejects_bead_id_starting_with_dot(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: ".hidden-bead".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.iter().any(|e| e.contains("mapped_to_bead_id")));
+        assert!(errors.iter().any(|e| e.contains("dot")));
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_accepts_qualified_bead_id() -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "m1.error-handling".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_accepts_simple_bead_id() -> Result<(), Box<dyn std::error::Error>> {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "bead-42".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn planned_elsewhere_accepts_deeply_qualified_bead_id() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let c = FindingClassification::PlannedElsewhere {
+            finding_summary: "Valid".to_owned(),
+            mapped_to_bead_id: "9ni.8.5.2".to_owned(),
+            confidence: 0.9,
+            rationale: "Valid".to_owned(),
+        };
+        let errors = validate_classification(&c);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
         Ok(())
     }
 
