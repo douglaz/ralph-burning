@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260409075617-final_review-aggregate-c1-a1-cr22-artifact",
+  "payload_id": "run-20260409075617-final_review-aggregate-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T17:53:01.287825997Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 22/25\n\n## Accepted\n\n- `fr-22-fc433550`\n\n## Rejected\n\n- `fr-22-bfc33b6c`\n- `fr-22-4eda4a65`\n- `fr-22-5a0fcfa3`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-22-fc433550`\n\nHandle explicit-id aliases when validating and verifying `mapped_to_bead_id`. The prompt builder canonicalizes explicit bead IDs to `milestone_id.short_id` in [src/cli/project.rs:1179](/home/master/p/ralphs/ralph-burning/src/cli/project.rs#L1179), `extract_pe_bead_ids` and final-review validation only accept that exact token from the prompt in [src/contexts/project_run_record/task_prompt_contract.rs:277](/home/master/p/ralphs/ralph-burning/src/contexts/project_run_record/task_prompt_contract.rs#L277) and [src/contexts/workflow_composition/final_review.rs:648](/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/final_review.rs#L648), and `verify_bead_exists` later passes the stored value straight to `br show` in [src/contexts/automation_runtime/planned_elsewhere.rs:70](/home/master/p/ralphs/ralph-burning/src/contexts/automation_runtime/planned_elsewhere.rs#L70). For explicit beads that still exist in `.beads` under their authored short ID, a valid planned-elsewhere mapping will be treated as stale and its comment will never post. Resolve both the qualified and short-ID forms here; the alias requirement is already acknowledged in [src/contexts/milestone_record/bundle.rs:494](/home/master/p/ralphs/ralph-burning/src/contexts/milestone_record/bundle.rs#L494).\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 22
+}

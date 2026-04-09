@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409075617-final_review-vote-1-c1-a1-cr22-artifact",
+  "payload_id": "run-20260409075617-final_review-vote-1-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T17:53:01.274068725Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nInspected the planned-elsewhere prompt, journal rebuild, and success-reconciliation paths. One amendment identifies a real alias-resolution bug for explicit bead IDs. The legacy-provenance concern is mostly transitional data hygiene rather than a current correctness failure, the double-write note confirms intended behavior, and the comment-delivery complaint targets a documented best-effort path rather than a broken invariant.\n\n## Votes\n\n- `fr-22-bfc33b6c`: Reject\n  Journal rebuild already collapses exact duplicates by `(active_bead_id, finding_summary, mapped_to_bead_id)`, so a legacy row and a modern row with the same logical identity do not both survive. Legacy rows can linger when they differ from later mappings or were never rediscovered, but the operational consumer in success reconciliation scopes to the current `run_id` before acting on mappings. That makes this a transitional cleanup concern, not a concrete correctness bug that requires an amendment here.\n- `fr-22-4eda4a65`: Reject\n  The amendment itself concludes that no change is needed, and the code supports that conclusion. Reconstructed unverified entries are intentionally superseded by the later verified write through journal collapse on the mapping identity key, and later rounds are likewise meant to overwrite earlier ones. This is confirming analysis, not a defect.\n- `fr-22-fc433550`: Accept\n  This is a real bug. Planned-elsewhere prompt construction and final-review validation can preserve a qualified explicit ID like `milestone.short_id`, but planned-elsewhere verification later hands that stored value straight to `br show` and subsequent comment posting uses the same raw ID. Elsewhere in the codebase explicit beads are already treated as having short/qualified aliases, so this path is inconsistent and can misclassify an existing explicit bead as stale. The fix should resolve both forms and use a `br`-accepted ID through verification/comment delivery.\n- `fr-22-5a0fcfa3`: Reject\n  The underlying observation is true for failed comment submission, but the code intentionally treats bead verification as the durable state and comment delivery as best-effort auxiliary audit output. `mapped_bead_verified` is not supposed to mean 'comment delivered'; it correctly means 'mapped bead existence verified'. Retrying comments would require separate durable delivery state and idempotency handling to avoid duplicate comments, and even failed `sync_flush` does not necessarily imply permanent loss because pending mutations remain dirty for later flushes. This is a deliberate trade-off, not a broken invariant.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4"
+  },
+  "completion_round": 22
+}
