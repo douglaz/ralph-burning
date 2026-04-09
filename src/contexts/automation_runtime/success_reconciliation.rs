@@ -718,7 +718,9 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
 
     let bead_mappings: Vec<_> = mappings
         .into_iter()
-        .filter(|m| m.active_bead_id == bead_id)
+        .filter(|m| {
+            m.active_bead_id == bead_id && m.run_id.as_deref().is_none_or(|rid| rid == run_id)
+        })
         .collect();
 
     // Attempt to reconstruct any planned-elsewhere amendments from persisted
@@ -782,6 +784,7 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
                 mapped_to_bead_id: outcome.mapping.mapped_to_bead_id.clone(),
                 recorded_at: now,
                 mapped_bead_verified: true,
+                run_id: outcome.mapping.run_id.clone(),
             };
             if let Err(e) = milestone_service::record_planned_elsewhere_mapping(
                 &FsMilestoneJournalStore,
@@ -912,9 +915,15 @@ fn reconstruct_missing_pe_mappings(
     // Build a mutable set of existing identity keys for dedup. Updated as
     // new mappings are reconstructed so the same identity appearing in
     // multiple aggregates is only reconstructed once.
-    let mut seen_keys: std::collections::HashSet<(String, String)> = existing_mappings
+    let mut seen_keys: std::collections::HashSet<(String, String, String)> = existing_mappings
         .iter()
-        .map(|m| (m.finding_summary.clone(), m.mapped_to_bead_id.clone()))
+        .map(|m| {
+            (
+                m.active_bead_id.clone(),
+                m.finding_summary.clone(),
+                m.mapped_to_bead_id.clone(),
+            )
+        })
         .collect();
 
     let now = Utc::now();
@@ -945,7 +954,11 @@ fn reconstruct_missing_pe_mappings(
                 None => continue,
             };
 
-            let identity_key = (amendment.normalized_body.clone(), mapped_to.to_owned());
+            let identity_key = (
+                bead_id.to_owned(),
+                amendment.normalized_body.clone(),
+                mapped_to.to_owned(),
+            );
             if seen_keys.contains(&identity_key) {
                 continue;
             }
@@ -957,6 +970,7 @@ fn reconstruct_missing_pe_mappings(
                 mapped_to_bead_id: mapped_to.to_owned(),
                 recorded_at: now,
                 mapped_bead_verified: false,
+                run_id: Some(run_id.to_owned()),
             };
 
             // Record the reconstructed mapping to the journal so subsequent

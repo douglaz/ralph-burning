@@ -294,6 +294,11 @@ pub enum MilestoneEventType {
     BeadSkipped,
     ProgressUpdated,
     PlannedElsewhereMapped,
+    /// Catch-all for event types added in newer versions. Allows older code
+    /// to read journals that contain events from future versions without
+    /// failing deserialization. Consumers should skip `Unknown` events.
+    #[serde(other)]
+    Unknown,
 }
 
 impl MilestoneJournalEvent {
@@ -739,6 +744,11 @@ pub struct PlannedElsewhereMapping {
     pub recorded_at: DateTime<Utc>,
     /// Whether the mapped-to bead was verified to exist at recording time.
     pub mapped_bead_verified: bool,
+    /// The run that produced this mapping. Used to scope verification to
+    /// the current successful run and ignore stale mappings from
+    /// rolled-back or abandoned runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 impl PlannedElsewhereMapping {

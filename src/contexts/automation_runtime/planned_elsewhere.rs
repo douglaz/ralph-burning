@@ -152,6 +152,7 @@ pub async fn reconcile_planned_elsewhere<R: ProcessRunner>(
         mapped_to_bead_id: input.mapped_to_bead_id.clone(),
         recorded_at: now,
         mapped_bead_verified: bead_verified,
+        run_id: None,
     };
 
     milestone_service::record_planned_elsewhere_mapping(

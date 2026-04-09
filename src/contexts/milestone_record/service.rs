@@ -2371,6 +2371,9 @@ pub fn record_planned_elsewhere_mapping(
         "mapped_bead_verified".to_owned(),
         JsonValue::Bool(mapping.mapped_bead_verified),
     );
+    if let Some(ref rid) = mapping.run_id {
+        metadata.insert("run_id".to_owned(), JsonValue::String(rid.clone()));
+    }
 
     let mut event = MilestoneJournalEvent::new(
         MilestoneEventType::PlannedElsewhereMapped,
@@ -2455,6 +2458,10 @@ fn rebuild_planned_elsewhere_from_journal(
             .get("mapped_bead_verified")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let run_id = metadata
+            .get("run_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned());
         let finding_summary = event.details.clone().unwrap_or_default();
 
         let key = (
@@ -2468,6 +2475,7 @@ fn rebuild_planned_elsewhere_from_journal(
             mapped_to_bead_id,
             recorded_at: event.timestamp,
             mapped_bead_verified,
+            run_id,
         };
         // Later journal events always supersede earlier ones.
         by_identity.insert(key, mapping);
@@ -9040,6 +9048,7 @@ mod tests {
             mapped_to_bead_id: "bead-B".to_owned(),
             recorded_at: now,
             mapped_bead_verified: false,
+            run_id: None,
         };
         record_planned_elsewhere_mapping(
             &FsMilestoneJournalStore,
@@ -9094,6 +9103,7 @@ mod tests {
             mapped_to_bead_id: "bead-B".to_owned(),
             recorded_at: now,
             mapped_bead_verified: false,
+            run_id: None,
         };
         record_planned_elsewhere_mapping(
             &FsMilestoneJournalStore,
@@ -9110,6 +9120,7 @@ mod tests {
             mapped_to_bead_id: "bead-B".to_owned(),
             recorded_at: now + chrono::Duration::seconds(10),
             mapped_bead_verified: true,
+            run_id: None,
         };
         record_planned_elsewhere_mapping(
             &FsMilestoneJournalStore,
@@ -9154,6 +9165,7 @@ mod tests {
             mapped_to_bead_id: "bead-B".to_owned(),
             recorded_at: now,
             mapped_bead_verified: false,
+            run_id: None,
         };
         record_planned_elsewhere_mapping(
             &FsMilestoneJournalStore,
@@ -9219,6 +9231,7 @@ mod tests {
             mapped_to_bead_id: "bead-B".to_owned(),
             recorded_at: now,
             mapped_bead_verified: false,
+            run_id: None,
         };
         record_planned_elsewhere_mapping(
             &FsMilestoneJournalStore,
@@ -9236,6 +9249,7 @@ mod tests {
             mapped_to_bead_id: "bead-C".to_owned(),
             recorded_at: now + chrono::Duration::seconds(5),
             mapped_bead_verified: false,
+            run_id: None,
         };
         let mut metadata = serde_json::Map::new();
         metadata.insert(

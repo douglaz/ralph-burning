@@ -2708,6 +2708,7 @@ where
                             base_dir,
                             project_id,
                             &pe_amendments,
+                            run_id,
                         );
                     }
 
@@ -3087,6 +3088,7 @@ where
                             base_dir,
                             project_id,
                             &planned_elsewhere,
+                            run_id,
                         );
                     }
 
@@ -7546,6 +7548,7 @@ fn record_planned_elsewhere_amendments(
     base_dir: &Path,
     project_id: &ProjectId,
     amendments: &[&FinalReviewQueuedAmendment],
+    run_id: &RunId,
 ) {
     if amendments.is_empty() {
         return;
@@ -7620,6 +7623,7 @@ fn record_planned_elsewhere_amendments(
             mapped_to_bead_id: mapped_to.to_owned(),
             recorded_at: now,
             mapped_bead_verified: false, // Verification deferred to automation_runtime
+            run_id: Some(run_id.as_str().to_owned()),
         };
 
         match milestone_service::record_planned_elsewhere_mapping(
