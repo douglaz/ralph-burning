@@ -343,11 +343,14 @@ where
     }
 
     // --- Proposal phase: process results sequentially ---
+    // We must drain ALL futures before returning any error so that every
+    // reviewer that emitted a `started` event also emits a `completed` event.
     let mut reviewer_records = Vec::new();
     let mut proposal_total_exhausted: usize = 0;
     let mut last_proposal_exhaustion_error: Option<AppError> = None;
     let mut first_required_proposal_failure: Option<AppError> = None;
     let mut first_optional_proposal_failure: Option<AppError> = None;
+    let mut deferred_processing_error: Option<AppError> = None;
     while let Some((prep_idx, started_at, reviewer_payload)) = proposal_futures.next().await {
         let (idx, member, reviewer_id, _) = &proposal_preps[prep_idx];
         let idx = *idx;
@@ -465,15 +468,25 @@ where
                 continue;
             }
         };
-        let (backend_family, model_id) = panel_member_identity_from_producer(
+        let (backend_family, model_id) = match panel_member_identity_from_producer(
             &producer,
             &member.target,
             "final_review:reviewer",
             "final-review reviewer invocations must produce agent metadata",
-        )?;
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                if deferred_processing_error.is_none() {
+                    deferred_processing_error = Some(e);
+                }
+                continue;
+            }
+        };
 
-        let proposal: FinalReviewProposalPayload = serde_json::from_value(reviewer_payload.clone())
-            .map_err(|e| {
+        let proposal: FinalReviewProposalPayload = match serde_json::from_value(reviewer_payload.clone())
+        {
+            Ok(v) => v,
+            Err(e) => {
                 let duration = started_at.elapsed();
                 let _ = append_panel_member_completed_event_with_identity(
                     journal_store,
@@ -505,16 +518,20 @@ where
                     Some("failed_schema_validation"),
                     Some(0),
                 );
-                AppError::InvocationFailed {
-                    backend: member.target.backend.family.to_string(),
-                    contract_id: "final_review:reviewer".to_owned(),
-                    failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                    details: format!("final-review proposal schema validation failed: {e}"),
+                if deferred_processing_error.is_none() {
+                    deferred_processing_error = Some(AppError::InvocationFailed {
+                        backend: member.target.backend.family.to_string(),
+                        contract_id: "final_review:reviewer".to_owned(),
+                        failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                        details: format!("final-review proposal schema validation failed: {e}"),
+                    });
                 }
-            })?;
+                continue;
+            }
+        };
 
         let duration = started_at.elapsed();
-        append_panel_member_completed_event_with_identity(
+        if let Err(e) = append_panel_member_completed_event_with_identity(
             journal_store,
             base_dir,
             project_id,
@@ -529,7 +546,12 @@ where
             duration,
             "proposed_amendments",
             proposal.amendments.len(),
-        )?;
+        ) {
+            if deferred_processing_error.is_none() {
+                deferred_processing_error = Some(e);
+            }
+            continue;
+        }
         append_panel_member_runtime_log_with_identity(
             log_write,
             base_dir,
@@ -545,7 +567,7 @@ where
             Some(proposal.amendments.len()),
         );
         let artifact = renderers::render_final_review_proposal(&proposal, &producer.to_string());
-        persist_supporting_record(
+        if let Err(e) = persist_supporting_record(
             artifact_write,
             base_dir,
             project_id,
@@ -557,7 +579,12 @@ where
             &artifact,
             producer,
             &format!("reviewer-{idx}"),
-        )?;
+        ) {
+            if deferred_processing_error.is_none() {
+                deferred_processing_error = Some(e);
+            }
+            continue;
+        }
 
         reviewer_records.push(ReviewerProposalRecord {
             member_index: idx,
@@ -570,10 +597,18 @@ where
         });
     }
 
-    // Required failures take priority over quorum shortfalls.
+    // Now that all futures have been drained, propagate deferred errors.
+    // Required invocation failures take priority over processing errors.
     if let Some(error) = first_required_proposal_failure {
         return Err(error);
     }
+    if let Some(error) = deferred_processing_error {
+        return Err(error);
+    }
+
+    // Restore deterministic panel order (FuturesUnordered yields in
+    // completion order which is latency-dependent).
+    reviewer_records.sort_by_key(|r| r.member_index);
 
     let all_proposal_exhausted = probe_exhausted_count + proposal_total_exhausted;
     let effective_proposal_min = min_reviewers
@@ -971,6 +1006,7 @@ where
     let mut last_vote_exhaustion_error: Option<AppError> = None;
     let mut first_required_vote_failure: Option<AppError> = None;
     let mut first_optional_vote_failure: Option<AppError> = None;
+    let mut deferred_vote_processing_error: Option<AppError> = None;
     while let Some((prep_idx, started_at, vote_payload)) = vote_futures.next().await {
         let (reviewer, _) = &vote_preps[prep_idx];
         let (vote_payload, producer) = match vote_payload {
@@ -1087,54 +1123,68 @@ where
                 continue;
             }
         };
-        let (backend_family, model_id) = panel_member_identity_from_producer(
+        let (backend_family, model_id) = match panel_member_identity_from_producer(
             &producer,
             &reviewer.target,
             "final_review:voter",
             "final-review reviewer vote invocations must produce agent metadata",
-        )?;
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                if deferred_vote_processing_error.is_none() {
+                    deferred_vote_processing_error = Some(e);
+                }
+                continue;
+            }
+        };
 
         let votes: FinalReviewVotePayload =
-            serde_json::from_value(vote_payload.clone()).map_err(|e| {
-                let duration = started_at.elapsed();
-                let _ = append_panel_member_completed_event_with_identity(
-                    journal_store,
-                    base_dir,
-                    project_id,
-                    seq,
-                    run_id,
-                    cursor,
-                    "vote",
-                    &reviewer.reviewer_id,
-                    "reviewer",
-                    &backend_family,
-                    &model_id,
-                    duration,
-                    "failed_schema_validation",
-                    0,
-                );
-                append_panel_member_runtime_log_with_identity(
-                    log_write,
-                    base_dir,
-                    project_id,
-                    "completed",
-                    "vote",
-                    &reviewer.reviewer_id,
-                    "reviewer",
-                    &backend_family,
-                    &model_id,
-                    Some(duration),
-                    Some("failed_schema_validation"),
-                    Some(0),
-                );
-                AppError::InvocationFailed {
-                    backend: reviewer.target.backend.family.to_string(),
-                    contract_id: "final_review:voter".to_owned(),
-                    failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                    details: format!("final-review vote schema validation failed: {e}"),
+            match serde_json::from_value(vote_payload.clone()) {
+                Ok(v) => v,
+                Err(e) => {
+                    let duration = started_at.elapsed();
+                    let _ = append_panel_member_completed_event_with_identity(
+                        journal_store,
+                        base_dir,
+                        project_id,
+                        seq,
+                        run_id,
+                        cursor,
+                        "vote",
+                        &reviewer.reviewer_id,
+                        "reviewer",
+                        &backend_family,
+                        &model_id,
+                        duration,
+                        "failed_schema_validation",
+                        0,
+                    );
+                    append_panel_member_runtime_log_with_identity(
+                        log_write,
+                        base_dir,
+                        project_id,
+                        "completed",
+                        "vote",
+                        &reviewer.reviewer_id,
+                        "reviewer",
+                        &backend_family,
+                        &model_id,
+                        Some(duration),
+                        Some("failed_schema_validation"),
+                        Some(0),
+                    );
+                    if deferred_vote_processing_error.is_none() {
+                        deferred_vote_processing_error = Some(AppError::InvocationFailed {
+                            backend: reviewer.target.backend.family.to_string(),
+                            contract_id: "final_review:voter".to_owned(),
+                            failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                            details: format!("final-review vote schema validation failed: {e}"),
+                        });
+                    }
+                    continue;
                 }
-            })?;
-        validate_vote_payload(&votes, &amendments, &reviewer.target).map_err(|error| {
+            };
+        if let Err(error) = validate_vote_payload(&votes, &amendments, &reviewer.target) {
             let duration = started_at.elapsed();
             let _ = append_panel_member_completed_event_with_identity(
                 journal_store,
@@ -1166,10 +1216,13 @@ where
                 Some("failed_domain_validation"),
                 Some(0),
             );
-            error
-        })?;
+            if deferred_vote_processing_error.is_none() {
+                deferred_vote_processing_error = Some(error);
+            }
+            continue;
+        }
         let duration = started_at.elapsed();
-        append_panel_member_completed_event_with_identity(
+        if let Err(e) = append_panel_member_completed_event_with_identity(
             journal_store,
             base_dir,
             project_id,
@@ -1184,7 +1237,12 @@ where
             duration,
             "reviewer_votes_recorded",
             votes.votes.len(),
-        )?;
+        ) {
+            if deferred_vote_processing_error.is_none() {
+                deferred_vote_processing_error = Some(e);
+            }
+            continue;
+        }
         append_panel_member_runtime_log_with_identity(
             log_write,
             base_dir,
@@ -1205,7 +1263,7 @@ where
             &votes,
             &producer.to_string(),
         );
-        persist_supporting_record(
+        if let Err(e) = persist_supporting_record(
             artifact_write,
             base_dir,
             project_id,
@@ -1217,13 +1275,21 @@ where
             &artifact,
             producer,
             &format!("vote-{}", reviewer.member_index),
-        )?;
+        ) {
+            if deferred_vote_processing_error.is_none() {
+                deferred_vote_processing_error = Some(e);
+            }
+            continue;
+        }
 
         reviewer_votes.push(votes);
     }
 
-    // Required vote failures take priority over quorum shortfalls.
+    // Now that all vote futures have been drained, propagate deferred errors.
     if let Some(error) = first_required_vote_failure {
+        return Err(error);
+    }
+    if let Some(error) = deferred_vote_processing_error {
         return Err(error);
     }
 
