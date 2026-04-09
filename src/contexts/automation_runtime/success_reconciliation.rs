@@ -732,21 +732,29 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
 
     // Flush any br mutations (comments) so they're persisted upstream.
     let any_comments = outcomes.iter().any(|o| o.comment_posted);
-    if any_comments {
-        if let Err(e) = br_mutation.sync_flush().await {
-            tracing::warn!(
-                error = %e,
-                "failed to flush br mutations after planned-elsewhere comments (non-blocking)"
-            );
+    let flush_succeeded = if any_comments {
+        match br_mutation.sync_flush().await {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to flush br mutations after planned-elsewhere comments (non-blocking)"
+                );
+                false
+            }
         }
-    }
+    } else {
+        true // No comments to flush — trivially "succeeded".
+    };
 
     // Persist verified mappings back so they won't be re-verified on replay.
-    // We append a new record with `mapped_bead_verified: true` — the append-only
-    // NDJSON design means the latest record for a given mapping wins.
+    // Only mark as verified if: (a) no comment was posted for this outcome, or
+    // (b) the comment was posted AND the flush succeeded. If a comment was posted
+    // but flush failed, leave the mapping unverified so replay will re-verify and
+    // re-attempt the comment.
     let now = Utc::now();
     for outcome in &outcomes {
-        if outcome.verified {
+        if outcome.verified && (!outcome.comment_posted || flush_succeeded) {
             let verified_mapping = PlannedElsewhereMapping {
                 active_bead_id: outcome.mapping.active_bead_id.clone(),
                 finding_summary: outcome.mapping.finding_summary.clone(),

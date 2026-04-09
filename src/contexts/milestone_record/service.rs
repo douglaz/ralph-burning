@@ -2385,9 +2385,16 @@ pub fn record_planned_elsewhere_mapping(
     // 2. Write journal first — this is the authoritative record.
     journal_store.append_event(base_dir, milestone_id, &line)?;
 
-    // 3. Write to dedicated NDJSON file (secondary, queryable index).
-    // If this fails, the journal still has the mapping for audit.
-    mapping_store.append_mapping(base_dir, milestone_id, mapping)?;
+    // 3. Write to dedicated NDJSON file (secondary, write-through projection).
+    // A failure here is non-critical: the journal is authoritative and
+    // load_planned_elsewhere_mappings rebuilds from it. Log and continue.
+    if let Err(e) = mapping_store.append_mapping(base_dir, milestone_id, mapping) {
+        tracing::warn!(
+            milestone_id = %milestone_id,
+            error = %e,
+            "failed to write planned-elsewhere NDJSON sidecar (journal record is intact)"
+        );
+    }
 
     Ok(())
 }

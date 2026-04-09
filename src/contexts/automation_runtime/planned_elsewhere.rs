@@ -79,10 +79,30 @@ async fn verify_bead_exists<R: ProcessRunner>(
                 BeadVerification::Verified
             }
         }
-        Err(BrError::BrExitError { .. }) => {
-            // Non-zero exit from `br show` is definitive: the bead does
-            // not exist or is otherwise unresolvable. Treat as stale.
-            BeadVerification::Stale(format!("mapped-to bead '{bead_id}' not found"))
+        Err(
+            ref e @ BrError::BrExitError {
+                ref stderr,
+                ref stdout,
+                ..
+            },
+        ) => {
+            // Only treat as definitive staleness when the message
+            // clearly indicates the bead does not exist. Other non-zero
+            // exits (corrupt state, permission errors, etc.) are treated
+            // as transient so the operator can investigate.
+            let msg_lower = |s: &str| s.to_ascii_lowercase();
+            let describes_missing = |s: &str| {
+                let s = msg_lower(s);
+                (s.contains("bead not found") || s.contains("issue not found"))
+                    || (s.contains("not found") && (s.contains("bead") || s.contains("issue")))
+            };
+            if describes_missing(stderr) || describes_missing(stdout) {
+                BeadVerification::Stale(format!("mapped-to bead '{bead_id}' not found"))
+            } else {
+                BeadVerification::TransientError(format!(
+                    "could not verify mapped-to bead '{bead_id}': {e}"
+                ))
+            }
         }
         Err(e @ BrError::BrNotFound { .. })
         | Err(e @ BrError::BrTimeout { .. })
@@ -609,7 +629,8 @@ mod tests {
         setup_milestone(base_dir, &milestone_id);
 
         // br show fails (bead doesn't exist)
-        let read_runner = MockBrRunner::new(vec![MockBrRunner::error(1, "not found")]);
+        let read_runner =
+            MockBrRunner::new(vec![MockBrRunner::error(1, "bead not found: ghost-bead")]);
         let br_read = BrAdapter::with_runner(read_runner);
 
         let mutation_runner = MockBrRunner::new(vec![]);
@@ -763,6 +784,65 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             err.to_string().contains("ghost-bead"),
+            "error should mention the bead: {err}"
+        );
+
+        // No mapping should have been persisted
+        let mappings = milestone_service::load_planned_elsewhere_mappings(
+            &FsPlannedElsewhereMappingStore,
+            base_dir,
+            &milestone_id,
+        )?;
+        assert!(mappings.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn non_missing_bead_exit_error_is_transient_not_stale(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base_dir = tmp.path();
+        let milestone_id = MilestoneId::new("test-ms")?;
+        setup_milestone(base_dir, &milestone_id);
+
+        // br show exits non-zero with a message that does NOT indicate a missing bead
+        // (e.g., corrupt state or permission error). Should be transient, not stale.
+        let read_runner = MockBrRunner::new(vec![MockBrRunner::error(
+            1,
+            "internal error: corrupt bead index",
+        )]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let input = PlannedElsewhereInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Edge case".to_owned(),
+            mapped_to_bead_id: "target-bead".to_owned(),
+        };
+
+        let now = Utc::now();
+        let result = reconcile_planned_elsewhere(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "test-ms",
+            &input,
+            false,
+            now,
+        )
+        .await;
+
+        // Should propagate as an error (transient), not silently succeed with stale warning
+        assert!(
+            result.is_err(),
+            "non-missing-bead exit error should propagate as transient"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("target-bead"),
             "error should mention the bead: {err}"
         );
 

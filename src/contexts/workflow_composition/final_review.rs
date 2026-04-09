@@ -1865,9 +1865,20 @@ fn build_voter_prompt(
     let amendment_text = amendments
         .iter()
         .map(|amendment| {
+            let pe_note = amendment
+                .mapped_to_bead_id
+                .as_ref()
+                .map(|id| {
+                    format!(
+                        "\n\n**Classification: planned-elsewhere** — mapped to bead `{id}`. \
+                         If accepted, this amendment will NOT trigger a restart; the concern \
+                         will be recorded as already covered by the mapped-to bead."
+                    )
+                })
+                .unwrap_or_default();
             format!(
-                "## Amendment: {}\n\n{}",
-                amendment.amendment_id, amendment.normalized_body
+                "## Amendment: {}\n\n{}{}",
+                amendment.amendment_id, amendment.normalized_body, pe_note
             )
         })
         .collect::<Vec<_>>()
@@ -1911,9 +1922,20 @@ fn build_arbiter_prompt(
     let amendment_text = disputed_amendments
         .values()
         .map(|amendment| {
+            let pe_note = amendment
+                .mapped_to_bead_id
+                .as_ref()
+                .map(|id| {
+                    format!(
+                        "\n\n**Classification: planned-elsewhere** — mapped to bead `{id}`. \
+                         If accepted, this amendment will NOT trigger a restart; the concern \
+                         will be recorded as already covered by the mapped-to bead."
+                    )
+                })
+                .unwrap_or_default();
             format!(
-                "## Amendment: {}\n\n{}",
-                amendment.amendment_id, amendment.normalized_body
+                "## Amendment: {}\n\n{}{}",
+                amendment.amendment_id, amendment.normalized_body, pe_note
             )
         })
         .collect::<Vec<_>>()
