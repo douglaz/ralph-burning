@@ -717,10 +717,20 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
         }
     };
 
-    let bead_mappings: Vec<_> = mappings
-        .into_iter()
-        .filter(|m| m.active_bead_id == bead_id && m.run_id.as_deref() == Some(run_id))
-        .collect();
+    let bead_mappings: Vec<_> = {
+        let mut filtered: Vec<_> = mappings
+            .into_iter()
+            .filter(|m| m.active_bead_id == bead_id && m.run_id.as_deref() == Some(run_id))
+            .collect();
+        // Only act on mappings from the latest completion_round for this
+        // run.  Earlier rounds may have marked a finding as
+        // planned-elsewhere, but a later round could have fixed/rejected
+        // it — the latest round's state is authoritative.
+        if let Some(max_round) = filtered.iter().filter_map(|m| m.completion_round).max() {
+            filtered.retain(|m| m.completion_round == Some(max_round));
+        }
+        filtered
+    };
 
     // Attempt to reconstruct any planned-elsewhere amendments from persisted
     // final-review aggregates that are missing from the journal. This covers
@@ -929,11 +939,14 @@ fn reconstruct_missing_pe_mappings(
     let now = Utc::now();
     let mut reconstructed = Vec::new();
 
-    // Scan only the latest aggregate per completion_round from the current
-    // run, so pre-rollback or crashed attempts are skipped.
+    // Only reconstruct from the highest completion_round — earlier rounds'
+    // PE decisions may have been superseded by the latest final-review
+    // aggregate (e.g. a finding was planned-elsewhere in round 1 but
+    // fixed/rejected in round 2).
     let mut rounds: Vec<u32> = latest_by_round.keys().copied().collect();
     rounds.sort_unstable();
-    for round in rounds {
+    let rounds_to_scan: Vec<u32> = rounds.last().copied().into_iter().collect();
+    for round in rounds_to_scan {
         let payload = latest_by_round[&round];
 
         let aggregate: FinalReviewAggregatePayload =

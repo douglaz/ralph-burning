@@ -3070,8 +3070,10 @@ impl FsMilestoneJournalStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e.into()),
         };
+        let lines: Vec<&str> = raw.lines().collect();
+        let line_count = lines.len();
         let mut events = Vec::new();
-        for (i, line) in raw.lines().enumerate() {
+        for (i, line) in lines.into_iter().enumerate() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -3079,17 +3081,26 @@ impl FsMilestoneJournalStore {
             match serde_json::from_str::<MilestoneJournalEvent>(trimmed) {
                 Ok(event) => events.push(event),
                 Err(e) => {
-                    // Skip unparseable lines with a warning instead of
-                    // failing.  This makes the reader forward-compatible
-                    // with event types added in newer versions (the
-                    // #[serde(other)] Unknown variant handles known
-                    // structural changes, but truly malformed or
-                    // future-schema lines are safely skipped here).
-                    tracing::warn!(
-                        line = i + 1,
-                        error = %e,
-                        "skipping unparseable milestone journal line"
-                    );
+                    let is_last_line = i + 1 == line_count;
+                    if is_last_line {
+                        // Tolerate a malformed trailing line — this
+                        // happens when the process crashed mid-append
+                        // (partial write).  The line is lost but the
+                        // journal up to that point is intact.
+                        tracing::warn!(
+                            line = i + 1,
+                            error = %e,
+                            "ignoring malformed trailing journal line (likely partial write)"
+                        );
+                    } else {
+                        // Non-trailing malformed lines indicate genuine
+                        // corruption in the authoritative journal — fail
+                        // loudly so the operator can investigate.
+                        return Err(AppError::CorruptRecord {
+                            file: path.display().to_string(),
+                            details: format!("line {} is malformed: {e}", i + 1,),
+                        });
+                    }
                 }
             }
         }
