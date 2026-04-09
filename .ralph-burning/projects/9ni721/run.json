@@ -2,29 +2,74 @@
   "active_run": {
     "run_id": "run-20260409194344",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-09T19:43:44.019387404Z",
     "prompt_hash_at_cycle_start": "1f97ea334523113f73c374e9c84685a59c2d807173de5424308e23f98cb73c59",
     "prompt_hash_at_stage_start": "1f97ea334523113f73c374e9c84685a59c2d807173de5424308e23f98cb73c59",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-cc71f355",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "The `validate_classification` function does not check individual entries in `affected_files` (FixNow variant) for empty or whitespace-only strings. A classification with `affected_files: vec![\"\".to_owned()]` passes validation. Add a check that rejects empty/whitespace-only entries in the affected_files vector, consistent with how all other string fields are validated.",
+        "created_at": "2026-04-09T19:59:21.955779586Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "a957d2ae749a6ad601402c0192125a7d07ffb632b0eeaf5d13536471ab67388d"
+      },
+      {
+        "amendment_id": "fr-1-b63f9c8c",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "src/contexts/workflow_composition/review_classification.rs:108-110 only rejects an empty `mapped_to_bead_id`, and the accompanying coverage at 350-360 exercises only that case. The bead contract says this field must be syntactically valid, but values such as `\"../bad\"`, `\"bad id\"`, or `\" 9ni.8.5.2 \"` currently pass `validate_classification()`. That lets malformed planned-elsewhere ownership references get serialized and carried forward until reconciliation, where they are indistinguishable from a legitimate-but-stale bead reference. Tighten validation (or normalize then validate) for bead-id syntax and add tests for malformed IDs.",
+        "created_at": "2026-04-09T19:59:21.955782652Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "70731f99a40f531081a6a9980a9e815868ef64ebae13f5081ab43383d1278ce5"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-09T19:49:51.916514394Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
 }

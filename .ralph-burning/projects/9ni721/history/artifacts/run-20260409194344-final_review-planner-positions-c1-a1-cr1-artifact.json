@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260409194344-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-09T19:56:17.433931158Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nEvaluated three amendments to review_classification.rs validation. The empty affected_files entry check (fr-1-cc71f355) is a clear consistency gap — all other string fields are validated but affected_files entries are not. The bead-id syntax validation (fr-1-b63f9c8c) is a real bug that allows malformed references to propagate silently. The proposed_title descriptiveness check (fr-1-2200c907) is rejected because defining a concrete 'descriptiveness rule' is inherently subjective and would create a brittle blocklist; the current non-empty check is the appropriate validation boundary.\n\n## Votes\n\n- `fr-1-cc71f355`: Accept\n  The validation function explicitly checks trim().is_empty() for finding_summary, mapped_to_bead_id, rationale, proposed_title, and proposed_scope — every string field except the entries inside affected_files. A FixNow with affected_files: vec![\"\".to_owned()] passes validation, which is inconsistent with the established pattern. The fix is straightforward (iterate affected_files, reject empty/whitespace-only entries) and cannot produce false positives since an empty file path is never valid.\n- `fr-1-b63f9c8c`: Accept\n  The current validation only rejects empty/whitespace-only mapped_to_bead_id values, but the codebase already has a normalize_mapped_to_bead_id function (final_review.rs:156) that trims whitespace, and downstream code like canonicalize_milestone_bead_ref (run.rs:272) and try_br_show (planned_elsewhere.rs:127) treats bead IDs as structured identifiers. Values like \"../bad\" or \"bad id\" with path traversal characters or spaces are syntactically invalid bead IDs that will silently pass through validation and persist until reconciliation, where they become indistinguishable from legitimate-but-stale references. Adding a basic regex check (e.g., alphanumeric, dots, hyphens, no whitespace, no path separators) is a correct tightening of the validation boundary.\n- `fr-1-2200c907`: Reject\n  The amendment asks for a 'concrete descriptiveness rule' to reject values like 'x', 'todo', or 'follow-up'. This is inherently subjective — any blocklist or minimum-length rule would be arbitrary and brittle. 'follow-up' could be a legitimate title prefix in some contexts; a 5-character minimum would reject valid titles like 'CORS' or 'i18n'. The current non-empty/non-whitespace check is the correct validation boundary for a schema validator. Enforcing title quality is a prompt-level concern for the LLM generating the classifications, not a schema validation concern. Adding a blocklist here creates maintenance burden with minimal real protection since bad titles can always be phrased to evade any rule.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}
