@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,53 +23,16 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-14fa4a43",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "Fix stale writer-lock recovery before `run resume`/`run stop` rely on the new PID-based stale-run flow. `handle_resume` still acquires the CLI writer lease before any stale-Running reconciliation (`src/cli/run.rs:1769-1778`), and `CliWriterLeaseGuard::acquire` hard-fails on an existing lock (`src/contexts/automation_runtime/cli_writer_lease.rs:136-166`). The new stale-stop/interruption paths only rewrite `run.json`/`run.pid` (`src/cli/run.rs:1885-1941`, `src/contexts/workflow_composition/engine.rs:729-757`) and never release or reclaim the old writer lock. After a SIGKILL/OOM/crash, the run is reported as stale, but `run resume` can still fail with `ProjectWriterLockHeld` until daemon TTL/reconcile clears the stale lease. Add lease cleanup/reclamation to stale-run recovery, or move the stale detection ahead of lock acquisition so the recovery path can clear the stranded lock before trying to resume.",
-        "created_at": "2026-04-10T06:15:49.309813478Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "572acfb53a4435a2518eade41a38d8441a3f0aa3ed2c0d688622c318586b4fb6"
-      },
-      {
-        "amendment_id": "fr-1-66744da8",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "Remove the startup race where a live run can be misclassified as stale before `run.pid` exists. The engine writes `run.json` as `Running` before creating the pid file on both start and resume (`src/contexts/workflow_composition/engine.rs:1080-1115`, `src/contexts/workflow_composition/engine.rs:1806-1849`), but `run status` and `run stop` immediately treat a missing pid file as proof that the orchestrator is dead (`src/cli/run.rs:1885-1899`, `src/cli/run.rs:5319-5338`). In that window, `run status` reports a healthy run as stale, and `run stop` can mark the snapshot failed without ever signaling the still-running orchestrator. Either write the pid file before exposing `Running`, or make `status`/`stop` tolerate the pre-pid startup window and/or coordinate with the writer lease.",
-        "created_at": "2026-04-10T06:15:49.309816955Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "7700f09150e11abd621d917bc50fa278c7bfca738e3c2c98b737986bab92abb3"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 2
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
-    "stage_id": "final_review",
-    "resolved_at": "2026-04-10T06:02:26.116836565Z",
-    "final_review_reviewers": [
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.4-xhigh"
-      },
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.3-codex-spark-xhigh"
-      }
-    ],
-    "final_review_planner": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-10T06:17:20.138285819Z",
+    "primary_target": {
       "backend_family": "codex",
-      "model_id": "gpt-5.4-xhigh"
-    },
-    "final_review_arbiter": {
-      "backend_family": "codex",
-      "model_id": "gpt-5.4-xhigh"
+      "model_id": "gpt-5.4-high"
     }
   }
 }

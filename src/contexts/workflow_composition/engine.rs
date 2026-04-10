@@ -1087,7 +1087,17 @@ where
         status_summary: format!("running: {}", first_stage.display_name()),
         last_stage_resolution_snapshot: None,
     };
-    run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot)?;
+    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id) {
+        return Err(AppError::RunStartFailed {
+            reason: format!("failed to persist run pid file: {error}"),
+        });
+    }
+    if let Err(error) =
+        run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot)
+    {
+        let _ = FileSystem::remove_pid_file(base_dir, project_id);
+        return Err(error);
+    }
 
     seq += 1;
     let run_started =
@@ -1098,24 +1108,6 @@ where
         return fail_run(
             &AppError::RunStartFailed {
                 reason: format!("failed to persist run_started event: {}", error),
-            },
-            first_stage,
-            &run_id,
-            &mut seq,
-            &mut current_snapshot,
-            journal_store,
-            run_snapshot_write,
-            base_dir,
-            project_id,
-            ExecutionOrigin::Start,
-        )
-        .await;
-    }
-
-    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id) {
-        return fail_run(
-            &AppError::RunStartFailed {
-                reason: format!("failed to persist run pid file: {error}"),
             },
             first_stage,
             &run_id,
@@ -1814,7 +1806,15 @@ where
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(effective_config.run_policy().max_completion_rounds),
     );
-    run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot)?;
+    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id) {
+        return Err(AppError::ResumeFailed {
+            reason: format!("failed to persist run pid file: {error}"),
+        });
+    }
+    if let Err(error) = run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot) {
+        let _ = FileSystem::remove_pid_file(base_dir, project_id);
+        return Err(error);
+    }
 
     seq += 1;
     let run_resumed = journal::run_resumed_event(
@@ -1832,24 +1832,6 @@ where
         return fail_run(
             &AppError::ResumeFailed {
                 reason: format!("failed to persist run_resumed event: {}", error),
-            },
-            resume_state.cursor.stage,
-            &resume_state.run_id,
-            &mut seq,
-            &mut snapshot,
-            journal_store,
-            run_snapshot_write,
-            base_dir,
-            project_id,
-            ExecutionOrigin::Resume,
-        )
-        .await;
-    }
-
-    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id) {
-        return fail_run(
-            &AppError::ResumeFailed {
-                reason: format!("failed to persist run pid file: {error}"),
             },
             resume_state.cursor.stage,
             &resume_state.run_id,

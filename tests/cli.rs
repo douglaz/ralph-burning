@@ -5514,6 +5514,24 @@ fn run_stop_terminates_pid_and_marks_snapshot_failed() {
         serde_json::to_string_pretty(&pid_file).expect("serialize pid file"),
     )
     .expect("write pid file");
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let stale_lease = CliWriterLease {
+        lease_id: "cli-stop-test".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("cli-stop-test.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(stale_lease.clone()))
+            .expect("serialize stale stop lease"),
+    )
+    .expect("write stale stop lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), &stale_lease.lease_id)
+        .expect("write stale stop writer lock");
 
     let output = Command::new(binary())
         .args(["run", "stop"])
@@ -5539,6 +5557,14 @@ fn run_stop_terminates_pid_and_marks_snapshot_failed() {
             .join("run.pid")
             .exists(),
         "run.pid should be removed after stop"
+    );
+    assert!(
+        !leases_dir.join("writer-alpha.lock").exists(),
+        "writer lock should be reclaimed after stop"
+    );
+    assert!(
+        !leases_dir.join("cli-stop-test.json").exists(),
+        "stale cli lease should be pruned after stop"
     );
 
     let child_status = child.wait().expect("wait for stopped child");
@@ -9632,6 +9658,112 @@ fn cli_run_resume_acquires_and_releases_writer_lock() {
     assert!(
         cli_leases.is_empty(),
         "no CLI lease file should remain after successful run resume"
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn cli_run_resume_recovers_stale_running_and_reclaims_writer_lock() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "stale-resume-lock");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("stale-resume-lock".to_owned())
+        .expect("valid project id");
+    let prompt_hash = <ralph_burning::adapters::fs::FsProjectStore as ralph_burning::contexts::project_run_record::service::ProjectStorePort>::read_project_record(
+        &ralph_burning::adapters::fs::FsProjectStore,
+        temp_dir.path(),
+        &project_id,
+    )
+    .expect("read project record")
+    .prompt_hash;
+    let now = Utc::now();
+    let run_json_path = project_root(temp_dir.path(), "stale-resume-lock").join("run.json");
+    fs::write(
+        &run_json_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "active_run": {
+                "run_id": "run-stale-resume-lock",
+                "stage_cursor": {
+                    "stage": "planning",
+                    "cycle": 1,
+                    "attempt": 1,
+                    "completion_round": 1
+                },
+                "started_at": now,
+                "prompt_hash_at_cycle_start": prompt_hash,
+                "prompt_hash_at_stage_start": prompt_hash,
+                "qa_iterations_current_cycle": 0,
+                "review_iterations_current_cycle": 0,
+                "final_review_restart_count": 0
+            },
+            "interrupted_run": serde_json::Value::Null,
+            "status": "running",
+            "cycle_history": [],
+            "completion_rounds": 1,
+            "max_completion_rounds": 20,
+            "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+            "amendment_queue": { "pending": [], "processed_count": 0 },
+            "status_summary": "running: Planning"
+        }))
+        .expect("serialize stale run.json"),
+    )
+    .expect("write stale run.json");
+    fs::write(
+        project_root(temp_dir.path(), "stale-resume-lock").join("journal.ndjson"),
+        format!(
+            "{{\"sequence\":1,\"timestamp\":\"2026-03-11T19:00:00Z\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"stale-resume-lock\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{now}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-stale-resume-lock\",\"first_stage\":\"planning\",\"max_completion_rounds\":20}}}}"
+        ),
+    )
+    .expect("write stale resume journal");
+    fs::remove_file(project_root(temp_dir.path(), "stale-resume-lock").join("run.pid")).ok();
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let stale_lease = CliWriterLease {
+        lease_id: "cli-stale-resume".to_owned(),
+        project_id: "stale-resume-lock".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("cli-stale-resume.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(stale_lease.clone()))
+            .expect("serialize stale resume lease"),
+    )
+    .expect("write stale resume lease");
+    fs::write(
+        leases_dir.join("writer-stale-resume-lock.lock"),
+        &stale_lease.lease_id,
+    )
+    .expect("write stale resume writer lock");
+
+    let resume = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+    assert!(
+        resume.status.success(),
+        "stale resume should recover and succeed: {}",
+        String::from_utf8_lossy(&resume.stderr)
+    );
+
+    let final_run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "stale-resume-lock").join("run.json"))
+            .expect("read final run.json");
+    assert!(
+        final_run_json.contains("\"completed\""),
+        "resume should finish after stale recovery, got: {final_run_json}"
+    );
+    assert!(
+        !leases_dir.join("writer-stale-resume-lock.lock").exists(),
+        "stale writer lock should be reclaimed before resume reacquires it"
+    );
+    assert!(
+        !leases_dir.join("cli-stale-resume.json").exists(),
+        "stale cli lease record should be pruned during resume recovery"
     );
 }
 

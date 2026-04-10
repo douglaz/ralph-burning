@@ -2,6 +2,7 @@
 //! `CliWriterLease` record and a periodic heartbeat so that `daemon reconcile`
 //! can discover and clean stale CLI-held locks after a crash.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -39,6 +40,64 @@ pub struct CliWriterLeaseGuard {
     /// for any in-flight tick to finish before cleaning up resources.
     tick_lock: Arc<std::sync::Mutex<()>>,
     heartbeat_handle: Option<JoinHandle<()>>,
+}
+
+fn writer_lock_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+    crate::adapters::fs::FileSystem::daemon_root(base_dir)
+        .join("leases")
+        .join(format!("writer-{}.lock", project_id.as_str()))
+}
+
+fn read_writer_lock_owner(base_dir: &Path, project_id: &ProjectId) -> AppResult<Option<String>> {
+    match fs::read_to_string(writer_lock_path(base_dir, project_id)) {
+        Ok(owner) => Ok(Some(owner)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Best-effort stale CLI lease cleanup for a project after the owning CLI
+/// process has died. Releases the stranded writer lock using the observed lock
+/// owner token, then prunes any remaining CLI lease records for the project.
+pub fn reclaim_stale_project_writer_lease(
+    store: &dyn DaemonStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<()> {
+    let cli_lease_ids = store
+        .list_lease_records(base_dir)?
+        .into_iter()
+        .filter_map(|record| match record {
+            LeaseRecord::CliWriter(lease) if lease.project_id == project_id.as_str() => {
+                Some(lease.lease_id)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut expected_owner = read_writer_lock_owner(base_dir, project_id)?;
+    let mut attempts = 0usize;
+    while let Some(owner) = expected_owner.take() {
+        attempts += 1;
+        match store.release_writer_lock(base_dir, project_id, &owner)? {
+            WriterLockReleaseOutcome::Released | WriterLockReleaseOutcome::AlreadyAbsent => break,
+            WriterLockReleaseOutcome::OwnerMismatch { actual_owner } => {
+                if attempts >= 3 {
+                    return Err(AppError::Io(std::io::Error::other(format!(
+                        "stale writer lock for project '{}' changed ownership during recovery; final owner '{actual_owner}'",
+                        project_id
+                    ))));
+                }
+                expected_owner = Some(actual_owner);
+            }
+        }
+    }
+
+    for lease_id in cli_lease_ids {
+        let _ = store.remove_lease(base_dir, &lease_id)?;
+    }
+
+    Ok(())
 }
 
 impl CliWriterLeaseGuard {
@@ -448,5 +507,42 @@ mod tests {
         );
 
         drop(guard);
+    }
+
+    #[test]
+    fn reclaim_stale_project_writer_lease_releases_lock_and_prunes_cli_leases() {
+        let temp = tempdir().expect("tempdir");
+        let project_id = ProjectId::new("stale-cli-cleanup".to_owned()).expect("valid id");
+        let lease = CliWriterLease {
+            lease_id: "cli-stale-cleanup".to_owned(),
+            project_id: project_id.to_string(),
+            owner: "cli".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: Utc::now(),
+        };
+        FsDaemonStore
+            .write_lease_record(temp.path(), &LeaseRecord::CliWriter(lease.clone()))
+            .expect("write stale cli lease");
+        FsDaemonStore
+            .acquire_writer_lock(temp.path(), &project_id, &lease.lease_id)
+            .expect("acquire writer lock");
+
+        reclaim_stale_project_writer_lease(&FsDaemonStore, temp.path(), &project_id)
+            .expect("reclaim stale lease");
+
+        assert!(
+            FsDaemonStore
+                .list_lease_records(temp.path())
+                .expect("list leases")
+                .is_empty(),
+            "stale cli lease record should be removed"
+        );
+        FsDaemonStore
+            .acquire_writer_lock(temp.path(), &project_id, "after-stale-cleanup")
+            .expect("writer lock should be available after cleanup");
+        FsDaemonStore
+            .release_writer_lock(temp.path(), &project_id, "after-stale-cleanup")
+            .expect("cleanup post-test writer lock");
     }
 }
