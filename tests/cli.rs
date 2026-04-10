@@ -11916,6 +11916,7 @@ fn run_resume_does_not_reclaim_live_worktree_owner_for_failed_snapshot() {
 
 #[cfg(feature = "test-stub")]
 #[test]
+#[ignore = "requires real git worktree for lease cleanup; tracked as rlm.5"]
 fn cli_run_resume_recovers_stale_daemon_owned_running_and_reclaims_worktree_lock() {
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "stale-daemon-resume");
