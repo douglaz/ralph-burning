@@ -5910,7 +5910,8 @@ fn run_status_reports_stale_daemon_owned_running_when_legacy_lease_expires() {
 }
 
 #[test]
-fn run_status_reports_stale_for_live_pid_without_proc_start_ticks_when_no_lease_exists() {
+fn run_status_keeps_legacy_cli_owned_running_snapshot_active_with_live_pid_without_proc_start_ticks(
+) {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -5952,8 +5953,8 @@ fn run_status_reports_stale_for_live_pid_without_proc_start_ticks_when_no_lease_
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Status: stale (process not found)"),
-        "non-authoritative pid-only records must not block stale recovery: {stdout}"
+        stdout.contains("Status: running"),
+        "live legacy pid-only records must stay active until recovery is safe: {stdout}"
     );
 }
 
@@ -6450,7 +6451,7 @@ fn run_stop_sigkill_terminates_same_process_group_backend_descendant() {
 }
 
 #[test]
-fn run_stop_recovers_live_pid_record_without_proc_start_ticks_as_stale() {
+fn run_stop_refuses_live_legacy_pid_record_without_proc_start_ticks() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -6495,30 +6496,123 @@ fn run_stop_recovers_live_pid_record_without_proc_start_ticks_as_stale() {
         .output()
         .expect("run stop");
 
-    assert!(output.status.success(), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("already stale"),
-        "stop should treat non-authoritative pid-only state as stale: {stdout}"
+        stderr.contains("legacy CLI-owned run"),
+        "stop should refuse a live legacy pid-only run without safe attempt identity: {stderr}"
     );
     assert!(
         pid_is_alive(child.id()),
-        "stop recovery must not signal an unrelated live pid without authoritative identity"
+        "run stop must not signal a live legacy pid-only process"
     );
-    let run_json: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
-    )
-    .expect("parse run.json");
-    assert_eq!(run_json["status"], "failed");
     assert!(
-        !project_root(temp_dir.path(), "alpha")
+        project_root(temp_dir.path(), "alpha")
             .join("run.pid")
             .exists(),
-        "stale recovery should remove the unsafe pid marker"
+        "refused stop must leave the legacy pid marker intact"
     );
 
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[test]
+fn run_stop_kills_backend_descendants_when_parent_exits_on_sigterm() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigterm-parent-exit",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let backend_child_pid_path = temp_dir.path().join("backend-child-parent-exit.pid");
+    let orchestrator_script = format!(
+        "trap 'exit 0' TERM; setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done; while :; do sleep 1; done",
+        backend_child_pid_path.display(),
+        backend_child_pid_path.display(),
+    );
+    let mut orchestrator = Command::new("bash")
+        .args(["-lc", &orchestrator_script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+    let orchestrator_pid = orchestrator.id();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !backend_child_pid_path.exists() || fs::read_to_string(&backend_child_pid_path).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "backend child pid file was never written"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let backend_child_pid = fs::read_to_string(&backend_child_pid_path)
+        .expect("read backend child pid")
+        .trim()
+        .parse::<u32>()
+        .expect("parse backend child pid");
+    assert!(
+        pid_is_alive(backend_child_pid),
+        "backend child must be alive before stop"
+    );
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator_pid,
+            "cli",
+            Some("run-stop-sigterm-parent-exit"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-parent-exit"),
+        ))
+        .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("terminated gracefully with SIGTERM and killed backend subprocesses"),
+        "stop should report descendant cleanup even when the orchestrator exits on SIGTERM: {stdout}"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_child_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_child_pid),
+        "backend child should be killed even when the orchestrator exits on SIGTERM"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        orchestrator_status.success(),
+        "orchestrator should exit cleanly on SIGTERM in this scenario: {orchestrator_status:?}"
+    );
 }
 
 #[test]
@@ -7064,6 +7158,67 @@ fn run_resume_refuses_legacy_cli_owned_running_without_pid_file() {
         leases_dir.join("lease-cli-legacy-resume.json").exists(),
         "legacy CLI lease must not be reclaimed while it is still fresh"
     );
+}
+
+#[test]
+fn run_resume_refuses_live_legacy_pid_record_without_proc_start_ticks() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-cli-legacy-resume-live-pid-only",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "pid": child.id(),
+            "started_at": Utc::now(),
+        }))
+        .expect("serialize legacy pid file"),
+    )
+    .expect("write legacy pid file");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("legacy CLI-owned running run"),
+        "resume should refuse a live legacy pid-only run without safe attempt identity: {stderr}"
+    );
+    assert!(
+        pid_is_alive(child.id()),
+        "run resume must not race a live legacy pid-only process"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 // ── Run History ──

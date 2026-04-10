@@ -1563,6 +1563,15 @@ fn classify_running_snapshot_liveness(
             }
             return Ok(RunningSnapshotLiveness::Stale);
         }
+
+        if FileSystem::is_pid_running_unchecked(record.pid) {
+            return Ok(match record.owner {
+                crate::adapters::fs::RunPidOwner::Cli => RunningSnapshotLiveness::LegacyCliProcess,
+                crate::adapters::fs::RunPidOwner::Daemon => {
+                    RunningSnapshotLiveness::LegacyDaemonProcess
+                }
+            });
+        }
     }
 
     if let Some((_owner, lease_record)) =
@@ -2985,24 +2994,52 @@ async fn handle_stop() -> AppResult<()> {
                     .clone()
                     .or(read_project_writer_lock_owner(&current_dir, &project_id)?);
                 let tracked_descendants = snapshot_descendant_processes(pid_record.pid)?;
+                let describe_stopped_process =
+                    |base: &'static str, killed_descendants: usize| -> &'static str {
+                        if killed_descendants == 0 {
+                            base
+                        } else {
+                            match base {
+                                "process already exited before SIGTERM" => {
+                                    "process already exited before SIGTERM and killed backend subprocesses"
+                                }
+                                "terminated gracefully with SIGTERM" => {
+                                    "terminated gracefully with SIGTERM and killed backend subprocesses"
+                                }
+                                "process exited before SIGKILL" => {
+                                    "process exited before SIGKILL and killed backend subprocesses"
+                                }
+                                "required SIGKILL after timeout" => {
+                                    "required SIGKILL after timeout and killed backend subprocesses"
+                                }
+                                _ => base,
+                            }
+                        }
+                    };
                 let stop_outcome = match open_stop_process_handle(&pid_record)? {
-                    None => "process already exited before SIGTERM",
+                    None => describe_stopped_process(
+                        "process already exited before SIGTERM",
+                        kill_tracked_descendant_processes(&tracked_descendants)?,
+                    ),
                     Some(handle) => match send_signal_to_handle(&handle, Signal::SIGTERM)? {
-                        SignalSendOutcome::AlreadyExited => "process already exited before SIGTERM",
+                        SignalSendOutcome::AlreadyExited => describe_stopped_process(
+                            "process already exited before SIGTERM",
+                            kill_tracked_descendant_processes(&tracked_descendants)?,
+                        ),
                         SignalSendOutcome::Delivered => {
                             if wait_for_handle_exit(&handle, RUN_STOP_GRACE_PERIOD).await? {
-                                "terminated gracefully with SIGTERM"
+                                describe_stopped_process(
+                                    "terminated gracefully with SIGTERM",
+                                    kill_tracked_descendant_processes(&tracked_descendants)?,
+                                )
                             } else {
                                 let killed_descendants =
                                     kill_tracked_descendant_processes(&tracked_descendants)?;
                                 match send_signal_to_handle(&handle, Signal::SIGKILL)? {
-                                    SignalSendOutcome::AlreadyExited => {
-                                        if killed_descendants == 0 {
-                                            "process exited before SIGKILL"
-                                        } else {
-                                            "process exited before SIGKILL and killed backend subprocesses"
-                                        }
-                                    }
+                                    SignalSendOutcome::AlreadyExited => describe_stopped_process(
+                                        "process exited before SIGKILL",
+                                        killed_descendants,
+                                    ),
                                     SignalSendOutcome::Delivered => {
                                         if !wait_for_handle_exit(&handle, Duration::from_secs(1))
                                             .await?
@@ -3014,14 +3051,10 @@ async fn handle_stop() -> AppResult<()> {
                                                 ),
                                             });
                                         }
-                                        #[cfg(unix)]
-                                        {
-                                            if killed_descendants == 0 {
-                                                "required SIGKILL after timeout"
-                                            } else {
-                                                "required SIGKILL after timeout and killed backend subprocesses"
-                                            }
-                                        }
+                                        describe_stopped_process(
+                                            "required SIGKILL after timeout",
+                                            killed_descendants,
+                                        )
                                     }
                                 }
                             }
