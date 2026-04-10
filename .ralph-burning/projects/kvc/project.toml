@@ -1,0 +1,7 @@
+id = "kvc"
+name = "kvc"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "aaa3e307626aac55394da5008181c8cb7d637de38b6156883f8c9b0ef7643710"
+created_at = "2026-04-09T22:10:54.154584730Z"
+status_summary = "created"

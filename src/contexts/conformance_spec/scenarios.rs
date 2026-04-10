@@ -7713,7 +7713,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let now = chrono::Utc::now();
         let run_id =
-            block_on_app_result(service.quick(ws.path(), "Quick revision test", now, None))?;
+            block_on_app_result(service.quick(ws.path(), "Quick revision test", now, None, true))?;
 
         let store = FsRequirementsStore;
         let run = store
@@ -8125,7 +8125,8 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = chrono::Utc::now();
-        let result = block_on_app_result(service.quick(ws.path(), "Max revisions test", now, None));
+        let result =
+            block_on_app_result(service.quick(ws.path(), "Max revisions test", now, None, true));
 
         // Should fail due to revision limit
         if result.is_ok() {

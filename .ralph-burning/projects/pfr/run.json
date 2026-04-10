@@ -1,8 +1,8 @@
 {
   "active_run": null,
-  "status": "not_started",
+  "status": "completed",
   "cycle_history": [],
-  "completion_rounds": 0,
+  "completion_rounds": 1,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
@@ -12,5 +12,5 @@
     "pending": [],
     "processed_count": 0
   },
-  "status_summary": "not started"
+  "status_summary": "completed"
 }

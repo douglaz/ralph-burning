@@ -1,0 +1,7 @@
+id = "pfr"
+name = "pfr"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "94bb17826fb62c202f712175259fc84755dddf2707fcc0d3267edc41ca4b45a0"
+created_at = "2026-04-09T22:47:25.784281621Z"
+status_summary = "created"

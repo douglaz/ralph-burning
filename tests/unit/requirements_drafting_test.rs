@@ -667,7 +667,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a caching layer", now, None)
+            .quick(temp_dir.path(), "Build a caching layer", now, None, true)
             .await
             .expect("quick should succeed");
 
@@ -688,7 +688,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a caching layer", now, None)
+            .quick(temp_dir.path(), "Build a caching layer", now, None, true)
             .await
             .expect("quick should succeed");
 
@@ -813,7 +813,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a caching layer", now, None)
+            .quick(temp_dir.path(), "Build a caching layer", now, None, true)
             .await
             .expect("quick should succeed");
 
@@ -941,7 +941,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a REST API", now, None)
+            .quick(temp_dir.path(), "Build a REST API", now, None, true)
             .await
             .expect("quick should succeed with conditional approval");
 
@@ -995,7 +995,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let result = service
-            .quick(temp_dir.path(), "Build something", now, None)
+            .quick(temp_dir.path(), "Build something", now, None, true)
             .await;
 
         assert!(result.is_err(), "quick should fail on request_changes");
@@ -1196,7 +1196,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let result = service
-            .quick(temp_dir.path(), "Build a widget", now, None)
+            .quick(temp_dir.path(), "Build a widget", now, None, true)
             .await;
 
         assert!(
@@ -1218,7 +1218,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Quick file layout test", now, None)
+            .quick(temp_dir.path(), "Quick file layout test", now, None, true)
             .await
             .expect("quick should succeed");
 
@@ -1447,7 +1447,13 @@ mod service_integration {
         // First, run a successful quick-mode run to get a baseline
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Seed history rollback test", now, None)
+            .quick(
+                temp_dir.path(),
+                "Seed history rollback test",
+                now,
+                None,
+                true,
+            )
             .await
             .expect("quick should succeed");
 
@@ -2367,7 +2373,13 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Seed rollback ordering test", now, None)
+            .quick(
+                temp_dir.path(),
+                "Seed rollback ordering test",
+                now,
+                None,
+                true,
+            )
             .await
             .expect("quick should succeed");
 
@@ -2728,6 +2740,7 @@ mod service_integration {
                     "Test run_created failure in quick",
                     now,
                     None,
+                    true,
                 )
                 .await;
 
@@ -2827,7 +2840,13 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test draft_generated failure", now, None)
+                .quick(
+                    temp_dir.path(),
+                    "Test draft_generated failure",
+                    now,
+                    None,
+                    true,
+                )
                 .await;
 
             assert!(
@@ -2883,7 +2902,13 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test review_completed failure", now, None)
+                .quick(
+                    temp_dir.path(),
+                    "Test review_completed failure",
+                    now,
+                    None,
+                    true,
+                )
                 .await;
 
             assert!(
@@ -2926,7 +2951,13 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test seed_generated failure", now, None)
+                .quick(
+                    temp_dir.path(),
+                    "Test seed_generated failure",
+                    now,
+                    None,
+                    true,
+                )
                 .await;
 
             assert!(
@@ -2991,7 +3022,13 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test run_completed failure", now, None)
+                .quick(
+                    temp_dir.path(),
+                    "Test run_completed failure",
+                    now,
+                    None,
+                    true,
+                )
                 .await;
 
             // The run should succeed despite RunCompleted journal failure
@@ -3070,6 +3107,7 @@ mod service_integration {
                     "Test later review_completed failure",
                     now,
                     None,
+                    true,
                 )
                 .await;
 
@@ -3347,6 +3385,7 @@ mod service_integration {
                     "Test revision_completed failure",
                     now,
                     None,
+                    true,
                 )
                 .await;
 
@@ -3404,6 +3443,7 @@ mod service_integration {
                     "Test revision_requested failure",
                     now,
                     None,
+                    true,
                 )
                 .await;
 

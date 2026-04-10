@@ -17,6 +17,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -276,13 +277,19 @@ where
             details: format!("failed to read prompt for final review: {e}"),
         })?;
 
-    let mut reviewer_records = Vec::new();
-    let mut proposal_total_exhausted: usize = 0;
-    let mut last_proposal_exhaustion_error: Option<AppError> = None;
+    // --- Proposal phase: prepare all reviewers first, then emit started events ---
+    // We collect all prep data before emitting any started events so that a
+    // prep failure (e.g. build_reviewer_prompt) does not leave orphaned
+    // started events for reviewers that were never invoked.
+    let mut proposal_preps = Vec::new();
     for (idx, member) in panel.reviewers.iter().enumerate() {
         let reviewer_id = final_review_reviewer_id(idx);
         let reviewer_prompt =
             build_reviewer_prompt(&project_prompt, &member.target, base_dir, Some(project_id))?;
+        proposal_preps.push((idx, member, reviewer_id, reviewer_prompt));
+    }
+    // All preps succeeded — now emit started events for the entire batch.
+    for (_, member, reviewer_id, _) in &proposal_preps {
         append_panel_member_started_event(
             journal_store,
             base_dir,
@@ -291,7 +298,7 @@ where
             run_id,
             cursor,
             "proposal",
-            &reviewer_id,
+            reviewer_id,
             "reviewer",
             &member.target,
         )?;
@@ -301,32 +308,58 @@ where
             project_id,
             "started",
             "proposal",
-            &reviewer_id,
+            reviewer_id,
             "reviewer",
             &member.target,
             None,
             None,
             None,
         );
-        let started_at = Instant::now();
-        let reviewer_payload = invoke_final_review_member(
-            agent_service,
-            project_root,
-            backend_working_dir,
-            run_id,
-            stage_id,
-            cursor,
-            &member.target,
-            BackendRole::Reviewer,
-            &reviewer_id,
-            "reviewer",
-            reviewer_prompt,
-            Value::Null,
-            reviewer_timeout_for_backend(member.target.backend.family),
-            cancellation_token.clone(),
-        )
-        .await;
+    }
 
+    // --- Proposal phase: invoke all reviewers concurrently ---
+    let mut proposal_futures = FuturesUnordered::new();
+    for (prep_idx, (_, member, reviewer_id, reviewer_prompt)) in proposal_preps.iter().enumerate() {
+        let cancellation_token = cancellation_token.clone();
+        let target = member.target.clone();
+        let reviewer_id = reviewer_id.clone();
+        let reviewer_prompt = reviewer_prompt.clone();
+        let timeout = reviewer_timeout_for_backend(member.target.backend.family);
+        proposal_futures.push(async move {
+            let started_at = Instant::now();
+            let result = invoke_final_review_member(
+                agent_service,
+                project_root,
+                backend_working_dir,
+                run_id,
+                stage_id,
+                cursor,
+                &target,
+                BackendRole::Reviewer,
+                &reviewer_id,
+                "reviewer",
+                reviewer_prompt,
+                Value::Null,
+                timeout,
+                cancellation_token,
+            )
+            .await;
+            (prep_idx, started_at, result)
+        });
+    }
+
+    // --- Proposal phase: process results sequentially ---
+    // We must drain ALL futures before returning any error so that every
+    // reviewer that emitted a `started` event also emits a `completed` event.
+    let mut reviewer_records = Vec::new();
+    let mut proposal_total_exhausted: usize = 0;
+    let mut last_proposal_exhaustion_error: Option<AppError> = None;
+    let mut first_required_proposal_failure: Option<(usize, AppError)> = None;
+    let mut first_optional_proposal_failure: Option<(usize, AppError)> = None;
+    let mut deferred_processing_error: Option<AppError> = None;
+    while let Some((prep_idx, started_at, reviewer_payload)) = proposal_futures.next().await {
+        let (idx, member, reviewer_id, _) = &proposal_preps[prep_idx];
+        let idx = *idx;
         let (reviewer_payload, producer) = match reviewer_payload {
             Ok(payload) => payload,
             // BackendExhausted is handled first regardless of required/optional
@@ -336,9 +369,6 @@ where
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
             {
-                // Track all exhausted members — both required and optional
-                // count toward quorum reduction because resolve_panel_backends
-                // counts all resolved members toward the configured minimum.
                 proposal_total_exhausted += 1;
                 tracing::warn!(
                     reviewer = %reviewer_id,
@@ -352,7 +382,7 @@ where
                     run_id,
                     cursor,
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     started_at.elapsed(),
@@ -365,29 +395,14 @@ where
                     project_id,
                     "completed",
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     Some(started_at.elapsed()),
                     Some("failed_exhausted"),
                     Some(0),
                 );
-                // Reduce effective quorum only when exhaustion makes the
-                // configured minimum impossible (remaining < min).
-                let effective_min = min_reviewers
-                    .min(
-                        panel
-                            .reviewers
-                            .len()
-                            .saturating_sub(proposal_total_exhausted),
-                    )
-                    .max(1);
-                if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
-                    < effective_min
-                {
-                    last_proposal_exhaustion_error = Some(error);
-                    break;
-                }
+                last_proposal_exhaustion_error = Some(error);
                 continue;
             }
             Err(error) if !member.required => {
@@ -399,7 +414,7 @@ where
                     run_id,
                     cursor,
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     started_at.elapsed(),
@@ -412,38 +427,21 @@ where
                     project_id,
                     "completed",
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     Some(started_at.elapsed()),
                     Some("failed_optional"),
                     Some(0),
                 );
-                // Use the reduced quorum: only reduce when exhaustion
-                // makes the configured minimum impossible.
-                let effective_optional_min = min_reviewers
-                    .min(
-                        panel
-                            .reviewers
-                            .len()
-                            .saturating_sub(proposal_total_exhausted),
-                    )
-                    .max(1);
-                if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
-                    < effective_optional_min
-                {
-                    tracing::warn!(
-                        reviewer = idx,
-                        backend = %member.target.backend.family,
-                        successful = reviewer_records.len(),
-                        remaining = panel.reviewers.len().saturating_sub(idx + 1),
-                        exhausted = proposal_total_exhausted,
-                        effective_min = effective_optional_min,
-                        "proposal quorum shortfall: optional failure + exhaustion makes minimum unreachable"
-                    );
-                    // Propagate the original error so its FailureClass is
-                    // preserved for the engine's retry decision.
-                    return Err(error);
+                match &first_optional_proposal_failure {
+                    None => {
+                        first_optional_proposal_failure = Some((idx, error));
+                    }
+                    Some((prev_idx, _)) if idx < *prev_idx => {
+                        first_optional_proposal_failure = Some((idx, error));
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -456,7 +454,7 @@ where
                     run_id,
                     cursor,
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     started_at.elapsed(),
@@ -469,25 +467,56 @@ where
                     project_id,
                     "completed",
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &member.target,
                     Some(started_at.elapsed()),
                     Some("failed"),
                     Some(0),
                 );
-                return Err(error);
+                {
+                    let is_cancellation = error
+                        .failure_class()
+                        .is_some_and(|fc| fc == FailureClass::Cancellation);
+                    match &first_required_proposal_failure {
+                        None => {
+                            first_required_proposal_failure = Some((idx, error));
+                            if !is_cancellation {
+                                cancellation_token.cancel();
+                            }
+                        }
+                        // Only replace with a lower-index error if it is a
+                        // real failure, not a synthetic cancellation induced
+                        // by our own cancel() call above.
+                        Some((prev_idx, _)) if idx < *prev_idx && !is_cancellation => {
+                            first_required_proposal_failure = Some((idx, error));
+                        }
+                        _ => {}
+                    }
+                }
+                continue;
             }
         };
-        let (backend_family, model_id) = panel_member_identity_from_producer(
+        let (backend_family, model_id) = match panel_member_identity_from_producer(
             &producer,
             &member.target,
             "final_review:reviewer",
             "final-review reviewer invocations must produce agent metadata",
-        )?;
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                if deferred_processing_error.is_none() {
+                    deferred_processing_error = Some(e);
+                    cancellation_token.cancel();
+                }
+                continue;
+            }
+        };
 
-        let proposal: FinalReviewProposalPayload = serde_json::from_value(reviewer_payload.clone())
-            .map_err(|e| {
+        let proposal: FinalReviewProposalPayload = match serde_json::from_value(reviewer_payload.clone())
+        {
+            Ok(v) => v,
+            Err(e) => {
                 let duration = started_at.elapsed();
                 let _ = append_panel_member_completed_event_with_identity(
                     journal_store,
@@ -497,7 +526,7 @@ where
                     run_id,
                     cursor,
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &backend_family,
                     &model_id,
@@ -511,7 +540,7 @@ where
                     project_id,
                     "completed",
                     "proposal",
-                    &reviewer_id,
+                    reviewer_id,
                     "reviewer",
                     &backend_family,
                     &model_id,
@@ -519,16 +548,20 @@ where
                     Some("failed_schema_validation"),
                     Some(0),
                 );
-                AppError::InvocationFailed {
-                    backend: member.target.backend.family.to_string(),
-                    contract_id: "final_review:reviewer".to_owned(),
-                    failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                    details: format!("final-review proposal schema validation failed: {e}"),
+                if deferred_processing_error.is_none() {
+                    deferred_processing_error = Some(AppError::InvocationFailed {
+                        backend: member.target.backend.family.to_string(),
+                        contract_id: "final_review:reviewer".to_owned(),
+                        failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                        details: format!("final-review proposal schema validation failed: {e}"),
+                    });
                 }
-            })?;
+                continue;
+            }
+        };
 
         let duration = started_at.elapsed();
-        append_panel_member_completed_event_with_identity(
+        if let Err(e) = append_panel_member_completed_event_with_identity(
             journal_store,
             base_dir,
             project_id,
@@ -536,21 +569,26 @@ where
             run_id,
             cursor,
             "proposal",
-            &reviewer_id,
+            reviewer_id,
             "reviewer",
             &backend_family,
             &model_id,
             duration,
             "proposed_amendments",
             proposal.amendments.len(),
-        )?;
+        ) {
+            if deferred_processing_error.is_none() {
+                deferred_processing_error = Some(e);
+            }
+            continue;
+        }
         append_panel_member_runtime_log_with_identity(
             log_write,
             base_dir,
             project_id,
             "completed",
             "proposal",
-            &reviewer_id,
+            reviewer_id,
             "reviewer",
             &backend_family,
             &model_id,
@@ -559,7 +597,7 @@ where
             Some(proposal.amendments.len()),
         );
         let artifact = renderers::render_final_review_proposal(&proposal, &producer.to_string());
-        persist_supporting_record(
+        if let Err(e) = persist_supporting_record(
             artifact_write,
             base_dir,
             project_id,
@@ -571,11 +609,16 @@ where
             &artifact,
             producer,
             &format!("reviewer-{idx}"),
-        )?;
+        ) {
+            if deferred_processing_error.is_none() {
+                deferred_processing_error = Some(e);
+            }
+            continue;
+        }
 
         reviewer_records.push(ReviewerProposalRecord {
             member_index: idx,
-            reviewer_id,
+            reviewer_id: reviewer_id.clone(),
             required: member.required,
             backend_family,
             model_id,
@@ -583,6 +626,21 @@ where
             payload: proposal,
         });
     }
+
+    // Now that all futures have been drained, propagate deferred errors.
+    // Required invocation failures take priority over processing errors.
+    // We pick the lowest-index (configured panel order) failure for
+    // deterministic retry/hard-fail decisions regardless of finish order.
+    if let Some((_, error)) = first_required_proposal_failure {
+        return Err(error);
+    }
+    if let Some(error) = deferred_processing_error {
+        return Err(error);
+    }
+
+    // Restore deterministic panel order (FuturesUnordered yields in
+    // completion order which is latency-dependent).
+    reviewer_records.sort_by_key(|r| r.member_index);
 
     let all_proposal_exhausted = probe_exhausted_count + proposal_total_exhausted;
     let effective_proposal_min = min_reviewers
@@ -594,9 +652,12 @@ where
         )
         .max(1);
     if reviewer_records.len() < effective_proposal_min {
-        // When the shortfall is entirely due to backend exhaustion,
-        // propagate the last BackendExhausted error so the engine's
-        // failure-class-aware handling can apply (e.g., non-retryable).
+        // Propagate the most specific error so the engine's
+        // failure-class-aware handling can apply (e.g., retry decisions).
+        // Priority: optional failure (preserves FailureClass) > exhaustion > generic.
+        if let Some((_, error)) = first_optional_proposal_failure {
+            return Err(error);
+        }
         if let Some(exhaustion_error) = last_proposal_exhaustion_error {
             return Err(exhaustion_error);
         }
@@ -886,10 +947,25 @@ where
         .map(|vote| (vote.amendment_id.clone(), vote.decision))
         .collect();
 
-    let mut reviewer_votes = Vec::new();
-    let mut vote_total_exhausted: usize = 0;
-    let mut last_vote_exhaustion_error: Option<AppError> = None;
-    for (idx, reviewer) in reviewer_records.iter().enumerate() {
+    // --- Vote phase: prepare and emit started events ---
+    let amendments_context = json!({
+        "amendments": amendments
+            .iter()
+            .map(|amendment| {
+                json!({
+                    "amendment_id": amendment.amendment_id,
+                    "body": amendment.normalized_body,
+                    "planner_position": planner_positions
+                        .get(&amendment.amendment_id)
+                        .map(|decision| decision.to_string()),
+                })
+            })
+            .collect::<Vec<_>>(),
+    });
+    // Collect all vote preps before emitting started events (same rationale
+    // as the proposal phase: avoid orphaned started events on prep failure).
+    let mut vote_preps = Vec::new();
+    for reviewer in reviewer_records.iter() {
         let vote_prompt = build_voter_prompt(
             "Final Review Votes",
             &amendments,
@@ -898,6 +974,9 @@ where
             base_dir,
             Some(project_id),
         )?;
+        vote_preps.push((reviewer, vote_prompt));
+    }
+    for (reviewer, _) in &vote_preps {
         append_panel_member_started_event(
             journal_store,
             base_dir,
@@ -923,38 +1002,49 @@ where
             None,
             None,
         );
-        let started_at = Instant::now();
-        let vote_payload = invoke_final_review_member(
-            agent_service,
-            project_root,
-            backend_working_dir,
-            run_id,
-            stage_id,
-            cursor,
-            &reviewer.target,
-            BackendRole::Reviewer,
-            &reviewer.reviewer_id,
-            "voter",
-            vote_prompt,
-            json!({
-                "amendments": amendments
-                    .iter()
-                    .map(|amendment| {
-                        json!({
-                            "amendment_id": amendment.amendment_id,
-                            "body": amendment.normalized_body,
-                            "planner_position": planner_positions
-                                .get(&amendment.amendment_id)
-                                .map(|decision| decision.to_string()),
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            }),
-            reviewer_timeout_for_backend(reviewer.target.backend.family),
-            cancellation_token.clone(),
-        )
-        .await;
+    }
 
+    // --- Vote phase: invoke all voters concurrently ---
+    let mut vote_futures = FuturesUnordered::new();
+    for (prep_idx, (reviewer, vote_prompt)) in vote_preps.iter().enumerate() {
+        let cancellation_token = cancellation_token.clone();
+        let target = reviewer.target.clone();
+        let reviewer_id = reviewer.reviewer_id.clone();
+        let vote_prompt = vote_prompt.clone();
+        let amendments_context = amendments_context.clone();
+        let timeout = reviewer_timeout_for_backend(reviewer.target.backend.family);
+        vote_futures.push(async move {
+            let started_at = Instant::now();
+            let result = invoke_final_review_member(
+                agent_service,
+                project_root,
+                backend_working_dir,
+                run_id,
+                stage_id,
+                cursor,
+                &target,
+                BackendRole::Reviewer,
+                &reviewer_id,
+                "voter",
+                vote_prompt,
+                amendments_context,
+                timeout,
+                cancellation_token,
+            )
+            .await;
+            (prep_idx, started_at, result)
+        });
+    }
+
+    // --- Vote phase: process results sequentially ---
+    let mut reviewer_votes = Vec::new();
+    let mut vote_total_exhausted: usize = 0;
+    let mut last_vote_exhaustion_error: Option<AppError> = None;
+    let mut first_required_vote_failure: Option<(usize, AppError)> = None;
+    let mut first_optional_vote_failure: Option<(usize, AppError)> = None;
+    let mut deferred_vote_processing_error: Option<AppError> = None;
+    while let Some((prep_idx, started_at, vote_payload)) = vote_futures.next().await {
+        let (reviewer, _) = &vote_preps[prep_idx];
         let (vote_payload, producer) = match vote_payload {
             Ok(payload) => payload,
             // BackendExhausted is handled first regardless of required/optional
@@ -964,8 +1054,6 @@ where
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
             {
-                // Track all exhausted members — both required and optional
-                // count toward quorum reduction (see proposal phase comment).
                 vote_total_exhausted += 1;
                 tracing::warn!(
                     reviewer = %reviewer.reviewer_id,
@@ -999,15 +1087,7 @@ where
                     Some("failed_exhausted"),
                     Some(0),
                 );
-                let effective_min = min_reviewers
-                    .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
-                    .max(1);
-                if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
-                    < effective_min
-                {
-                    last_vote_exhaustion_error = Some(error);
-                    break;
-                }
+                last_vote_exhaustion_error = Some(error);
                 continue;
             }
             Err(error) if !reviewer.required => {
@@ -1039,26 +1119,16 @@ where
                     Some("failed_optional"),
                     Some(0),
                 );
-                // Use the reduced quorum: only reduce when exhaustion
-                // makes the configured minimum impossible.
-                let effective_optional_min = min_reviewers
-                    .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
-                    .max(1);
-                if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
-                    < effective_optional_min
-                {
-                    tracing::warn!(
-                        reviewer = idx,
-                        backend = %reviewer.target.backend.family,
-                        successful_votes = reviewer_votes.len(),
-                        remaining = reviewer_records.len().saturating_sub(idx + 1),
-                        exhausted = vote_total_exhausted,
-                        effective_min = effective_optional_min,
-                        "vote quorum shortfall: optional failure + exhaustion makes minimum unreachable"
-                    );
-                    // Propagate the original error so its FailureClass is
-                    // preserved for the engine's retry decision.
-                    return Err(error);
+                match &first_optional_vote_failure {
+                    None => {
+                        first_optional_vote_failure =
+                            Some((reviewer.member_index, error));
+                    }
+                    Some((prev_idx, _)) if reviewer.member_index < *prev_idx => {
+                        first_optional_vote_failure =
+                            Some((reviewer.member_index, error));
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -1091,57 +1161,92 @@ where
                     Some("failed"),
                     Some(0),
                 );
-                return Err(error);
+                {
+                    let is_cancellation = error
+                        .failure_class()
+                        .is_some_and(|fc| fc == FailureClass::Cancellation);
+                    match &first_required_vote_failure {
+                        None => {
+                            first_required_vote_failure =
+                                Some((reviewer.member_index, error));
+                            if !is_cancellation {
+                                cancellation_token.cancel();
+                            }
+                        }
+                        Some((prev_idx, _))
+                            if reviewer.member_index < *prev_idx && !is_cancellation =>
+                        {
+                            first_required_vote_failure =
+                                Some((reviewer.member_index, error));
+                        }
+                        _ => {}
+                    }
+                }
+                continue;
             }
         };
-        let (backend_family, model_id) = panel_member_identity_from_producer(
+        let (backend_family, model_id) = match panel_member_identity_from_producer(
             &producer,
             &reviewer.target,
             "final_review:voter",
             "final-review reviewer vote invocations must produce agent metadata",
-        )?;
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                if deferred_vote_processing_error.is_none() {
+                    deferred_vote_processing_error = Some(e);
+                }
+                continue;
+            }
+        };
 
         let votes: FinalReviewVotePayload =
-            serde_json::from_value(vote_payload.clone()).map_err(|e| {
-                let duration = started_at.elapsed();
-                let _ = append_panel_member_completed_event_with_identity(
-                    journal_store,
-                    base_dir,
-                    project_id,
-                    seq,
-                    run_id,
-                    cursor,
-                    "vote",
-                    &reviewer.reviewer_id,
-                    "reviewer",
-                    &backend_family,
-                    &model_id,
-                    duration,
-                    "failed_schema_validation",
-                    0,
-                );
-                append_panel_member_runtime_log_with_identity(
-                    log_write,
-                    base_dir,
-                    project_id,
-                    "completed",
-                    "vote",
-                    &reviewer.reviewer_id,
-                    "reviewer",
-                    &backend_family,
-                    &model_id,
-                    Some(duration),
-                    Some("failed_schema_validation"),
-                    Some(0),
-                );
-                AppError::InvocationFailed {
-                    backend: reviewer.target.backend.family.to_string(),
-                    contract_id: "final_review:voter".to_owned(),
-                    failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                    details: format!("final-review vote schema validation failed: {e}"),
+            match serde_json::from_value(vote_payload.clone()) {
+                Ok(v) => v,
+                Err(e) => {
+                    let duration = started_at.elapsed();
+                    let _ = append_panel_member_completed_event_with_identity(
+                        journal_store,
+                        base_dir,
+                        project_id,
+                        seq,
+                        run_id,
+                        cursor,
+                        "vote",
+                        &reviewer.reviewer_id,
+                        "reviewer",
+                        &backend_family,
+                        &model_id,
+                        duration,
+                        "failed_schema_validation",
+                        0,
+                    );
+                    append_panel_member_runtime_log_with_identity(
+                        log_write,
+                        base_dir,
+                        project_id,
+                        "completed",
+                        "vote",
+                        &reviewer.reviewer_id,
+                        "reviewer",
+                        &backend_family,
+                        &model_id,
+                        Some(duration),
+                        Some("failed_schema_validation"),
+                        Some(0),
+                    );
+                    if deferred_vote_processing_error.is_none() {
+                        deferred_vote_processing_error = Some(AppError::InvocationFailed {
+                            backend: reviewer.target.backend.family.to_string(),
+                            contract_id: "final_review:voter".to_owned(),
+                            failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                            details: format!("final-review vote schema validation failed: {e}"),
+                        });
+                    }
+                    continue;
                 }
-            })?;
-        validate_vote_payload(&votes, &amendments, &reviewer.target).map_err(|error| {
+            };
+        if let Err(error) = validate_vote_payload(&votes, &amendments, &reviewer.target) {
             let duration = started_at.elapsed();
             let _ = append_panel_member_completed_event_with_identity(
                 journal_store,
@@ -1173,10 +1278,13 @@ where
                 Some("failed_domain_validation"),
                 Some(0),
             );
-            error
-        })?;
+            if deferred_vote_processing_error.is_none() {
+                deferred_vote_processing_error = Some(error);
+            }
+            continue;
+        }
         let duration = started_at.elapsed();
-        append_panel_member_completed_event_with_identity(
+        if let Err(e) = append_panel_member_completed_event_with_identity(
             journal_store,
             base_dir,
             project_id,
@@ -1191,7 +1299,12 @@ where
             duration,
             "reviewer_votes_recorded",
             votes.votes.len(),
-        )?;
+        ) {
+            if deferred_vote_processing_error.is_none() {
+                deferred_vote_processing_error = Some(e);
+            }
+            continue;
+        }
         append_panel_member_runtime_log_with_identity(
             log_write,
             base_dir,
@@ -1212,7 +1325,7 @@ where
             &votes,
             &producer.to_string(),
         );
-        persist_supporting_record(
+        if let Err(e) = persist_supporting_record(
             artifact_write,
             base_dir,
             project_id,
@@ -1224,10 +1337,29 @@ where
             &artifact,
             producer,
             &format!("vote-{}", reviewer.member_index),
-        )?;
+        ) {
+            if deferred_vote_processing_error.is_none() {
+                deferred_vote_processing_error = Some(e);
+            }
+            continue;
+        }
 
-        reviewer_votes.push(votes);
+        reviewer_votes.push((reviewer.member_index, votes));
     }
+
+    // Now that all vote futures have been drained, propagate deferred errors.
+    // Pick lowest-index failure for deterministic behavior (same as proposals).
+    if let Some((_, error)) = first_required_vote_failure {
+        return Err(error);
+    }
+    if let Some(error) = deferred_vote_processing_error {
+        return Err(error);
+    }
+
+    // Restore deterministic panel order for votes (same as proposals).
+    reviewer_votes.sort_by_key(|(idx, _)| *idx);
+    let reviewer_votes: Vec<FinalReviewVotePayload> =
+        reviewer_votes.into_iter().map(|(_, v)| v).collect();
 
     // Reduce vote quorum only when exhaustion makes the configured
     // minimum impossible.  reviewer_records is the post-proposal panel;
@@ -1236,9 +1368,11 @@ where
         .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
         .max(1);
     if reviewer_votes.len() < effective_vote_min {
-        // When the shortfall is entirely due to backend exhaustion,
-        // propagate the last BackendExhausted error so the engine's
-        // failure-class-aware handling can apply (e.g., non-retryable).
+        // Propagate the most specific error so the engine's
+        // failure-class-aware handling can apply (e.g., retry decisions).
+        if let Some((_, error)) = first_optional_vote_failure {
+            return Err(error);
+        }
         if let Some(exhaustion_error) = last_vote_exhaustion_error {
             return Err(exhaustion_error);
         }
@@ -2216,6 +2350,7 @@ mod tests {
         vote_failures: Arc<HashSet<String>>,
         /// Members whose proposal invocations fail with BackendExhausted.
         proposal_exhausted: Arc<HashSet<String>>,
+        invocation_delays: Arc<HashMap<String, Duration>>,
         actual_targets: Arc<HashMap<String, ResolvedBackendTarget>>,
         deferred_template_override: Arc<Mutex<Option<DeferredTemplateOverride>>>,
     }
@@ -2245,6 +2380,18 @@ mod tests {
         fn with_proposal_exhausted(keys: &[&str]) -> Self {
             Self {
                 proposal_exhausted: Arc::new(keys.iter().map(|k| (*k).to_owned()).collect()),
+                ..Default::default()
+            }
+        }
+
+        fn with_invocation_delays(entries: &[(&str, Duration)]) -> Self {
+            Self {
+                invocation_delays: Arc::new(
+                    entries
+                        .iter()
+                        .map(|(fragment, delay)| ((*fragment).to_owned(), *delay))
+                        .collect(),
+                ),
                 ..Default::default()
             }
         }
@@ -2352,6 +2499,11 @@ mod tests {
                     failure_class: crate::shared::domain::FailureClass::TransportFailure,
                     details: "optional reviewer failed during voting".to_owned(),
                 });
+            }
+            if let Some(delay) = self.invocation_delays.iter().find_map(|(fragment, delay)| {
+                request.invocation_id.contains(fragment).then_some(*delay)
+            }) {
+                tokio::time::sleep(delay).await;
             }
 
             let amendment_id = canonical_amendment_id(1, "tighten wording");
@@ -3226,6 +3378,105 @@ mod tests {
                 && event.details["phase"] == "proposal"
                 && event.details["outcome"] == "proposed_amendments"
         }));
+    }
+
+    #[tokio::test]
+    async fn final_review_emits_reviewer_completion_events_in_finish_order() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-completion-order");
+        let adapter = RecordingFinalReviewAdapter::with_invocation_delays(&[
+            ("reviewer-reviewer-1", Duration::from_millis(40)),
+            ("reviewer-reviewer-2", Duration::from_millis(5)),
+            ("voter-reviewer-1", Duration::from_millis(40)),
+            ("voter-reviewer-2", Duration::from_millis(5)),
+        ]);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-completion-order").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
+            reviewers: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                    required: true,
+                    configured_index: 0,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-2-model"),
+                    required: true,
+                    configured_index: 1,
+                },
+            ],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &crate::adapters::fs::FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            2,
+            0,
+            0.66,
+            2,
+            0,
+            "prompt.md",
+            0,
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("final review should succeed");
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        let proposal_completions: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.event_type
+                    == crate::contexts::project_run_record::model::JournalEventType::ReviewerCompleted
+                    && event.details["phase"] == "proposal"
+                    && event.details["role"] == "reviewer"
+                    && event.details["outcome"] == "proposed_amendments"
+            })
+            .map(|event| event.details["reviewer_id"].as_str().unwrap().to_owned())
+            .collect();
+        let vote_completions: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.event_type
+                    == crate::contexts::project_run_record::model::JournalEventType::ReviewerCompleted
+                    && event.details["phase"] == "vote"
+                    && event.details["role"] == "reviewer"
+                    && event.details["outcome"] == "reviewer_votes_recorded"
+            })
+            .map(|event| event.details["reviewer_id"].as_str().unwrap().to_owned())
+            .collect();
+
+        assert_eq!(
+            proposal_completions,
+            vec!["reviewer-2".to_owned(), "reviewer-1".to_owned()],
+            "proposal completion events should follow actual finish order"
+        );
+        assert_eq!(
+            vote_completions,
+            vec!["reviewer-2".to_owned(), "reviewer-1".to_owned()],
+            "vote completion events should follow actual finish order"
+        );
     }
 
     #[tokio::test]

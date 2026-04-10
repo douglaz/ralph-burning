@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260409224817-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260409224817-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-09T22:52:23.807769701Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nReworked final-review proposal and voting fan-out to use completion-order concurrent polling with `FuturesUnordered`, while keeping all journal/log persistence on the main task to avoid shared mutable state. Existing `BackendExhausted`, optional/required failure handling, artifact persistence, and cancellation-token propagation were preserved. Added a regression test that injects staggered reviewer delays and verifies reviewer completion events are emitted in actual finish order for both phases.\n\n## Steps\n\n1. [Completed] Replace proposal-phase `join_all` collection with completion-order concurrent polling while preserving proposal success, exhaustion, and failure semantics.\n2. [Completed] Apply the same completion-order concurrent polling to the voting phase and continue serializing journal/log writes on the coordinator task to avoid shared mutable access.\n3. [Completed] Extend the final-review test adapter with controllable invocation delays, add a regression test for reviewer completion ordering, and run formatting, tests, and clippy validation.\n\n## Validation Evidence\n\n- `cargo fmt --check` succeeded.\n- `cargo test final_review_emits_reviewer_completion_events_in_finish_order -- --nocapture` passed.\n- `cargo test final_review_votes_only_with_successful_proposal_reviewers_and_uses_unique_ids -- --nocapture` passed.\n- `cargo test` succeeded across the repository test suite.\n- `cargo clippy` succeeded; it reported existing warnings, including pre-existing lint suggestions outside the scope of this change.\n\n## Outstanding Risks\n\n- Concurrent cancellation still relies on the existing `CancellationToken` path inside `invoke_final_review_member`; this change did not add a dedicated end-to-end cancellation regression test.\n- Reviewer completion events now intentionally interleave by finish order rather than configured panel order, so any downstream consumer that assumed stable reviewer ordering would need to tolerate that behavior.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

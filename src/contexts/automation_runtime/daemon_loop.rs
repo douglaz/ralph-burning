@@ -2049,7 +2049,10 @@ where
                 );
                 e
             })?;
-        let run_id = match req_svc.quick(workspace_dir, &idea, Utc::now(), None).await {
+        let run_id = match req_svc
+            .quick(workspace_dir, &idea, Utc::now(), None, true)
+            .await
+        {
             Ok(run_id) => run_id,
             Err(e) => {
                 let _ = DaemonTaskService::mark_failed(

@@ -147,6 +147,10 @@ pub struct BootstrapArgs {
     pub flow: Option<String>,
     #[arg(long)]
     pub start: bool,
+    /// Enable the requirements review step during bootstrap. By default, the
+    /// review is skipped and drafting proceeds directly to project creation.
+    #[arg(long = "enable-review")]
+    pub enable_review: bool,
 }
 
 pub async fn handle(command: ProjectCommand) -> AppResult<()> {
@@ -540,7 +544,7 @@ async fn handle_bootstrap(args: BootstrapArgs) -> AppResult<()> {
         let requirements_cli_service =
             agent_execution_builder::build_requirements_service(&effective_config)?;
         let run_id = requirements_cli_service
-            .quick(&current_dir, &idea, Utc::now(), None)
+            .quick(&current_dir, &idea, Utc::now(), None, args.enable_review)
             .await?;
         let handoff = requirements_service::extract_seed_handoff(
             &FsRequirementsStore,
