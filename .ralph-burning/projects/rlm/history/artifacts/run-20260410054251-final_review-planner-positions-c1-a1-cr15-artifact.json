@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr15-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T17:49:20.503776785Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe cross-platform pid-liveness defect is real on non-Linux Unix, but daemon-owned pid files are not safe targets for `run stop`, and the broader claim that live runs are generally reclassified as stale is inaccurate because fresh writer leases still classify them as legacy-running.\n\n## Votes\n\n- `fr-15-7856d3cc`: Reject\n  `write_pid_file` records `std::process::id()`, and daemon dispatch calls the engine in-process from the daemon loop. For daemon-owned runs, `run.pid` therefore identifies the daemon process itself, not a dedicated per-run worker. Teaching `run stop` to signal that pid would risk killing the whole daemon and unrelated work while bypassing daemon abort bookkeeping, so the current rejection is a safety guard, not a defect.\n- `fr-15-b033bfcb`: Accept\n  On non-Linux Unix, `proc_start_ticks()` always returns `None` while `write_pid_file` still records a `proc_start_marker`. Because `pid_record_is_authoritative()` only accepts `proc_start_ticks` and `is_pid_alive()` returns `false` when ticks are absent, `run.pid` never becomes authoritative on macOS/BSD. That forces liveness back to lease-only handling, which blocks immediate pid-based stop/recovery until the lease expires. Either honoring the fallback marker or explicitly Linux-gating the feature is the correct fix direction.\n- `fr-15-cc7b8a94`: Reject\n  The underlying Linux-only authoritativeness problem is real, but this amendment overstates the runtime effect. When `run.pid` is non-authoritative, `classify_running_snapshot_liveness()` does not automatically treat live runs as stale; it falls back to fresh writer leases and returns `LegacyCliLease` or `LegacyDaemonLease`. So `run stop` is impaired on non-Linux, but not because live runs are generally reclassified as stale or because `resume/status` auto-fail them as stale.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 15
+}

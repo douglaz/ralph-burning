@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T17:38:35.970560186Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI reviewed the current diff and key implementation files end-to-end. I found one high-confidence issue: non-linux PID liveness is effectively non-functional because records are marked non-authoritative, which can misclassify live CLI runs and break `run stop`/`run resume` behavior outside Linux. No other high-confidence correctness bugs were identified in these paths.\n\n## Amendments\n\n1. `run.pid` liveness handling in `src/adapters/fs.rs` is Linux-only authoritative on the `proc_start_ticks` field. `write_pid_file` sets `proc_start_ticks` only from `proc_start_ticks(pid)` (`src/adapters/fs.rs:291`), and on non-linux Unix that helper always returns `None` (`src/adapters/fs.rs:700`); `pid_record_is_authoritative` requires this field and `is_pid_alive` returns `false` when absent (`src/adapters/fs.rs:337`, `src/adapters/fs.rs:344`). As a result, on macOS/other non-linux Unix targets all records become non-authoritative, so `classify_running_snapshot_liveness` cannot return `CliProcess` (`src/cli/run.rs:1533`) and live runs are treated as stale, preventing reliable `run stop` signalling and causing resume/status to auto-fail live runs as stale.\n   Rationale: This is a correctness and robustness gap in cross-platform behavior for process liveness, directly affecting stop/resume/stale detection for non-linux builds.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 15
+}
