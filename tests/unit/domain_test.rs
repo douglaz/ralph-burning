@@ -1,4 +1,6 @@
-use ralph_burning::shared::domain::{ProjectId, StageCursor, StageId};
+use ralph_burning::shared::domain::{
+    BackendFamily, PanelBackendSpec, ProjectId, StageCursor, StageId,
+};
 use ralph_burning::shared::error::AppError;
 
 #[test]
@@ -90,4 +92,49 @@ fn project_id_rejects_path_like_values() {
         let error = ProjectId::new(value).expect_err("path-like project id should fail");
         assert!(matches!(error, AppError::InvalidIdentifier { .. }));
     }
+}
+
+#[test]
+fn panel_backend_spec_parses_inline_model_overrides_and_optional_marker() {
+    let required = "codex/gpt-5.4-xhigh"
+        .parse::<PanelBackendSpec>()
+        .expect("parse required panel backend");
+    let optional = "?openrouter/openai/gpt-5.4"
+        .parse::<PanelBackendSpec>()
+        .expect("parse optional panel backend");
+
+    assert_eq!(BackendFamily::Codex, required.selection().family);
+    assert_eq!(Some("gpt-5.4-xhigh"), required.selection().model.as_deref());
+    assert!(!required.is_optional());
+    assert_eq!("codex/gpt-5.4-xhigh", required.to_string());
+
+    assert_eq!(BackendFamily::OpenRouter, optional.selection().family);
+    assert_eq!(
+        Some("openai/gpt-5.4"),
+        optional.selection().model.as_deref()
+    );
+    assert!(optional.is_optional());
+    assert_eq!("?openrouter/openai/gpt-5.4", optional.to_string());
+}
+
+#[test]
+fn panel_backend_spec_serde_round_trips_inline_model_overrides() {
+    #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+    struct Wrapper {
+        spec: PanelBackendSpec,
+    }
+
+    let spec = "?codex/gpt-5.3-codex-spark-xhigh"
+        .parse::<PanelBackendSpec>()
+        .expect("parse panel backend");
+    let wrapper = Wrapper { spec };
+
+    let json = serde_json::to_string(&wrapper).expect("serialize panel backend to json");
+    let from_json: Wrapper =
+        serde_json::from_str(&json).expect("deserialize panel backend from json");
+    assert_eq!(wrapper, from_json);
+
+    let toml = toml::to_string(&wrapper).expect("serialize panel backend to toml");
+    let from_toml: Wrapper = toml::from_str(&toml).expect("deserialize panel backend from toml");
+    assert_eq!(wrapper, from_toml);
 }

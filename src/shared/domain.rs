@@ -485,8 +485,21 @@ impl PanelBackendSpec {
 impl fmt::Display for PanelBackendSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Required(selection) => write!(f, "{selection}"),
-            Self::Optional(selection) => write!(f, "?{selection}"),
+            Self::Required(selection) => {
+                f.write_str(selection.family.as_str())?;
+                if let Some(model) = &selection.model {
+                    write!(f, "/{model}")?;
+                }
+                Ok(())
+            }
+            Self::Optional(selection) => {
+                f.write_str("?")?;
+                f.write_str(selection.family.as_str())?;
+                if let Some(model) = &selection.model {
+                    write!(f, "/{model}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -495,8 +508,8 @@ impl FromStr for PanelBackendSpec {
     type Err = AppError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let normalized = value.trim();
-        if normalized.is_empty() {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
             return Err(AppError::InvalidConfigValue {
                 key: "panel_backend".to_owned(),
                 value: value.to_owned(),
@@ -504,14 +517,44 @@ impl FromStr for PanelBackendSpec {
             });
         }
 
-        if let Some(optional) = normalized.strip_prefix('?') {
-            Ok(Self::optional_selection(
-                BackendSelection::from_backend_name(optional)?,
-            ))
+        let (optional, raw_selection) = match trimmed.strip_prefix('?') {
+            Some(selection) => (true, selection.trim()),
+            None => (false, trimmed),
+        };
+        if raw_selection.is_empty() {
+            return Err(AppError::InvalidConfigValue {
+                key: "panel_backend".to_owned(),
+                value: value.to_owned(),
+                reason: "backend spec must not be empty".to_owned(),
+            });
+        }
+
+        let selection = if let Some((family, model)) = raw_selection.split_once('/') {
+            let family = family.trim();
+            let model = model.trim();
+            if family.is_empty() {
+                return Err(AppError::InvalidConfigValue {
+                    key: "panel_backend".to_owned(),
+                    value: value.to_owned(),
+                    reason: "backend family must not be empty".to_owned(),
+                });
+            }
+            if model.is_empty() {
+                return Err(AppError::InvalidConfigValue {
+                    key: "panel_backend".to_owned(),
+                    value: value.to_owned(),
+                    reason: "backend model override must not be empty".to_owned(),
+                });
+            }
+            BackendSelection::new(family.parse::<BackendFamily>()?, Some(model.to_owned()))
         } else {
-            Ok(Self::required_selection(
-                BackendSelection::from_backend_name(normalized)?,
-            ))
+            BackendSelection::from_backend_name(raw_selection)?
+        };
+
+        if optional {
+            Ok(Self::optional_selection(selection))
+        } else {
+            Ok(Self::required_selection(selection))
         }
     }
 }

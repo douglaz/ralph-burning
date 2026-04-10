@@ -7,9 +7,9 @@ use ralph_burning::contexts::workspace_governance::config::{
     CliBackendOverrides, EffectiveConfig, DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS,
 };
 use ralph_burning::shared::domain::{
-    BackendFamily, BackendPolicyRole, BackendRoleTimeouts, BackendRuntimeSettings,
-    BackendSelection, CompletionSettings, FlowPreset, PanelBackendSpec, ProjectConfig, ProjectId,
-    WorkspaceConfig,
+    BackendFamily, BackendPolicyRole, BackendRoleModels, BackendRoleTimeouts,
+    BackendRuntimeSettings, BackendSelection, CompletionSettings, FlowPreset, PanelBackendSpec,
+    ProjectConfig, ProjectId, WorkspaceConfig,
 };
 use ralph_burning::shared::error::AppError;
 
@@ -310,6 +310,16 @@ fn final_review_panel_supports_same_family_with_distinct_models() {
 
     let mut workspace = WorkspaceConfig::new(test_timestamp());
     workspace.settings.default_backend = Some("claude".to_owned());
+    workspace.backends.insert(
+        "codex".to_owned(),
+        BackendRuntimeSettings {
+            role_models: BackendRoleModels {
+                final_reviewer: Some("role-model-should-not-win".to_owned()),
+                ..Default::default()
+            },
+            ..empty_backend_settings(true)
+        },
+    );
     workspace.final_review.backends = Some(vec![
         PanelBackendSpec::required_selection(BackendSelection::new(
             BackendFamily::Codex,
