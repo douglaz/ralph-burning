@@ -355,7 +355,7 @@ where
     let mut proposal_total_exhausted: usize = 0;
     let mut last_proposal_exhaustion_error: Option<AppError> = None;
     let mut first_required_proposal_failure: Option<(usize, AppError)> = None;
-    let mut first_optional_proposal_failure: Option<AppError> = None;
+    let mut first_optional_proposal_failure: Option<(usize, AppError)> = None;
     let mut deferred_processing_error: Option<AppError> = None;
     while let Some((prep_idx, started_at, reviewer_payload)) = proposal_futures.next().await {
         let (idx, member, reviewer_id, _) = &proposal_preps[prep_idx];
@@ -434,8 +434,14 @@ where
                     Some("failed_optional"),
                     Some(0),
                 );
-                if first_optional_proposal_failure.is_none() {
-                    first_optional_proposal_failure = Some(error);
+                match &first_optional_proposal_failure {
+                    None => {
+                        first_optional_proposal_failure = Some((idx, error));
+                    }
+                    Some((prev_idx, _)) if idx < *prev_idx => {
+                        first_optional_proposal_failure = Some((idx, error));
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -491,6 +497,7 @@ where
             Err(e) => {
                 if deferred_processing_error.is_none() {
                     deferred_processing_error = Some(e);
+                    cancellation_token.cancel();
                 }
                 continue;
             }
@@ -638,7 +645,7 @@ where
         // Propagate the most specific error so the engine's
         // failure-class-aware handling can apply (e.g., retry decisions).
         // Priority: optional failure (preserves FailureClass) > exhaustion > generic.
-        if let Some(error) = first_optional_proposal_failure {
+        if let Some((_, error)) = first_optional_proposal_failure {
             return Err(error);
         }
         if let Some(exhaustion_error) = last_proposal_exhaustion_error {
@@ -1024,7 +1031,7 @@ where
     let mut vote_total_exhausted: usize = 0;
     let mut last_vote_exhaustion_error: Option<AppError> = None;
     let mut first_required_vote_failure: Option<(usize, AppError)> = None;
-    let mut first_optional_vote_failure: Option<AppError> = None;
+    let mut first_optional_vote_failure: Option<(usize, AppError)> = None;
     let mut deferred_vote_processing_error: Option<AppError> = None;
     while let Some((prep_idx, started_at, vote_payload)) = vote_futures.next().await {
         let (reviewer, _) = &vote_preps[prep_idx];
@@ -1102,8 +1109,16 @@ where
                     Some("failed_optional"),
                     Some(0),
                 );
-                if first_optional_vote_failure.is_none() {
-                    first_optional_vote_failure = Some(error);
+                match &first_optional_vote_failure {
+                    None => {
+                        first_optional_vote_failure =
+                            Some((reviewer.member_index, error));
+                    }
+                    Some((prev_idx, _)) if reviewer.member_index < *prev_idx => {
+                        first_optional_vote_failure =
+                            Some((reviewer.member_index, error));
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -1336,7 +1351,7 @@ where
     if reviewer_votes.len() < effective_vote_min {
         // Propagate the most specific error so the engine's
         // failure-class-aware handling can apply (e.g., retry decisions).
-        if let Some(error) = first_optional_vote_failure {
+        if let Some((_, error)) = first_optional_vote_failure {
             return Err(error);
         }
         if let Some(exhaustion_error) = last_vote_exhaustion_error {
