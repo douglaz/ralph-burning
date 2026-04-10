@@ -238,6 +238,33 @@ fn config_set_accepts_panel_backend_model_overrides_and_displays_them() {
 }
 
 #[test]
+fn config_set_accepts_legacy_parenthesized_panel_backend_model_overrides() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let entry = EffectiveConfig::set(
+        temp_dir.path(),
+        "final_review.backends",
+        r#"["openrouter(openai/gpt-5.4)", "?openrouter(openai/gpt-5.4-mini)"]"#,
+    )
+    .expect("set final review backends");
+
+    assert_eq!(
+        r#"["openrouter/openai/gpt-5.4", "?openrouter/openai/gpt-5.4-mini"]"#,
+        entry.value.toml_like_value()
+    );
+
+    let loaded = EffectiveConfig::load(temp_dir.path()).expect("reload config");
+    let fetched = loaded
+        .get("final_review.backends")
+        .expect("get final review backends");
+    assert_eq!(
+        r#"["openrouter/openai/gpt-5.4", "?openrouter/openai/gpt-5.4-mini"]"#,
+        fetched.value.toml_like_value()
+    );
+}
+
+#[test]
 fn config_set_rejects_invalid_panel_backend_model_overrides_before_writing() {
     let temp_dir = tempdir().expect("create temp dir");
     let workspace_root = initialize_workspace_fixture(temp_dir.path());

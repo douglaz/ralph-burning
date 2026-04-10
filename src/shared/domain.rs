@@ -508,6 +508,24 @@ impl FromStr for PanelBackendSpec {
     type Err = AppError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
+        fn split_family_and_model(value: &str) -> Option<(&str, &str)> {
+            let mut paren_depth = 0usize;
+
+            for (idx, ch) in value.char_indices() {
+                match ch {
+                    '(' => paren_depth += 1,
+                    ')' => paren_depth = paren_depth.saturating_sub(1),
+                    '/' if paren_depth == 0 => {
+                        let next = idx + ch.len_utf8();
+                        return Some((&value[..idx], &value[next..]));
+                    }
+                    _ => {}
+                }
+            }
+
+            None
+        }
+
         let trimmed = value.trim();
         if trimmed.is_empty() {
             return Err(AppError::InvalidConfigValue {
@@ -529,7 +547,7 @@ impl FromStr for PanelBackendSpec {
             });
         }
 
-        let selection = if let Some((family, model)) = raw_selection.split_once('/') {
+        let selection = if let Some((family, model)) = split_family_and_model(raw_selection) {
             let family = family.trim();
             let model = model.trim();
             if family.is_empty() {

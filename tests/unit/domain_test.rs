@@ -138,3 +138,54 @@ fn panel_backend_spec_serde_round_trips_inline_model_overrides() {
     let from_toml: Wrapper = toml::from_str(&toml).expect("deserialize panel backend from toml");
     assert_eq!(wrapper, from_toml);
 }
+
+#[test]
+fn panel_backend_spec_parses_legacy_parenthesized_model_overrides_with_slashes() {
+    let required = "openrouter(openai/gpt-5.4)"
+        .parse::<PanelBackendSpec>()
+        .expect("parse required legacy panel backend");
+    let optional = "?openrouter(openai/gpt-5.4)"
+        .parse::<PanelBackendSpec>()
+        .expect("parse optional legacy panel backend");
+
+    assert_eq!(BackendFamily::OpenRouter, required.selection().family);
+    assert_eq!(
+        Some("openai/gpt-5.4"),
+        required.selection().model.as_deref()
+    );
+    assert!(!required.is_optional());
+
+    assert_eq!(BackendFamily::OpenRouter, optional.selection().family);
+    assert_eq!(
+        Some("openai/gpt-5.4"),
+        optional.selection().model.as_deref()
+    );
+    assert!(optional.is_optional());
+}
+
+#[test]
+fn panel_backend_spec_serde_accepts_legacy_parenthesized_model_overrides() {
+    #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+    struct Wrapper {
+        spec: PanelBackendSpec,
+    }
+
+    let from_json: Wrapper = serde_json::from_str(r#"{"spec":"?openrouter(openai/gpt-5.4)"}"#)
+        .expect("deserialize legacy panel backend from json");
+    assert_eq!(BackendFamily::OpenRouter, from_json.spec.selection().family);
+    assert_eq!(
+        Some("openai/gpt-5.4"),
+        from_json.spec.selection().model.as_deref()
+    );
+    assert_eq!(
+        r#"{"spec":"?openrouter/openai/gpt-5.4"}"#,
+        serde_json::to_string(&from_json).expect("serialize normalized panel backend to json")
+    );
+
+    let from_toml: Wrapper = toml::from_str("spec = \"?openrouter(openai/gpt-5.4)\"")
+        .expect("deserialize legacy panel backend from toml");
+    assert_eq!(from_json, from_toml);
+    assert!(toml::to_string(&from_toml)
+        .expect("serialize normalized panel backend to toml")
+        .contains("?openrouter/openai/gpt-5.4"));
+}

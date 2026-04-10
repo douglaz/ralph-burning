@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260410035618",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-e5d149ba",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "Preserve the legacy `backend(model)` syntax when parsing panel backend specs. In `src/shared/domain.rs:532-550`, `PanelBackendSpec::from_str` now does `raw_selection.split_once('/')` before falling back to `BackendSelection::from_backend_name()`. That breaks previously valid panel entries whose old-style model override contains a slash, such as `?openrouter(openai/gpt-5.4)`: the slash inside the parentheses is misread as the new `family/model` separator, so the family becomes `openrouter(openai)` and parsing fails. Because `config set` now validates panel lists through this parser in `src/contexts/workspace_governance/config.rs:2115-2118`, existing workspace/project configs using the old serialized form can no longer be reloaded or updated. Update the parser to accept the legacy parenthesized form first (or otherwise ignore `/` inside parentheses), and add regression tests for direct parse plus `config set`/serde round-trip of an old-style OpenRouter value.",
-        "created_at": "2026-04-10T04:15:33.250366195Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "d58257b7f5a1f2ae82b721e8cfcf226803ef328c2ed90ef399da75f4078c6ee7"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-10T04:02:32.897048503Z",
