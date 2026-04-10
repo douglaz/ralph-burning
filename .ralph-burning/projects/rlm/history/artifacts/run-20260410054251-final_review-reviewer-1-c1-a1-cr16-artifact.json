@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T17:56:33.696464816Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed only the current diff and found no source-level changes in the requested implementation files; the patch only mutates `.ralph-burning` state artifacts. No further code correctness findings can be tied to modified lines because the required files were not modified.\n\n## Amendments\n\n1. No required implementation changes were made in this patch: `git diff` shows only project-tracking metadata updates in `.ralph-burning/projects/rlm/run.json` (`run.json:15-37`, including new `stage_resolution_snapshot` fields) and `.ralph-burning/projects/rlm/journal.ndjson` (`journal.ndjson:294-297` new reviewer start entries). `src/adapters/fs.rs`, `src/cli/run.rs`, and `src/contexts/workflow_composition/engine.rs` are untouched, so PID tracking, `run stop`, stale-run detection/recovery logic, and SIGTERM-based cleanup requested by the contract are not actually implemented in this change set.\n   Rationale: This means the patch does not address the stated goal and leaves the run-lifecycle robustness features missing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 16
+}

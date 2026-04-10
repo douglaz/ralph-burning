@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T18:09:50.003294242Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccept all three amendments. Each points to concrete correctness or safety gaps with clear code-level evidence, and the third correctly identifies that no implementation-backed changes were made.\n\n## Votes\n\n- `fr-16-66213a5a`: Accept\n  This amendment identifies a real TOCTOU/race: stale snapshots are consumed later without proving the still-current attempt identity, and `RunPidRecord` lacks attempt metadata. Acting on a new PID/lock-owner allows stopping or reclaiming a different run attempt. Binding/revalidating identity before signaling or reclaiming is required for correctness.\n- `fr-16-1275546c`: Accept\n  The described SIGTERM path can leave stale state because durable interruption and pid cleanup are deferred to later epilogues and may never execute if cancellation/failure paths hang or crash. Moving cleanup and interrupted snapshot writes into the signal/fail path is necessary to ensure resumable recovery invariants under interruption.\n- `fr-16-f10c91e6`: Accept\n  The amendment is a valid review finding: only metadata files changed and the referenced lifecycle-critical implementation files are untouched, so required run lifecycle behavior is not actually implemented in this patch. That means the contract requirements remain unaddressed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 16
+}

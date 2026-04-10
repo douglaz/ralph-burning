@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr16-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T18:12:31.997955564Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept all three amendments. The first identifies a real run-attempt binding race in stop/recovery handling, the second identifies non-durable interruption cleanup that can strand stale pid state, and the third correctly notes that the current patch is metadata-only and does not implement the required lifecycle changes.\n\n## Votes\n\n- `fr-16-66213a5a`: Accept\n  `run stop` reads a running snapshot and later acts on whatever authoritative `run.pid` record is current, but `RunPidRecord` does not carry the run-attempt identity from `active_run` (`run_id` plus attempt `started_at`). That leaves a real TOCTOU race where a concurrent `run resume` can replace `run.pid` with a fresh orchestrator and `run stop` can signal the new attempt instead of the one it observed. Existing owner-mismatch checks reduce some fresh-lease reclaim cases, but they do not eliminate the lack of attempt binding before signaling or recovery decisions.\n- `fr-16-1275546c`: Accept\n  The SIGTERM wrapper only cancels the token and waits for the main future; it does not durably mark interruption or clear `run.pid` itself. PID removal is deferred to the outer `handle_start`/`handle_resume` epilogue, `fail_run` never removes the pid file, and `mark_running_run_interrupted` removes it only after the synthetic `run_failed` append succeeds. A hang or crash in that window can leave exactly the stale pid/run state this work is supposed to prevent, so interruption cleanup needs to live in the signal/failure path itself.\n- `fr-16-f10c91e6`: Accept\n  The current diff changes only `.ralph-burning/projects/rlm/run.json` and `.ralph-burning/projects/rlm/journal.ndjson`; the implementation files called out by the contract (`src/adapters/fs.rs`, `src/cli/run.rs`, and `src/contexts/workflow_composition/engine.rs`) are untouched. That means the requested pid-tracking, stale-run recovery, stop-path hardening, and SIGTERM cleanup changes are not present in this patch set.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}

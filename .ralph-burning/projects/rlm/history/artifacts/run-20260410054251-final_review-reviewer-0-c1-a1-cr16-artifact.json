@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr16-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T18:06:44.715148240Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the lifecycle changes against the branch diff. Two robustness issues remain: stale recovery is not bound to a specific run attempt, and SIGTERM/failure cleanup still relies on outer epilogues instead of durable in-path cleanup.\n\n## Amendments\n\n1. Bind stale-run recovery to the specific run attempt before reclaiming or signaling. `run stop` reads `run.json`, then later signals whatever PID is currently in `run.pid` and reclaims whatever writer-lock owner is current (`src/cli/run.rs:2465-2604`); stale `run resume` uses the same observed-owner flow (`src/cli/run.rs:1705-1727`, `src/cli/run.rs:2291-2351`). But `RunPidRecord` only stores process identity fields and not the active `run_id` / attempt metadata (`src/adapters/fs.rs:155-165`), so a concurrent `run resume` can replace `run.pid` and the writer-lock owner after the stale snapshot was read. In that race, `run stop` can kill the brand-new resumed orchestrator, and stale `run resume` / `run stop` can reclaim a fresh writer lease that belongs to the new attempt. Persist the active run identity in `run.pid` (or otherwise prove the pid/owner still matches the snapshot attempt) and abort/retry when the snapshot changed before signaling or reclaiming.\n   Rationale: Without attempt binding, stale recovery is TOCTOU-racy and can tear down a legitimate new run that won the race.\n2. Make SIGTERM/interruption cleanup durable inside the signal/failure path instead of relying on the outer CLI epilogue. The new signal wrapper only cancels the token and then waits for the existing future to return (`src/cli/run.rs:1761-1777`); it never writes an interrupted snapshot or removes `run.pid` itself. PID cleanup is still deferred to the end of `handle_start` / `handle_resume` after `lock_guard.close()` (`src/cli/run.rs:2267-2272`, `src/cli/run.rs:2439-2442`), while `fail_run` itself never deletes the pid file (`src/contexts/workflow_composition/engine.rs:5862-5948`). Even the generic interrupted-run helper removes `run.pid` only after its synthetic `run_failed` append succeeds (`src/contexts/workflow_composition/engine.rs:807-825`, `src/contexts/workflow_composition/engine.rs:839-865`). If cancellation hangs, or the process dies after writing the failed snapshot but before reaching the outer cleanup, the project is left in exactly the kind of stale state this bead is meant to eliminate. Move the interrupted snapshot + pid cleanup into the signal/fail path itself so external SIGTERM and `run stop` reliably leave a clean resumable state.\n   Rationale: The current implementation still depends on normal unwind to clean `run.pid`, so abrupt interruption can strand stale state on the supposed robust shutdown path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}
