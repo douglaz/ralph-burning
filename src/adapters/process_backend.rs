@@ -1157,6 +1157,11 @@ impl ProcessBackendAdapter {
         let mut stdout_handle = child.stdout.take();
         let mut stderr_handle = child.stderr.take();
         let active_child = Arc::new(ManagedChild::new(child));
+        // Register the child handle immediately so cancellation can find and
+        // signal it. The filesystem tracking below is best-effort metadata;
+        // the in-memory handle is what cancel() actually uses.
+        self.register_child(&request.invocation_id, active_child.clone())
+            .await;
         if let Some(pid) = tracked_backend_pid {
             if let Err(error) = FileSystem::register_backend_process(&request.project_root, pid) {
                 let _ = active_child.force_kill().await;
@@ -1168,8 +1173,6 @@ impl ProcessBackendAdapter {
                 ));
             }
         }
-        self.register_child(&request.invocation_id, active_child.clone())
-            .await;
         let stdin_bytes = stdin_payload.as_bytes().to_vec();
 
         let stdin_future = async move {

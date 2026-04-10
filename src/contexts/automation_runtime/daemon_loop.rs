@@ -3306,7 +3306,21 @@ where
                         .map(|_| ());
                 if cleared.is_ok() {
                     if let Ok(project_id) = ProjectId::new(lease.project_id.clone()) {
-                        let _ = FileSystem::remove_pid_file(base_dir, &project_id);
+                        // Only remove the pid file if it still belongs to
+                        // this task's run.  A fresh run may have claimed the
+                        // project and written a new pid file after the writer
+                        // lock was released above.
+                        if let Ok(Some(pid_record)) =
+                            FileSystem::read_pid_file(base_dir, &project_id)
+                        {
+                            if pid_record.pid == std::process::id() {
+                                let _ = FileSystem::remove_pid_file_if_matches(
+                                    base_dir,
+                                    &project_id,
+                                    &pid_record,
+                                );
+                            }
+                        }
                     }
                 }
                 cleared
