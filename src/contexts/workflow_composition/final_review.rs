@@ -474,15 +474,25 @@ where
                     Some("failed"),
                     Some(0),
                 );
-                match &first_required_proposal_failure {
-                    None => {
-                        first_required_proposal_failure = Some((idx, error));
-                        cancellation_token.cancel();
+                {
+                    let is_cancellation = error
+                        .failure_class()
+                        .is_some_and(|fc| fc == FailureClass::Cancellation);
+                    match &first_required_proposal_failure {
+                        None => {
+                            first_required_proposal_failure = Some((idx, error));
+                            if !is_cancellation {
+                                cancellation_token.cancel();
+                            }
+                        }
+                        // Only replace with a lower-index error if it is a
+                        // real failure, not a synthetic cancellation induced
+                        // by our own cancel() call above.
+                        Some((prev_idx, _)) if idx < *prev_idx && !is_cancellation => {
+                            first_required_proposal_failure = Some((idx, error));
+                        }
+                        _ => {}
                     }
-                    Some((prev_idx, _)) if idx < *prev_idx => {
-                        first_required_proposal_failure = Some((idx, error));
-                    }
-                    _ => {}
                 }
                 continue;
             }
@@ -1151,17 +1161,26 @@ where
                     Some("failed"),
                     Some(0),
                 );
-                match &first_required_vote_failure {
-                    None => {
-                        first_required_vote_failure =
-                            Some((reviewer.member_index, error));
-                        cancellation_token.cancel();
+                {
+                    let is_cancellation = error
+                        .failure_class()
+                        .is_some_and(|fc| fc == FailureClass::Cancellation);
+                    match &first_required_vote_failure {
+                        None => {
+                            first_required_vote_failure =
+                                Some((reviewer.member_index, error));
+                            if !is_cancellation {
+                                cancellation_token.cancel();
+                            }
+                        }
+                        Some((prev_idx, _))
+                            if reviewer.member_index < *prev_idx && !is_cancellation =>
+                        {
+                            first_required_vote_failure =
+                                Some((reviewer.member_index, error));
+                        }
+                        _ => {}
                     }
-                    Some((prev_idx, _)) if reviewer.member_index < *prev_idx => {
-                        first_required_vote_failure =
-                            Some((reviewer.member_index, error));
-                    }
-                    _ => {}
                 }
                 continue;
             }
