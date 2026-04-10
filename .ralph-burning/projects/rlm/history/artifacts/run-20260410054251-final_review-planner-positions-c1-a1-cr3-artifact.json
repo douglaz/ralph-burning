@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr3-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T07:35:14.053389909Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real correctness bugs in the resume/recovery path. The first is a concurrency hazard around pid-file cleanup during stale recovery, and the second is a resume-state derivation bug that can bind resume to an older journaled run instead of the snapshot's interrupted run metadata.\n\n## Votes\n\n- `fr-3-7a1032e2`: Accept\n  `mark_running_run_interrupted()` currently removes `run.pid` even when its reread sees a non-`Running` snapshot. That is unsafe because `handle_resume()` performs stale-snapshot recovery before reacquiring the writer lease, while resume later writes `run.pid` before it publishes the new `Running` snapshot. A concurrent loser in `run resume` or `run stop` can therefore reread the winner's intermediate `Failed` snapshot, hit the non-`Running` branch, and delete the winner's freshly written pid file. The resulting `Running` snapshot without a pid file is then misreported as stale by status/recovery logic. This is a real race on shared mutable state, not a theoretical concern.\n- `fr-3-36a3f606`: Accept\n  `stage_plan_for_resume()` and `derive_resume_state()` prefer the most recent visible `run_started` event whenever one exists, and only consult `snapshot.interrupted_run` when no `run_started` is present at all. That is wrong when the snapshot represents a newer resumable run whose `run_started` was never durably written, or when a completed project was reopened and the snapshot intentionally carries a new interrupted run id. In those cases the code derives stage/run state from an older completed run in the journal, which can either raise the bogus `all stages ... already complete` error or resume under the wrong `run_id`. The seeded `run-current` vs `run-old` reproduction matches the current control flow.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

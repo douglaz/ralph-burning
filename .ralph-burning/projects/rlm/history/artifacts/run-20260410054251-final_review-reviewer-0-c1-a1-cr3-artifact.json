@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T07:30:57.315519213Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the lifecycle hardening changes in `run stop`, resume recovery, and terminal pid cleanup. Two correctness gaps remain: the shared stale-recovery helper can still delete a live pid file during concurrent recovery, and the missing-`run_started` fallback is not scoped to the resumed run id, so historical journal entries can make a recovered run look already complete.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/engine.rs:749-752` still deletes `run.pid` whenever `mark_running_run_interrupted()` rereads a non-`Running` snapshot. That reintroduces the same startup-window bug this patch was trying to close: stale recovery is triggered before the writer lease is reacquired (`src/cli/run.rs:1769-1781`), while resume republishes `run.pid` before it writes the new `Running` snapshot (`src/contexts/workflow_composition/engine.rs:1820-1827`). Two concurrent `run resume`/`run stop` attempts against the same stale snapshot can therefore race so that the loser observes the winner's intermediate `Failed` snapshot and deletes the winner's freshly written pid file, after which `run status` and later recovery misclassify a live orchestrator as stale.\n   Rationale: The CLI fast-path deletion was removed, but the shared recovery helper still erases a live pid file in the same startup window, so the original stale-state split-brain risk is not actually closed.\n2. `src/contexts/workflow_composition/engine.rs:6470-6476` and `src/contexts/workflow_composition/engine.rs:6500-6593` only fall back to `snapshot.interrupted_run` when the journal has no `run_started` event at all. If the journal contains an older visible `run_started`/terminal pair, `run resume` binds to that old run id and cursor instead of the recovered snapshot metadata. A recovered stale-start snapshot can then fail with `all stages in the current flow are already complete` or resume the wrong run. I reproduced this by seeding `run.json` with `interrupted_run.run_id = run-current` and a journal containing an older `run_started`/`run_completed` for `run-old`; `ralph-burning run resume` exited with the bogus `already complete` error instead of resuming `run-current`.\n   Rationale: The new fallback is scoped to “no run_started anywhere” instead of “no run_started for the run being resumed”, so it is still not robust against historical journal state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
