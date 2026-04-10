@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T13:50:01.989106505Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll three amendments identify concrete safety and correctness defects in run lifecycle handling: two are explicit race/signaling risks in `run stop`, and one is a real daemon crash-detection gap. They should be accepted.\n\n## Votes\n\n- `fr-5-df12fd3f`: Accept\n  The race is real: capturing lease ownership after waiting allows a different process to acquire the lock, and reclaiming by owner alone can evict an active replacement run. The stale/ownership check must be tied to the original holder (and/or verified dead) before lock and pid cleanup.\n- `fr-5-bee729a6`: Accept\n  Using only numeric PID when sending signals is unsafe under PID reuse. The existing `proc_start_ticks` indicates process identity should be revalidated immediately before each signal, otherwise stop can terminate an unrelated process after reuse.\n- `fr-5-79c8dac9`: Accept\n  For daemon-owned runs there is no persisted pid marker, yet status/resume treats any valid lease as liveness. A hard-killed daemon leaves runs marked running until lease TTL expires, blocking recovery and reporting false-positive health. This is a genuine crash-detection hole.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 5
+}

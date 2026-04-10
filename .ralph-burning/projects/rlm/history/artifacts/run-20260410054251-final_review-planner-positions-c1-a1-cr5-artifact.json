@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr5-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T13:49:58.045310965Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments describe real liveness and ownership defects. Two are concrete `run stop` races around lease ownership and PID reuse; the third is a genuine daemon-run crash-detection gap caused by treating lease freshness as process health.\n\n## Votes\n\n- `fr-5-df12fd3f`: Accept\n  `handle_stop` reads the writer-lock owner only after waiting for the target CLI process to exit, then `acquire_recovery_writer_guard` immediately tries to reclaim that owner. `reclaim_specific_cli_writer_lease` only proves the passed owner still owns the lock; it does not prove that owner is the stale one we intended to recover. If a new CLI `run start`/`run resume` acquires the lock in that window, stop can revoke the fresh lease and then remove the fresh `run.pid`, which is a real ownership race and can orphan the replacement run.\n- `fr-5-bee729a6`: Accept\n  The code records `proc_start_ticks` precisely to distinguish PID reuse, and `FileSystem::is_pid_alive` uses it, but `send_signal_to_pid` takes only a raw PID. `run stop` therefore classifies liveness once and then later signals a numeric PID without revalidating that it is still the same process. If the original orchestrator exits and the PID is recycled before SIGTERM or SIGKILL, an unrelated process can be signaled. That is a real safety bug.\n- `fr-5-79c8dac9`: Accept\n  Daemon-owned runs deliberately do not persist `run.pid` when `execution_cwd` is present, and `classify_running_snapshot_liveness` treats any non-stale worktree lease as `DaemonLease`. So an abrupt daemon/task death leaves the run appearing alive until the lease TTL expires, during which `run status` still reports running and `run resume` refuses recovery. Lease freshness is not equivalent to orchestrator health here, so the amendment identifies a real crash-detection hole.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T13:52:02.034856401Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real liveness and ownership defects. Two are concrete `run stop` races around reclaiming the wrong lease and signaling a reused PID; the third is a genuine daemon-run crash-detection gap caused by treating lease freshness as equivalent to orchestrator health.\n\n## Votes\n\n- `fr-5-df12fd3f`: Accept\n  `handle_stop` waits for the target CLI PID to exit, then re-reads the current writer-lock owner and passes that owner straight into `acquire_recovery_writer_guard`, which immediately calls `reclaim_specific_cli_writer_lease`. That reclaim path only checks that the supplied owner still owns the lock; it does not prove the owner is the stale run we intended to recover. If a fresh `run start` or `run resume` acquires the lock after the old process exits, `run stop` can revoke that live lease and then remove the fresh `run.pid`, orphaning the replacement run. This is a real ownership race.\n- `fr-5-bee729a6`: Accept\n  The code records `proc_start_ticks` in `RunPidRecord` and `FileSystem::is_pid_alive` uses it to detect PID reuse, but `send_signal_to_pid` takes only a raw PID. `run stop` therefore classifies liveness once and then later sends SIGTERM or SIGKILL to a numeric PID without revalidating that it is still the same process. If the orchestrator exits and the PID is recycled in that window, an unrelated process can be signaled. That is a real safety bug, not just a theoretical edge case.\n- `fr-5-79c8dac9`: Accept\n  Daemon-owned runs do not persist `run.pid` when execution happens in a worktree, and `classify_running_snapshot_liveness` treats any fresh `WorktreeLease` as `DaemonLease`. That means an abrupt daemon or task death leaves the run looking alive until the lease heartbeat expires, during which `run status` still reports it as running and `run resume` refuses recovery. Lease freshness is not an actual process-health check, so this is a genuine crash-detection hole.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}
