@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260410054251-final_review-aggregate-c1-a1-cr17-artifact",
+  "payload_id": "run-20260410054251-final_review-aggregate-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T18:40:49.536089901Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 17/25\n\n## Accepted\n\n- `fr-17-69983bd8`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-17-69983bd8`\n\nTreat live `run.pid` files that have authoritative liveness markers but no `run_id`/`run_started_at` as legacy runs instead of as a run-attempt handoff. `RunPidRecord` now makes the attempt identity optional in `src/adapters/fs.rs:155-169`, while `pid_record_is_authoritative` still treats any record with `proc_start_ticks` as authoritative in `src/adapters/fs.rs:368-381`. That means a pre-change orchestrator's pid file is classified as `CliProcess`/`DaemonProcess` in `src/cli/run.rs:1533-1544`, but `liveness_matches_running_attempt` can never match it in `src/cli/run.rs:1589-1602`. From there, `run resume` and `run stop` hit the hard \"project run changed... retry\" paths in `src/cli/run.rs:1756-1785` and `src/cli/run.rs:2691-2709` instead of the intended legacy refusal/recovery behavior. After upgrading while an older orchestrator is still running, operators can get stuck with a live run that cannot be stopped and only reports a misleading retry error. Add an explicit compatibility path for authoritative pid records that lack attempt metadata (for example, classify them as legacy CLI/daemon variants or special-case the mismatch checks) and add CLI coverage for that mixed-version case.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 17
+}

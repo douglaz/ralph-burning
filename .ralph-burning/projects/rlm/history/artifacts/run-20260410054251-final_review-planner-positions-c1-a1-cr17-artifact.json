@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr17-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T18:39:25.253266976Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the amendment. It identifies a real mixed-version compatibility defect: older live `run.pid` files can still be authoritative for process liveness while lacking the newly introduced attempt identity fields, and the current logic misclassifies that state as a same-era process handoff and then fails an impossible attempt match.\n\n## Votes\n\n- `fr-17-69983bd8`: Accept\n  Pre-change `write_pid_file` produced authoritative pid records with `proc_start_ticks` but no `run_id`/`run_started_at`, so this state is not hypothetical. Current `classify_running_snapshot_liveness` returns `CliProcess`/`DaemonProcess` for those records, but `pid_record_matches_attempt` can only return false when the attempt fields are absent, which forces `run resume` and `run stop` into the hard \"project run changed... retry\" errors indefinitely while the legacy process remains alive. That is a real correctness and operability regression; the code needs an explicit compatibility path that preserves attempt-safety semantics and tests for the mixed-version live-run case.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

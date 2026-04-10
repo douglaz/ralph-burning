@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T18:31:41.534127368Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed `git diff` and read the key implementation files. This patch only updates metadata files (`.ralph-burning/projects/rlm/journal.ndjson` and `.ralph-burning/projects/rlm/run.json`); no source changes were made in `src/adapters/fs.rs`, `src/cli/run.rs`, or `src/contexts/workflow_composition/engine.rs`. No new correctness or safety regressions were introduced by this diff.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 17
+}
