@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 21
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-20-9af9a94d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 20,
-        "body": "`run stop` can report success while leaving backend subprocesses alive. In `src/cli/run.rs:2175-2213` and `src/cli/run.rs:2266-2303`, `kill_descendant_process_groups` only SIGKILLs descendant process groups whose PGID differs from the orchestrator’s PGID, and the forced-stop path at `src/cli/run.rs:2961-2978` only sends SIGKILL directly to the orchestrator PID itself. Ordinary backend children inherit the parent’s process group, so they are never signaled here; once the parent dies they keep running even though `run stop` proceeds to rewrite `run.json` as failed/resumable. The added regression only covers a `setsid` child (`tests/cli.rs:6255-6349`), so the default same-process-group case is still unhandled. The stop path needs to tear down same-PG descendants too, or refuse to claim a clean stop when it cannot guarantee backend teardown.",
-        "created_at": "2026-04-10T19:54:20.990355720Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "87adbc15efc1962eb6b53bd17892d38d5e91985e12df21283282f0b2a8bf529f"
-      },
-      {
-        "amendment_id": "fr-20-036970e2",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 20,
-        "body": "Non-authoritative legacy `run.pid` files are treated as stale even when the recorded process may still be alive. `src/cli/run.rs:1539-1585` falls back from a pid record without `proc_start_ticks`/start-marker to lease heuristics and returns `Stale` whenever there is no fresh lease. Both `run resume` (`src/cli/run.rs:1859-1867`) and the stale branch of `run stop` (`src/cli/run.rs:2871-2899`) then reclaim the lock and rewrite the snapshot as failed/resumable. The new test `tests/cli.rs:6353-6408` demonstrates this explicitly by treating a live `sleep 60` process as “already stale”. That allows a mixed-version/live legacy orchestrator to continue running while a second orchestrator is resumed against the same project.",
-        "created_at": "2026-04-10T19:54:20.990358565Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "dca163846b453873dabda6f4fb4c539f695d27e6b6305b82799384202e485a8f"
-      },
-      {
-        "amendment_id": "fr-20-768d5ea2",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 20,
-        "body": "Partial stale-owner cleanup is silently ignored before reacquiring the CLI writer lease. `src/contexts/automation_runtime/cli_writer_lease.rs:186-199` returns `Ok(false)` when reclaiming a stale daemon worktree owner only partially succeeds (for example the writer lock is released but worktree or lease-file cleanup fails). `src/cli/run.rs:1798-1807` discards that boolean and immediately retries `CliWriterLeaseGuard::acquire`. If the writer lock happened to be released before the partial failure, resume/stop will continue even though the stale daemon lease/task/worktree state was not fully repaired. Recovery should stop and surface that partial cleanup instead of continuing on top of contradictory durable ownership state.",
-        "created_at": "2026-04-10T19:54:20.990361110Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "10633ee9ecf4a23bf65c01d2c4f3121d5f03679bd763db97a2b76ef5187c5026"
-      }
-    ],
-    "processed_count": 47
+    "pending": [],
+    "processed_count": 50
   },
-  "status_summary": "running: final review restart round 21 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-10T19:40:25.047923781Z",

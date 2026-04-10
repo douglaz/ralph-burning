@@ -191,12 +191,13 @@ pub fn reclaim_specific_project_writer_owner(
                 &lease,
                 ReleaseMode::Idempotent,
             )?;
-            if release_result.worktree_error.is_some()
-                || release_result.writer_lock_error.is_some()
-                || release_result.writer_lock_owner_mismatch
-                || release_result.lease_file_error.is_some()
-            {
+            if release_result.writer_lock_owner_mismatch {
                 return Ok(false);
+            }
+            if release_result.has_cleanup_failures() {
+                return Err(AppError::LeaseCleanupPartialFailure {
+                    task_id: lease.task_id.clone(),
+                });
             }
 
             let _ = store.remove_lease(base_dir, &lease.lease_id)?;
@@ -466,17 +467,68 @@ mod tests {
     use super::*;
 
     use chrono::Duration;
+    use std::path::{Path, PathBuf};
     use tempfile::tempdir;
 
     use crate::adapters::fs::FsDaemonStore;
-    use crate::adapters::worktree::WorktreeAdapter;
     use crate::contexts::automation_runtime::model::{
         DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
     };
+    use crate::contexts::automation_runtime::{WorktreeCleanupOutcome, WorktreePort};
     use crate::shared::domain::FlowPreset;
 
     fn store() -> Arc<dyn DaemonStorePort + Send + Sync> {
         Arc::new(FsDaemonStore)
+    }
+
+    enum StubWorktreeCleanup {
+        Removed,
+        AlreadyAbsent,
+    }
+
+    struct StubWorktreePort {
+        cleanup: StubWorktreeCleanup,
+    }
+
+    impl WorktreePort for StubWorktreePort {
+        fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf {
+            base_dir.join("worktrees").join(task_id)
+        }
+
+        fn branch_name(&self, task_id: &str) -> String {
+            format!("stub-{task_id}")
+        }
+
+        fn create_worktree(
+            &self,
+            _repo_root: &Path,
+            _worktree_path: &Path,
+            _branch_name: &str,
+            _task_id: &str,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn remove_worktree(
+            &self,
+            _repo_root: &Path,
+            _worktree_path: &Path,
+            _task_id: &str,
+        ) -> AppResult<WorktreeCleanupOutcome> {
+            Ok(match self.cleanup {
+                StubWorktreeCleanup::Removed => WorktreeCleanupOutcome::Removed,
+                StubWorktreeCleanup::AlreadyAbsent => WorktreeCleanupOutcome::AlreadyAbsent,
+            })
+        }
+
+        fn rebase_onto_default_branch(
+            &self,
+            _repo_root: &Path,
+            _worktree_path: &Path,
+            _branch_name: &str,
+        ) -> AppResult<()> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -810,7 +862,9 @@ mod tests {
 
         let reclaimed = reclaim_specific_project_writer_owner(
             &FsDaemonStore,
-            &WorktreeAdapter,
+            &StubWorktreePort {
+                cleanup: StubWorktreeCleanup::Removed,
+            },
             temp.path(),
             temp.path(),
             &project_id,
@@ -838,6 +892,103 @@ mod tests {
         assert!(
             task.lease_id.is_none(),
             "stale daemon recovery must clear the task lease reference"
+        );
+    }
+
+    #[test]
+    fn reclaim_specific_project_writer_owner_surfaces_partial_cleanup_failure() {
+        let temp = tempdir().expect("tempdir");
+        let project_id = ProjectId::new("stale-daemon-owner-partial".to_owned()).expect("valid id");
+        let now = Utc::now();
+        let worktree_lease = WorktreeLease {
+            lease_id: "lease-stale-daemon-owner-partial".to_owned(),
+            task_id: "task-stale-daemon-owner-partial".to_owned(),
+            project_id: project_id.to_string(),
+            worktree_path: temp
+                .path()
+                .join("worktrees/missing-stale-daemon-owner-partial"),
+            branch_name: "task-stale-daemon-owner-partial".to_owned(),
+            acquired_at: now,
+            ttl_seconds: CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: now,
+        };
+        FsDaemonStore
+            .write_task(
+                temp.path(),
+                &DaemonTask {
+                    task_id: worktree_lease.task_id.clone(),
+                    issue_ref: "repo#2".to_owned(),
+                    project_id: project_id.to_string(),
+                    project_name: Some("stale daemon partial".to_owned()),
+                    prompt: Some("prompt".to_owned()),
+                    routing_command: None,
+                    routing_labels: vec![],
+                    resolved_flow: Some(FlowPreset::Standard),
+                    routing_source: Some(RoutingSource::DefaultFlow),
+                    routing_warnings: vec![],
+                    status: TaskStatus::Active,
+                    created_at: now,
+                    updated_at: now,
+                    attempt_count: 0,
+                    lease_id: Some(worktree_lease.lease_id.clone()),
+                    failure_class: None,
+                    failure_message: None,
+                    dispatch_mode: DispatchMode::Workflow,
+                    source_revision: None,
+                    requirements_run_id: None,
+                    workflow_run_id: None,
+                    repo_slug: None,
+                    issue_number: None,
+                    pr_url: None,
+                    last_seen_comment_id: None,
+                    last_seen_review_id: None,
+                    label_dirty: false,
+                },
+            )
+            .expect("write daemon task");
+        FsDaemonStore
+            .write_lease_record(temp.path(), &LeaseRecord::Worktree(worktree_lease.clone()))
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(temp.path(), &project_id, &worktree_lease.lease_id)
+            .expect("acquire writer lock");
+
+        let error = reclaim_specific_project_writer_owner(
+            &FsDaemonStore,
+            &StubWorktreePort {
+                cleanup: StubWorktreeCleanup::AlreadyAbsent,
+            },
+            temp.path(),
+            temp.path(),
+            &project_id,
+            &worktree_lease.lease_id,
+        )
+        .expect_err("partial cleanup should surface an error");
+
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "expected partial cleanup error, got: {error:?}"
+        );
+        assert!(
+            read_project_writer_lock_owner(temp.path(), &project_id)
+                .expect("read writer owner")
+                .is_none(),
+            "writer lock release may already have succeeded before the partial cleanup surfaced"
+        );
+        assert!(
+            FsDaemonStore
+                .read_lease_record(temp.path(), &worktree_lease.lease_id)
+                .is_ok(),
+            "worktree lease record should remain for operator recovery"
+        );
+        let task = FsDaemonStore
+            .read_task(temp.path(), &worktree_lease.task_id)
+            .expect("read daemon task");
+        assert_eq!(task.status, TaskStatus::Failed);
+        assert_eq!(
+            task.lease_id.as_deref(),
+            Some(worktree_lease.lease_id.as_str()),
+            "partial cleanup must preserve the task lease reference"
         );
     }
 }

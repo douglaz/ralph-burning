@@ -384,45 +384,43 @@ impl FileSystem {
         }
     }
 
-    pub fn is_pid_alive(record: &RunPidRecord) -> bool {
+    pub fn is_pid_running_unchecked(pid: u32) -> bool {
         #[cfg(unix)]
         {
-            let pid = nix::unistd::Pid::from_raw(record.pid as i32);
+            let pid = nix::unistd::Pid::from_raw(pid as i32);
             match nix::sys::signal::kill(pid, None) {
-                Ok(()) => {}
-                Err(nix::errno::Errno::ESRCH) => return false,
-                Err(_) => return false,
+                Ok(()) => !matches!(Self::proc_state(pid.as_raw() as u32), Some('Z')),
+                Err(nix::errno::Errno::ESRCH) => false,
+                Err(_) => false,
             }
-
-            if let Some(expected_ticks) = record.proc_start_ticks {
-                match Self::proc_start_ticks(record.pid) {
-                    Some(actual_ticks) if actual_ticks == expected_ticks => {}
-                    _ => return false,
-                }
-            } else {
-                #[cfg(all(unix, not(target_os = "linux")))]
-                {
-                    let Some(expected_marker) = record.proc_start_marker.as_deref() else {
-                        return false;
-                    };
-                    match Self::proc_start_marker(record.pid) {
-                        Some(actual_marker) if actual_marker == expected_marker => {}
-                        _ => return false,
-                    }
-                }
-
-                #[cfg(any(target_os = "linux", not(unix)))]
-                {
-                    return false;
-                }
-            }
-
-            !matches!(Self::proc_state(record.pid), Some('Z'))
         }
 
         #[cfg(not(unix))]
         {
-            let _ = record;
+            let _ = pid;
+            false
+        }
+    }
+
+    pub fn is_pid_alive(record: &RunPidRecord) -> bool {
+        if !Self::is_pid_running_unchecked(record.pid) {
+            return false;
+        }
+
+        if let Some(expected_ticks) = record.proc_start_ticks {
+            return matches!(Self::proc_start_ticks(record.pid), Some(actual_ticks) if actual_ticks == expected_ticks);
+        }
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            let Some(expected_marker) = record.proc_start_marker.as_deref() else {
+                return false;
+            };
+            return matches!(Self::proc_start_marker(record.pid), Some(actual_marker) if actual_marker == expected_marker);
+        }
+
+        #[cfg(any(target_os = "linux", not(unix)))]
+        {
             false
         }
     }

@@ -1562,6 +1562,15 @@ fn classify_running_snapshot_liveness(
             }
             return Ok(RunningSnapshotLiveness::Stale);
         }
+
+        if FileSystem::is_pid_running_unchecked(record.pid) {
+            return Ok(match record.owner {
+                crate::adapters::fs::RunPidOwner::Cli => RunningSnapshotLiveness::LegacyCliProcess,
+                crate::adapters::fs::RunPidOwner::Daemon => {
+                    RunningSnapshotLiveness::LegacyDaemonProcess
+                }
+            });
+        }
     }
 
     if let Some((_owner, lease_record)) =
@@ -2162,55 +2171,20 @@ fn linux_child_pids(pid: u32) -> Vec<u32> {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_process_group_id(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (_, tail) = stat.rsplit_once(") ")?;
-    tail.split_whitespace().nth(2)?.parse::<u32>().ok()
-}
-
-#[cfg(target_os = "linux")]
-fn kill_descendant_process_groups(root_pid: u32) -> AppResult<usize> {
+fn linux_descendant_pids(root_pid: u32) -> Vec<u32> {
     let mut stack = vec![root_pid];
     let mut seen_pids = HashSet::from([root_pid]);
-    let mut process_groups = HashSet::new();
-    let root_process_group = linux_process_group_id(root_pid);
 
     while let Some(pid) = stack.pop() {
         for child_pid in linux_child_pids(pid) {
             if seen_pids.insert(child_pid) {
                 stack.push(child_pid);
-                if let Some(process_group_id) = linux_process_group_id(child_pid) {
-                    process_groups.insert(process_group_id);
-                }
             }
         }
     }
 
-    let mut signaled_groups = 0usize;
-    for process_group_id in process_groups {
-        if process_group_id == root_pid || Some(process_group_id) == root_process_group {
-            continue;
-        }
-
-        let process_group_id =
-            i32::try_from(process_group_id).map_err(|_| AppError::RunStopFailed {
-                reason: format!(
-                    "process group id {} exceeds libc::pid_t range",
-                    process_group_id
-                ),
-            })?;
-        match kill(Pid::from_raw(-process_group_id), Signal::SIGKILL) {
-            Ok(()) => signaled_groups += 1,
-            Err(nix::errno::Errno::ESRCH) => {}
-            Err(error) => {
-                return Err(AppError::Io(std::io::Error::other(format!(
-                    "failed to SIGKILL descendant process group {process_group_id}: {error}"
-                ))))
-            }
-        }
-    }
-
-    Ok(signaled_groups)
+    seen_pids.remove(&root_pid);
+    seen_pids.into_iter().collect()
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -2248,59 +2222,55 @@ fn unix_process_snapshot() -> AppResult<Vec<(u32, u32, u32)>> {
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-fn kill_descendant_process_groups(root_pid: u32) -> AppResult<usize> {
+fn unix_descendant_pids(root_pid: u32) -> AppResult<Vec<u32>> {
     let process_snapshot = unix_process_snapshot()?;
     let mut children_by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut process_group_by_pid = HashMap::new();
 
-    for (pid, ppid, pgid) in process_snapshot {
+    for (pid, ppid, _pgid) in process_snapshot {
         children_by_parent.entry(ppid).or_default().push(pid);
-        process_group_by_pid.insert(pid, pgid);
     }
 
     let mut stack = vec![root_pid];
     let mut seen_pids = HashSet::from([root_pid]);
-    let mut process_groups = HashSet::new();
-    let root_process_group = process_group_by_pid.get(&root_pid).copied();
 
     while let Some(pid) = stack.pop() {
         if let Some(child_pids) = children_by_parent.get(&pid) {
             for child_pid in child_pids {
                 if seen_pids.insert(*child_pid) {
                     stack.push(*child_pid);
-                    if let Some(process_group_id) = process_group_by_pid.get(child_pid).copied() {
-                        process_groups.insert(process_group_id);
-                    }
                 }
             }
         }
     }
 
-    let mut signaled_groups = 0usize;
-    for process_group_id in process_groups {
-        if process_group_id == root_pid || Some(process_group_id) == root_process_group {
-            continue;
-        }
+    seen_pids.remove(&root_pid);
+    Ok(seen_pids.into_iter().collect())
+}
 
-        let process_group_id =
-            i32::try_from(process_group_id).map_err(|_| AppError::RunStopFailed {
-                reason: format!(
-                    "process group id {} exceeds libc::pid_t range",
-                    process_group_id
-                ),
-            })?;
-        match kill(Pid::from_raw(-process_group_id), Signal::SIGKILL) {
-            Ok(()) => signaled_groups += 1,
+#[cfg(unix)]
+fn kill_descendant_processes(root_pid: u32) -> AppResult<usize> {
+    #[cfg(target_os = "linux")]
+    let descendant_pids = linux_descendant_pids(root_pid);
+    #[cfg(all(unix, not(target_os = "linux")))]
+    let descendant_pids = unix_descendant_pids(root_pid)?;
+
+    let mut signaled = 0usize;
+    for pid in descendant_pids {
+        let pid = i32::try_from(pid).map_err(|_| AppError::RunStopFailed {
+            reason: format!("descendant pid {} exceeds libc::pid_t range", pid),
+        })?;
+        match kill(Pid::from_raw(pid), Signal::SIGKILL) {
+            Ok(()) => signaled += 1,
             Err(nix::errno::Errno::ESRCH) => {}
             Err(error) => {
                 return Err(AppError::Io(std::io::Error::other(format!(
-                    "failed to SIGKILL descendant process group {process_group_id}: {error}"
+                    "failed to SIGKILL descendant pid {pid}: {error}"
                 ))))
             }
         }
     }
 
-    Ok(signaled_groups)
+    Ok(signaled)
 }
 
 fn recover_stale_running_snapshot(
@@ -2965,8 +2935,8 @@ async fn handle_stop() -> AppResult<()> {
                                 "terminated gracefully with SIGTERM"
                             } else {
                                 #[cfg(unix)]
-                                let killed_descendant_groups =
-                                    kill_descendant_process_groups(pid_record.pid)?;
+                                let killed_descendants =
+                                    kill_descendant_processes(pid_record.pid)?;
                                 match send_signal_to_handle(&handle, Signal::SIGKILL)? {
                                     SignalSendOutcome::AlreadyExited => {
                                         "process exited before SIGKILL"
@@ -2984,10 +2954,10 @@ async fn handle_stop() -> AppResult<()> {
                                         }
                                         #[cfg(unix)]
                                         {
-                                            if killed_descendant_groups == 0 {
+                                            if killed_descendants == 0 {
                                                 "required SIGKILL after timeout"
                                             } else {
-                                                "required SIGKILL after timeout and killed backend subprocess groups"
+                                                "required SIGKILL after timeout and killed backend subprocesses"
                                             }
                                         }
                                     }
