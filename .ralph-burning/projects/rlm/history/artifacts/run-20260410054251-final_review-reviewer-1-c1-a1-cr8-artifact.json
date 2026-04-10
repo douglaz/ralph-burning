@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T15:05:33.252102520Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI reviewed the current diff and git state. The only changes are in `.ralph-burning/projects/rlm/journal.ndjson` and `.ralph-burning/projects/rlm/run.json` (review-logging metadata); no implementation files were modified in this patch. Therefore there are no file-scoped correctness/safety regressions to report from the code diff itself.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 8
+}

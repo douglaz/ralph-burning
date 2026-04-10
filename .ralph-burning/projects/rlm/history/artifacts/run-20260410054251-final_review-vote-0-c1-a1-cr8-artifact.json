@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr8-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T15:18:03.012548618Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real correctness or safety defects in run-state handling. Status reconciliation is using the wrong journal scope, stale-run recovery can reclaim live legacy CLI ownership, and forced stop can orphan backend subprocesses while the snapshot is rewritten as failed.\n\n## Votes\n\n- `fr-8-937b947b`: Accept\n  `handle_status` reconciles a running snapshot against the journal's global last terminal event, and `reconcile_snapshot_status` does not scope that lookup to the active snapshot. Because the journal spans multiple starts/resumes, an older terminal event can overwrite the current running snapshot with the wrong terminal state. Reconciliation needs to be constrained to the active run/attempt instead of the full journal tail.\n- `fr-8-d8cb5745`: Accept\n  This is a real compatibility bug. A pid record without `proc_start_ticks` is treated as dead, and a fresh `CliWriter` lease without an authoritative pid marker is also treated as stale, after which `run resume` or `run stop` can reclaim the writer lock and mutate state. For a live pre-upgrade CLI orchestrator, that can create concurrent orchestrators or mark an active run failed without stopping the original process.\n- `fr-8-8663197c`: Accept\n  The forced-stop path only signals the orchestrator PID, but process-backend work runs in its own process group specifically so the whole subtree can be killed together. If `run stop` escalates to SIGKILL, the orchestrator cannot execute normal cancellation or child cleanup, so backend subprocesses can keep running after the snapshot is marked failed and resumable. That is a real stop-semantics and process-leak bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260410054251-final_review-aggregate-c1-a1-cr8-artifact",
+  "payload_id": "run-20260410054251-final_review-aggregate-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T15:18:03.024993872Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 8/25\n\n## Accepted\n\n- `fr-8-937b947b`\n- `fr-8-d8cb5745`\n- `fr-8-8663197c`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-8-937b947b`\n\nFilter `run status` reconciliation by the current run id before applying terminal journal events. Right now `handle_status` unconditionally calls `reconcile_snapshot_status` on the full journal (`src/cli/run.rs:5655-5662`), and `reconcile_snapshot_status` uses the journal's global last terminal event (`src/contexts/project_run_record/queries.rs:24-45`). If the current stale `Running` snapshot belongs to a newer run that died before its `run_started` reached disk, but the journal still ends with an older `run_completed`/`run_failed`, `run status` will report the old terminal state instead of `stale` or the active run's state.\n\n### `fr-8-d8cb5745`\n\nMake stale-run detection safe for pre-upgrade CLI runs that do not have the new authoritative pid tuple yet. `FileSystem::is_pid_alive` returns `false` whenever `proc_start_ticks` is missing (`src/adapters/fs.rs:329-347`), and `classify_running_snapshot_liveness` also treats a fresh `CliWriter` lease without a pid marker as `Stale` unconditionally (`src/cli/run.rs:1530-1563`). `handle_resume` and `handle_stop` then reclaim the writer lock and rewrite run state on that basis (`src/cli/run.rs:2040-2058`, `src/cli/run.rs:2172-2204`). For a live older CLI orchestrator, that can start a second orchestrator or mark the run failed without ever stopping the original process.\n\n### `fr-8-8663197c`\n\nWhen `run stop` escalates to SIGKILL, terminate the active backend subprocess tree as well as the orchestrator. The new stop path only signals the orchestrator PID (`src/cli/run.rs:2219-2242`), but process-backend invocations are launched in their own process groups (`src/adapters/process_backend.rs:1122-1126`). A forced stop can therefore kill the orchestrator while leaving the backend child group running, after which the command marks the snapshot failed and ready to resume.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 8
+}
