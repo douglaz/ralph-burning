@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T06:13:07.083452063Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real defects in the current stale-run recovery design: stale CLI writer leases can block the advertised resume path, and a run can be exposed as Running before its PID record exists, letting concurrent status/stop calls misclassify a live process as stale.\n\n## Votes\n\n- `fr-1-14fa4a43`: Accept\n  The amendment is technically sound. handle_resume acquires the CLI writer lease before engine-side stale Running reconciliation, and that acquisition hard-fails if the old writer lock file still exists. The stale-stop and stale-interruption recovery paths only rewrite run snapshot / pid state; they do not release the stranded writer lock or delete the matching CLI lease. That means a crashed or SIGKILLed run can be reported as recoverable and even marked \"ready for resume,\" while run resume still fails with ProjectWriterLockHeld until later daemon reconciliation. That is a real correctness and recoverability bug, not just an operational inconvenience.\n- `fr-1-66744da8`: Accept\n  The race is real. Both start and resume write run.json with status Running before write_pid_file succeeds, while run status and run stop treat a missing pid file as proof that the orchestrator is gone. Because those readers do not coordinate with startup, another CLI invocation can observe the intermediate state and falsely report stale status or mark the run failed without ever signaling the still-running process. Publishing Running before the liveness artifact exists creates an externally visible inconsistency that should be removed or explicitly handled.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

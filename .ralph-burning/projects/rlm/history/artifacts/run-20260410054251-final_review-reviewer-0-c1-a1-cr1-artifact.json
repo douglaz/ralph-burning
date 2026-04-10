@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T06:10:01.030013117Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the run-lifecycle diff against `origin/master`, focusing on `src/adapters/fs.rs`, `src/cli/run.rs`, and `src/contexts/workflow_composition/engine.rs`, plus the new tests. I found two correctness issues: stale writer leases still block crash recovery, and there is a startup race where a live run can be treated as stale before the pid file is written.\n\n## Amendments\n\n1. Fix stale writer-lock recovery before `run resume`/`run stop` rely on the new PID-based stale-run flow. `handle_resume` still acquires the CLI writer lease before any stale-Running reconciliation (`src/cli/run.rs:1769-1778`), and `CliWriterLeaseGuard::acquire` hard-fails on an existing lock (`src/contexts/automation_runtime/cli_writer_lease.rs:136-166`). The new stale-stop/interruption paths only rewrite `run.json`/`run.pid` (`src/cli/run.rs:1885-1941`, `src/contexts/workflow_composition/engine.rs:729-757`) and never release or reclaim the old writer lock. After a SIGKILL/OOM/crash, the run is reported as stale, but `run resume` can still fail with `ProjectWriterLockHeld` until daemon TTL/reconcile clears the stale lease. Add lease cleanup/reclamation to stale-run recovery, or move the stale detection ahead of lock acquisition so the recovery path can clear the stranded lock before trying to resume.\n   Rationale: This leaves the main crash-recovery workflow broken for abrupt process death, which is the core goal of the change.\n2. Remove the startup race where a live run can be misclassified as stale before `run.pid` exists. The engine writes `run.json` as `Running` before creating the pid file on both start and resume (`src/contexts/workflow_composition/engine.rs:1080-1115`, `src/contexts/workflow_composition/engine.rs:1806-1849`), but `run status` and `run stop` immediately treat a missing pid file as proof that the orchestrator is dead (`src/cli/run.rs:1885-1899`, `src/cli/run.rs:5319-5338`). In that window, `run status` reports a healthy run as stale, and `run stop` can mark the snapshot failed without ever signaling the still-running orchestrator. Either write the pid file before exposing `Running`, or make `status`/`stop` tolerate the pre-pid startup window and/or coordinate with the writer lease.\n   Rationale: A second terminal can race with start/resume and leave a real orchestrator running behind a failed snapshot, which is a correctness issue rather than a cosmetic status glitch.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
