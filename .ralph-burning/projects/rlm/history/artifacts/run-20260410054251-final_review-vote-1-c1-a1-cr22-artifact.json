@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr22-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T20:42:25.709717887Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted all three amendments. Each identifies a real correctness/safety concern or a concrete mismatch between requested lifecycle hardening and the submitted change set.\n\n## Votes\n\n- `fr-22-a8904cc1`: Accept\n  Treating legacy pid-only run records as stale without stronger proof can cause false-positive recovery while an older orchestrator is still running, leading to concurrent controllers and unsafe run.json rewrites. Requiring authoritative liveness proof before stale conversion is correct.\n- `fr-22-38d07054`: Accept\n  Killing tracked descendants only in the SIGKILL path misses cases where the parent exits or is reaped before or during graceful termination, allowing backend children to persist. Cleanup should run whenever parent death is observed to prevent orphaned processes.\n- `fr-22-2654893d`: Accept\n  If no code changes were made in the lifecycle-critical paths (no diffs in run/adapter/engine sources), the requested hardening is not implemented. In that state, acceptance criteria for liveness, stale handling, stop behavior, and cleanup are unmet.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 22
+}

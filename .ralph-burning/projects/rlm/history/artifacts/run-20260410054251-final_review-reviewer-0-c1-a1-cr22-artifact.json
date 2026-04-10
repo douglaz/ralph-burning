@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr22-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T20:40:09.941291780Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the run lifecycle/lease changes and found two correctness issues: stale recovery is now unsafe for live legacy pid-only orchestrators, and `run stop` only kills tracked descendants on the SIGKILL path, so children can survive when the parent exits earlier.\n\n## Amendments\n\n1. `run stop`/`run resume` can now recover over a still-live legacy orchestrator. In `src/cli/run.rs:1541-1595`, any `run.pid` record that lacks `proc_start_*` metadata is classified as `Stale` unless there is a fresh lease. The stale-recovery paths in `src/cli/run.rs:1877-1885`, `src/cli/run.rs:2693-2706`, and `src/cli/run.rs:2899-2934` then rewrite `run.json` without signalling or waiting for that PID. That is unsafe for mixed-version upgrades where an older orchestrator only wrote `pid`/`started_at` and did not create a lease: the new CLI will mark the run failed/resumable while the old process keeps running, so a second run can start against the same project. Restore the previous refusal for live pid-only legacy records, or require some additional authoritative proof before treating them as stale.\n   Rationale: This is a real concurrency/corruption risk: the review change explicitly codifies resuming/stopping over a live process when its pid file is non-authoritative.\n2. `run stop` still leaks backend descendants whenever the orchestrator exits before the SIGKILL branch. In `src/cli/run.rs:2987-3005`, `snapshot_descendant_processes` is captured up front, but `kill_tracked_descendant_processes` is only invoked after the SIGTERM grace period times out. If the orchestrator exits just before `open_stop_process_handle`, or exits promptly on SIGTERM while leaving children behind, stop reports success and reconciles the snapshot without ever killing the tracked descendants. Since `src/cli/run.rs:2262-2332` already records start-tick-safe descendant identities, use that cleanup whenever the parent is observed to be gone, not only on the timeout-to-SIGKILL path.\n   Rationale: This leaves real backend work running after `run stop`, which breaks the contract that stop should shut down the run cleanly before making it resumable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 22
+}

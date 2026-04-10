@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr22-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T20:43:54.304209746Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept all three amendments. The first two describe real lifecycle-safety defects in the current `run stop`/`run resume` handling, and the third correctly observes that the submitted diff does not contain the required code changes at all.\n\n## Votes\n\n- `fr-22-a8904cc1`: Accept\n  `classify_running_snapshot_liveness` only treats a pid record as live when it is authoritative. On Linux, a legacy `run.pid` record without `proc_start_*` metadata is non-authoritative, so if no fresh lease exists it falls through to `Stale` even if the recorded PID is still running. The stale-recovery paths for `run resume` and `run stop` then reclaim writer ownership and rewrite `run.json` without stopping or waiting on that legacy process. That is unsafe mixed-version behavior and should be blocked unless there is stronger proof that the old process is actually stale.\n- `fr-22-38d07054`: Accept\n  The code snapshots descendants before attempting stop, but only calls `kill_tracked_descendant_processes` in the timeout-to-`SIGKILL` branch. If `open_stop_process_handle` finds the parent already gone, or SIGTERM makes the parent exit promptly while children remain, stop proceeds to reconcile state and report success without cleaning the tracked descendants. That leaves real orphan/backend leak cases unhandled; the tracked cleanup should run whenever parent death is observed, not only after a timeout.\n- `fr-22-2654893d`: Accept\n  The current tracked diff only contains `.ralph-burning/projects/rlm/run.json` and `.ralph-burning/projects/rlm/journal.ndjson`; there are no code changes under `src/adapters/fs.rs`, `src/cli/run.rs`, or `src/contexts/workflow_composition/engine.rs`. So the requested lifecycle hardening is not implemented by this patch, and the acceptance criteria around pid liveness, stale recovery, stop semantics, and descendant cleanup are not satisfied by the submitted changes.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 22
+}

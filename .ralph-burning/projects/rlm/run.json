@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 22
+      "completion_round": 23
     },
     "started_at": "2026-04-10T13:01:46.204377009Z",
     "prompt_hash_at_cycle_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "prompt_hash_at_stage_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 21
+    "final_review_restart_count": 22
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 22,
+  "completion_rounds": 23,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-22-a8904cc1",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 22,
+        "body": "`run stop`/`run resume` can now recover over a still-live legacy orchestrator. In `src/cli/run.rs:1541-1595`, any `run.pid` record that lacks `proc_start_*` metadata is classified as `Stale` unless there is a fresh lease. The stale-recovery paths in `src/cli/run.rs:1877-1885`, `src/cli/run.rs:2693-2706`, and `src/cli/run.rs:2899-2934` then rewrite `run.json` without signalling or waiting for that PID. That is unsafe for mixed-version upgrades where an older orchestrator only wrote `pid`/`started_at` and did not create a lease: the new CLI will mark the run failed/resumable while the old process keeps running, so a second run can start against the same project. Restore the previous refusal for live pid-only legacy records, or require some additional authoritative proof before treating them as stale.",
+        "created_at": "2026-04-10T20:43:54.318078627Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "e45a3bce89b29f6862093a0498d832d5fe281d158eaa0bed65086be6816dfb05"
+      },
+      {
+        "amendment_id": "fr-22-38d07054",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 22,
+        "body": "`run stop` still leaks backend descendants whenever the orchestrator exits before the SIGKILL branch. In `src/cli/run.rs:2987-3005`, `snapshot_descendant_processes` is captured up front, but `kill_tracked_descendant_processes` is only invoked after the SIGTERM grace period times out. If the orchestrator exits just before `open_stop_process_handle`, or exits promptly on SIGTERM while leaving children behind, stop reports success and reconciles the snapshot without ever killing the tracked descendants. Since `src/cli/run.rs:2262-2332` already records start-tick-safe descendant identities, use that cleanup whenever the parent is observed to be gone, not only on the timeout-to-SIGKILL path.",
+        "created_at": "2026-04-10T20:43:54.318081883Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "1f2933cfb44b8d0e6df48d777012fe11289432a992155de7c7e7731bf0794b2d"
+      },
+      {
+        "amendment_id": "fr-22-2654893d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 22,
+        "body": "The submitted change set does not implement the requested lifecycle hardening in code. `git diff --name-only` only reports `.ralph-burning/projects/rlm/run.json` and `.ralph-burning/projects/rlm/journal.ndjson` (metadata/journal lines `run.json:12-29`, `journal.ndjson:402-408`), and there are no diffs under `src/adapters/fs.rs`, `src/cli/run.rs`, or `src/contexts/workflow_composition/engine.rs`. As a result, PID-file liveness, `run stop`, stale status detection, automatic stale resume recovery, and SIGTERM cleanup behavior are not introduced by this patch and acceptance criteria are not met by the current diff.",
+        "created_at": "2026-04-10T20:43:54.318083957Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "feaa87fabf4400e1c522af0dbf6bdb0be27767859fe663d6abf640029f924445"
+      }
+    ],
     "processed_count": 53
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 23 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-10T20:01:56.774337915Z",
+    "resolved_at": "2026-04-10T20:33:20.178988941Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
