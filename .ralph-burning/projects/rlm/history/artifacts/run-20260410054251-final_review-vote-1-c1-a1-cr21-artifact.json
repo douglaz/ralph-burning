@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr21-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T20:13:20.324999759Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted all three amendments. Each identifies a concrete correctness or safety defect in lifecycle and recovery logic (process orchestration and lease recovery) that can yield incorrect state, leaked work, or stale lock masking despite explicit signals and recovery paths. The planner positions are aligned with these risks.\n\n## Votes\n\n- `fr-21-288cf6fd`: Accept\n  This is a real race: the forced-stop flow relies on live PPID traversal from the root PID, so if the orchestrator exits before descendant enumeration, backend children can be orphaned and excluded from enumeration. Treating `SignalSendOutcome::AlreadyExited` as success then persists a false stopped state while unrelated processes remain, making the cleanup path unsound.\n- `fr-21-653afa1c`: Accept\n  The reclaim flow is only triggered on `ProjectWriterLockHeld`, but partial cleanup can release the writer lock while retaining stale daemon ownership state. A subsequent command can acquire a fresh CLI lease and never re-check the stale daemon owner because record lookup is bound to current writer owner, allowing contradictory partial-cleanup state to become invisible and bypassed.\n- `fr-21-f3228381`: Accept\n  Legacy PID-only liveness checks using only `kill(pid,0)` plus zombie filtering are identity-unsafe under PID reuse. Reused unrelated processes can be mistaken for the original run, causing incorrect `running` reporting and blocking recovery/stop paths until that unrelated process exits; this is a practical robustness flaw in stale recovery.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 21
+}

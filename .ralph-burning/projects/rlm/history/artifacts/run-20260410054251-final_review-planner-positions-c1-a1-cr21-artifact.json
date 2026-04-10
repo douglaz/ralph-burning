@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr21-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T20:13:16.784447807Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real robustness defects in run lifecycle recovery: forced-stop can still leak backend processes, partial stale-owner cleanup can become hidden and bypassed on retry, and legacy PID liveness now treats unrelated PID reuse as proof that a run is still active.\n\n## Votes\n\n- `fr-21-288cf6fd`: Accept\n  `kill_descendant_processes` only walks the live PPID tree under the orchestrator PID. If the orchestrator dies after the TERM grace period but before that walk, its backend children are reparented and disappear from the traversal, yet `SignalSendOutcome::AlreadyExited` is still treated as a successful forced stop. The code then reconciles the snapshot as stopped based only on the leader PID becoming stale, so orphan backend processes can remain running after `run stop` reports success. That is a real stop/cleanup race, not a theoretical one.\n- `fr-21-653afa1c`: Accept\n  The reclaim path is only entered after `CliWriterLeaseGuard::acquire` fails on an existing writer lock. On a partial cleanup failure, `reclaim_specific_project_writer_owner` can already have released that writer lock while intentionally preserving the daemon lease/task for visibility. The next retry then acquires a fresh CLI lease immediately and never re-examines the retained stale daemon lease, because `read_project_writer_lease_record` is keyed off the current writer-lock owner. That means the command can hide and bypass the very partial-cleanup state it surfaced earlier, leaving contradictory retained task/lease state behind.\n- `fr-21-f3228381`: Accept\n  For non-authoritative legacy `run.pid` files, the new fallback reduces liveness to raw PID occupancy via `kill(pid, 0)`. That is not a stable identity check: after the original orchestrator exits, a reused PID from an unrelated process will be misclassified as the legacy run still being alive. The result is incorrect `run status` output and refusal of `run stop`/`run resume` recovery until the unrelated process exits. A conservative fallback is understandable for legacy records, but raw PID existence alone is not robust enough to represent run liveness.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 21
+}
