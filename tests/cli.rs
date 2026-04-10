@@ -11594,6 +11594,12 @@ fn cli_run_start_close_failure_exits_nonzero() {
         stderr.contains("writer_lock_absent") || stderr.contains("guard close failed"),
         "should report the close failure reason, got: {stderr}"
     );
+    assert!(
+        !project_root(temp_dir.path(), "close-fail")
+            .join("run.pid")
+            .exists(),
+        "successful engine completion must remove run.pid even when writer-lease close fails"
+    );
 
     // CLI lease record must remain durable (close did not delete it
     // because lock release failed).

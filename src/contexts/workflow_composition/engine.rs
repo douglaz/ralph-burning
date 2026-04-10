@@ -5863,6 +5863,7 @@ fn complete_run(
                     ),
                 })?;
         }
+        let _ = FileSystem::remove_pid_file(base_dir, project_id);
         return Err(e);
     }
 
@@ -5872,6 +5873,7 @@ fn complete_run(
     snapshot.completion_rounds = snapshot.completion_rounds.max(1);
     snapshot.status_summary = "completed".to_owned();
     run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
+    let _ = FileSystem::remove_pid_file(base_dir, project_id);
 
     *seq += 1;
     let run_completed = journal::run_completed_event(
@@ -5905,6 +5907,7 @@ fn pause_run(
     snapshot.active_run = None;
     snapshot.status_summary = summary;
     run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
+    let _ = FileSystem::remove_pid_file(base_dir, project_id);
     Ok(())
 }
 
@@ -8374,9 +8377,9 @@ mod tests {
 
     use super::{
         build_final_review_snapshot, complete_run, drift_still_satisfies_requirements,
-        mark_running_run_interrupted, milestone_lineage_plan_hash, resolution_has_drifted,
-        sync_milestone_bead_start, InterruptedRunContext, InterruptedRunUpdate,
-        RunningAttemptIdentity,
+        mark_running_run_interrupted, milestone_lineage_plan_hash, pause_run,
+        resolution_has_drifted, sync_milestone_bead_start, InterruptedRunContext,
+        InterruptedRunUpdate, RunningAttemptIdentity,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -9089,8 +9092,47 @@ mod tests {
         assert!(
             FileSystem::read_pid_file(temp_dir.path(), &project_id)
                 .expect("read pid file")
-                .is_some(),
-            "engine-level completion should leave pid cleanup to the caller that releases the writer lease"
+                .is_none(),
+            "completion should remove run.pid before returning even when run_completed append fails"
+        );
+    }
+
+    #[test]
+    fn pause_run_removes_pid_file_when_snapshot_is_paused() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+        let project_id = ProjectId::new("pid-cleanup-pause").expect("project id");
+        let run_id = crate::shared::domain::RunId::new("run-pid-cleanup-pause").expect("run id");
+        let mut snapshot = running_snapshot_for_pid_cleanup(&run_id);
+
+        crate::adapters::fs::FsRunSnapshotWriteStore
+            .write_run_snapshot(temp_dir.path(), &project_id, &snapshot)
+            .expect("write running snapshot");
+        FileSystem::write_pid_file(
+            temp_dir.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            None,
+            None,
+            None,
+        )
+        .expect("write pid file");
+
+        pause_run(
+            &mut snapshot,
+            &crate::adapters::fs::FsRunSnapshotWriteStore,
+            temp_dir.path(),
+            &project_id,
+            "paused for test".to_owned(),
+        )
+        .expect("pause run");
+
+        assert_eq!(snapshot.status, RunStatus::Paused);
+        assert!(
+            FileSystem::read_pid_file(temp_dir.path(), &project_id)
+                .expect("read pid file")
+                .is_none(),
+            "pausing a run should remove run.pid before returning"
         );
     }
 
