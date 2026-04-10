@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 22
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-21-288cf6fd",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 21,
-        "body": "The new PID-by-PID forced-stop cleanup still leaks backend processes when the orchestrator exits in the race window after the TERM grace period but before descendant enumeration/SIGKILL. `src/cli/run.rs:2937-2943` calls `kill_descendant_processes(pid_record.pid)` and then treats `SignalSendOutcome::AlreadyExited` as a successful stop. But both `linux_descendant_pids` / `unix_descendant_pids` (`src/cli/run.rs:2174-2255`) discover children from the current PPID tree, so once the orchestrator has exited its children are already reparented and no longer appear under `root_pid`. In that case `run stop` can still report `process exited before SIGKILL` and rewrite the snapshot as stopped while orphan backend subprocesses continue running. The escalation path needs a fallback that survives parent exit instead of relying only on live PPID traversal at the end.",
-        "created_at": "2026-04-10T20:15:25.622563373Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "dd39cc69f90bfd1430c5e14030d0dcbdfa7537b010f44647f59ca3df0b66cfe1"
-      },
-      {
-        "amendment_id": "fr-21-653afa1c",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 21,
-        "body": "Partial stale-owner cleanup is still bypassable on the next retry. `reclaim_specific_project_writer_owner` now returns `LeaseCleanupPartialFailure` after `LeaseService::release` reports partial cleanup (`src/contexts/automation_runtime/cli_writer_lease.rs:186-203`), but `acquire_recovery_writer_guard` only attempts that reclaim when `CliWriterLeaseGuard::acquire` fails with `ProjectWriterLockHeld` (`src/cli/run.rs:1777-1815`). Once the first attempt has already released the writer lock, the next `run stop` / `run resume` call acquires a fresh CLI lease immediately and never revisits the stale daemon lease/task. Because `read_project_writer_lease_record` only consults the current writer-lock owner (`src/contexts/automation_runtime/cli_writer_lease.rs:78-85`), the contradictory partial-cleanup state becomes invisible as soon as the lock file is gone.",
-        "created_at": "2026-04-10T20:15:25.622566479Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "bda8e72499352dcbe67cdba5c5aea9790063ffc7b1f863c03d59d36a54e4b288"
-      },
-      {
-        "amendment_id": "fr-21-f3228381",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 21,
-        "body": "Legacy `run.pid` records are now treated as live purely on raw PID existence, which breaks stale recovery after PID reuse. For non-authoritative records, `classify_running_snapshot_liveness` returns `LegacyCliProcess` / `LegacyDaemonProcess` whenever `FileSystem::is_pid_running_unchecked(record.pid)` succeeds (`src/cli/run.rs:1566-1572`), and `is_pid_running_unchecked` only checks `kill(pid, 0)` plus zombie state (`src/adapters/fs.rs:387-403`). Older pid files do not carry `proc_start_ticks`, so after the original orchestrator dies and the kernel reuses that PID for an unrelated process, `run status` will keep reporting `running` and both `run resume` and `run stop` will refuse recovery until the unrelated process exits. The updated regression at `tests/cli.rs:5936-5958` codifies this by accepting any live process on the recorded PID as proof that the run is still active.",
-        "created_at": "2026-04-10T20:15:25.622569645Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "24bd6de2046aada697d70066facb57e8ff4b9ff0349898ee717cc86b25cdbbc6"
-      }
-    ],
-    "processed_count": 50
+    "pending": [],
+    "processed_count": 53
   },
-  "status_summary": "running: final review restart round 22 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-10T20:01:56.774337915Z",

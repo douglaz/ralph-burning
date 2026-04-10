@@ -425,6 +425,14 @@ impl FileSystem {
         }
     }
 
+    pub fn proc_start_ticks_for_pid(pid: u32) -> Option<u64> {
+        Self::proc_start_ticks(pid)
+    }
+
+    pub fn proc_start_marker_for_pid(pid: u32) -> Option<String> {
+        Self::proc_start_marker(pid)
+    }
+
     /// Legacy 64-bit prompt hash retained only for resume compatibility with
     /// snapshots and project metadata written before the SHA-256 migration.
     pub(crate) fn legacy_prompt_hash(contents: &str) -> String {

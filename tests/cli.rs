@@ -5910,8 +5910,7 @@ fn run_status_reports_stale_daemon_owned_running_when_legacy_lease_expires() {
 }
 
 #[test]
-fn run_status_keeps_legacy_cli_owned_running_snapshot_active_with_live_pid_without_proc_start_ticks(
-) {
+fn run_status_reports_stale_for_live_pid_without_proc_start_ticks_when_no_lease_exists() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -5952,10 +5951,9 @@ fn run_status_keeps_legacy_cli_owned_running_snapshot_active_with_live_pid_witho
 
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Status: running"));
     assert!(
-        !stdout.contains("stale (process not found)"),
-        "live legacy pid records must not be misclassified as stale: {stdout}"
+        stdout.contains("Status: stale (process not found)"),
+        "non-authoritative pid-only records must not block stale recovery: {stdout}"
     );
 }
 
@@ -6452,7 +6450,7 @@ fn run_stop_sigkill_terminates_same_process_group_backend_descendant() {
 }
 
 #[test]
-fn run_stop_refuses_live_legacy_pid_record_without_proc_start_ticks() {
+fn run_stop_recovers_live_pid_record_without_proc_start_ticks_as_stale() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -6497,98 +6495,26 @@ fn run_stop_refuses_live_legacy_pid_record_without_proc_start_ticks() {
         .output()
         .expect("run stop");
 
-    assert!(!output.status.success(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("legacy CLI-owned run"),
-        "stop should refuse a live legacy pid without authoritative identity: {stderr}"
+        stdout.contains("already stale"),
+        "stop should treat non-authoritative pid-only state as stale: {stdout}"
     );
     assert!(
         pid_is_alive(child.id()),
-        "run stop must not signal a live legacy pid without authoritative identity"
+        "stop recovery must not signal an unrelated live pid without authoritative identity"
     );
     let run_json: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
     )
     .expect("parse run.json");
-    assert_eq!(run_json["status"], "running");
+    assert_eq!(run_json["status"], "failed");
     assert!(
-        project_root(temp_dir.path(), "alpha")
+        !project_root(temp_dir.path(), "alpha")
             .join("run.pid")
             .exists(),
-        "unsafe legacy pid marker must remain until the original process exits"
-    );
-
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-#[test]
-fn run_resume_refuses_live_legacy_pid_record_without_proc_start_ticks() {
-    let temp_dir = initialize_workspace_fixture();
-    create_project_fixture(temp_dir.path(), "alpha");
-    select_active_project_fixture(temp_dir.path(), "alpha");
-
-    fs::write(
-        project_root(temp_dir.path(), "alpha").join("run.json"),
-        r#"{
-  "active_run": {
-    "run_id": "run-resume-legacy-live-pid",
-    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
-    "started_at": "2026-04-10T00:00:00Z"
-  },
-  "status": "running",
-  "cycle_history": [],
-  "completion_rounds": 1,
-  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
-  "amendment_queue": { "pending": [], "processed_count": 0 },
-  "status_summary": "running: Implementation"
-}"#,
-    )
-    .expect("write running snapshot");
-
-    let mut child = Command::new("sleep")
-        .arg("60")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sleep");
-    fs::write(
-        project_root(temp_dir.path(), "alpha").join("run.pid"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "pid": child.id(),
-            "started_at": Utc::now(),
-        }))
-        .expect("serialize pid file"),
-    )
-    .expect("write legacy pid file");
-
-    let output = Command::new(binary())
-        .args(["run", "resume"])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("run resume");
-
-    assert!(!output.status.success(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("legacy CLI-owned running run"),
-        "resume should refuse a live legacy pid without authoritative identity: {stderr}"
-    );
-    assert!(
-        pid_is_alive(child.id()),
-        "run resume must not race a live legacy pid-backed process"
-    );
-    let run_json: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
-    )
-    .expect("parse run.json");
-    assert_eq!(run_json["status"], "running");
-    assert!(
-        project_root(temp_dir.path(), "alpha")
-            .join("run.pid")
-            .exists(),
-        "unsafe legacy pid marker must remain until the original process exits"
+        "stale recovery should remove the unsafe pid marker"
     );
 
     let _ = child.kill();

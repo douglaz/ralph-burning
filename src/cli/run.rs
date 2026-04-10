@@ -40,6 +40,7 @@ use crate::adapters::worktree::WorktreeAdapter;
 use crate::composition::agent_execution_builder;
 use crate::contexts::agent_execution::model::CancellationToken;
 use crate::contexts::automation_runtime::cli_writer_lease::{
+    cleanup_detached_project_writer_owner, find_detached_project_writer_owner,
     read_project_writer_lease_record, read_project_writer_lock_owner,
     reclaim_specific_project_writer_owner, CliWriterLeaseGuard,
     CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
@@ -1562,15 +1563,6 @@ fn classify_running_snapshot_liveness(
             }
             return Ok(RunningSnapshotLiveness::Stale);
         }
-
-        if FileSystem::is_pid_running_unchecked(record.pid) {
-            return Ok(match record.owner {
-                crate::adapters::fs::RunPidOwner::Cli => RunningSnapshotLiveness::LegacyCliProcess,
-                crate::adapters::fs::RunPidOwner::Daemon => {
-                    RunningSnapshotLiveness::LegacyDaemonProcess
-                }
-            });
-        }
     }
 
     if let Some((_owner, lease_record)) =
@@ -1775,7 +1767,24 @@ fn acquire_recovery_writer_guard(
     };
 
     let initial_error = match acquire() {
-        Ok(guard) => return Ok(guard),
+        Ok(guard) => {
+            if let Some(owner) = observed_owner {
+                if owner != guard.lease_id() {
+                    if let Err(error) = cleanup_detached_project_writer_owner(
+                        &FsDaemonStore,
+                        &WorktreeAdapter,
+                        base_dir,
+                        repo_root,
+                        project_id,
+                        owner,
+                    ) {
+                        let _ = guard.close();
+                        return Err(error);
+                    }
+                }
+            }
+            return Ok(guard);
+        }
         Err(error) => error,
     };
     if !matches!(initial_error, AppError::ProjectWriterLockHeld { .. }) {
@@ -1877,7 +1886,9 @@ fn observed_resume_recovery_owner(
             }
         }
         RunStatus::Failed | RunStatus::Paused => Ok(ResumeRecoveryObservation {
-            observed_owner: read_project_writer_lock_owner(base_dir, project_id)?,
+            observed_owner: read_project_writer_lock_owner(base_dir, project_id)?.or(
+                find_detached_project_writer_owner(&FsDaemonStore, base_dir, project_id)?,
+            ),
             should_reconcile_claimed_running_snapshot: false,
             allow_dead_cli_cleanup_reclaim: true,
         }),
@@ -2248,16 +2259,63 @@ fn unix_descendant_pids(root_pid: u32) -> AppResult<Vec<u32>> {
 }
 
 #[cfg(unix)]
-fn kill_descendant_processes(root_pid: u32) -> AppResult<usize> {
+#[derive(Clone)]
+struct TrackedDescendantProcess {
+    pid: u32,
+    proc_start_ticks: Option<u64>,
+    proc_start_marker: Option<String>,
+}
+
+#[cfg(unix)]
+impl TrackedDescendantProcess {
+    fn from_pid(pid: u32) -> Self {
+        Self {
+            pid,
+            proc_start_ticks: FileSystem::proc_start_ticks_for_pid(pid),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(pid),
+        }
+    }
+
+    fn matches_live_process(&self) -> bool {
+        if self.proc_start_ticks.is_none() && self.proc_start_marker.is_none() {
+            return FileSystem::is_pid_running_unchecked(self.pid);
+        }
+
+        FileSystem::is_pid_alive(&crate::adapters::fs::RunPidRecord {
+            pid: self.pid,
+            started_at: Utc::now(),
+            owner: crate::adapters::fs::RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: self.proc_start_ticks,
+            proc_start_marker: self.proc_start_marker.clone(),
+        })
+    }
+}
+
+#[cfg(unix)]
+fn snapshot_descendant_processes(root_pid: u32) -> AppResult<Vec<TrackedDescendantProcess>> {
     #[cfg(target_os = "linux")]
     let descendant_pids = linux_descendant_pids(root_pid);
     #[cfg(all(unix, not(target_os = "linux")))]
     let descendant_pids = unix_descendant_pids(root_pid)?;
 
+    Ok(descendant_pids
+        .into_iter()
+        .map(TrackedDescendantProcess::from_pid)
+        .collect())
+}
+
+#[cfg(unix)]
+fn kill_tracked_descendant_processes(processes: &[TrackedDescendantProcess]) -> AppResult<usize> {
     let mut signaled = 0usize;
-    for pid in descendant_pids {
-        let pid = i32::try_from(pid).map_err(|_| AppError::RunStopFailed {
-            reason: format!("descendant pid {} exceeds libc::pid_t range", pid),
+    for process in processes {
+        if !process.matches_live_process() {
+            continue;
+        }
+        let pid = i32::try_from(process.pid).map_err(|_| AppError::RunStopFailed {
+            reason: format!("descendant pid {} exceeds libc::pid_t range", process.pid),
         })?;
         match kill(Pid::from_raw(pid), Signal::SIGKILL) {
             Ok(()) => signaled += 1,
@@ -2926,6 +2984,7 @@ async fn handle_stop() -> AppResult<()> {
                     .writer_owner
                     .clone()
                     .or(read_project_writer_lock_owner(&current_dir, &project_id)?);
+                let tracked_descendants = snapshot_descendant_processes(pid_record.pid)?;
                 let stop_outcome = match open_stop_process_handle(&pid_record)? {
                     None => "process already exited before SIGTERM",
                     Some(handle) => match send_signal_to_handle(&handle, Signal::SIGTERM)? {
@@ -2934,12 +2993,15 @@ async fn handle_stop() -> AppResult<()> {
                             if wait_for_handle_exit(&handle, RUN_STOP_GRACE_PERIOD).await? {
                                 "terminated gracefully with SIGTERM"
                             } else {
-                                #[cfg(unix)]
                                 let killed_descendants =
-                                    kill_descendant_processes(pid_record.pid)?;
+                                    kill_tracked_descendant_processes(&tracked_descendants)?;
                                 match send_signal_to_handle(&handle, Signal::SIGKILL)? {
                                     SignalSendOutcome::AlreadyExited => {
-                                        "process exited before SIGKILL"
+                                        if killed_descendants == 0 {
+                                            "process exited before SIGKILL"
+                                        } else {
+                                            "process exited before SIGKILL and killed backend subprocesses"
+                                        }
                                     }
                                     SignalSendOutcome::Delivered => {
                                         if !wait_for_handle_exit(&handle, Duration::from_secs(1))
@@ -6504,6 +6566,73 @@ mod tests {
         assert_eq!(
             task.lease_id.as_deref(),
             Some(worktree_lease.lease_id.as_str())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_tracked_descendant_processes_survives_parent_exit() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let child_pid_path = temp_dir.path().join("descendant.pid");
+        let script = format!(
+            "setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done",
+            child_pid_path.display(),
+            child_pid_path.display(),
+        );
+        let mut parent = std::process::Command::new("bash")
+            .args(["-lc", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn parent");
+        let parent_pid = parent.id();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !child_pid_path.exists() || std::fs::read_to_string(&child_pid_path).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "descendant pid file was never written"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let child_pid = std::fs::read_to_string(&child_pid_path)
+            .expect("read child pid")
+            .trim()
+            .parse::<u32>()
+            .expect("parse child pid");
+        assert!(
+            FileSystem::is_pid_running_unchecked(child_pid),
+            "descendant should be alive before cleanup"
+        );
+
+        let tracked = super::snapshot_descendant_processes(parent_pid)
+            .expect("capture descendant processes before parent exit");
+        let status = parent.wait().expect("wait for parent");
+        assert!(
+            status.success(),
+            "parent helper should exit successfully: {status:?}"
+        );
+        assert!(
+            FileSystem::is_pid_running_unchecked(child_pid),
+            "descendant should remain alive after the parent exits"
+        );
+
+        let killed = super::kill_tracked_descendant_processes(&tracked)
+            .expect("kill tracked descendants after parent exit");
+        assert!(
+            killed >= 1,
+            "tracked cleanup should kill the orphaned child"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while FileSystem::is_pid_running_unchecked(child_pid)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            !FileSystem::is_pid_running_unchecked(child_pid),
+            "tracked cleanup should remove the orphaned child process"
         );
     }
 }
