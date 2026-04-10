@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr13-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:51:03.119711646Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the lifecycle changes against the bead scope and read the key implementation paths in `src/adapters/fs.rs`, `src/cli/run.rs`, `src/contexts/automation_runtime/cli_writer_lease.rs`, `src/contexts/project_run_record/queries.rs`, and `src/contexts/workflow_composition/engine.rs`. I found two correctness issues: the pid-based flow is not actually usable on non-Linux Unix, and `run resume` can reclaim a live writer lease in a race.\n\n## Amendments\n\n1. Make current-version pid records authoritative on non-Linux Unix. `write_pid_file` records `proc_start_ticks: None` whenever `/proc/<pid>/stat` is unavailable (`src/adapters/fs.rs:284-295`, `src/adapters/fs.rs:670-680`), and both `is_pid_alive` and `classify_running_snapshot_liveness` reject those records as non-authoritative (`src/adapters/fs.rs:329-347`, `src/cli/run.rs:1533-1547`). On macOS/BSD that means every current run falls back to the legacy lease path, so a dead orchestrator keeps reporting as running until the lease TTL expires, `run resume` refuses stale recovery (`src/cli/run.rs:1618-1624`), and `run stop` rejects the run as a legacy CLI run (`src/cli/run.rs:2378-2379`). Add a non-`/proc` process identity check for non-Linux Unix, or another way to mark current pid records as authoritative there.\n   Rationale: The new lifecycle feature works on Linux, but the current implementation regresses status/stop/resume on other Unix targets because every pid record is treated as legacy.\n2. Do not reclaim an observed writer-lock owner for ordinary `Failed`/`Paused` resumes unless that owner has been proven stale. `observed_resume_recovery_owner` records whatever lock owner exists even for terminal snapshots (`src/cli/run.rs:1635-1637`), and `acquire_recovery_writer_guard` unconditionally calls `reclaim_specific_project_writer_owner` before trying to acquire its own lease (`src/cli/run.rs:1579-1594`, `src/cli/run.rs:2230-2238`). If another `run resume` or daemon worker wins the race after we read `run.json`, this path will tear down that live owner and can even mark the live worktree task failed (`src/contexts/automation_runtime/cli_writer_lease.rs:123-175`) before we later discover the snapshot is already `Running`. Reclaim should only happen after stale-owner proof, or after a normal acquire fails and the existing owner is independently verified stale.\n   Rationale: This is a real correctness race: a second resume can steal the writer lock from the first live resume attempt and corrupt daemon task state, even though the code comment says fresh owners should be preserved.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

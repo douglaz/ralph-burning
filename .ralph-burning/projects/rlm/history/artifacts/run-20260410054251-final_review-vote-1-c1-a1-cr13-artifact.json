@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:54:06.264127148Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted all three amendments. Each identifies a concrete portability/correctness gap: non-Linux PID records being treated as non-authoritative breaks run lifecycle semantics, unguarded writer-lock reclaim can invalidate active owners, and the cited revision does not contain the required runtime changes.\n\n## Votes\n\n- `fr-13-0041a5fc`: Accept\n  The proposed change correctly flags that `proc_start_ticks` becomes unavailable outside Linux while downstream liveness logic requires it, causing current runs to be misclassified and routed to legacy lease behavior. This is a real correctness and recoverability bug on macOS/BSD, and adding a non-/proc identity check or alternate authoritative marker is warranted.\n- `fr-13-b082909a`: Accept\n  Unconditionally reclaiming a writer-lock owner on Failed/Paused resumes can race with a concurrently active daemon/run-resume owner and force reclamation of live work, potentially marking active tasks failed before snapshot state is revalidated. Reclaiming should require staleness proof or failure-path verification, so this is a valid concurrency-safety issue.\n- `fr-13-310064c8`: Accept\n  The amendment is a valid completeness finding: the revision is limited to `.ndjson`/`run.json` artifacts and does not modify `src/` runtime paths needed for PID lifecycle, stop/recovery behavior, or lock/interruption handling. It correctly identifies an implementation gap in scope of the discussed change.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 13
+}

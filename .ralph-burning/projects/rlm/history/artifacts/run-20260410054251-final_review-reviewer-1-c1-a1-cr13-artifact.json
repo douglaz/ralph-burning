@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:43:06.479251742Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI did not find runtime correctness bugs in the changed lines because the patch contains no functional code changes; the critical gap is that the requested lifecycle implementation is not present in this diff.\n\n## Amendments\n\n1. `git diff` for this revision only touches `.ralph-burning/projects/rlm/journal.ndjson` (around lines 237–243) and `.ralph-burning/projects/rlm/run.json` (around lines 12–29). No source files under `src/` are modified, so required runtime changes for PID lifecycle tracking (`src/adapters/fs.rs`), `run stop`/stale handling (`src/cli/run.rs`), and resume recovery/signal-safe interruption (`src/contexts/workflow_composition/engine.rs`) are not implemented in this patch.\n   Rationale: The working-tree change set is metadata-only and cannot satisfy the requested acceptance criteria for run lifecycle robustness.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 13
+}

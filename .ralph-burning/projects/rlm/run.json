@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 13
+      "completion_round": 14
     },
     "started_at": "2026-04-10T13:01:46.204377009Z",
     "prompt_hash_at_cycle_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "prompt_hash_at_stage_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 12
+    "final_review_restart_count": 13
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 13,
+  "completion_rounds": 14,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-13-0041a5fc",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 13,
+        "body": "Make current-version pid records authoritative on non-Linux Unix. `write_pid_file` records `proc_start_ticks: None` whenever `/proc/<pid>/stat` is unavailable (`src/adapters/fs.rs:284-295`, `src/adapters/fs.rs:670-680`), and both `is_pid_alive` and `classify_running_snapshot_liveness` reject those records as non-authoritative (`src/adapters/fs.rs:329-347`, `src/cli/run.rs:1533-1547`). On macOS/BSD that means every current run falls back to the legacy lease path, so a dead orchestrator keeps reporting as running until the lease TTL expires, `run resume` refuses stale recovery (`src/cli/run.rs:1618-1624`), and `run stop` rejects the run as a legacy CLI run (`src/cli/run.rs:2378-2379`). Add a non-`/proc` process identity check for non-Linux Unix, or another way to mark current pid records as authoritative there.",
+        "created_at": "2026-04-10T16:55:29.564169533Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "0338444d241d95dcdc5b6658f259aca20e1321558e3c38887ace70c4cf35b44c"
+      },
+      {
+        "amendment_id": "fr-13-b082909a",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 13,
+        "body": "Do not reclaim an observed writer-lock owner for ordinary `Failed`/`Paused` resumes unless that owner has been proven stale. `observed_resume_recovery_owner` records whatever lock owner exists even for terminal snapshots (`src/cli/run.rs:1635-1637`), and `acquire_recovery_writer_guard` unconditionally calls `reclaim_specific_project_writer_owner` before trying to acquire its own lease (`src/cli/run.rs:1579-1594`, `src/cli/run.rs:2230-2238`). If another `run resume` or daemon worker wins the race after we read `run.json`, this path will tear down that live owner and can even mark the live worktree task failed (`src/contexts/automation_runtime/cli_writer_lease.rs:123-175`) before we later discover the snapshot is already `Running`. Reclaim should only happen after stale-owner proof, or after a normal acquire fails and the existing owner is independently verified stale.",
+        "created_at": "2026-04-10T16:55:29.564173030Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "71baeb6346c1ff9c3b788e09843ef80e06fdf2c2fe6b5d02f9a6edc88c0ba3f4"
+      },
+      {
+        "amendment_id": "fr-13-310064c8",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 13,
+        "body": "`git diff` for this revision only touches `.ralph-burning/projects/rlm/journal.ndjson` (around lines 237–243) and `.ralph-burning/projects/rlm/run.json` (around lines 12–29). No source files under `src/` are modified, so required runtime changes for PID lifecycle tracking (`src/adapters/fs.rs`), `run stop`/stale handling (`src/cli/run.rs`), and resume recovery/signal-safe interruption (`src/contexts/workflow_composition/engine.rs`) are not implemented in this patch.",
+        "created_at": "2026-04-10T16:55:29.564174943Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "2871f1a40d19d030361f45e085348db52093090785d51594812e1a552e75a1dd"
+      }
+    ],
     "processed_count": 32
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 14 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-10T16:25:20.350115816Z",
+    "resolved_at": "2026-04-10T16:42:22.390954254Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
