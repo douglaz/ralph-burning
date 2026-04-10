@@ -1915,6 +1915,7 @@ fn kill_descendant_process_groups(root_pid: u32) -> AppResult<usize> {
 fn recover_stale_running_snapshot(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
+    expected_attempt: &engine::RunningAttemptIdentity,
     summary: impl Into<String>,
     log_message: impl Into<String>,
     failure_class: &str,
@@ -1922,12 +1923,15 @@ fn recover_stale_running_snapshot(
     let summary = summary.into();
     let log_message = log_message.into();
     engine::mark_running_run_interrupted(
-        &FsRunSnapshotStore,
-        &FsRunSnapshotWriteStore,
-        &FsJournalStore,
-        &FsRuntimeLogWriteStore,
-        base_dir,
-        project_id,
+        engine::InterruptedRunContext {
+            run_snapshot_read: &FsRunSnapshotStore,
+            run_snapshot_write: &FsRunSnapshotWriteStore,
+            journal_store: &FsJournalStore,
+            log_write: &FsRuntimeLogWriteStore,
+            base_dir,
+            project_id,
+        },
+        expected_attempt,
         engine::InterruptedRunUpdate {
             summary: &summary,
             log_message: &log_message,
@@ -1956,6 +1960,12 @@ fn reconcile_or_recover_claimed_running_snapshot(
     }
 
     let journal_events = FsJournalStore.read_journal(base_dir, project_id)?;
+    let observed_attempt = engine::RunningAttemptIdentity::from_active_run(
+        snapshot
+            .active_run
+            .as_ref()
+            .expect("running snapshot must include active_run"),
+    );
     match crate::contexts::project_run_record::queries::terminal_status_for_running_attempt(
         &snapshot,
         &journal_events,
@@ -1966,12 +1976,15 @@ fn reconcile_or_recover_claimed_running_snapshot(
                  reconciling snapshot to Failed"
             );
             engine::mark_running_run_interrupted(
-                &FsRunSnapshotStore,
-                &FsRunSnapshotWriteStore,
-                &FsJournalStore,
-                &FsRuntimeLogWriteStore,
-                base_dir,
-                project_id,
+                engine::InterruptedRunContext {
+                    run_snapshot_read: &FsRunSnapshotStore,
+                    run_snapshot_write: &FsRunSnapshotWriteStore,
+                    journal_store: &FsJournalStore,
+                    log_write: &FsRuntimeLogWriteStore,
+                    base_dir,
+                    project_id,
+                },
+                &observed_attempt,
                 engine::InterruptedRunUpdate {
                     summary: "failed (reconciled from journal)",
                     log_message:
@@ -2020,6 +2033,7 @@ fn reconcile_or_recover_claimed_running_snapshot(
             recover_stale_running_snapshot(
                 base_dir,
                 project_id,
+                &observed_attempt,
                 stale_summary,
                 stale_log_message,
                 stale_failure_class,

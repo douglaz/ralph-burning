@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 13
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-12-6869bf03",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 12,
-        "body": "Guard the new stale-running reconciliation path in `src/contexts/workflow_composition/engine.rs:1453-1502` against clobbering a newer run. Both new branches call `mark_running_run_interrupted()`, but that helper rereads `run.json` and unconditionally rewrites any still-`Running` snapshot at `src/contexts/workflow_composition/engine.rs:755-782` without checking that it is the same `(run_id, started_at)` attempt that was just classified as stale. Two overlapping `run resume` invocations can therefore race: one invocation starts a fresh run, while the slower invocation still holding the stale preflight view marks that new run as `Failed`, removes its pid file, and may append a bogus interruption event. Thread the expected attempt identity into `mark_running_run_interrupted` (or do a compare-and-swap before rewriting) and add a regression that simulates concurrent resumes.",
-        "created_at": "2026-04-10T16:36:09.868125455Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "5ac7c5d37228c8c91151584e6b550ba928967247d41388c439739ee75c76e59e"
-      }
-    ],
-    "processed_count": 31
+    "pending": [],
+    "processed_count": 32
   },
-  "status_summary": "running: final review restart round 13 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-10T16:25:20.350115816Z",

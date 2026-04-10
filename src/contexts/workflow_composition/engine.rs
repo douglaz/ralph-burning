@@ -743,17 +743,56 @@ pub struct InterruptedRunUpdate<'a> {
     pub failure_class: Option<&'a str>,
 }
 
+pub struct InterruptedRunContext<'a> {
+    pub run_snapshot_read: &'a dyn RunSnapshotPort,
+    pub run_snapshot_write: &'a dyn RunSnapshotWritePort,
+    pub journal_store: &'a dyn JournalStorePort,
+    pub log_write: &'a dyn RuntimeLogWritePort,
+    pub base_dir: &'a Path,
+    pub project_id: &'a ProjectId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningAttemptIdentity {
+    pub run_id: String,
+    pub started_at: DateTime<Utc>,
+}
+
+impl RunningAttemptIdentity {
+    pub fn from_active_run(active_run: &ActiveRun) -> Self {
+        Self {
+            run_id: active_run.run_id.clone(),
+            started_at: active_run.started_at,
+        }
+    }
+}
+
+fn current_running_attempt_identity(snapshot: &RunSnapshot) -> AppResult<RunningAttemptIdentity> {
+    Ok(RunningAttemptIdentity::from_active_run(current_active_run(
+        snapshot,
+    )?))
+}
+
+fn snapshot_matches_running_attempt(
+    snapshot: &RunSnapshot,
+    expected_attempt: &RunningAttemptIdentity,
+) -> bool {
+    snapshot.status == RunStatus::Running
+        && snapshot.active_run.as_ref().is_some_and(|active_run| {
+            active_run.run_id == expected_attempt.run_id
+                && active_run.started_at == expected_attempt.started_at
+        })
+}
+
 pub fn mark_running_run_interrupted(
-    run_snapshot_read: &dyn RunSnapshotPort,
-    run_snapshot_write: &dyn RunSnapshotWritePort,
-    journal_store: &dyn JournalStorePort,
-    log_write: &dyn RuntimeLogWritePort,
-    base_dir: &Path,
-    project_id: &ProjectId,
+    context: InterruptedRunContext<'_>,
+    expected_attempt: &RunningAttemptIdentity,
     update: InterruptedRunUpdate<'_>,
 ) -> AppResult<bool> {
-    let mut snapshot = run_snapshot_read.read_run_snapshot(base_dir, project_id)?;
-    if snapshot.status != RunStatus::Running {
+    let mut snapshot = context
+        .run_snapshot_read
+        .read_run_snapshot(context.base_dir, context.project_id)?;
+    if !snapshot_matches_running_attempt(&snapshot, expected_attempt) {
         return Ok(false);
     }
 
@@ -768,21 +807,25 @@ pub fn mark_running_run_interrupted(
     snapshot.status = RunStatus::Failed;
     snapshot.active_run = None;
     snapshot.status_summary = update.summary.to_owned();
-    run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot)?;
+    context.run_snapshot_write.write_run_snapshot(
+        context.base_dir,
+        context.project_id,
+        &snapshot,
+    )?;
     if let Some(failure_class) = update.failure_class {
         append_interrupted_run_failed_event(
-            journal_store,
-            base_dir,
-            project_id,
+            context.journal_store,
+            context.base_dir,
+            context.project_id,
             &snapshot,
             update.log_message,
             failure_class,
         )?;
     }
-    let _ = FileSystem::remove_pid_file(base_dir, project_id);
-    let _ = log_write.append_runtime_log(
-        base_dir,
-        project_id,
+    let _ = FileSystem::remove_pid_file(context.base_dir, context.project_id);
+    let _ = context.log_write.append_runtime_log(
+        context.base_dir,
+        context.project_id,
         &RuntimeLogEntry {
             timestamp: Utc::now(),
             level: LogLevel::Warn,
@@ -1446,6 +1489,7 @@ where
             });
         }
         RunStatus::Running => {
+            let observed_attempt = current_running_attempt_identity(&snapshot)?;
             // The snapshot says Running, but the journal may record a terminal
             // event that the snapshot write missed (e.g. fail_run snapshot write
             // failed).  Cross-check the journal to reconcile.
@@ -1457,12 +1501,15 @@ where
                          reconciling snapshot to Failed (stale snapshot from failed write)"
                     );
                     mark_running_run_interrupted(
-                        run_snapshot_read,
-                        run_snapshot_write,
-                        journal_store,
-                        log_write,
-                        base_dir,
-                        project_id,
+                        InterruptedRunContext {
+                            run_snapshot_read,
+                            run_snapshot_write,
+                            journal_store,
+                            log_write,
+                            base_dir,
+                            project_id,
+                        },
+                        &observed_attempt,
                         InterruptedRunUpdate {
                             summary: "failed (reconciled from journal)",
                             log_message:
@@ -1486,12 +1533,15 @@ where
                              reconciling snapshot to Failed and continuing"
                         );
                         mark_running_run_interrupted(
-                            run_snapshot_read,
-                            run_snapshot_write,
-                            journal_store,
-                            log_write,
-                            base_dir,
-                            project_id,
+                            InterruptedRunContext {
+                                run_snapshot_read,
+                                run_snapshot_write,
+                                journal_store,
+                                log_write,
+                                base_dir,
+                                project_id,
+                            },
+                            &observed_attempt,
                             InterruptedRunUpdate {
                                 summary: "failed (stale running snapshot recovered for resume)",
                                 log_message:
@@ -8248,7 +8298,9 @@ mod tests {
         ActiveRun, JournalEventType, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus,
         TaskOrigin, TaskSource,
     };
-    use crate::contexts::project_run_record::service::{JournalStorePort, RunSnapshotWritePort};
+    use crate::contexts::project_run_record::service::{
+        JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
+    };
     use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
     use crate::shared::domain::{
         BackendFamily, FlowPreset, ProjectId, ResolvedBackendTarget, StageId,
@@ -8258,7 +8310,8 @@ mod tests {
     use super::{
         build_final_review_snapshot, complete_run, drift_still_satisfies_requirements,
         mark_running_run_interrupted, milestone_lineage_plan_hash, resolution_has_drifted,
-        sync_milestone_bead_start, InterruptedRunUpdate,
+        sync_milestone_bead_start, InterruptedRunContext, InterruptedRunUpdate,
+        RunningAttemptIdentity,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -8983,14 +9036,21 @@ mod tests {
             .expect("write failed snapshot");
         FileSystem::write_pid_file(temp_dir.path(), &project_id, RunPidOwner::Cli)
             .expect("write pid file");
+        let expected_attempt = RunningAttemptIdentity {
+            run_id: "run-stale-attempt".to_owned(),
+            started_at: Utc::now(),
+        };
 
         let updated = mark_running_run_interrupted(
-            &crate::adapters::fs::FsRunSnapshotStore,
-            &crate::adapters::fs::FsRunSnapshotWriteStore,
-            &crate::adapters::fs::FsJournalStore,
-            &crate::adapters::fs::FsRuntimeLogWriteStore,
-            temp_dir.path(),
-            &project_id,
+            InterruptedRunContext {
+                run_snapshot_read: &crate::adapters::fs::FsRunSnapshotStore,
+                run_snapshot_write: &crate::adapters::fs::FsRunSnapshotWriteStore,
+                journal_store: &crate::adapters::fs::FsJournalStore,
+                log_write: &crate::adapters::fs::FsRuntimeLogWriteStore,
+                base_dir: temp_dir.path(),
+                project_id: &project_id,
+            },
+            &expected_attempt,
             InterruptedRunUpdate {
                 summary: "failed (stale running snapshot recovered for resume)",
                 log_message: "should be ignored because the snapshot is no longer running",
@@ -9030,14 +9090,20 @@ mod tests {
                 ),
             )
             .expect("append project_created event");
+        let expected_attempt = RunningAttemptIdentity::from_active_run(
+            snapshot.active_run.as_ref().expect("active run"),
+        );
 
         let updated = mark_running_run_interrupted(
-            &crate::adapters::fs::FsRunSnapshotStore,
-            &crate::adapters::fs::FsRunSnapshotWriteStore,
-            &crate::adapters::fs::FsJournalStore,
-            &crate::adapters::fs::FsRuntimeLogWriteStore,
-            temp_dir.path(),
-            &project_id,
+            InterruptedRunContext {
+                run_snapshot_read: &crate::adapters::fs::FsRunSnapshotStore,
+                run_snapshot_write: &crate::adapters::fs::FsRunSnapshotWriteStore,
+                journal_store: &crate::adapters::fs::FsJournalStore,
+                log_write: &crate::adapters::fs::FsRuntimeLogWriteStore,
+                base_dir: temp_dir.path(),
+                project_id: &project_id,
+            },
+            &expected_attempt,
             InterruptedRunUpdate {
                 summary: "failed (stopped by user; run `ralph-burning run resume` to continue)",
                 log_message:
@@ -9055,5 +9121,80 @@ mod tests {
         assert_eq!(run_failed.event_type, JournalEventType::RunFailed);
         assert_eq!(run_failed.details["run_id"], run_id.as_str());
         assert_eq!(run_failed.details["failure_class"], "cancellation");
+    }
+
+    #[test]
+    fn mark_running_run_interrupted_skips_newer_running_attempt_after_stale_resume_race() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+        let project_id = ProjectId::new("stale-resume-race").expect("project id");
+        let stale_run_id =
+            crate::shared::domain::RunId::new("run-stale-resume-race").expect("stale run id");
+        let fresh_run_id =
+            crate::shared::domain::RunId::new("run-fresh-resume-race").expect("fresh run id");
+        let stale_started_at = Utc::now();
+        let fresh_started_at = stale_started_at + chrono::Duration::minutes(5);
+
+        let mut stale_snapshot = running_snapshot_for_pid_cleanup(&stale_run_id);
+        stale_snapshot
+            .active_run
+            .as_mut()
+            .expect("stale active run")
+            .started_at = stale_started_at;
+        let expected_attempt = RunningAttemptIdentity::from_active_run(
+            stale_snapshot
+                .active_run
+                .as_ref()
+                .expect("stale active run"),
+        );
+
+        let mut fresh_snapshot = running_snapshot_for_pid_cleanup(&fresh_run_id);
+        fresh_snapshot
+            .active_run
+            .as_mut()
+            .expect("fresh active run")
+            .started_at = fresh_started_at;
+
+        crate::adapters::fs::FsRunSnapshotWriteStore
+            .write_run_snapshot(temp_dir.path(), &project_id, &fresh_snapshot)
+            .expect("write fresh running snapshot");
+        FileSystem::write_pid_file(temp_dir.path(), &project_id, RunPidOwner::Cli)
+            .expect("write pid file");
+
+        let updated = mark_running_run_interrupted(
+            InterruptedRunContext {
+                run_snapshot_read: &crate::adapters::fs::FsRunSnapshotStore,
+                run_snapshot_write: &crate::adapters::fs::FsRunSnapshotWriteStore,
+                journal_store: &crate::adapters::fs::FsJournalStore,
+                log_write: &crate::adapters::fs::FsRuntimeLogWriteStore,
+                base_dir: temp_dir.path(),
+                project_id: &project_id,
+            },
+            &expected_attempt,
+            InterruptedRunUpdate {
+                summary: "failed (stale running snapshot recovered for resume)",
+                log_message: "should not clobber a newer running attempt",
+                failure_class: Some("interruption"),
+            },
+        )
+        .expect("mark interrupted");
+
+        assert!(
+            !updated,
+            "older stale attempt should not rewrite a newer running attempt"
+        );
+        let final_snapshot = crate::adapters::fs::FsRunSnapshotStore
+            .read_run_snapshot(temp_dir.path(), &project_id)
+            .expect("read final snapshot");
+        assert_eq!(final_snapshot.status, RunStatus::Running);
+        let active_run = final_snapshot.active_run.expect("active run");
+        assert_eq!(active_run.run_id, fresh_run_id.as_str());
+        assert_eq!(active_run.started_at, fresh_started_at);
+        assert!(
+            FileSystem::read_pid_file(temp_dir.path(), &project_id)
+                .expect("read pid file")
+                .is_some(),
+            "pid file should remain for the newer live attempt"
+        );
     }
 }
