@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T13:12:59.963152520Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted the three amendments that expose concrete lifecycle, concurrency, and observability defects; rejected the `/proc/<pid>/stat` index change because the cited indexing is incorrect after the `) ` split and would read the wrong field.\n\n## Votes\n\n- `fr-4-d6939a5e`: Accept\n  This identifies a real correctness/isolation flaw: writing `std::process::id()` for daemon-dispatched runs causes run liveness and stop semantics to target the daemon instead of the run worker, which can leave stale/misreported status and terminate broader process scope than intended.\n- `fr-4-5c6b3a2b`: Accept\n  The recovery/reclamation path is non-atomic across lock ownership checks, so a second operator can acquire a valid writer lease between rewrite and reclaim. Unconditional reclamation can then revoke a live lock, breaking mutual exclusion and allowing concurrent mutating operations on run state.\n- `fr-4-76d9ab3e`: Accept\n  Persisted snapshot transitions to failed without a corresponding durable terminal journal event creates an audit/history gap: `run history` is journal-derived and misses failed/interrupted entries, undermining reconciliation and observability of externally visible terminal transitions.\n- `fr-4-8748f56f`: Reject\n  After splitting `/proc/<pid>/stat` by `\") \"` and splitting remaining fields, index 19 maps to `starttime` (with index 0 being `state`), so the current code already reads the intended field. Changing to index 20 would shift to `vsize`, worsening PID-reuse validation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}

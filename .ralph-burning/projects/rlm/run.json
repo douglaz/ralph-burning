@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
-    "started_at": "2026-04-10T05:42:51.231492314Z",
+    "started_at": "2026-04-10T13:01:46.204377009Z",
     "prompt_hash_at_cycle_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "prompt_hash_at_stage_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-d6939a5e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "Do not write `run.pid` from the shared engine for daemon-dispatched runs. `execute_run_with_retry_internal()` and `resume_run_with_retry_internal()` always persist `std::process::id()` into the pid file (`src/contexts/workflow_composition/engine.rs:1100`, `src/contexts/workflow_composition/engine.rs:1829`), but the daemon calls those same entry points inline inside the long-lived daemon process (`src/contexts/automation_runtime/daemon_loop.rs:3203`, `src/contexts/automation_runtime/daemon_loop.rs:3224`). That means pid liveness now tracks the daemon process, not the per-project run task: a dead/stuck daemon-owned run will still look \"alive\" while the daemon stays up, and `run stop` will send SIGTERM/SIGKILL to the whole daemon (`src/cli/run.rs:1956-1962`) instead of only stopping the target run. The pid/liveness design needs to distinguish CLI-owned orchestrators from daemon-owned task execution before this is safe.",
+        "created_at": "2026-04-10T13:16:28.893988182Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "ae11579df0df6ec28a5ed88e0c4622ba6b152ec4d95f29cd5d796ee147d0bee3"
+      },
+      {
+        "amendment_id": "fr-4-5c6b3a2b",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "Make stale-run recovery atomic with respect to the writer lock. `handle_resume()` rewrites a stale Running snapshot via `recover_stale_running_snapshot()` before it acquires a new `CliWriterLeaseGuard` (`src/cli/run.rs:1769-1814`), and `recover_stale_running_snapshot()` immediately calls `reclaim_stale_project_writer_lease()` (`src/cli/run.rs:1592-1609`). That helper blindly releases whatever writer lock is present and deletes every CLI lease for the project (`src/contexts/automation_runtime/cli_writer_lease.rs:62-98`). If two operators race `run resume`/`run stop`, one process can acquire a fresh writer lock between the snapshot rewrite and the reclaim step, and the late reclaim will tear down that live lock/lease, leaving both callers mutating run state concurrently. Recovery needs to claim ownership atomically before deleting locks, or the reclaim helper must verify staleness instead of removing the current owner unconditionally.",
+        "created_at": "2026-04-10T13:16:28.893991378Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "4e247d7bc0e7c83ca0f58032c8650097bf81f6ae90b90a5a0528a6c638ec2496"
+      },
+      {
+        "amendment_id": "fr-4-76d9ab3e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "Persist a durable terminal journal event when `run stop` or stale-run recovery converts a Running snapshot into a resumable Failed state. `mark_running_run_interrupted()` only rewrites `run.json` and appends a runtime log (`src/contexts/workflow_composition/engine.rs:740-777`), and the stop path just calls that helper (`src/cli/run.rs:1979-1988`). `run history` is built from the journal only (`src/cli/run.rs:5403-5410`), so after `run stop` the durable history has no `run_failed`/interruption event for the stopped run even though the snapshot says Failed. That leaves audit/history/reconciliation consumers with an incomplete view of what happened.",
+        "created_at": "2026-04-10T13:16:28.893993512Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "9fdeaca8806b9910e30de9c96d4772bb6308a86271e3b7c5970c7604b5e85838"
+      }
+    ],
     "processed_count": 9
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-10T07:13:16.688583673Z",
+    "resolved_at": "2026-04-10T13:01:46.227031248Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
