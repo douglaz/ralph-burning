@@ -721,6 +721,52 @@ fn preserve_interrupted_run(snapshot: &mut RunSnapshot) {
     snapshot.interrupted_run = snapshot.active_run.clone();
 }
 
+fn orchestrator_process_is_alive(base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
+    Ok(FileSystem::read_pid_file(base_dir, project_id)?
+        .is_some_and(|record| FileSystem::is_pid_alive(&record)))
+}
+
+pub fn mark_running_run_interrupted(
+    run_snapshot_read: &dyn RunSnapshotPort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    summary: impl Into<String>,
+    log_message: impl Into<String>,
+) -> AppResult<bool> {
+    let mut snapshot = run_snapshot_read.read_run_snapshot(base_dir, project_id)?;
+    if snapshot.status != RunStatus::Running {
+        let _ = FileSystem::remove_pid_file(base_dir, project_id);
+        return Ok(false);
+    }
+
+    if let Some(resolution) = snapshot
+        .active_run
+        .as_ref()
+        .and_then(|active_run| active_run.stage_resolution_snapshot.clone())
+    {
+        snapshot.last_stage_resolution_snapshot = Some(resolution);
+    }
+    preserve_interrupted_run(&mut snapshot);
+    snapshot.status = RunStatus::Failed;
+    snapshot.active_run = None;
+    snapshot.status_summary = summary.into();
+    run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot)?;
+    let _ = FileSystem::remove_pid_file(base_dir, project_id);
+    let _ = log_write.append_runtime_log(
+        base_dir,
+        project_id,
+        &RuntimeLogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Warn,
+            source: "engine".to_owned(),
+            message: log_message.into(),
+        },
+    );
+    Ok(true)
+}
+
 fn carry_forward_active_run(
     snapshot: &RunSnapshot,
     run_id: &RunId,
@@ -1066,6 +1112,24 @@ where
         .await;
     }
 
+    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id) {
+        return fail_run(
+            &AppError::RunStartFailed {
+                reason: format!("failed to persist run pid file: {error}"),
+            },
+            first_stage,
+            &run_id,
+            &mut seq,
+            &mut current_snapshot,
+            journal_store,
+            run_snapshot_write,
+            base_dir,
+            project_id,
+            ExecutionOrigin::Start,
+        )
+        .await;
+    }
+
     if let Err(error) =
         sync_milestone_bead_start(&project_record, base_dir, project_id, &run_id, now)
     {
@@ -1340,12 +1404,16 @@ where
                         "resume: snapshot shows Running but journal has run_failed — \
                          reconciling snapshot to Failed (stale snapshot from failed write)"
                     );
-                    snapshot.status = RunStatus::Failed;
-                    snapshot.active_run = None;
-                    snapshot.status_summary = "failed (reconciled from journal)".to_owned();
-                    // Best-effort: try to persist the reconciled snapshot so
-                    // future operations don't need to reconcile again.
-                    let _ = run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot);
+                    mark_running_run_interrupted(
+                        run_snapshot_read,
+                        run_snapshot_write,
+                        log_write,
+                        base_dir,
+                        project_id,
+                        "failed (reconciled from journal)",
+                        "reconciled stale running snapshot from durable run_failed journal event",
+                    )?;
+                    snapshot = run_snapshot_read.read_run_snapshot(base_dir, project_id)?;
                 }
                 Some(JournalEventType::RunCompleted) => {
                     return Err(AppError::ResumeFailed {
@@ -1355,9 +1423,26 @@ where
                     });
                 }
                 _ => {
-                    return Err(AppError::ResumeFailed {
-                        reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
-                    });
+                    if !orchestrator_process_is_alive(base_dir, project_id)? {
+                        eprintln!(
+                            "resume: snapshot shows Running but orchestrator pid is missing or dead — \
+                             reconciling snapshot to Failed and continuing"
+                        );
+                        mark_running_run_interrupted(
+                            run_snapshot_read,
+                            run_snapshot_write,
+                            log_write,
+                            base_dir,
+                            project_id,
+                            "failed (stale running snapshot recovered for resume)",
+                            "reconciled stale running snapshot because orchestrator process was not alive",
+                        )?;
+                        snapshot = run_snapshot_read.read_run_snapshot(base_dir, project_id)?;
+                    } else {
+                        return Err(AppError::ResumeFailed {
+                            reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
+                        });
+                    }
                 }
             }
         }
@@ -1747,6 +1832,24 @@ where
         return fail_run(
             &AppError::ResumeFailed {
                 reason: format!("failed to persist run_resumed event: {}", error),
+            },
+            resume_state.cursor.stage,
+            &resume_state.run_id,
+            &mut seq,
+            &mut snapshot,
+            journal_store,
+            run_snapshot_write,
+            base_dir,
+            project_id,
+            ExecutionOrigin::Resume,
+        )
+        .await;
+    }
+
+    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id) {
+        return fail_run(
+            &AppError::ResumeFailed {
+                reason: format!("failed to persist run pid file: {error}"),
             },
             resume_state.cursor.stage,
             &resume_state.run_id,
@@ -5596,6 +5699,7 @@ fn complete_run(
     );
     let run_completed_line = journal::serialize_event(&run_completed)?;
     journal_store.append_event(base_dir, project_id, &run_completed_line)?;
+    let _ = FileSystem::remove_pid_file(base_dir, project_id);
     Ok(())
 }
 
@@ -5615,7 +5719,9 @@ fn pause_run(
     snapshot.status = RunStatus::Paused;
     snapshot.active_run = None;
     snapshot.status_summary = summary;
-    run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+    run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
+    let _ = FileSystem::remove_pid_file(base_dir, project_id);
+    Ok(())
 }
 
 /// Record a run failure: persist failed snapshot, then journal event, return error.
@@ -5706,6 +5812,7 @@ async fn fail_run(
     if let Ok(run_failed_line) = journal::serialize_event(&run_failed) {
         let _ = journal_store.append_event(base_dir, project_id, &run_failed_line);
     }
+    let _ = FileSystem::remove_pid_file(base_dir, project_id);
 
     Err(origin.error(format!("stage {} failed: {}", stage_id.as_str(), message)))
 }

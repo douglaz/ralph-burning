@@ -1,10 +1,15 @@
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use clap::{Args, Subcommand};
+#[cfg(unix)]
+use nix::sys::signal::{kill, Signal};
+#[cfg(unix)]
+use nix::unistd::Pid;
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
@@ -21,6 +26,7 @@ use crate::adapters::fs::{
 };
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::composition::agent_execution_builder;
+use crate::contexts::agent_execution::model::CancellationToken;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
@@ -37,11 +43,13 @@ use crate::contexts::milestone_record::service::{
 use crate::contexts::project_run_record::model::{
     JournalEvent, JournalEventType, ProjectRecord, RunSnapshot, RunStatus,
 };
+use crate::contexts::project_run_record::queries::{RunStatusJsonView, RunStatusView};
 use crate::contexts::project_run_record::service::{
     self, ArtifactStorePort, JournalStorePort, ProjectStorePort, RunSnapshotPort,
     RuntimeLogStorePort,
 };
 use crate::contexts::workflow_composition::engine;
+use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
 use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
 use crate::shared::domain::{BackendSelection, ExecutionMode, ProjectId, StageId};
@@ -57,6 +65,8 @@ pub struct RunCommand {
 pub enum RunSubcommand {
     Start(RunBackendOverrideArgs),
     Resume(RunBackendOverrideArgs),
+    /// Gracefully stop the running orchestrator for the active project.
+    Stop,
     /// Reconcile milestone lineage from the current terminal project snapshot.
     SyncMilestone,
     /// Attach to the active tmux-backed invocation for the selected project.
@@ -152,6 +162,7 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
         } => handle_tail(logs, last, follow, follow_baseline_delay_ms).await,
         RunSubcommand::Start(args) => handle_start(args).await,
         RunSubcommand::Resume(args) => handle_resume(args).await,
+        RunSubcommand::Stop => handle_stop().await,
         RunSubcommand::SyncMilestone => handle_sync_milestone().await,
         RunSubcommand::Attach => handle_attach().await,
         RunSubcommand::Rollback { list, to, hard } => handle_rollback(list, to, hard).await,
@@ -162,6 +173,8 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
 
 const FOLLOW_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const FOLLOW_TRANSIENT_PARTIAL_PAIR_GRACE_PERIOD: Duration = Duration::from_secs(2);
+const RUN_STOP_GRACE_PERIOD: Duration = Duration::from_secs(5);
+const RUN_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy)]
 enum MilestoneControllerExecutionOrigin {
@@ -229,6 +242,7 @@ struct BvMessageOnlyResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 enum BrShowResponse {
     Single(BeadDetail),
     Many(Vec<BeadDetail>),
@@ -840,6 +854,7 @@ async fn continue_selecting_milestone_bead_if_needed<R: ProcessRunner, V: BvProc
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn sync_terminal_milestone_task_and_continue_selection_with_options<
     R: ProcessRunner,
     V: BvProcessRunner,
@@ -1038,6 +1053,7 @@ fn prepare_milestone_controller_for_execution(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn sync_terminal_milestone_task(
     base_dir: &std::path::Path,
     project_id: &crate::shared::domain::ProjectId,
@@ -1486,6 +1502,92 @@ fn resume_attempt_has_exact_lineage(
         .any(|entry| lineage_entry_matches_attempt(entry, project_id.as_str(), run_id, started_at)))
 }
 
+fn running_snapshot_process_is_alive(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+) -> AppResult<bool> {
+    Ok(FileSystem::read_pid_file(base_dir, project_id)?
+        .is_some_and(|record| FileSystem::is_pid_alive(&record)))
+}
+
+fn stale_status_summary() -> String {
+    "stale running snapshot: process not found; run `ralph-burning run resume` to recover"
+        .to_owned()
+}
+
+fn stale_status_view(project_id: &ProjectId, snapshot: &RunSnapshot) -> RunStatusView {
+    let mut status = RunStatusView::from_snapshot(project_id.as_str(), snapshot);
+    status.status = "stale (process not found)".to_owned();
+    status.summary = stale_status_summary();
+    status
+}
+
+fn stale_status_json_view(project_id: &ProjectId, snapshot: &RunSnapshot) -> RunStatusJsonView {
+    let mut status = RunStatusJsonView::from_snapshot(project_id.as_str(), snapshot);
+    status.status = "stale".to_owned();
+    status.summary = stale_status_summary();
+    status
+}
+
+async fn run_with_termination_signal<F>(
+    cancellation_token: CancellationToken,
+    future: F,
+) -> AppResult<()>
+where
+    F: Future<Output = AppResult<()>>,
+{
+    tokio::pin!(future);
+
+    tokio::select! {
+        result = &mut future => result,
+        signal = wait_for_run_termination_signal() => {
+            signal?;
+            eprintln!("termination signal received; stopping run gracefully...");
+            cancellation_token.cancel();
+            future.await
+        }
+    }
+}
+
+async fn wait_for_run_termination_signal() -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => Ok(()),
+            _ = sigterm.recv() => Ok(()),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.map_err(AppError::from)
+    }
+}
+
+#[cfg(unix)]
+fn send_signal_to_pid(pid: u32, signal: Signal) -> AppResult<()> {
+    match kill(Pid::from_raw(pid as i32), signal) {
+        Ok(()) => Ok(()),
+        Err(nix::errno::Errno::ESRCH) => Ok(()),
+        Err(error) => Err(AppError::Io(std::io::Error::other(format!(
+            "failed to send {signal:?} to pid {pid}: {error}"
+        )))),
+    }
+}
+
+async fn wait_for_pid_exit(record: &crate::adapters::fs::RunPidRecord, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !FileSystem::is_pid_alive(record) {
+            return true;
+        }
+        tokio::time::sleep(RUN_STOP_POLL_INTERVAL).await;
+    }
+    !FileSystem::is_pid_alive(record)
+}
+
 async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
@@ -1557,23 +1659,31 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let journal_store = FsJournalStore;
     let artifact_write = FsPayloadArtifactWriteStore;
     let log_write = FsRuntimeLogWriteStore;
+    let cancellation_token = CancellationToken::new();
 
     println!("Starting run for project '{}'...", project_id);
 
     let amendment_queue = FsAmendmentQueueStore;
-
-    let run_result = engine::execute_run(
-        &agent_service,
-        &run_snapshot_read,
-        &run_snapshot_write,
-        &journal_store,
-        &artifact_write,
-        &log_write,
-        &amendment_queue,
-        &current_dir,
-        &project_id,
-        project_record.flow,
-        &effective_config,
+    let retry_policy = RetryPolicy::default_policy()
+        .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations);
+    let run_result = run_with_termination_signal(
+        cancellation_token.clone(),
+        engine::execute_run_with_retry(
+            &agent_service,
+            &run_snapshot_read,
+            &run_snapshot_write,
+            &journal_store,
+            &artifact_write,
+            &log_write,
+            &amendment_queue,
+            &current_dir,
+            None,
+            &project_id,
+            project_record.flow,
+            &effective_config,
+            &retry_policy,
+            cancellation_token,
+        ),
     )
     .await;
 
@@ -1635,16 +1745,11 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let run_snapshot_read = FsRunSnapshotStore;
     let run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
     match run_snapshot.status {
-        RunStatus::Failed | RunStatus::Paused => {}
+        RunStatus::Failed | RunStatus::Paused | RunStatus::Running => {}
         RunStatus::NotStarted => {
             return Err(AppError::ResumeFailed {
                 reason: "project has not started a run yet; use `ralph-burning run start`"
                     .to_owned(),
-            });
-        }
-        RunStatus::Running => {
-            return Err(AppError::ResumeFailed {
-                reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
             });
         }
         RunStatus::Completed => {
@@ -1653,7 +1758,9 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             });
         }
     }
-    if run_snapshot.has_active_run() {
+    if matches!(run_snapshot.status, RunStatus::Failed | RunStatus::Paused)
+        && run_snapshot.has_active_run()
+    {
         return Err(AppError::ResumeFailed {
             reason: "failed or paused snapshots must not retain an active run".to_owned(),
         });
@@ -1685,24 +1792,32 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let journal_store = FsJournalStore;
     let artifact_write = FsPayloadArtifactWriteStore;
     let log_write = FsRuntimeLogWriteStore;
+    let cancellation_token = CancellationToken::new();
 
     println!("Resuming run for project '{}'...", project_id);
 
     let amendment_queue = FsAmendmentQueueStore;
-
-    let run_result = engine::resume_run(
-        &agent_service,
-        &run_snapshot_read,
-        &run_snapshot_write,
-        &journal_store,
-        &FsArtifactStore,
-        &artifact_write,
-        &log_write,
-        &amendment_queue,
-        &current_dir,
-        &project_id,
-        project_record.flow,
-        &effective_config,
+    let retry_policy = RetryPolicy::default_policy()
+        .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations);
+    let run_result = run_with_termination_signal(
+        cancellation_token.clone(),
+        engine::resume_run_with_retry(
+            &agent_service,
+            &run_snapshot_read,
+            &run_snapshot_write,
+            &journal_store,
+            &FsArtifactStore,
+            &artifact_write,
+            &log_write,
+            &amendment_queue,
+            &current_dir,
+            None,
+            &project_id,
+            project_record.flow,
+            &effective_config,
+            &retry_policy,
+            cancellation_token,
+        ),
     )
     .await;
 
@@ -1751,6 +1866,102 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     Ok(())
 }
 
+async fn handle_stop() -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+    let run_snapshot_read = FsRunSnapshotStore;
+    let run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+
+    if run_snapshot.status != RunStatus::Running {
+        let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
+        return Err(AppError::RunStopFailed {
+            reason: format!(
+                "project is not currently running; current status is '{}'",
+                run_snapshot.status
+            ),
+        });
+    }
+
+    let Some(pid_record) = FileSystem::read_pid_file(&current_dir, &project_id)? else {
+        engine::mark_running_run_interrupted(
+            &run_snapshot_read,
+            &FsRunSnapshotWriteStore,
+            &FsRuntimeLogWriteStore,
+            &current_dir,
+            &project_id,
+            "failed (stale running snapshot recovered by stop)",
+            "run stop reconciled a stale running snapshot with no pid file",
+        )?;
+        println!(
+            "Run was already stale for project '{}'; snapshot marked failed and ready for resume.",
+            project_id
+        );
+        return Ok(());
+    };
+
+    if !FileSystem::is_pid_alive(&pid_record) {
+        engine::mark_running_run_interrupted(
+            &run_snapshot_read,
+            &FsRunSnapshotWriteStore,
+            &FsRuntimeLogWriteStore,
+            &current_dir,
+            &project_id,
+            "failed (stale running snapshot recovered by stop)",
+            "run stop reconciled a stale running snapshot because the pid was not alive",
+        )?;
+        println!(
+            "Run was already stale for project '{}'; snapshot marked failed and ready for resume.",
+            project_id
+        );
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        send_signal_to_pid(pid_record.pid, Signal::SIGTERM)?;
+        let stopped_gracefully = wait_for_pid_exit(&pid_record, RUN_STOP_GRACE_PERIOD).await;
+        let outcome = if stopped_gracefully {
+            "terminated gracefully with SIGTERM"
+        } else {
+            send_signal_to_pid(pid_record.pid, Signal::SIGKILL)?;
+            let _ = wait_for_pid_exit(&pid_record, Duration::from_secs(1)).await;
+            "required SIGKILL after timeout"
+        };
+
+        let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+        if final_snapshot.status == RunStatus::Running {
+            engine::mark_running_run_interrupted(
+                &run_snapshot_read,
+                &FsRunSnapshotWriteStore,
+                &FsRuntimeLogWriteStore,
+                &current_dir,
+                &project_id,
+                "failed (stopped by user; run `ralph-burning run resume` to continue)",
+                format!("run stop interrupted the orchestrator; outcome={outcome}"),
+            )?;
+            println!(
+                "Stopped run for project '{}' ({outcome}); run `ralph-burning run resume` to continue.",
+                project_id
+            );
+        } else {
+            let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
+            println!(
+                "Run for project '{}' exited during stop with status '{}'.",
+                project_id, final_snapshot.status
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = pid_record;
+        Err(AppError::RunStopFailed {
+            reason: "run stop is only supported on unix-like platforms".to_owned(),
+        })
+    }
+}
+
 async fn handle_sync_milestone() -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
@@ -1782,6 +1993,7 @@ async fn handle_sync_milestone() -> AppResult<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
         persist_next_step_recommendation, prepare_milestone_controller_for_execution,
@@ -5096,24 +5308,35 @@ async fn handle_attach() -> AppResult<()> {
 
 async fn handle_status(as_json: bool) -> AppResult<()> {
     let (current_dir, project_id) = load_active_project_context()?;
+    let mut snapshot = FsRunSnapshotStore.read_run_snapshot(&current_dir, &project_id)?;
+    if let Ok(events) = FsJournalStore.read_journal(&current_dir, &project_id) {
+        crate::contexts::project_run_record::queries::reconcile_snapshot_status(
+            &mut snapshot,
+            &events,
+        );
+    }
+
+    let process_alive = if snapshot.status == RunStatus::Running {
+        running_snapshot_process_is_alive(&current_dir, &project_id)?
+    } else {
+        false
+    };
 
     if as_json {
-        let status = service::run_status_json_reconciled(
-            &FsRunSnapshotStore,
-            &FsJournalStore,
-            &current_dir,
-            &project_id,
-        )?;
+        let status = if snapshot.status == RunStatus::Running && !process_alive {
+            stale_status_json_view(&project_id, &snapshot)
+        } else {
+            RunStatusJsonView::from_snapshot(project_id.as_str(), &snapshot)
+        };
         println!("{}", format_json_status(&status)?);
         return Ok(());
     }
 
-    let status = service::run_status_reconciled(
-        &FsRunSnapshotStore,
-        &FsJournalStore,
-        &current_dir,
-        &project_id,
-    )?;
+    let status = if snapshot.status == RunStatus::Running && !process_alive {
+        stale_status_view(&project_id, &snapshot)
+    } else {
+        RunStatusView::from_snapshot(project_id.as_str(), &snapshot)
+    };
     println!("Project: {}", status.project_id);
     println!("Status: {}", status.status);
     if let Some(ref stage) = status.stage {

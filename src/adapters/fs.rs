@@ -56,6 +56,7 @@ const PROJECTS_DIR: &str = "projects";
 const PROJECT_CONFIG_FILE: &str = "project.toml";
 const PROJECT_POLICY_CONFIG_FILE: &str = "config.toml";
 const RUN_FILE: &str = "run.json";
+const PID_FILE: &str = "run.pid";
 const JOURNAL_FILE: &str = "journal.ndjson";
 const SESSIONS_FILE: &str = "sessions.json";
 const PROMPT_FILE: &str = "prompt.md";
@@ -140,6 +141,14 @@ fn parse_failpoint_config(raw: &str) -> Option<(Option<&str>, u32)> {
 
     let (project_id, threshold) = raw.split_once(':')?;
     Some((Some(project_id), threshold.parse().ok()?))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunPidRecord {
+    pub pid: u32,
+    pub started_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_start_ticks: Option<u64>,
 }
 
 pub struct FileSystem;
@@ -260,6 +269,73 @@ impl FileSystem {
         let mut hasher = Sha256::new();
         hasher.update(contents.as_bytes());
         format!("{:x}", hasher.finalize())
+    }
+
+    pub fn write_pid_file(base_dir: &Path, project_id: &ProjectId) -> AppResult<RunPidRecord> {
+        let project_root = Self::ensure_live_project_root(base_dir, project_id)?;
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            proc_start_ticks: Self::proc_start_ticks(std::process::id()),
+        };
+        Self::write_atomic(
+            &project_root.join(PID_FILE),
+            &serde_json::to_string_pretty(&record)?,
+        )?;
+        Ok(record)
+    }
+
+    pub fn read_pid_file(
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<Option<RunPidRecord>> {
+        let path = Self::live_project_root(base_dir, project_id).join(PID_FILE);
+        match fs::read_to_string(&path) {
+            Ok(raw) => Ok(Some(serde_json::from_str(&raw).map_err(|error| {
+                AppError::CorruptRecord {
+                    file: format!("projects/{}/{}", project_id, PID_FILE),
+                    details: error.to_string(),
+                }
+            })?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn remove_pid_file(base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+        let path = Self::live_project_root(base_dir, project_id).join(PID_FILE);
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn is_pid_alive(record: &RunPidRecord) -> bool {
+        #[cfg(unix)]
+        {
+            let pid = nix::unistd::Pid::from_raw(record.pid as i32);
+            match nix::sys::signal::kill(pid, None) {
+                Ok(()) => {}
+                Err(nix::errno::Errno::ESRCH) => return false,
+                Err(_) => return false,
+            }
+
+            if let Some(expected_ticks) = record.proc_start_ticks {
+                match Self::proc_start_ticks(record.pid) {
+                    Some(actual_ticks) if actual_ticks == expected_ticks => {}
+                    _ => return false,
+                }
+            }
+
+            !matches!(Self::proc_state(record.pid), Some('Z'))
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = record;
+            false
+        }
     }
 
     /// Legacy 64-bit prompt hash retained only for resume compatibility with
@@ -492,7 +568,7 @@ impl FileSystem {
         }
         fs::create_dir_all(destination)?;
         let mut entries = fs::read_dir(source)?.collect::<Result<Vec<_>, std::io::Error>>()?;
-        entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+        entries.sort_by_key(|left| left.file_name());
         for entry in entries {
             let source_path = entry.path();
             let destination_path = destination.join(entry.file_name());
@@ -527,7 +603,7 @@ impl FileSystem {
             fs::create_dir_all(&live_root)?;
             let mut entries =
                 fs::read_dir(&audit_root)?.collect::<Result<Vec<_>, std::io::Error>>()?;
-            entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+            entries.sort_by_key(|left| left.file_name());
 
             let mut deferred_sentinel = None;
             for entry in entries {
@@ -573,6 +649,31 @@ impl FileSystem {
             Self::copy_tree(&audit_root, &live_root)?;
         }
         Ok(live_root)
+    }
+
+    #[cfg(unix)]
+    fn proc_start_ticks(pid: u32) -> Option<u64> {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, rest) = stat.rsplit_once(") ")?;
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        fields.get(19)?.parse().ok()
+    }
+
+    #[cfg(not(unix))]
+    fn proc_start_ticks(_pid: u32) -> Option<u64> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn proc_state(pid: u32) -> Option<char> {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, rest) = stat.rsplit_once(") ")?;
+        rest.chars().next()
+    }
+
+    #[cfg(not(unix))]
+    fn proc_state(_pid: u32) -> Option<char> {
+        None
     }
 
     pub(crate) fn mirror_project_file(
@@ -5041,6 +5142,37 @@ mod tests {
     fn legacy_prompt_hash_matches_pre_sha256_digest() {
         let prompt = "# Prompt\n\nOriginal prompt.\n";
         assert_eq!(FileSystem::legacy_prompt_hash(prompt), "5b624debc08968f4");
+    }
+
+    #[test]
+    fn pid_file_round_trips_for_live_project() {
+        let temp = tempdir().expect("tempdir");
+        let project_id = ProjectId::new("pid-roundtrip".to_owned()).expect("project id");
+
+        let written = FileSystem::write_pid_file(temp.path(), &project_id).expect("write pid file");
+        let read_back = FileSystem::read_pid_file(temp.path(), &project_id)
+            .expect("read pid file")
+            .expect("pid file present");
+
+        assert_eq!(read_back.pid, written.pid);
+        assert_eq!(read_back.started_at, written.started_at);
+        assert!(FileSystem::is_pid_alive(&read_back));
+
+        FileSystem::remove_pid_file(temp.path(), &project_id).expect("remove pid file");
+        assert!(FileSystem::read_pid_file(temp.path(), &project_id)
+            .expect("read after remove")
+            .is_none());
+    }
+
+    #[test]
+    fn pid_liveness_rejects_missing_process() {
+        let record = RunPidRecord {
+            pid: 999_999,
+            started_at: Utc::now(),
+            proc_start_ticks: None,
+        };
+
+        assert!(!FileSystem::is_pid_alive(&record));
     }
 
     #[test]

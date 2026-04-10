@@ -7080,6 +7080,103 @@ async fn resume_reconciles_stale_running_snapshot_with_journal_run_failed() {
     );
 }
 
+/// When the snapshot is Running but the orchestrator pid file is missing,
+/// resume should treat the run as stale, recover it, and continue.
+#[tokio::test]
+async fn resume_recovers_stale_running_snapshot_when_pid_file_is_missing() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "stale-pid-missing");
+    let run_id = RunId::new("run-stale-pid-missing").unwrap();
+    let now = Utc::now();
+    let prompt_hash = FsProjectStore
+        .read_project_record(base_dir, &pid)
+        .unwrap()
+        .prompt_hash;
+
+    let snapshot = RunSnapshot {
+        active_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                    StageId::Planning,
+                ),
+                started_at: now,
+                prompt_hash_at_cycle_start: prompt_hash.clone(),
+                prompt_hash_at_stage_start: prompt_hash,
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
+        interrupted_run: None,
+        status: RunStatus::Running,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        max_completion_rounds: Some(20),
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "running: planning".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+    FsRunSnapshotWriteStore
+        .write_run_snapshot(base_dir, &pid, &snapshot)
+        .unwrap();
+    FsJournalStore
+        .append_event(
+            base_dir,
+            &pid,
+            &journal::serialize_event(&journal::run_started_event(
+                2,
+                now,
+                &run_id,
+                StageId::Planning,
+                20,
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    FileSystem::remove_pid_file(base_dir, &pid).unwrap();
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+    let result = engine::resume_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "resume should recover stale running run: {result:?}"
+    );
+
+    let final_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(final_snapshot.status, RunStatus::Completed);
+    assert!(
+        final_snapshot.interrupted_run.is_none(),
+        "completed run should clear interrupted_run after successful resume"
+    );
+    assert!(
+        FileSystem::read_pid_file(base_dir, &pid).unwrap().is_none(),
+        "pid file should be removed after resumed run completes"
+    );
+}
+
 /// Status reporting correctly shows Failed when snapshot is stale Running
 /// but journal has run_failed.
 #[test]

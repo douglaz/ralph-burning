@@ -5396,6 +5396,158 @@ fn run_status_does_not_rewrite_legacy_run_snapshot() {
     assert_eq!(after, before, "run status must not mutate legacy run.json");
 }
 
+#[test]
+fn run_status_reports_stale_running_when_pid_file_is_missing() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stale",
+    "stage_cursor": { "stage": "planning", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Planning"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: stale (process not found)"));
+    assert!(stdout.contains("run `ralph-burning run resume` to recover"));
+}
+
+#[test]
+fn run_status_json_reports_stale_running_when_pid_file_is_missing() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stale-json",
+    "stage_cursor": { "stage": "planning", "cycle": 2, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Planning"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let output = Command::new(binary())
+        .args(["run", "status", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status --json");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status json should parse");
+    assert_eq!(value["status"], "stale");
+    assert_eq!(value["stage"], "planning");
+    assert_eq!(value["cycle"], 2);
+    assert_eq!(
+        value["summary"],
+        "stale running snapshot: process not found; run `ralph-burning run resume` to recover"
+    );
+}
+
+#[test]
+fn run_stop_terminates_pid_and_marks_snapshot_failed() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    let pid = child.id();
+    let pid_file = serde_json::json!({
+        "pid": pid,
+        "started_at": Utc::now(),
+    });
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&pid_file).expect("serialize pid file"),
+    )
+    .expect("write pid file");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Stopped run for project 'alpha'"));
+
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "failed");
+    assert!(
+        !run_json["interrupted_run"].is_null(),
+        "stop should preserve interrupted_run for resume"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "alpha")
+            .join("run.pid")
+            .exists(),
+        "run.pid should be removed after stop"
+    );
+
+    let child_status = child.wait().expect("wait for stopped child");
+    assert!(
+        !child_status.success(),
+        "sleep child should not exit successfully after stop: {child_status:?}"
+    );
+}
+
 // ── Run History ──
 
 #[test]

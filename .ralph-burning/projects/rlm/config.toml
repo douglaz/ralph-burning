@@ -1,0 +1,12 @@
+[workflow]
+implementer_backend = "codex"
+
+[final_review]
+planner_backend = "codex"
+arbiter_backend = "codex"
+
+[backends.codex.role_models]
+planner = "gpt-5.4-xhigh"
+implementer = "gpt-5.4-high"
+final_reviewer = "gpt-5.4-xhigh"
+arbiter = "gpt-5.4-xhigh"

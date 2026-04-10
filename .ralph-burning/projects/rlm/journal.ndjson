@@ -1,0 +1,4 @@
+{"sequence":1,"timestamp":"2026-04-10T05:18:16.133966205Z","event_type":"project_created","details":{"flow":"minimal","project_id":"rlm"}}
+{"sequence":2,"timestamp":"2026-04-10T05:42:51.231492314Z","event_type":"run_started","details":{"first_stage":"plan_and_implement","max_completion_rounds":25,"run_id":"run-20260410054251"}}
+{"sequence":3,"timestamp":"2026-04-10T05:42:51.253759630Z","event_type":"stage_entered","details":{"attempt":1,"cycle":1,"run_id":"run-20260410054251","stage_id":"plan_and_implement"}}
+{"sequence":4,"timestamp":"2026-04-10T06:02:26.023179559Z","event_type":"stage_completed","details":{"artifact_id":"run-20260410054251-plan_and_implement-c1-a1-cr1-artifact","attempt":1,"cycle":1,"payload_id":"run-20260410054251-plan_and_implement-c1-a1-cr1","run_id":"run-20260410054251","stage_id":"plan_and_implement"}}
