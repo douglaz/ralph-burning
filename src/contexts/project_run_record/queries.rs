@@ -7,7 +7,6 @@ use crate::contexts::workflow_composition::panel_contracts::RecordKind;
 use crate::shared::domain::StageId;
 use crate::shared::error::AppResult;
 
-use super::journal;
 use super::model::{
     ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, RunSnapshot, RunStatus,
     RuntimeLogEntry,
@@ -25,7 +24,24 @@ pub fn reconcile_snapshot_status(snapshot: &mut RunSnapshot, events: &[JournalEv
     if snapshot.status != RunStatus::Running {
         return false;
     }
-    match journal::last_terminal_event_type(events) {
+    let Some(run_id) = snapshot
+        .active_run
+        .as_ref()
+        .map(|active_run| active_run.run_id.as_str())
+    else {
+        return false;
+    };
+
+    let last_terminal_for_run = events.iter().rev().find_map(|event| {
+        (event.details.get("run_id").and_then(|value| value.as_str()) == Some(run_id)
+            && matches!(
+                event.event_type,
+                JournalEventType::RunFailed | JournalEventType::RunCompleted
+            ))
+        .then_some(event.event_type.clone())
+    });
+
+    match last_terminal_for_run {
         Some(JournalEventType::RunFailed) => {
             eprintln!(
                 "status: snapshot shows Running but journal has run_failed — \

@@ -139,6 +139,10 @@ fn live_pid_record_json(pid: u32, owner: &str) -> serde_json::Value {
     record
 }
 
+fn pid_is_alive(pid: u32) -> bool {
+    kill(Pid::from_raw(pid as i32), None).is_ok()
+}
+
 fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = project_root(base_dir, project_id);
     let long_artifact = format!("# Planning\n{}\n", "A".repeat(140));
@@ -5502,6 +5506,52 @@ fn run_status_json_reports_stale_running_when_pid_file_is_missing() {
 }
 
 #[test]
+fn run_status_ignores_older_terminal_journal_events_for_different_run_id() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-current",
+    "stage_cursor": { "stage": "planning", "cycle": 2, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Planning"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-older","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_completed","details":{"run_id":"run-older","completion_rounds":0,"max_completion_rounds":20}}"#,
+    )
+    .expect("write journal");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: stale (process not found)"));
+    assert!(
+        !stdout.contains("Status: completed"),
+        "older terminal history must not reconcile a newer running snapshot: {stdout}"
+    );
+}
+
+#[test]
 fn run_status_keeps_daemon_owned_running_snapshot_active_with_live_pid_file() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -5624,6 +5674,67 @@ fn run_status_keeps_legacy_daemon_owned_running_snapshot_active_without_pid_file
     assert!(
         !stdout.contains("stale"),
         "fresh legacy daemon lease should keep the run active during mixed-version rollouts: {stdout}"
+    );
+}
+
+#[test]
+fn run_status_keeps_legacy_cli_owned_running_snapshot_active_without_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-cli-legacy-status",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let cli_lease = CliWriterLease {
+        lease_id: "lease-cli-legacy-status".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-cli-legacy-status.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(cli_lease))
+            .expect("serialize cli lease"),
+    )
+    .expect("write cli lease");
+    fs::write(
+        leases_dir.join("writer-alpha.lock"),
+        "lease-cli-legacy-status",
+    )
+    .expect("write cli writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: running"));
+    assert!(
+        !stdout.contains("stale"),
+        "fresh legacy CLI lease should keep the run active instead of reporting stale: {stdout}"
     );
 }
 
@@ -5883,6 +5994,98 @@ fn run_stop_does_not_delete_pid_file_when_snapshot_is_not_running() {
 }
 
 #[test]
+fn run_stop_sigkill_terminates_backend_subprocess_group() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigkill-tree",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let backend_child_pid_path = temp_dir.path().join("backend-child.pid");
+    let orchestrator_script = format!(
+        "trap '' TERM; setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done; while :; do sleep 1; done",
+        backend_child_pid_path.display(),
+        backend_child_pid_path.display(),
+    );
+    let mut orchestrator = Command::new("bash")
+        .args(["-lc", &orchestrator_script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+    let orchestrator_pid = orchestrator.id();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !backend_child_pid_path.exists() || fs::read_to_string(&backend_child_pid_path).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "backend child pid file was never written"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let backend_child_pid = fs::read_to_string(&backend_child_pid_path)
+        .expect("read backend child pid")
+        .trim()
+        .parse::<u32>()
+        .expect("parse backend child pid");
+    assert!(
+        pid_is_alive(backend_child_pid),
+        "backend child must be alive before stop"
+    );
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(orchestrator_pid, "cli"))
+            .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("required SIGKILL after timeout"),
+        "stop should escalate to SIGKILL for the TERM-ignoring orchestrator: {stdout}"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_child_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_child_pid),
+        "backend subprocess group should be gone after SIGKILL escalation"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        !orchestrator_status.success(),
+        "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
+    );
+}
+
+#[test]
 fn run_stop_recovers_legacy_pid_record_without_proc_start_ticks_as_stale() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -6026,6 +6229,74 @@ fn run_stop_refuses_daemon_owned_running_snapshot() {
 }
 
 #[test]
+fn run_stop_refuses_legacy_cli_owned_running_without_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-cli-legacy-stop",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let cli_lease = CliWriterLease {
+        lease_id: "lease-cli-legacy-stop".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-cli-legacy-stop.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(cli_lease))
+            .expect("serialize cli lease"),
+    )
+    .expect("write cli lease");
+    fs::write(
+        leases_dir.join("writer-alpha.lock"),
+        "lease-cli-legacy-stop",
+    )
+    .expect("write cli writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("legacy CLI-owned run"),
+        "stop should refuse fresh legacy CLI runs instead of reclaiming them: {stderr}"
+    );
+    assert!(
+        leases_dir.join("writer-alpha.lock").exists(),
+        "legacy CLI writer lock must remain intact after refused stop"
+    );
+    assert!(
+        leases_dir.join("lease-cli-legacy-stop.json").exists(),
+        "legacy CLI lease must not be reclaimed while it is still fresh"
+    );
+}
+
+#[test]
 fn run_resume_refuses_legacy_daemon_owned_running_without_pid_file() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -6092,6 +6363,74 @@ fn run_resume_refuses_legacy_daemon_owned_running_without_pid_file() {
     assert!(
         leases_dir.join("lease-daemon-legacy-resume.json").exists(),
         "legacy daemon lease must not be reclaimed while it is still fresh"
+    );
+}
+
+#[test]
+fn run_resume_refuses_legacy_cli_owned_running_without_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-cli-legacy-resume",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let cli_lease = CliWriterLease {
+        lease_id: "lease-cli-legacy-resume".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-cli-legacy-resume.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(cli_lease))
+            .expect("serialize cli lease"),
+    )
+    .expect("write cli lease");
+    fs::write(
+        leases_dir.join("writer-alpha.lock"),
+        "lease-cli-legacy-resume",
+    )
+    .expect("write cli writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("legacy CLI-owned running run"),
+        "resume should refuse fresh legacy CLI runs instead of reclaiming them: {stderr}"
+    );
+    assert!(
+        leases_dir.join("writer-alpha.lock").exists(),
+        "legacy CLI writer lock must remain intact after refused resume"
+    );
+    assert!(
+        leases_dir.join("lease-cli-legacy-resume.json").exists(),
+        "legacy CLI lease must not be reclaimed while it is still fresh"
     );
 }
 
@@ -10245,7 +10584,7 @@ fn cli_run_resume_recovers_stale_running_and_reclaims_writer_lock() {
         owner: "cli".to_owned(),
         acquired_at: Utc::now(),
         ttl_seconds: 300,
-        last_heartbeat: Utc::now(),
+        last_heartbeat: Utc::now() - Duration::seconds(301),
     };
     fs::write(
         leases_dir.join("cli-stale-resume.json"),

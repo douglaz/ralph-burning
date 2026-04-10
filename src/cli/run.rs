@@ -7,9 +7,11 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use clap::{Args, Subcommand};
 #[cfg(target_os = "linux")]
-use nix::sys::signal::Signal;
+use nix::sys::signal::{kill, Signal};
 #[cfg(all(unix, not(target_os = "linux")))]
 use nix::sys::signal::{kill, Signal};
+#[cfg(target_os = "linux")]
+use nix::unistd::Pid;
 #[cfg(all(unix, not(target_os = "linux")))]
 use nix::unistd::Pid;
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
@@ -1519,6 +1521,7 @@ fn resume_attempt_has_exact_lineage(
 enum RunningSnapshotLiveness {
     CliProcess(crate::adapters::fs::RunPidRecord),
     DaemonProcess,
+    LegacyCliLease,
     LegacyDaemonLease,
     Stale,
 }
@@ -1527,39 +1530,46 @@ fn classify_running_snapshot_liveness(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
 ) -> AppResult<RunningSnapshotLiveness> {
-    if let Some(record) = FileSystem::read_pid_file(base_dir, project_id)? {
-        if FileSystem::is_pid_alive(&record) {
-            return Ok(match record.owner {
-                crate::adapters::fs::RunPidOwner::Cli => {
-                    RunningSnapshotLiveness::CliProcess(record)
-                }
-                crate::adapters::fs::RunPidOwner::Daemon => RunningSnapshotLiveness::DaemonProcess,
-            });
-        }
-        return Ok(RunningSnapshotLiveness::Stale);
-    }
-
-    if let Some((_owner, LeaseRecord::Worktree(lease))) =
-        read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
-    {
-        if lease.project_id == project_id.as_str() {
-            return Ok(if lease.is_stale_at(Utc::now()) {
-                RunningSnapshotLiveness::Stale
-            } else {
-                RunningSnapshotLiveness::LegacyDaemonLease
-            });
-        }
-    }
-
-    if let Some((_owner, LeaseRecord::CliWriter(lease))) =
-        read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
-    {
-        if lease.project_id == project_id.as_str() {
-            // CLI-owned runs must have a pid marker with a start-time tuple.
-            // Without that, a fresh lease alone is not authoritative enough to
-            // block recovery because the owning process cannot be identified
-            // safely after PID reuse or a post-run cleanup crash.
+    let pid_record = FileSystem::read_pid_file(base_dir, project_id)?;
+    if let Some(record) = pid_record.as_ref() {
+        if record.proc_start_ticks.is_some() {
+            if FileSystem::is_pid_alive(record) {
+                return Ok(match record.owner {
+                    crate::adapters::fs::RunPidOwner::Cli => {
+                        RunningSnapshotLiveness::CliProcess(record.clone())
+                    }
+                    crate::adapters::fs::RunPidOwner::Daemon => {
+                        RunningSnapshotLiveness::DaemonProcess
+                    }
+                });
+            }
             return Ok(RunningSnapshotLiveness::Stale);
+        }
+    }
+
+    if let Some((_owner, lease_record)) =
+        read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
+    {
+        match lease_record {
+            LeaseRecord::Worktree(lease) if lease.project_id == project_id.as_str() => {
+                return Ok(if lease.is_stale_at(Utc::now()) {
+                    RunningSnapshotLiveness::Stale
+                } else {
+                    RunningSnapshotLiveness::LegacyDaemonLease
+                });
+            }
+            LeaseRecord::CliWriter(lease) if lease.project_id == project_id.as_str() => {
+                // Mixed-version CLI runs may still hold a fresh writer lease
+                // without an authoritative pid tuple. Treat them as running so
+                // resume/stop never reclaim the lock or rewrite state until the
+                // lease itself goes stale.
+                return Ok(if lease.is_stale_at(Utc::now()) {
+                    RunningSnapshotLiveness::Stale
+                } else {
+                    RunningSnapshotLiveness::LegacyCliLease
+                });
+            }
+            _ => {}
         }
     }
 
@@ -1603,6 +1613,9 @@ fn observed_resume_recovery_owner(
         RunStatus::Running => match classify_running_snapshot_liveness(base_dir, project_id)? {
             RunningSnapshotLiveness::CliProcess(_) => Err(AppError::ResumeFailed {
                 reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
+            }),
+            RunningSnapshotLiveness::LegacyCliLease => Err(AppError::ResumeFailed {
+                reason: "project has a legacy CLI-owned running run without authoritative pid tracking; wait for it to finish or for its writer lease to go stale before resuming".to_owned(),
             }),
             RunningSnapshotLiveness::DaemonProcess | RunningSnapshotLiveness::LegacyDaemonLease => {
                 Err(AppError::ResumeFailed {
@@ -1821,6 +1834,70 @@ async fn wait_for_handle_exit(handle: &StopProcessHandle, timeout: Duration) -> 
     }
 }
 
+#[cfg(target_os = "linux")]
+fn linux_child_pids(pid: u32) -> Vec<u32> {
+    let children_path = format!("/proc/{pid}/task/{pid}/children");
+    match std::fs::read_to_string(children_path) {
+        Ok(children) => children
+            .split_whitespace()
+            .filter_map(|value| value.parse::<u32>().ok())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_group_id(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, tail) = stat.rsplit_once(") ")?;
+    tail.split_whitespace().nth(2)?.parse::<u32>().ok()
+}
+
+#[cfg(target_os = "linux")]
+fn kill_descendant_process_groups(root_pid: u32) -> AppResult<usize> {
+    let mut stack = vec![root_pid];
+    let mut seen_pids = HashSet::from([root_pid]);
+    let mut process_groups = HashSet::new();
+    let root_process_group = linux_process_group_id(root_pid);
+
+    while let Some(pid) = stack.pop() {
+        for child_pid in linux_child_pids(pid) {
+            if seen_pids.insert(child_pid) {
+                stack.push(child_pid);
+                if let Some(process_group_id) = linux_process_group_id(child_pid) {
+                    process_groups.insert(process_group_id);
+                }
+            }
+        }
+    }
+
+    let mut signaled_groups = 0usize;
+    for process_group_id in process_groups {
+        if process_group_id == root_pid || Some(process_group_id) == root_process_group {
+            continue;
+        }
+
+        let process_group_id =
+            i32::try_from(process_group_id).map_err(|_| AppError::RunStopFailed {
+                reason: format!(
+                    "process group id {} exceeds libc::pid_t range",
+                    process_group_id
+                ),
+            })?;
+        match kill(Pid::from_raw(-process_group_id), Signal::SIGKILL) {
+            Ok(()) => signaled_groups += 1,
+            Err(nix::errno::Errno::ESRCH) => {}
+            Err(error) => {
+                return Err(AppError::Io(std::io::Error::other(format!(
+                    "failed to SIGKILL descendant process group {process_group_id}: {error}"
+                ))))
+            }
+        }
+    }
+
+    Ok(signaled_groups)
+}
+
 fn recover_stale_running_snapshot(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
@@ -2037,25 +2114,22 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     .map_err(|error| AppError::ResumeFailed {
         reason: format!("failed to acquire writer lease for resume: {error}"),
     })?;
-    if stale_recovery_owner.is_some() {
-        let liveness = classify_running_snapshot_liveness(&current_dir, &project_id)?;
-        if run_snapshot_read
+    if stale_recovery_owner.is_some()
+        && run_snapshot_read
             .read_run_snapshot(&current_dir, &project_id)?
             .status
             == RunStatus::Running
-            && matches!(liveness, RunningSnapshotLiveness::Stale)
-        {
-            recover_stale_running_snapshot(
-                &current_dir,
-                &project_id,
-                "failed (stale running snapshot recovered for resume)",
-                "run resume reconciled a stale running snapshot after claiming the writer lease",
-                "interruption",
-            )
-            .map_err(|error| AppError::ResumeFailed {
-                reason: format!("stale run recovery failed before resume: {error}"),
-            })?;
-        }
+    {
+        recover_stale_running_snapshot(
+            &current_dir,
+            &project_id,
+            "failed (stale running snapshot recovered for resume)",
+            "run resume reconciled a stale running snapshot after claiming the writer lease",
+            "interruption",
+        )
+        .map_err(|error| AppError::ResumeFailed {
+            reason: format!("stale run recovery failed before resume: {error}"),
+        })?;
     }
 
     let cli_overrides = parse_cli_backend_overrides(&overrides)?;
@@ -2169,6 +2243,9 @@ async fn handle_stop() -> AppResult<()> {
                 "run stop only supports CLI-owned runs; the active run is owned by a daemon task"
                     .to_owned(),
         }),
+        RunningSnapshotLiveness::LegacyCliLease => Err(AppError::RunStopFailed {
+            reason: "run stop cannot safely target a legacy CLI-owned run without authoritative pid tracking; wait for the original process to exit or for its writer lease to go stale".to_owned(),
+        }),
         RunningSnapshotLiveness::Stale => {
             let observed_owner = read_project_writer_lock_owner(&current_dir, &project_id)?;
             let guard =
@@ -2187,10 +2264,6 @@ async fn handle_stop() -> AppResult<()> {
                 .read_run_snapshot(&current_dir, &project_id)?
                 .status
                 == RunStatus::Running
-                && matches!(
-                    classify_running_snapshot_liveness(&current_dir, &project_id)?,
-                    RunningSnapshotLiveness::Stale
-                )
             {
                 recover_stale_running_snapshot(
                     &current_dir,
@@ -2224,6 +2297,9 @@ async fn handle_stop() -> AppResult<()> {
                             if wait_for_handle_exit(&handle, RUN_STOP_GRACE_PERIOD).await? {
                                 "terminated gracefully with SIGTERM"
                             } else {
+                                #[cfg(target_os = "linux")]
+                                let killed_descendant_groups =
+                                    kill_descendant_process_groups(pid_record.pid)?;
                                 match send_signal_to_handle(&handle, Signal::SIGKILL)? {
                                     SignalSendOutcome::AlreadyExited => {
                                         "process exited before SIGKILL"
@@ -2239,7 +2315,18 @@ async fn handle_stop() -> AppResult<()> {
                                                 ),
                                             });
                                         }
-                                        "required SIGKILL after timeout"
+                                        #[cfg(target_os = "linux")]
+                                        {
+                                            if killed_descendant_groups == 0 {
+                                                "required SIGKILL after timeout"
+                                            } else {
+                                                "required SIGKILL after timeout and killed backend subprocess groups"
+                                            }
+                                        }
+                                        #[cfg(not(target_os = "linux"))]
+                                        {
+                                            "required SIGKILL after timeout"
+                                        }
                                     }
                                 }
                             }
