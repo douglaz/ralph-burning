@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr23-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T20:56:50.181682569Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBoth amendments are valid and should be accepted. They each identify concrete liveness/recovery defects that can cause process overlap or indefinite lockouts and are not handled by the current logic. Implementing them improves correctness, isolation, and recovery robustness.\n\n## Votes\n\n- `fr-23-1d5a1b60`: Accept\n  This is a real correctness and safety bug: backends run in a separate process group, so unclean orchestrator exits can leave descendants alive while run state is reconciled as failed/interrupted. Allowing automatic resume without first confirming/terminating stale backend descendants can create concurrent writers on shared project state and violates isolation guarantees. Persisting descendant identity or gating recovery until cleanup completes is the right fix pattern.\n- `fr-23-07aa46ac`: Accept\n  The legacy PID fallback is too weak because it treats any process with matching PID as live. On PID reuse, this can permanently misclassify a completed/crashed run as running and block stop/resume, which is a real robustness bug. Using additional identity checks (e.g., start-time started_at matching or lease freshness) before marking legacy run as running is necessary to avoid false positives and recovery deadlock.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 23
+}

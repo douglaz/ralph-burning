@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260410054251-final_review-aggregate-c1-a1-cr23-artifact",
+  "payload_id": "run-20260410054251-final_review-aggregate-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T20:59:06.160624741Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 23/25\n\n## Accepted\n\n- `fr-23-1d5a1b60`\n- `fr-23-07aa46ac`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-23-1d5a1b60`\n\n`run stop`/`run resume` still allow overlap with backend subprocesses after an unclean orchestrator death. Backend invocations are launched in their own process group (`src/adapters/process_backend.rs:1121-1126`), so a SIGKILL/OOM/terminal-close can leave the worker tree alive after the orchestrator PID disappears. The stale-recovery paths in `src/cli/run.rs:2702-2715` and `src/cli/run.rs:2908-2939` immediately reconcile the snapshot to Failed/Interrupted without checking for or terminating any surviving backend descendants; descendant cleanup only exists while a live parent PID can still be snapshotted in `src/cli/run.rs:2996-3056`. That lets `run resume` start a second attempt while the first backend is still running against the same project. Persist and clean up the backend process-group/descendant identity during stale recovery, or refuse automatic recovery until no stale backend subprocesses remain.\n\n### `fr-23-07aa46ac`\n\nThe new legacy-PID fallback can strand a dead run behind an unrelated reused PID. In `src/cli/run.rs:1567-1574`, `classify_running_snapshot_liveness` treats any non-authoritative `run.pid` record as live as soon as `kill(pid, 0)` succeeds, but it ignores the legacy `started_at` timestamp that is still present in the record (`src/adapters/fs.rs:155-165`) and it bypasses lease freshness entirely. `run status` therefore reports plain running (`src/cli/run.rs:6732-6749`), while both `run resume` and `run stop` hard-refuse recovery (`src/cli/run.rs:1866-1869`, `src/cli/run.rs:2904-2906`). If the original orchestrator died and the OS later reuses its PID, the project becomes stuck behind an unrelated process until that PID exits. Add an additional identity check for legacy pid-only records (for example compare the live process start time against `started_at`, or require a fresh matching lease) before blocking recovery.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 23
+}

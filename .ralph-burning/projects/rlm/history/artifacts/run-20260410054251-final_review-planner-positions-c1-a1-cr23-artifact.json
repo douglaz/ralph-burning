@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr23-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T20:56:46.331078073Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real liveness and recovery defects. One allows orphaned backend subprocesses to keep running after an unclean orchestrator death while stale recovery marks the run recoverable, and the other lets legacy pid-only records mistake an unrelated reused PID for the original run and block recovery indefinitely.\n\n## Votes\n\n- `fr-23-1d5a1b60`: Accept\n  Accept. The cited behavior is real: backend invocations are launched in their own process group, so an unclean orchestrator death can leave that worker tree alive. The stale-recovery paths for resume/stop only reconcile run.json and journal state; they do not discover or terminate surviving backend processes. Existing descendant cleanup depends on having the live orchestrator PID and a pre-death descendant snapshot, which stale recovery does not have. That means a resumed run can overlap with backend work from the dead attempt against the same project, which is a correctness and isolation bug.\n- `fr-23-07aa46ac`: Accept\n  Accept. For non-authoritative legacy run.pid records, liveness currently degrades to a bare kill(pid, 0) style existence check and returns LegacyCliProcess or LegacyDaemonProcess before consulting lease freshness. Because stop and resume both refuse those legacy-running states, a PID reused by an unrelated process can wedge the project until that unrelated process exits. The record still carries started_at, so ignoring all identity evidence beyond raw PID existence is too weak for a blocker path. An extra identity check or fresh-lease requirement is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 23
+}
