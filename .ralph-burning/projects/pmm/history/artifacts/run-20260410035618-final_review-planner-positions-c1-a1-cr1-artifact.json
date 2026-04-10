@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410035618-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260410035618-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T04:12:44.013616867Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the amendment: the new `PanelBackendSpec` parser introduces a real backward-compatibility regression for previously valid `backend(model)` entries containing `/` in the model name, and the failure now propagates into config validation/loading paths.\n\n## Votes\n\n- `fr-1-e5d149ba`: Accept\n  `PanelBackendSpec::from_str` now gives `/` higher precedence than the legacy `BackendSelection::from_backend_name()` parser. That means inputs like `?openrouter(openai/gpt-5.4)` are split at the model slash before the parenthesized legacy form is recognized, producing an invalid family and rejecting a config that used to parse. Because `config set` and serde-backed config loading now route these panel backend strings through this parser, this is not cosmetic: existing workspace/project configs can fail to reload or be updated. Restoring support for the legacy parenthesized form first, or otherwise ignoring `/` inside parentheses, is the correct compatibility fix. Regression coverage for direct parsing plus config/serde round-trips is appropriate to prevent this from recurring.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

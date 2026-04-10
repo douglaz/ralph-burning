@@ -2,29 +2,63 @@
   "active_run": {
     "run_id": "run-20260410035618",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-10T03:56:18.394409817Z",
     "prompt_hash_at_cycle_start": "6dd4990241bce956bfc78563e91712694ef9d2852922f53ffc62bd7920548be6",
     "prompt_hash_at_stage_start": "6dd4990241bce956bfc78563e91712694ef9d2852922f53ffc62bd7920548be6",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-e5d149ba",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Preserve the legacy `backend(model)` syntax when parsing panel backend specs. In `src/shared/domain.rs:532-550`, `PanelBackendSpec::from_str` now does `raw_selection.split_once('/')` before falling back to `BackendSelection::from_backend_name()`. That breaks previously valid panel entries whose old-style model override contains a slash, such as `?openrouter(openai/gpt-5.4)`: the slash inside the parentheses is misread as the new `family/model` separator, so the family becomes `openrouter(openai)` and parsing fails. Because `config set` now validates panel lists through this parser in `src/contexts/workspace_governance/config.rs:2115-2118`, existing workspace/project configs using the old serialized form can no longer be reloaded or updated. Update the parser to accept the legacy parenthesized form first (or otherwise ignore `/` inside parentheses), and add regression tests for direct parse plus `config set`/serde round-trip of an old-style OpenRouter value.",
+        "created_at": "2026-04-10T04:15:33.250366195Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "d58257b7f5a1f2ae82b721e8cfcf226803ef328c2ed90ef399da75f4078c6ee7"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-10T04:02:32.897048503Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    },
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
 }
