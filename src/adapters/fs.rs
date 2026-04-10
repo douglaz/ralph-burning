@@ -335,7 +335,22 @@ impl FileSystem {
     }
 
     pub fn pid_record_is_authoritative(record: &RunPidRecord) -> bool {
-        record.proc_start_ticks.is_some()
+        if record.proc_start_ticks.is_some() {
+            return true;
+        }
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            record
+                .proc_start_marker
+                .as_deref()
+                .is_some_and(|marker| !marker.trim().is_empty())
+        }
+
+        #[cfg(any(target_os = "linux", not(unix)))]
+        {
+            false
+        }
     }
 
     pub fn is_pid_alive(record: &RunPidRecord) -> bool {
@@ -354,7 +369,21 @@ impl FileSystem {
                     _ => return false,
                 }
             } else {
-                return false;
+                #[cfg(all(unix, not(target_os = "linux")))]
+                {
+                    let Some(expected_marker) = record.proc_start_marker.as_deref() else {
+                        return false;
+                    };
+                    match Self::proc_start_marker(record.pid) {
+                        Some(actual_marker) if actual_marker == expected_marker => {}
+                        _ => return false,
+                    }
+                }
+
+                #[cfg(any(target_os = "linux", not(unix)))]
+                {
+                    return false;
+                }
             }
 
             !matches!(Self::proc_state(record.pid), Some('Z'))
@@ -5288,7 +5317,7 @@ mod tests {
     }
 
     #[test]
-    fn pid_record_with_only_start_marker_is_not_authoritative() {
+    fn pid_record_with_only_start_marker_matches_platform_authority_rules() {
         let record = RunPidRecord {
             pid: std::process::id(),
             started_at: Utc::now(),
@@ -5298,7 +5327,45 @@ mod tests {
             proc_start_marker: Some("fallback-start-marker".to_owned()),
         };
 
+        #[cfg(all(unix, not(target_os = "linux")))]
+        assert!(FileSystem::pid_record_is_authoritative(&record));
+
+        #[cfg(any(target_os = "linux", not(unix)))]
         assert!(!FileSystem::pid_record_is_authoritative(&record));
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn pid_liveness_accepts_matching_start_marker_on_non_linux_unix() {
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            proc_start_ticks: None,
+            proc_start_marker: FileSystem::proc_start_marker(std::process::id()),
+        };
+
+        assert!(FileSystem::pid_record_is_authoritative(&record));
+        assert!(FileSystem::is_pid_alive(&record));
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn pid_liveness_rejects_mismatched_start_marker_on_non_linux_unix() {
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            proc_start_ticks: None,
+            proc_start_marker: Some("mismatched-start-marker".to_owned()),
+        };
+
+        assert!(
+            !FileSystem::is_pid_alive(&record),
+            "mismatched proc_start_marker should reject reused or stale pid records"
+        );
     }
 
     #[test]
