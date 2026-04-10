@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr6-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T14:18:55.833324156Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll four amendments should be accepted. The first three identify real lifecycle/cleanup/signal-safety defects in the current run hardening, and the fourth correctly observes that the present diff is metadata-only rather than a runtime implementation of the requested contract.\n\n## Votes\n\n- `fr-6-3a1b8b12`: Accept\n  `classify_running_snapshot_liveness` returns `Stale` whenever `run.pid` is absent, and its fallback writer-lock check does not distinguish a live daemon-owned `WorktreeLease` from a genuinely stale owner. `handle_resume` and `handle_stop` then treat that stale result as recoverable and reclaim the observed writer owner before mutating the snapshot. That is not backward compatible with daemon runs started before pid-file support, and it can steal the lock from a still-live daemon task during a mixed-version rollout.\n- `fr-6-b96db5c4`: Accept\n  `reclaim_specific_project_writer_owner` releases the writer lock and removes the `WorktreeLease` record directly, but it does not update the daemon task that owns that lease. The normal reconcile/release path is where the task is marked failed and `clear_lease_reference` runs after successful cleanup. Bypassing that leaves daemon task metadata inconsistent, and `retry_task` explicitly rejects tasks that still retain `lease_id`, so stale CLI recovery can wedge the daemon task.\n- `fr-6-69ce5084`: Accept\n  `send_signal_to_pid` performs a userspace identity check with `is_pid_alive(record)` and only then sends `kill()` to the numeric PID. That does not make delivery atomic. If the original orchestrator exits after the precheck and the PID is reused before `kill()` executes, `run stop` can signal an unrelated process. The `proc_start_ticks` comparison reduces false positives during polling, but it does not close this TOCTOU race at signal-delivery time.\n- `fr-6-9734311a`: Accept\n  The current diff only changes `.ralph-burning/projects/rlm/journal.ndjson` and `.ralph-burning/projects/rlm/run.json`, adding review metadata and `stage_resolution_snapshot` state. There are no edits in the runtime files named in the amendment, and `git diff --stat` confirms no `src/` behavior changes. If the requested work was run-lifecycle hardening in runtime code, this patch does not implement it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

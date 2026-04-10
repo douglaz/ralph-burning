@@ -2,34 +2,79 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 6
+      "completion_round": 7
     },
     "started_at": "2026-04-10T13:01:46.204377009Z",
     "prompt_hash_at_cycle_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "prompt_hash_at_stage_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 5
+    "final_review_restart_count": 6
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 6,
+  "completion_rounds": 7,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-6-3a1b8b12",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "`classify_running_snapshot_liveness` now treats any running snapshot with no `run.pid` as stale (`src/cli/run.rs:1518-1535`), and `run resume` / `run stop` immediately reclaim that owner in the stale path (`src/cli/run.rs:1833-1900`, `src/cli/run.rs:2007-2045`). That breaks mixed-version rollouts for daemon-owned runs: daemon tasks that were already in flight before this change have no pid file yet, so the new binary will misclassify a still-live daemon run as stale and can steal its writer lock. Add a compatibility path for preexisting daemon runs instead of treating missing pid as stale unconditionally.",
+        "created_at": "2026-04-10T14:21:02.851155479Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "4df3f3a9a5a5e2fcae3a9116c5691718e9afecec5da2f4b0e1eeb3d8cff8e238"
+      },
+      {
+        "amendment_id": "fr-6-b96db5c4",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "Stale daemon recovery now deletes the observed `WorktreeLease` directly in `reclaim_specific_project_writer_owner` (`src/contexts/automation_runtime/cli_writer_lease.rs:119-152`), and `run resume` / `run stop` call that path before recovering the snapshot (`src/cli/run.rs:1875-1900`, `src/cli/run.rs:2013-2044`). That bypasses the daemon reconcile/release flow that marks the daemon task failed and clears `task.lease_id` (`src/contexts/automation_runtime/lease_service.rs:473-491`, `src/contexts/automation_runtime/lease_service.rs:601-608`). `DaemonTaskService::retry_task` still rejects tasks with a retained lease reference (`src/contexts/automation_runtime/task_service.rs:499-505`), so a crashed daemon task can be left permanently wedged after CLI recovery. Route stale daemon recovery through the normal daemon cleanup path or clear/update the daemon task record alongside the lease reclamation.",
+        "created_at": "2026-04-10T14:21:02.851158595Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "ba09abe525e398033d942afdc69823cf28dad6703a9d05dc157fa200c1e51735"
+      },
+      {
+        "amendment_id": "fr-6-69ce5084",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "`run stop` still has a PID-reuse race. `send_signal_to_pid` checks `FileSystem::is_pid_alive(record)` and then sends `kill()` to the raw PID (`src/cli/run.rs:1624-1638`), and the stop flow uses that helper for both SIGTERM and SIGKILL (`src/cli/run.rs:2055-2064`). If the orchestrator exits after the liveness check and the PID is recycled before `kill()` runs, `run stop` can signal an unrelated process. The current `proc_start_ticks` check is only a userspace preflight; it does not make the signal delivery itself safe. Use an OS handle that remains bound to the original process (for example a pidfd on Linux) or another atomic mechanism before claiming PID-reuse is handled.",
+        "created_at": "2026-04-10T14:21:02.851161080Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "a7e1501b6ccdf84ed7726d4d34c23869a00ce723786e1cdc36a88903b8536061"
+      },
+      {
+        "amendment_id": "fr-6-9734311a",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "The patch is metadata-only and does not implement the requested run-lifecycle hardening contract in runtime code. The only file-level changes are in `.ralph-burning/projects/rlm/journal.ndjson` (new `reviewer_started` entries at lines 113-114) and `.ralph-burning/projects/rlm/run.json` (added `stage_resolution_snapshot`/metadata under `active_run` at lines 16-37), while the behavior files required by the goal (`src/adapters/fs.rs`, `src/cli/run.rs`, `src/contexts/workflow_composition/engine.rs`) are untouched by this diff.",
+        "created_at": "2026-04-10T14:21:02.851162743Z",
+        "batch_sequence": 4,
+        "source": "workflow_stage",
+        "dedup_key": "183e55df7bec44507bda93304b52612231f177f86863521dd186a2b7dee3d4e9"
+      }
+    ],
     "processed_count": 15
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 7 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-10T13:40:50.133473860Z",
+    "resolved_at": "2026-04-10T14:04:18.845189592Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
