@@ -354,7 +354,7 @@ where
     let mut reviewer_records = Vec::new();
     let mut proposal_total_exhausted: usize = 0;
     let mut last_proposal_exhaustion_error: Option<AppError> = None;
-    let mut first_required_proposal_failure: Option<AppError> = None;
+    let mut first_required_proposal_failure: Option<(usize, AppError)> = None;
     let mut first_optional_proposal_failure: Option<AppError> = None;
     let mut deferred_processing_error: Option<AppError> = None;
     while let Some((prep_idx, started_at, reviewer_payload)) = proposal_futures.next().await {
@@ -468,8 +468,15 @@ where
                     Some("failed"),
                     Some(0),
                 );
-                if first_required_proposal_failure.is_none() {
-                    first_required_proposal_failure = Some(error);
+                match &first_required_proposal_failure {
+                    None => {
+                        first_required_proposal_failure = Some((idx, error));
+                        cancellation_token.cancel();
+                    }
+                    Some((prev_idx, _)) if idx < *prev_idx => {
+                        first_required_proposal_failure = Some((idx, error));
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -605,7 +612,9 @@ where
 
     // Now that all futures have been drained, propagate deferred errors.
     // Required invocation failures take priority over processing errors.
-    if let Some(error) = first_required_proposal_failure {
+    // We pick the lowest-index (configured panel order) failure for
+    // deterministic retry/hard-fail decisions regardless of finish order.
+    if let Some((_, error)) = first_required_proposal_failure {
         return Err(error);
     }
     if let Some(error) = deferred_processing_error {
@@ -1014,7 +1023,7 @@ where
     let mut reviewer_votes = Vec::new();
     let mut vote_total_exhausted: usize = 0;
     let mut last_vote_exhaustion_error: Option<AppError> = None;
-    let mut first_required_vote_failure: Option<AppError> = None;
+    let mut first_required_vote_failure: Option<(usize, AppError)> = None;
     let mut first_optional_vote_failure: Option<AppError> = None;
     let mut deferred_vote_processing_error: Option<AppError> = None;
     while let Some((prep_idx, started_at, vote_payload)) = vote_futures.next().await {
@@ -1127,8 +1136,17 @@ where
                     Some("failed"),
                     Some(0),
                 );
-                if first_required_vote_failure.is_none() {
-                    first_required_vote_failure = Some(error);
+                match &first_required_vote_failure {
+                    None => {
+                        first_required_vote_failure =
+                            Some((reviewer.member_index, error));
+                        cancellation_token.cancel();
+                    }
+                    Some((prev_idx, _)) if reviewer.member_index < *prev_idx => {
+                        first_required_vote_failure =
+                            Some((reviewer.member_index, error));
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -1296,7 +1314,8 @@ where
     }
 
     // Now that all vote futures have been drained, propagate deferred errors.
-    if let Some(error) = first_required_vote_failure {
+    // Pick lowest-index failure for deterministic behavior (same as proposals).
+    if let Some((_, error)) = first_required_vote_failure {
         return Err(error);
     }
     if let Some(error) = deferred_vote_processing_error {
