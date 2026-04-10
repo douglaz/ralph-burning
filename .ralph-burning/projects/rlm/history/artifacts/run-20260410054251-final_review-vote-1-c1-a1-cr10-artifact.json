@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:01:48.524684491Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted all three amendments. Each identifies a concrete correctness or reliability gap in run lifecycle handling: boundary misclassification of resumed attempts, incomplete stale-run reconciliation dependent on stale lock metadata, and a review comment that the observed diff does not include required implementation changes.\n\n## Votes\n\n- `fr-10-3bf6da63`: Accept\n  This is a real edge-case correctness bug in `terminal_status_for_running_attempt()` when `run_resumed` is not yet durable; fallback to only `run_started` can select prior-attempt terminal events and misreport status. Using active snapshot metadata as fallback aligns terminal detection with in-memory attempt state and prevents incorrect stale/misclassified outcomes.\n- `fr-10-1089b525`: Accept\n  Gating stale reconciliation on `stale_recovery_owner.is_some()` is an isolation/robustness flaw because lock-owner files can disappear before recovery runs. The stale `Running` state can remain terminally inconsistent on disk, since resume can detect completion but skip snapshot rewrite. Recovery should be driven by stale state, not owner-file remnants.\n- `fr-10-8ba8c1df`: Accept\n  The described diff scope indicates no runtime logic changes in the cited core modules, so requested lifecycle hardening behaviors are not implemented by that patch. This is a valid blocker finding: behavior-level requirements (pid tracking, status/recovery fixes, interruption cleanup) remain unfulfilled.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 10
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T15:52:49.621934535Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound one issue: the change set is metadata-only and does not implement the requested core run lifecycle robustness behaviors. Only review bookkeeping artifacts changed.\n\n## Amendments\n\n1. Patch does not include any runtime implementation for the requested lifecycle hardening. `git diff` shows changes only in `.ralph-burning/projects/rlm/run.json` (`lines 15-37`, `52-72`) and `.ralph-burning/projects/rlm/journal.ndjson` (`lines 186-189`) and adds no edits to `src/adapters/fs.rs`, `src/cli/run.rs`, or `src/contexts/workflow_composition/engine.rs`. Therefore required behaviors for `run.pid` tracking, `run stop`, stale `run status` reporting, stale-run recovery in `run resume`, and signal-based interruption cleanup are not delivered by this change set.\n   Rationale: Critical correctness gap: this amendment set does not implement the features that are the stated acceptance criteria for bead `ralph-burning-rlm`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 10
+}

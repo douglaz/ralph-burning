@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr10-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:03:43.461515255Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept all three amendments. The code still misclassifies some stale resumed attempts, `run resume` gates stale reconciliation on leftover owner-file state when it should not, and the current change set contains no runtime implementation of the requested lifecycle hardening.\n\n## Votes\n\n- `fr-10-3bf6da63`: Accept\n  `terminal_status_for_running_attempt()` currently anchors only on durable `run_started`/`run_resumed` events. Resume writes `run.pid` and `run.json` before appending `run_resumed`, so a crash in that window leaves `snapshot.active_run.started_at` pointing at the new attempt with no durable boundary. The helper then falls back to the older `run_started` boundary and can incorrectly pick a prior `run_failed` or `run_completed`, causing `run status` and stale recovery paths to misclassify the run. Using active snapshot attempt metadata such as `active_run.started_at` as the fallback boundary, plus a regression test for this crash window, is technically correct.\n- `fr-10-1089b525`: Accept\n  `handle_resume()` only calls the pre-recovery reconciliation path when `stale_recovery_owner.is_some()`. If the stale writer-lock owner file has already disappeared, `run resume` acquires a fresh writer lease but skips reconciliation of the stale `Running` snapshot. In that case `resume_run_with_retry_internal()` can hit the `RunStatus::Running` branch, notice a durable `run_completed`, and return `already completed per journal` without rewriting `run.json`, leaving on-disk state stuck at `running`. Recovery should depend on stale running state after lock acquisition, not on whether an old owner string still exists, and this needs regression coverage.\n- `fr-10-8ba8c1df`: Accept\n  The current diff against `HEAD` changes only `.ralph-burning/projects/rlm/run.json` and `.ralph-burning/projects/rlm/journal.ndjson`; there are no source edits in `src/adapters/fs.rs`, `src/cli/run.rs`, or `src/contexts/workflow_composition/engine.rs`. That means the requested runtime behaviors for pid tracking, `run stop`, stale `run status`, stale-run recovery in `run resume`, and signal-cleanup hardening are not implemented by this change set.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}
