@@ -126,6 +126,19 @@ fn proc_start_ticks(pid: u32) -> u64 {
         .expect("parse start ticks")
 }
 
+fn live_pid_record_json(pid: u32, owner: &str) -> serde_json::Value {
+    let mut record = serde_json::json!({
+        "pid": pid,
+        "started_at": Utc::now(),
+        "owner": owner,
+    });
+    #[cfg(target_os = "linux")]
+    {
+        record["proc_start_ticks"] = serde_json::json!(proc_start_ticks(pid));
+    }
+    record
+}
+
 fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = project_root(base_dir, project_id);
     let long_artifact = format!("# Planning\n{}\n", "A".repeat(140));
@@ -5534,12 +5547,8 @@ fn run_status_keeps_daemon_owned_running_snapshot_active_with_live_pid_file() {
         .expect("write daemon writer lock");
     fs::write(
         project_root(temp_dir.path(), "alpha").join("run.pid"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "pid": std::process::id(),
-            "started_at": Utc::now(),
-            "owner": "daemon",
-        }))
-        .expect("serialize daemon pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(std::process::id(), "daemon"))
+            .expect("serialize daemon pid"),
     )
     .expect("write daemon pid");
 
@@ -5662,6 +5671,52 @@ fn run_status_reports_stale_daemon_owned_running_when_legacy_lease_expires() {
     .expect("write daemon lease");
     fs::write(leases_dir.join("writer-alpha.lock"), "lease-daemon-stale")
         .expect("write daemon writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: stale (process not found)"));
+    assert!(stdout.contains("run `ralph-burning run resume` to recover"));
+}
+
+#[test]
+fn run_status_reports_stale_when_pid_record_missing_proc_start_ticks() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-legacy-pid-status",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "pid": std::process::id(),
+            "started_at": Utc::now(),
+            "owner": "cli",
+        }))
+        .expect("serialize legacy pid"),
+    )
+    .expect("write legacy pid");
 
     let output = Command::new(binary())
         .args(["run", "status"])
@@ -5828,7 +5883,7 @@ fn run_stop_does_not_delete_pid_file_when_snapshot_is_not_running() {
 }
 
 #[test]
-fn run_stop_rejects_legacy_pid_record_without_proc_start_ticks() {
+fn run_stop_recovers_legacy_pid_record_without_proc_start_ticks_as_stale() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -5873,11 +5928,22 @@ fn run_stop_rejects_legacy_pid_record_without_proc_start_ticks() {
         .output()
         .expect("run stop");
 
-    assert!(!output.status.success(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("missing proc_start_ticks"),
-        "stop should refuse unsafe legacy pid records: {stderr}"
+        stdout.contains("Run was already stale for project 'alpha'"),
+        "stop should recover unsafe legacy pid records as stale instead of signaling blindly: {stdout}"
+    );
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "failed");
+    assert!(
+        !project_root(temp_dir.path(), "alpha")
+            .join("run.pid")
+            .exists(),
+        "stale recovery should remove the unsafe legacy pid marker"
     );
 
     let _ = child.kill();
@@ -5930,12 +5996,8 @@ fn run_stop_refuses_daemon_owned_running_snapshot() {
         .expect("write daemon writer lock");
     fs::write(
         project_root(temp_dir.path(), "alpha").join("run.pid"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "pid": std::process::id(),
-            "started_at": Utc::now(),
-            "owner": "daemon",
-        }))
-        .expect("serialize daemon pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(std::process::id(), "daemon"))
+            .expect("serialize daemon pid"),
     )
     .expect("write daemon pid");
 
@@ -10223,6 +10285,73 @@ fn cli_run_resume_recovers_stale_running_and_reclaims_writer_lock() {
     assert!(
         !leases_dir.join("cli-stale-resume.json").exists(),
         "stale cli lease record should be pruned during resume recovery"
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn cli_run_resume_reclaims_writer_lock_for_failed_snapshot_cleanup_crash() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "failed-cleanup-lock");
+    select_active_project_fixture(temp_dir.path(), "failed-cleanup-lock");
+
+    let fail_output = Command::new(binary())
+        .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "implementation")
+        .output()
+        .expect("run start to fail");
+    assert!(!fail_output.status.success());
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create lease dir");
+    let stranded_lease = CliWriterLease {
+        lease_id: "cli-failed-cleanup-lock".to_owned(),
+        project_id: "failed-cleanup-lock".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("cli-failed-cleanup-lock.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(stranded_lease.clone()))
+            .expect("serialize stranded cleanup lease"),
+    )
+    .expect("write stranded cleanup lease");
+    fs::write(
+        leases_dir.join("writer-failed-cleanup-lock.lock"),
+        &stranded_lease.lease_id,
+    )
+    .expect("write stranded cleanup lock");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+    assert!(
+        output.status.success(),
+        "resume should reclaim stranded cleanup lock: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "failed-cleanup-lock").join("run.json"))
+            .expect("read run.json");
+    assert!(
+        run_json.contains("\"completed\""),
+        "resume should finish after reclaiming stranded cleanup lock, got: {run_json}"
+    );
+    assert!(
+        !leases_dir.join("writer-failed-cleanup-lock.lock").exists(),
+        "stranded cleanup writer lock should be reclaimed before resume reacquires it"
+    );
+    assert!(
+        !leases_dir.join("cli-failed-cleanup-lock.json").exists(),
+        "stranded cleanup cli lease should be pruned during resume recovery"
     );
 }
 

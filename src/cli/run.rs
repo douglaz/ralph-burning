@@ -1519,7 +1519,6 @@ fn resume_attempt_has_exact_lineage(
 enum RunningSnapshotLiveness {
     CliProcess(crate::adapters::fs::RunPidRecord),
     DaemonProcess,
-    LegacyCliLease,
     LegacyDaemonLease,
     Stale,
 }
@@ -1556,11 +1555,11 @@ fn classify_running_snapshot_liveness(
         read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
     {
         if lease.project_id == project_id.as_str() {
-            return Ok(if lease.is_stale_at(Utc::now()) {
-                RunningSnapshotLiveness::Stale
-            } else {
-                RunningSnapshotLiveness::LegacyCliLease
-            });
+            // CLI-owned runs must have a pid marker with a start-time tuple.
+            // Without that, a fresh lease alone is not authoritative enough to
+            // block recovery because the owning process cannot be identified
+            // safely after PID reuse or a post-run cleanup crash.
+            return Ok(RunningSnapshotLiveness::Stale);
         }
     }
 
@@ -1593,6 +1592,28 @@ fn acquire_recovery_writer_guard(
         CLI_LEASE_TTL_SECONDS,
         CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
     )
+}
+
+fn observed_resume_recovery_owner(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    snapshot: &RunSnapshot,
+) -> AppResult<Option<String>> {
+    match snapshot.status {
+        RunStatus::Running => match classify_running_snapshot_liveness(base_dir, project_id)? {
+            RunningSnapshotLiveness::CliProcess(_) => Err(AppError::ResumeFailed {
+                reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
+            }),
+            RunningSnapshotLiveness::DaemonProcess | RunningSnapshotLiveness::LegacyDaemonLease => {
+                Err(AppError::ResumeFailed {
+                    reason: "project has a daemon-owned running run; wait for the daemon task to finish or stop it through daemon controls".to_owned(),
+                })
+            }
+            RunningSnapshotLiveness::Stale => read_project_writer_lock_owner(base_dir, project_id),
+        },
+        RunStatus::Failed | RunStatus::Paused => read_project_writer_lock_owner(base_dir, project_id),
+        RunStatus::NotStarted | RunStatus::Completed => Ok(None),
+    }
 }
 
 fn stale_status_summary() -> String {
@@ -1980,32 +2001,6 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
     let run_snapshot_read = FsRunSnapshotStore;
     let run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
-    let stale_recovery_owner = match run_snapshot.status {
-        RunStatus::Running => {
-            match classify_running_snapshot_liveness(&current_dir, &project_id)? {
-                RunningSnapshotLiveness::CliProcess(_) => {
-                    return Err(AppError::ResumeFailed {
-                    reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
-                });
-                }
-                RunningSnapshotLiveness::LegacyCliLease => {
-                    return Err(AppError::ResumeFailed {
-                    reason: "project has a legacy CLI-owned running run without a pid file; wait for it to finish or let its lease go stale before resuming".to_owned(),
-                });
-                }
-                RunningSnapshotLiveness::DaemonProcess
-                | RunningSnapshotLiveness::LegacyDaemonLease => {
-                    return Err(AppError::ResumeFailed {
-                    reason: "project has a daemon-owned running run; wait for the daemon task to finish or stop it through daemon controls".to_owned(),
-                });
-                }
-                RunningSnapshotLiveness::Stale => {
-                    read_project_writer_lock_owner(&current_dir, &project_id)?
-                }
-            }
-        }
-        _ => None,
-    };
     match run_snapshot.status {
         RunStatus::Failed | RunStatus::Paused | RunStatus::Running => {}
         RunStatus::NotStarted => {
@@ -2027,9 +2022,12 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             reason: "failed or paused snapshots must not retain an active run".to_owned(),
         });
     }
+    let stale_recovery_owner =
+        observed_resume_recovery_owner(&current_dir, &project_id, &run_snapshot)?;
 
     // Acquire the writer lock before any stale-run mutation so recovery never
-    // tears down a fresh owner that wins the race after we detect staleness.
+    // tears down a fresh owner that wins the race after we detect staleness or
+    // leaves behind a stranded post-run cleanup lease after a crash.
     let lock_guard = acquire_recovery_writer_guard(
         &current_dir,
         &current_dir,
@@ -2169,11 +2167,6 @@ async fn handle_stop() -> AppResult<()> {
         | RunningSnapshotLiveness::LegacyDaemonLease => Err(AppError::RunStopFailed {
             reason:
                 "run stop only supports CLI-owned runs; the active run is owned by a daemon task"
-                    .to_owned(),
-        }),
-        RunningSnapshotLiveness::LegacyCliLease => Err(AppError::RunStopFailed {
-            reason:
-                "run stop cannot safely signal a legacy CLI-owned run without a pid file; wait for it to finish or let the lease go stale before recovering"
                     .to_owned(),
         }),
         RunningSnapshotLiveness::Stale => {

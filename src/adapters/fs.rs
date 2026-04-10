@@ -336,11 +336,12 @@ impl FileSystem {
                 Err(_) => return false,
             }
 
-            if let Some(expected_ticks) = record.proc_start_ticks {
-                match Self::proc_start_ticks(record.pid) {
-                    Some(actual_ticks) if actual_ticks == expected_ticks => {}
-                    _ => return false,
-                }
+            let Some(expected_ticks) = record.proc_start_ticks else {
+                return false;
+            };
+            match Self::proc_start_ticks(record.pid) {
+                Some(actual_ticks) if actual_ticks == expected_ticks => {}
+                _ => return false,
             }
 
             !matches!(Self::proc_state(record.pid), Some('Z'))
@@ -5191,6 +5192,22 @@ mod tests {
         };
 
         assert!(!FileSystem::is_pid_alive(&record));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_liveness_rejects_live_process_without_start_ticks() {
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            proc_start_ticks: None,
+        };
+
+        assert!(
+            !FileSystem::is_pid_alive(&record),
+            "pid records without proc_start_ticks must not be treated as authoritative"
+        );
     }
 
     #[cfg(unix)]
