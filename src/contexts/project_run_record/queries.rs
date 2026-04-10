@@ -12,6 +12,53 @@ use super::model::{
     RuntimeLogEntry,
 };
 
+fn snapshot_run_id(snapshot: &RunSnapshot) -> Option<&str> {
+    snapshot
+        .active_run
+        .as_ref()
+        .map(|active_run| active_run.run_id.as_str())
+}
+
+fn event_run_id(event: &JournalEvent) -> Option<&str> {
+    event.details.get("run_id").and_then(|value| value.as_str())
+}
+
+/// Returns the durable terminal status for the current running attempt, if any.
+///
+/// Resumed attempts reuse the same `run_id`, so stale reconciliation must ignore
+/// terminal events that happened before the latest `run_started`/`run_resumed`
+/// boundary for the active attempt.
+pub fn terminal_status_for_running_attempt(
+    snapshot: &RunSnapshot,
+    events: &[JournalEvent],
+) -> Option<RunStatus> {
+    if snapshot.status != RunStatus::Running {
+        return None;
+    }
+    let run_id = snapshot_run_id(snapshot)?;
+    let boundary_sequence = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event_run_id(event) == Some(run_id)
+                && matches!(
+                    event.event_type,
+                    JournalEventType::RunStarted | JournalEventType::RunResumed
+                )
+        })
+        .map(|event| event.sequence)?;
+
+    events.iter().rev().find_map(|event| {
+        (event.sequence > boundary_sequence && event_run_id(event) == Some(run_id)).then_some(
+            match event.event_type {
+                JournalEventType::RunFailed => Some(RunStatus::Failed),
+                JournalEventType::RunCompleted => Some(RunStatus::Completed),
+                _ => None,
+            },
+        )?
+    })
+}
+
 /// Reconcile a snapshot's status against the journal's last terminal event.
 ///
 /// When a `fail_run()` snapshot write fails, `run.json` may still say `Running`
@@ -21,28 +68,8 @@ use super::model::{
 ///
 /// Returns `true` if the snapshot was patched.
 pub fn reconcile_snapshot_status(snapshot: &mut RunSnapshot, events: &[JournalEvent]) -> bool {
-    if snapshot.status != RunStatus::Running {
-        return false;
-    }
-    let Some(run_id) = snapshot
-        .active_run
-        .as_ref()
-        .map(|active_run| active_run.run_id.as_str())
-    else {
-        return false;
-    };
-
-    let last_terminal_for_run = events.iter().rev().find_map(|event| {
-        (event.details.get("run_id").and_then(|value| value.as_str()) == Some(run_id)
-            && matches!(
-                event.event_type,
-                JournalEventType::RunFailed | JournalEventType::RunCompleted
-            ))
-        .then_some(event.event_type.clone())
-    });
-
-    match last_terminal_for_run {
-        Some(JournalEventType::RunFailed) => {
+    match terminal_status_for_running_attempt(snapshot, events) {
+        Some(RunStatus::Failed) => {
             eprintln!(
                 "status: snapshot shows Running but journal has run_failed — \
                  reporting as Failed (stale snapshot from failed write)"
@@ -52,7 +79,7 @@ pub fn reconcile_snapshot_status(snapshot: &mut RunSnapshot, events: &[JournalEv
             snapshot.status_summary = "failed (reconciled from journal)".to_owned();
             true
         }
-        Some(JournalEventType::RunCompleted) => {
+        Some(RunStatus::Completed) => {
             eprintln!(
                 "status: snapshot shows Running but journal has run_completed — \
                  reporting as Completed (stale snapshot from failed write)"

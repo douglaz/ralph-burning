@@ -5552,6 +5552,54 @@ fn run_status_ignores_older_terminal_journal_events_for_different_run_id() {
 }
 
 #[test]
+fn run_status_ignores_terminal_journal_events_before_latest_resume_for_same_run_id() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-current",
+    "stage_cursor": { "stage": "implementation", "cycle": 2, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-current","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:15:00Z","event_type":"run_failed","details":{"run_id":"run-current","stage_id":"review","failure_class":"stage_failure","message":"older attempt failed","completion_rounds":1,"max_completion_rounds":20}}
+{"sequence":4,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_resumed","details":{"run_id":"run-current","resume_stage":"implementation","cycle":2,"completion_round":1,"max_completion_rounds":20}}
+{"sequence":5,"timestamp":"2026-04-01T10:21:00Z","event_type":"stage_entered","details":{"run_id":"run-current","stage_id":"implementation","cycle":2,"attempt":1}}"#,
+    )
+    .expect("write journal");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: stale (process not found)"));
+    assert!(
+        !stdout.contains("Status: failed"),
+        "an older failed attempt for the same run_id must not override the active resumed attempt: {stdout}"
+    );
+}
+
+#[test]
 fn run_status_keeps_daemon_owned_running_snapshot_active_with_live_pid_file() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -5946,6 +5994,79 @@ fn run_stop_terminates_pid_and_marks_snapshot_failed() {
     assert!(
         !child_status.success(),
         "sleep child should not exit successfully after stop: {child_status:?}"
+    );
+}
+
+#[test]
+fn run_stop_preserves_completed_journal_outcome_for_stale_running_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-completed",
+    "stage_cursor": { "stage": "review", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Review"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-stop-completed","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_completed","details":{"run_id":"run-stop-completed","completion_rounds":1,"max_completion_rounds":20}}"#,
+    )
+    .expect("write journal");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let stale_lease = CliWriterLease {
+        lease_id: "cli-stop-completed".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::seconds(301),
+    };
+    fs::write(
+        leases_dir.join("cli-stop-completed.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(stale_lease.clone()))
+            .expect("serialize stale stop lease"),
+    )
+    .expect("write stale stop lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), &stale_lease.lease_id)
+        .expect("write stale stop writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("already completed"),
+        "stop should report the durable completed outcome instead of rewriting to failed: {stdout}"
+    );
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "completed");
+    assert_eq!(
+        run_json["status_summary"],
+        "completed (reconciled from journal)"
     );
 }
 
@@ -6363,6 +6484,82 @@ fn run_resume_refuses_legacy_daemon_owned_running_without_pid_file() {
     assert!(
         leases_dir.join("lease-daemon-legacy-resume.json").exists(),
         "legacy daemon lease must not be reclaimed while it is still fresh"
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn run_resume_preserves_completed_journal_outcome_for_stale_running_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-resume-completed",
+    "stage_cursor": { "stage": "review", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Review"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-resume-completed","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_completed","details":{"run_id":"run-resume-completed","completion_rounds":1,"max_completion_rounds":20}}"#,
+    )
+    .expect("write journal");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let stale_lease = CliWriterLease {
+        lease_id: "cli-resume-completed".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::seconds(301),
+    };
+    fs::write(
+        leases_dir.join("cli-resume-completed.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(stale_lease.clone()))
+            .expect("serialize stale resume lease"),
+    )
+    .expect("write stale resume lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), &stale_lease.lease_id)
+        .expect("write stale resume writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already completed"),
+        "resume should refuse when the journal already completed the run: {stderr}"
+    );
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "completed");
+    assert_eq!(
+        run_json["status_summary"],
+        "completed (reconciled from journal)"
     );
 }
 

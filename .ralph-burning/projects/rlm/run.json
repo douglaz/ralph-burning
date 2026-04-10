@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 10
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-9-fc2b4c4f",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "Preserve journal-terminal outcomes before stale-owner recovery in `run resume`/`run stop`. `src/cli/run.rs:2117-2132`, `src/cli/run.rs:2263-2277`, and `src/cli/run.rs:2349-2363` now unconditionally call `recover_stale_running_snapshot` once the writer lease is claimed. That bypasses the existing journal-first reconciliation in `src/contexts/workflow_composition/engine.rs:1449-1504`, which is the code that distinguishes 'snapshot write missed a durable run_failed' from 'snapshot write missed a durable run_completed'. If the previous orchestrator already appended `run_completed` or `run_failed` and only the snapshot write failed, these new CLI paths will rewrite the run to `Failed` with an interruption/cancellation summary, and `run resume` can then restart a run that should have stayed terminal.",
-        "created_at": "2026-04-10T15:43:05.658934465Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "c281b7f94559094de1f0da135d478a2831d42fc46cdc8972bab95ddd4579b157"
-      },
-      {
-        "amendment_id": "fr-9-5fed1ae0",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "Make status reconciliation attempt-aware before trusting terminal journal events. The updated `reconcile_snapshot_status` in `src/contexts/project_run_record/queries.rs:27-40` now filters by `run_id`, but resumed attempts reuse the same run id (`tests/unit/workflow_engine_test.rs:3792-3800`). A live resumed run therefore still has an older `run_failed` for that same `run_id`, and `handle_status` (`src/cli/run.rs:5744-5749`) will incorrectly patch the current Running snapshot to Failed/Completed even though the resumed attempt is still active. The reconciliation needs to ignore terminal events that occurred before the most recent `run_started`/`run_resumed` boundary for the current attempt.",
-        "created_at": "2026-04-10T15:43:05.658937090Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "5abb4ad6b2022cefc6779095429df2d0332ad209de1fc21c45a56b5fd155a1aa"
-      }
-    ],
-    "processed_count": 24
+    "pending": [],
+    "processed_count": 26
   },
-  "status_summary": "running: final review restart round 10 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-10T15:31:11.383616325Z",

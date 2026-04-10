@@ -61,7 +61,7 @@ use crate::contexts::project_run_record::model::{
 use crate::contexts::project_run_record::queries::{RunStatusJsonView, RunStatusView};
 use crate::contexts::project_run_record::service::{
     self, ArtifactStorePort, JournalStorePort, ProjectStorePort, RunSnapshotPort,
-    RuntimeLogStorePort,
+    RunSnapshotWritePort, RuntimeLogStorePort, RuntimeLogWritePort,
 };
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
@@ -1922,6 +1922,100 @@ fn recover_stale_running_snapshot(
     )
 }
 
+enum ClaimedRunningSnapshotOutcome {
+    NotRunning(RunSnapshot),
+    JournalFailed,
+    JournalCompleted(RunSnapshot),
+    RecoveredAsInterrupted,
+}
+
+fn reconcile_or_recover_claimed_running_snapshot(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    stale_summary: impl Into<String>,
+    stale_log_message: impl Into<String>,
+    stale_failure_class: &str,
+) -> AppResult<ClaimedRunningSnapshotOutcome> {
+    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
+    if snapshot.status != RunStatus::Running {
+        return Ok(ClaimedRunningSnapshotOutcome::NotRunning(snapshot));
+    }
+
+    let journal_events = FsJournalStore.read_journal(base_dir, project_id)?;
+    match crate::contexts::project_run_record::queries::terminal_status_for_running_attempt(
+        &snapshot,
+        &journal_events,
+    ) {
+        Some(RunStatus::Failed) => {
+            eprintln!(
+                "run lifecycle: snapshot shows Running but journal has run_failed — \
+                 reconciling snapshot to Failed"
+            );
+            engine::mark_running_run_interrupted(
+                &FsRunSnapshotStore,
+                &FsRunSnapshotWriteStore,
+                &FsJournalStore,
+                &FsRuntimeLogWriteStore,
+                base_dir,
+                project_id,
+                engine::InterruptedRunUpdate {
+                    summary: "failed (reconciled from journal)",
+                    log_message:
+                        "reconciled stale running snapshot from durable run_failed journal event",
+                    failure_class: None,
+                },
+            )?;
+            let _ = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
+            Ok(ClaimedRunningSnapshotOutcome::JournalFailed)
+        }
+        Some(RunStatus::Completed) => {
+            eprintln!(
+                "run lifecycle: snapshot shows Running but journal has run_completed — \
+                 reconciling snapshot to Completed"
+            );
+            let mut reconciled = snapshot;
+            if let Some(resolution) = reconciled
+                .active_run
+                .as_ref()
+                .and_then(|active_run| active_run.stage_resolution_snapshot.clone())
+            {
+                reconciled.last_stage_resolution_snapshot = Some(resolution);
+            }
+            reconciled.status = RunStatus::Completed;
+            reconciled.active_run = None;
+            reconciled.status_summary = "completed (reconciled from journal)".to_owned();
+            FsRunSnapshotWriteStore.write_run_snapshot(base_dir, project_id, &reconciled)?;
+            let _ = FileSystem::remove_pid_file(base_dir, project_id);
+            let _ = FsRuntimeLogWriteStore.append_runtime_log(
+                base_dir,
+                project_id,
+                &crate::contexts::project_run_record::model::RuntimeLogEntry {
+                    timestamp: Utc::now(),
+                    level: crate::contexts::project_run_record::model::LogLevel::Warn,
+                    source: "run-cli".to_owned(),
+                    message:
+                        "reconciled stale running snapshot from durable run_completed journal event"
+                            .to_owned(),
+                },
+            );
+            Ok(ClaimedRunningSnapshotOutcome::JournalCompleted(
+                FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?,
+            ))
+        }
+        _ => {
+            recover_stale_running_snapshot(
+                base_dir,
+                project_id,
+                stale_summary,
+                stale_log_message,
+                stale_failure_class,
+            )?;
+            let _ = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
+            Ok(ClaimedRunningSnapshotOutcome::RecoveredAsInterrupted)
+        }
+    }
+}
+
 async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
@@ -2114,13 +2208,8 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     .map_err(|error| AppError::ResumeFailed {
         reason: format!("failed to acquire writer lease for resume: {error}"),
     })?;
-    if stale_recovery_owner.is_some()
-        && run_snapshot_read
-            .read_run_snapshot(&current_dir, &project_id)?
-            .status
-            == RunStatus::Running
-    {
-        recover_stale_running_snapshot(
+    if stale_recovery_owner.is_some() {
+        match reconcile_or_recover_claimed_running_snapshot(
             &current_dir,
             &project_id,
             "failed (stale running snapshot recovered for resume)",
@@ -2129,7 +2218,22 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
         )
         .map_err(|error| AppError::ResumeFailed {
             reason: format!("stale run recovery failed before resume: {error}"),
-        })?;
+        })? {
+            ClaimedRunningSnapshotOutcome::JournalCompleted(snapshot)
+                if snapshot.status == RunStatus::Completed =>
+            {
+                lock_guard.close().map_err(|error| AppError::ResumeFailed {
+                    reason: format!(
+                        "failed to release writer lease after completed-run reconciliation: {error}"
+                    ),
+                })?;
+                return Err(AppError::ResumeFailed {
+                    reason: "project is already completed per journal; there is nothing to resume"
+                        .to_owned(),
+                });
+            }
+            _ => {}
+        }
     }
 
     let cli_overrides = parse_cli_backend_overrides(&overrides)?;
@@ -2260,29 +2364,45 @@ async fn handle_stop() -> AppResult<()> {
                             "failed to acquire writer lease for stale stop recovery: {error}"
                         ),
                     })?;
-            if run_snapshot_read
-                .read_run_snapshot(&current_dir, &project_id)?
-                .status
-                == RunStatus::Running
-            {
-                recover_stale_running_snapshot(
-                    &current_dir,
-                    &project_id,
-                    "failed (stale running snapshot recovered by stop)",
-                    "run stop reconciled a stale running snapshot after claiming the writer lease",
-                    "interruption",
-                )
-                .map_err(|error| AppError::RunStopFailed {
-                    reason: format!("failed to recover stale run before stop: {error}"),
-                })?;
-            }
+            let outcome = reconcile_or_recover_claimed_running_snapshot(
+                &current_dir,
+                &project_id,
+                "failed (stale running snapshot recovered by stop)",
+                "run stop reconciled a stale running snapshot after claiming the writer lease",
+                "interruption",
+            )
+            .map_err(|error| AppError::RunStopFailed {
+                reason: format!("failed to recover stale run before stop: {error}"),
+            })?;
             guard.close().map_err(|error| AppError::RunStopFailed {
                 reason: format!("failed to release recovery writer lease after stop: {error}"),
             })?;
-            println!(
-                "Run was already stale for project '{}'; snapshot marked failed and ready for resume.",
-                project_id
-            );
+            match outcome {
+                ClaimedRunningSnapshotOutcome::RecoveredAsInterrupted => println!(
+                    "Run was already stale for project '{}'; snapshot marked failed and ready for resume.",
+                    project_id
+                ),
+                ClaimedRunningSnapshotOutcome::JournalCompleted(_)
+                | ClaimedRunningSnapshotOutcome::NotRunning(RunSnapshot {
+                    status: RunStatus::Completed,
+                    ..
+                }) => println!(
+                    "Run for project '{}' was already completed; no stop was required.",
+                    project_id
+                ),
+                ClaimedRunningSnapshotOutcome::JournalFailed
+                | ClaimedRunningSnapshotOutcome::NotRunning(RunSnapshot {
+                    status: RunStatus::Failed,
+                    ..
+                }) => println!(
+                    "Run for project '{}' was already failed and remains ready for resume.",
+                    project_id
+                ),
+                ClaimedRunningSnapshotOutcome::NotRunning(snapshot) => println!(
+                    "Run for project '{}' exited during stop with status '{}'.",
+                    project_id, snapshot.status
+                ),
+            }
             Ok(())
         }
         RunningSnapshotLiveness::CliProcess(pid_record) => {
@@ -2351,7 +2471,7 @@ async fn handle_stop() -> AppResult<()> {
                         classify_running_snapshot_liveness(&current_dir, &project_id)?,
                         RunningSnapshotLiveness::Stale
                     ) {
-                    recover_stale_running_snapshot(
+                    match reconcile_or_recover_claimed_running_snapshot(
                         &current_dir,
                         &project_id,
                         "failed (stopped by user; run `ralph-burning run resume` to continue)",
@@ -2360,11 +2480,32 @@ async fn handle_stop() -> AppResult<()> {
                     )
                     .map_err(|error| AppError::RunStopFailed {
                         reason: format!("failed to finalize stopped run state: {error}"),
-                    })?;
-                    format!(
-                        "Stopped run for project '{}' ({stop_outcome}); run `ralph-burning run resume` to continue.",
-                        project_id
-                    )
+                    })? {
+                        ClaimedRunningSnapshotOutcome::RecoveredAsInterrupted => format!(
+                            "Stopped run for project '{}' ({stop_outcome}); run `ralph-burning run resume` to continue.",
+                            project_id
+                        ),
+                        ClaimedRunningSnapshotOutcome::JournalCompleted(_)
+                        | ClaimedRunningSnapshotOutcome::NotRunning(RunSnapshot {
+                            status: RunStatus::Completed,
+                            ..
+                        }) => format!(
+                            "Run for project '{}' exited during stop with status 'completed'.",
+                            project_id
+                        ),
+                        ClaimedRunningSnapshotOutcome::JournalFailed
+                        | ClaimedRunningSnapshotOutcome::NotRunning(RunSnapshot {
+                            status: RunStatus::Failed,
+                            ..
+                        }) => format!(
+                            "Run for project '{}' exited during stop with status 'failed'.",
+                            project_id
+                        ),
+                        ClaimedRunningSnapshotOutcome::NotRunning(snapshot) => format!(
+                            "Run for project '{}' exited during stop with status '{}'.",
+                            project_id, snapshot.status
+                        ),
+                    }
                 } else {
                     if FileSystem::read_pid_file(&current_dir, &project_id)?
                         .as_ref()
