@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T14:51:03.733926332Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI recommend accepting the two liveness/ownership correctness fixes and rejecting the immediate missing-PID recovery override. The first two amendments close concrete correctness/safety gaps around stale resources and process identity, while the third sacrifices an existing positive-liveness signal and is safer to keep as a conservative fallback unless a stronger explicit override is added.\n\n## Votes\n\n- `fr-7-45babe55`: Accept\n  This addresses a real stale-lock wedge: a run can transition to resumable `failed/paused` while the CLI still holds a writer lease guard and dies before cleanup. Restricting stale-owner reclaim to `running` misses this transition and can permanently block resume with `ProjectWriterLockHeld`, so extending recovery scope improves correctness and operator recoverability without weakening live-owner safety.\n- `fr-7-cee54496`: Accept\n  Using PID liveness alone when `proc_start_ticks` is missing is unreliable, especially with PID reuse. It can misidentify an unrelated process as the orchestrator, impacting both status/recovery and non-Linux stop behavior, which may terminate the wrong process. Treating missing start-time as stale/unsafe (or adding equivalent platform checks) is a clear safety hardening change.\n- `fr-7-81e934dc`: Reject\n  This proposal optimizes availability but can introduce false-positive reclamation. A fresh writer lease on missing `run.pid` is currently the only trustworthy indicator for mixed-version/legacy owners; forcing immediate stale classification would race against legitimate in-progress legacy daemons/CLI instances. The 5-minute TTL is a deliberate safety delay rather than a correctness defect unless a stronger explicit override or alternative liveness proof is added.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 7
+}

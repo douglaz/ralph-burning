@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 7
+      "completion_round": 8
     },
     "started_at": "2026-04-10T13:01:46.204377009Z",
     "prompt_hash_at_cycle_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "prompt_hash_at_stage_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 6
+    "final_review_restart_count": 7
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 7,
+  "completion_rounds": 8,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-7-45babe55",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "Extend `run resume` stale-owner recovery beyond `RunStatus::Running`. In `src/cli/run.rs:1983-2038`, the code only captures/reclaims an observed writer owner when the snapshot still says `running`, but the CLI does not actually close its `CliWriterLeaseGuard` until much later (`src/cli/run.rs:1950-1953` and `src/cli/run.rs:2130-2132`) after post-run sync. If the orchestrator dies after the engine has already written a resumable `failed`/`paused` snapshot but before `close()` runs, the orphaned `writer-*.lock` survives and the next `run resume` goes straight into `CliWriterLeaseGuard::acquire`, which fails with `ProjectWriterLockHeld`. Reclaim or ignore stale writer owners for resumable snapshots too, otherwise SIGTERM/OOM during post-run cleanup still wedges the run.",
+        "created_at": "2026-04-10T14:53:15.018537540Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "488e35305181cb71a247aada864c80b1f891ebad5e10e963a7004499f5b698e8"
+      },
+      {
+        "amendment_id": "fr-7-cee54496",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "Do not treat `run.pid` records without `proc_start_ticks` as authoritative liveness. `FileSystem::is_pid_alive` in `src/adapters/fs.rs:329-347` returns true for any live PID when `proc_start_ticks` is `None`, `classify_running_snapshot_liveness` in `src/cli/run.rs:1531-1539` uses that to block `status`/`resume`, and the non-Linux stop path in `src/cli/run.rs:1705-1710` plus `src/cli/run.rs:1740-1753` will signal that PID directly. After PID reuse, a stale or legacy `run.pid` can therefore make an unrelated process look like the orchestrator, and on non-Linux `run stop` can send SIGTERM/SIGKILL to the wrong process. Treat missing `proc_start_ticks` as unsafe/stale everywhere, or add a platform-specific equivalent start-time check before trusting the PID.",
+        "created_at": "2026-04-10T14:53:15.018540536Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "0d9576180e92af18e821be49abe5eba5ca857eaaede7e1c28914759b6c3636eb"
+      }
+    ],
     "processed_count": 19
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 8 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-10T14:04:18.845189592Z",
+    "resolved_at": "2026-04-10T14:38:31.229898558Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T14:39:19.139787224Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nNo source-code regressions were found in the requested lifecycle areas. The working-tree diff only updates `.ralph-burning/projects/rlm/journal.ndjson` and `.ralph-burning/projects/rlm/run.json`, so there are no new runtime changes to review in this cycle (PID liveness, `run stop`, stale `run status`, automatic resume recovery, PID cleanup/signals are already present in current implementation files).\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 7
+}
