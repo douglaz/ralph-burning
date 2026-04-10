@@ -143,10 +143,19 @@ fn parse_failpoint_config(raw: &str) -> Option<(Option<&str>, u32)> {
     Some((Some(project_id), threshold.parse().ok()?))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPidOwner {
+    #[default]
+    Cli,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunPidRecord {
     pub pid: u32,
     pub started_at: DateTime<Utc>,
+    #[serde(default)]
+    pub owner: RunPidOwner,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proc_start_ticks: Option<u64>,
 }
@@ -271,11 +280,16 @@ impl FileSystem {
         format!("{:x}", hasher.finalize())
     }
 
-    pub fn write_pid_file(base_dir: &Path, project_id: &ProjectId) -> AppResult<RunPidRecord> {
+    pub fn write_pid_file(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        owner: RunPidOwner,
+    ) -> AppResult<RunPidRecord> {
         let project_root = Self::ensure_live_project_root(base_dir, project_id)?;
         let record = RunPidRecord {
             pid: std::process::id(),
             started_at: Utc::now(),
+            owner,
             proc_start_ticks: Self::proc_start_ticks(std::process::id()),
         };
         Self::write_atomic(
@@ -5149,13 +5163,15 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let project_id = ProjectId::new("pid-roundtrip".to_owned()).expect("project id");
 
-        let written = FileSystem::write_pid_file(temp.path(), &project_id).expect("write pid file");
+        let written = FileSystem::write_pid_file(temp.path(), &project_id, RunPidOwner::Cli)
+            .expect("write pid file");
         let read_back = FileSystem::read_pid_file(temp.path(), &project_id)
             .expect("read pid file")
             .expect("pid file present");
 
         assert_eq!(read_back.pid, written.pid);
         assert_eq!(read_back.started_at, written.started_at);
+        assert_eq!(read_back.owner, RunPidOwner::Cli);
         assert!(FileSystem::is_pid_alive(&read_back));
 
         FileSystem::remove_pid_file(temp.path(), &project_id).expect("remove pid file");
@@ -5169,6 +5185,7 @@ mod tests {
         let record = RunPidRecord {
             pid: 999_999,
             started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
             proc_start_ticks: None,
         };
 

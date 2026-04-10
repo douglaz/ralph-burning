@@ -5475,6 +5475,66 @@ fn run_status_json_reports_stale_running_when_pid_file_is_missing() {
 }
 
 #[test]
+fn run_status_keeps_daemon_owned_running_snapshot_active_without_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-daemon",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let worktree_lease = WorktreeLease {
+        lease_id: "lease-daemon-alpha".to_owned(),
+        task_id: "task-daemon-alpha".to_owned(),
+        project_id: "alpha".to_owned(),
+        worktree_path: temp_dir.path().join("worktrees/task-daemon-alpha"),
+        branch_name: "task-daemon-alpha".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-daemon-alpha.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(worktree_lease))
+            .expect("serialize daemon lease"),
+    )
+    .expect("write daemon lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), "lease-daemon-alpha")
+        .expect("write daemon writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: running"));
+    assert!(
+        !stdout.contains("stale"),
+        "daemon-owned running snapshot should not be reported as stale: {stdout}"
+    );
+}
+
+#[test]
 fn run_stop_terminates_pid_and_marks_snapshot_failed() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -5566,6 +5626,13 @@ fn run_stop_terminates_pid_and_marks_snapshot_failed() {
         !leases_dir.join("cli-stop-test.json").exists(),
         "stale cli lease should be pruned after stop"
     );
+    let journal = fs::read_to_string(project_root(temp_dir.path(), "alpha").join("journal.ndjson"))
+        .expect("read journal");
+    let last_line = journal.lines().last().expect("journal should not be empty");
+    assert!(
+        last_line.contains("\"run_failed\""),
+        "run stop should append a durable run_failed event, got: {last_line}"
+    );
 
     let child_status = child.wait().expect("wait for stopped child");
     assert!(
@@ -5615,6 +5682,75 @@ fn run_stop_does_not_delete_pid_file_when_snapshot_is_not_running() {
     assert!(
         pid_path.exists(),
         "run stop should not delete a live pid file when the snapshot is not running"
+    );
+}
+
+#[test]
+fn run_stop_refuses_daemon_owned_running_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-daemon-stop",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let worktree_lease = WorktreeLease {
+        lease_id: "lease-daemon-stop".to_owned(),
+        task_id: "task-daemon-stop".to_owned(),
+        project_id: "alpha".to_owned(),
+        worktree_path: temp_dir.path().join("worktrees/task-daemon-stop"),
+        branch_name: "task-daemon-stop".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-daemon-stop.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(worktree_lease))
+            .expect("serialize daemon lease"),
+    )
+    .expect("write daemon lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), "lease-daemon-stop")
+        .expect("write daemon writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("daemon task"),
+        "stop should explain why daemon-owned runs are refused: {stderr}"
+    );
+    let run_json = fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
+        .expect("read run.json");
+    assert!(
+        run_json.contains("\"status\": \"running\""),
+        "daemon-owned run should remain running after refused stop: {run_json}"
+    );
+    assert!(
+        leases_dir.join("writer-alpha.lock").exists(),
+        "daemon writer lock should remain intact after refused stop"
     );
 }
 

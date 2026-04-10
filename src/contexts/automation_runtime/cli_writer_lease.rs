@@ -48,12 +48,69 @@ fn writer_lock_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
         .join(format!("writer-{}.lock", project_id.as_str()))
 }
 
-fn read_writer_lock_owner(base_dir: &Path, project_id: &ProjectId) -> AppResult<Option<String>> {
+pub(crate) fn read_project_writer_lock_owner(
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<Option<String>> {
     match fs::read_to_string(writer_lock_path(base_dir, project_id)) {
         Ok(owner) => Ok(Some(owner)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+fn read_lease_record_if_present(
+    store: &dyn DaemonStorePort,
+    base_dir: &Path,
+    lease_id: &str,
+) -> AppResult<Option<LeaseRecord>> {
+    match store.read_lease_record(base_dir, lease_id) {
+        Ok(record) => Ok(Some(record)),
+        Err(AppError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn read_project_writer_lease_record(
+    store: &dyn DaemonStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<Option<(String, LeaseRecord)>> {
+    let Some(owner) = read_project_writer_lock_owner(base_dir, project_id)? else {
+        return Ok(None);
+    };
+    Ok(read_lease_record_if_present(store, base_dir, &owner)?.map(|record| (owner, record)))
+}
+
+pub fn reclaim_specific_cli_writer_lease(
+    store: &dyn DaemonStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    expected_owner: &str,
+) -> AppResult<bool> {
+    let Some(current_owner) = read_project_writer_lock_owner(base_dir, project_id)? else {
+        return Ok(false);
+    };
+    if current_owner != expected_owner {
+        return Ok(false);
+    }
+
+    let Some(record) = read_lease_record_if_present(store, base_dir, expected_owner)? else {
+        return Ok(false);
+    };
+    let LeaseRecord::CliWriter(lease) = record else {
+        return Ok(false);
+    };
+    if lease.project_id != project_id.as_str() {
+        return Ok(false);
+    }
+
+    match store.release_writer_lock(base_dir, project_id, expected_owner)? {
+        WriterLockReleaseOutcome::Released | WriterLockReleaseOutcome::AlreadyAbsent => {}
+        WriterLockReleaseOutcome::OwnerMismatch { .. } => return Ok(false),
+    }
+    let _ = store.remove_lease(base_dir, expected_owner)?;
+    Ok(true)
 }
 
 /// Best-effort stale CLI lease cleanup for a project after the owning CLI
@@ -75,21 +132,11 @@ pub fn reclaim_stale_project_writer_lease(
         })
         .collect::<Vec<_>>();
 
-    let mut expected_owner = read_writer_lock_owner(base_dir, project_id)?;
-    let mut attempts = 0usize;
-    while let Some(owner) = expected_owner.take() {
-        attempts += 1;
-        match store.release_writer_lock(base_dir, project_id, &owner)? {
-            WriterLockReleaseOutcome::Released | WriterLockReleaseOutcome::AlreadyAbsent => break,
-            WriterLockReleaseOutcome::OwnerMismatch { actual_owner } => {
-                if attempts >= 3 {
-                    return Err(AppError::Io(std::io::Error::other(format!(
-                        "stale writer lock for project '{}' changed ownership during recovery; final owner '{actual_owner}'",
-                        project_id
-                    ))));
-                }
-                expected_owner = Some(actual_owner);
-            }
+    if let Some(owner) = read_project_writer_lock_owner(base_dir, project_id)? {
+        if cli_lease_ids.iter().any(|lease_id| lease_id == &owner)
+            && !reclaim_specific_cli_writer_lease(store, base_dir, project_id, &owner)?
+        {
+            return Ok(());
         }
     }
 
@@ -544,5 +591,58 @@ mod tests {
         FsDaemonStore
             .release_writer_lock(temp.path(), &project_id, "after-stale-cleanup")
             .expect("cleanup post-test writer lock");
+    }
+
+    #[test]
+    fn reclaim_specific_cli_writer_lease_preserves_replaced_owner() {
+        let temp = tempdir().expect("tempdir");
+        let project_id = ProjectId::new("stale-cli-race".to_owned()).expect("valid id");
+        let stale_lease = CliWriterLease {
+            lease_id: "cli-stale-race".to_owned(),
+            project_id: project_id.to_string(),
+            owner: "cli".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: Utc::now(),
+        };
+        let fresh_lease = CliWriterLease {
+            lease_id: "cli-fresh-race".to_owned(),
+            project_id: project_id.to_string(),
+            owner: "cli".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: Utc::now(),
+        };
+        FsDaemonStore
+            .write_lease_record(temp.path(), &LeaseRecord::CliWriter(stale_lease.clone()))
+            .expect("write stale cli lease");
+        FsDaemonStore
+            .write_lease_record(temp.path(), &LeaseRecord::CliWriter(fresh_lease.clone()))
+            .expect("write fresh cli lease");
+        FsDaemonStore
+            .acquire_writer_lock(temp.path(), &project_id, &fresh_lease.lease_id)
+            .expect("acquire fresh writer lock");
+
+        let reclaimed = reclaim_specific_cli_writer_lease(
+            &FsDaemonStore,
+            temp.path(),
+            &project_id,
+            &stale_lease.lease_id,
+        )
+        .expect("reclaim should not fail");
+
+        assert!(
+            !reclaimed,
+            "reclaim should refuse to remove a replaced owner"
+        );
+        assert!(
+            FsDaemonStore
+                .read_lease_record(temp.path(), &fresh_lease.lease_id)
+                .is_ok(),
+            "fresh cli lease must remain intact"
+        );
+        FsDaemonStore
+            .release_writer_lock(temp.path(), &project_id, &fresh_lease.lease_id)
+            .expect("cleanup fresh writer lock");
     }
 }

@@ -28,9 +28,11 @@ use crate::adapters::worktree::WorktreeAdapter;
 use crate::composition::agent_execution_builder;
 use crate::contexts::agent_execution::model::CancellationToken;
 use crate::contexts::automation_runtime::cli_writer_lease::{
-    reclaim_stale_project_writer_lease, CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    read_project_writer_lease_record, read_project_writer_lock_owner,
+    reclaim_specific_cli_writer_lease, CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
     CLI_LEASE_TTL_SECONDS,
 };
+use crate::contexts::automation_runtime::LeaseRecord;
 use crate::contexts::milestone_record::bundle::{planned_bead_membership_refs, MilestoneBundle};
 use crate::contexts::milestone_record::controller::{
     self as milestone_controller, ControllerBeadStatus, ControllerTaskStatus,
@@ -1503,12 +1505,51 @@ fn resume_attempt_has_exact_lineage(
         .any(|entry| lineage_entry_matches_attempt(entry, project_id.as_str(), run_id, started_at)))
 }
 
-fn running_snapshot_process_is_alive(
+enum RunningSnapshotLiveness {
+    CliProcess(crate::adapters::fs::RunPidRecord),
+    DaemonLease,
+    Stale,
+}
+
+fn classify_running_snapshot_liveness(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
-) -> AppResult<bool> {
-    Ok(FileSystem::read_pid_file(base_dir, project_id)?
-        .is_some_and(|record| FileSystem::is_pid_alive(&record)))
+) -> AppResult<RunningSnapshotLiveness> {
+    if let Some(record) = FileSystem::read_pid_file(base_dir, project_id)? {
+        if FileSystem::is_pid_alive(&record) {
+            return Ok(RunningSnapshotLiveness::CliProcess(record));
+        }
+    }
+
+    if let Some((_owner, LeaseRecord::Worktree(lease))) =
+        read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
+    {
+        if lease.project_id == project_id.as_str() && !lease.is_stale_at(Utc::now()) {
+            return Ok(RunningSnapshotLiveness::DaemonLease);
+        }
+    }
+
+    Ok(RunningSnapshotLiveness::Stale)
+}
+
+fn acquire_recovery_writer_guard(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    observed_owner: Option<&str>,
+) -> AppResult<CliWriterLeaseGuard> {
+    if let Some(owner) = observed_owner {
+        let _ = reclaim_specific_cli_writer_lease(&FsDaemonStore, base_dir, project_id, owner)?;
+    }
+
+    let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
+        Arc::new(FsDaemonStore);
+    CliWriterLeaseGuard::acquire(
+        Arc::clone(&daemon_store),
+        base_dir,
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )
 }
 
 fn stale_status_summary() -> String {
@@ -1594,20 +1635,23 @@ fn recover_stale_running_snapshot(
     project_id: &ProjectId,
     summary: impl Into<String>,
     log_message: impl Into<String>,
+    failure_class: &str,
 ) -> AppResult<bool> {
-    let recovered = engine::mark_running_run_interrupted(
+    let summary = summary.into();
+    let log_message = log_message.into();
+    engine::mark_running_run_interrupted(
         &FsRunSnapshotStore,
         &FsRunSnapshotWriteStore,
+        &FsJournalStore,
         &FsRuntimeLogWriteStore,
         base_dir,
         project_id,
-        summary,
-        log_message,
-    )?;
-    if recovered {
-        reclaim_stale_project_writer_lease(&FsDaemonStore, base_dir, project_id)?;
-    }
-    Ok(recovered)
+        engine::InterruptedRunUpdate {
+            summary: &summary,
+            log_message: &log_message,
+            failure_class: Some(failure_class),
+        },
+    )
 }
 
 async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
@@ -1765,21 +1809,27 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let project_store = FsProjectStore;
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
     let run_snapshot_read = FsRunSnapshotStore;
-    let mut run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
-    if run_snapshot.status == RunStatus::Running
-        && !running_snapshot_process_is_alive(&current_dir, &project_id)?
-    {
-        recover_stale_running_snapshot(
-            &current_dir,
-            &project_id,
-            "failed (stale running snapshot recovered for resume)",
-            "run resume reconciled a stale running snapshot before reclaiming the writer lease",
-        )
-        .map_err(|error| AppError::ResumeFailed {
-            reason: format!("stale run recovery failed before resume: {error}"),
-        })?;
-        run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
-    }
+    let run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+    let stale_recovery_owner = match run_snapshot.status {
+        RunStatus::Running => {
+            match classify_running_snapshot_liveness(&current_dir, &project_id)? {
+                RunningSnapshotLiveness::CliProcess(_) => {
+                    return Err(AppError::ResumeFailed {
+                    reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
+                });
+                }
+                RunningSnapshotLiveness::DaemonLease => {
+                    return Err(AppError::ResumeFailed {
+                    reason: "project has a daemon-owned running run; wait for the daemon task to finish or stop it through daemon controls".to_owned(),
+                });
+                }
+                RunningSnapshotLiveness::Stale => {
+                    read_project_writer_lock_owner(&current_dir, &project_id)?
+                }
+            }
+        }
+        _ => None,
+    };
     match run_snapshot.status {
         RunStatus::Failed | RunStatus::Paused | RunStatus::Running => {}
         RunStatus::NotStarted => {
@@ -1802,16 +1852,33 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
         });
     }
 
-    // Acquire per-project writer lock with lease record before any run-state mutation
-    let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
-        Arc::new(FsDaemonStore);
-    let lock_guard = CliWriterLeaseGuard::acquire(
-        Arc::clone(&daemon_store),
-        &current_dir,
-        project_id.clone(),
-        CLI_LEASE_TTL_SECONDS,
-        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
-    )?;
+    // Acquire the writer lock before any stale-run mutation so recovery never
+    // tears down a fresh owner that wins the race after we detect staleness.
+    let lock_guard =
+        acquire_recovery_writer_guard(&current_dir, &project_id, stale_recovery_owner.as_deref())
+            .map_err(|error| AppError::ResumeFailed {
+            reason: format!("failed to acquire writer lease for resume: {error}"),
+        })?;
+    if stale_recovery_owner.is_some() {
+        let liveness = classify_running_snapshot_liveness(&current_dir, &project_id)?;
+        if run_snapshot_read
+            .read_run_snapshot(&current_dir, &project_id)?
+            .status
+            == RunStatus::Running
+            && matches!(liveness, RunningSnapshotLiveness::Stale)
+        {
+            recover_stale_running_snapshot(
+                &current_dir,
+                &project_id,
+                "failed (stale running snapshot recovered for resume)",
+                "run resume reconciled a stale running snapshot after claiming the writer lease",
+                "interruption",
+            )
+            .map_err(|error| AppError::ResumeFailed {
+                reason: format!("stale run recovery failed before resume: {error}"),
+            })?;
+        }
+    }
 
     let cli_overrides = parse_cli_backend_overrides(&overrides)?;
     let effective_config =
@@ -1917,95 +1984,125 @@ async fn handle_stop() -> AppResult<()> {
         });
     }
 
-    let Some(pid_record) = FileSystem::read_pid_file(&current_dir, &project_id)? else {
-        recover_stale_running_snapshot(
-            &current_dir,
-            &project_id,
-            "failed (stale running snapshot recovered by stop)",
-            "run stop reconciled a stale running snapshot with no pid file",
-        )
-        .map_err(|error| AppError::RunStopFailed {
-            reason: format!("failed to recover stale run before stop: {error}"),
-        })?;
-        println!(
-            "Run was already stale for project '{}'; snapshot marked failed and ready for resume.",
-            project_id
-        );
-        return Ok(());
-    };
-
-    if !FileSystem::is_pid_alive(&pid_record) {
-        recover_stale_running_snapshot(
-            &current_dir,
-            &project_id,
-            "failed (stale running snapshot recovered by stop)",
-            "run stop reconciled a stale running snapshot because the pid was not alive",
-        )
-        .map_err(|error| AppError::RunStopFailed {
-            reason: format!("failed to recover stale run before stop: {error}"),
-        })?;
-        println!(
-            "Run was already stale for project '{}'; snapshot marked failed and ready for resume.",
-            project_id
-        );
-        return Ok(());
-    }
-
-    #[cfg(unix)]
-    {
-        send_signal_to_pid(pid_record.pid, Signal::SIGTERM)?;
-        let stopped_gracefully = wait_for_pid_exit(&pid_record, RUN_STOP_GRACE_PERIOD).await;
-        let outcome = if stopped_gracefully {
-            "terminated gracefully with SIGTERM"
-        } else {
-            send_signal_to_pid(pid_record.pid, Signal::SIGKILL)?;
-            if !wait_for_pid_exit(&pid_record, Duration::from_secs(1)).await {
-                return Err(AppError::RunStopFailed {
-                    reason: format!(
-                        "sent SIGKILL to pid {} but the orchestrator is still alive; refusing to rewrite run state",
-                        pid_record.pid
-                    ),
-                });
+    match classify_running_snapshot_liveness(&current_dir, &project_id)? {
+        RunningSnapshotLiveness::DaemonLease => Err(AppError::RunStopFailed {
+            reason:
+                "run stop only supports CLI-owned runs; the active run is owned by a daemon task"
+                    .to_owned(),
+        }),
+        RunningSnapshotLiveness::Stale => {
+            let observed_owner = read_project_writer_lock_owner(&current_dir, &project_id)?;
+            let guard =
+                acquire_recovery_writer_guard(&current_dir, &project_id, observed_owner.as_deref())
+                    .map_err(|error| AppError::RunStopFailed {
+                        reason: format!(
+                            "failed to acquire writer lease for stale stop recovery: {error}"
+                        ),
+                    })?;
+            if run_snapshot_read
+                .read_run_snapshot(&current_dir, &project_id)?
+                .status
+                == RunStatus::Running
+                && matches!(
+                    classify_running_snapshot_liveness(&current_dir, &project_id)?,
+                    RunningSnapshotLiveness::Stale
+                )
+            {
+                recover_stale_running_snapshot(
+                    &current_dir,
+                    &project_id,
+                    "failed (stale running snapshot recovered by stop)",
+                    "run stop reconciled a stale running snapshot after claiming the writer lease",
+                    "interruption",
+                )
+                .map_err(|error| AppError::RunStopFailed {
+                    reason: format!("failed to recover stale run before stop: {error}"),
+                })?;
             }
-            "required SIGKILL after timeout"
-        };
-
-        let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
-        reclaim_stale_project_writer_lease(&FsDaemonStore, &current_dir, &project_id).map_err(
-            |error| AppError::RunStopFailed {
-                reason: format!("failed to reclaim the stale writer lease after stop: {error}"),
-            },
-        )?;
-        if final_snapshot.status == RunStatus::Running {
-            recover_stale_running_snapshot(
-                &current_dir,
-                &project_id,
-                "failed (stopped by user; run `ralph-burning run resume` to continue)",
-                format!("run stop interrupted the orchestrator; outcome={outcome}"),
-            )
-            .map_err(|error| AppError::RunStopFailed {
-                reason: format!("failed to finalize stopped run state: {error}"),
+            guard.close().map_err(|error| AppError::RunStopFailed {
+                reason: format!("failed to release recovery writer lease after stop: {error}"),
             })?;
             println!(
-                "Stopped run for project '{}' ({outcome}); run `ralph-burning run resume` to continue.",
+                "Run was already stale for project '{}'; snapshot marked failed and ready for resume.",
                 project_id
             );
-        } else {
-            let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
-            println!(
-                "Run for project '{}' exited during stop with status '{}'.",
-                project_id, final_snapshot.status
-            );
+            Ok(())
         }
-        Ok(())
-    }
+        RunningSnapshotLiveness::CliProcess(pid_record) => {
+            #[cfg(unix)]
+            {
+                send_signal_to_pid(pid_record.pid, Signal::SIGTERM)?;
+                let stopped_gracefully =
+                    wait_for_pid_exit(&pid_record, RUN_STOP_GRACE_PERIOD).await;
+                let outcome = if stopped_gracefully {
+                    "terminated gracefully with SIGTERM"
+                } else {
+                    send_signal_to_pid(pid_record.pid, Signal::SIGKILL)?;
+                    if !wait_for_pid_exit(&pid_record, Duration::from_secs(1)).await {
+                        return Err(AppError::RunStopFailed {
+                            reason: format!(
+                                "sent SIGKILL to pid {} but the orchestrator is still alive; refusing to rewrite run state",
+                                pid_record.pid
+                            ),
+                        });
+                    }
+                    "required SIGKILL after timeout"
+                };
 
-    #[cfg(not(unix))]
-    {
-        let _ = pid_record;
-        Err(AppError::RunStopFailed {
-            reason: "run stop is only supported on unix-like platforms".to_owned(),
-        })
+                let observed_owner = read_project_writer_lock_owner(&current_dir, &project_id)?;
+                let guard = acquire_recovery_writer_guard(
+                    &current_dir,
+                    &project_id,
+                    observed_owner.as_deref(),
+                )
+                .map_err(|error| AppError::RunStopFailed {
+                    reason: format!(
+                        "failed to acquire writer lease after stopping the orchestrator: {error}"
+                    ),
+                })?;
+                let final_snapshot =
+                    run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+                let status_message = if final_snapshot.status == RunStatus::Running
+                    && matches!(
+                        classify_running_snapshot_liveness(&current_dir, &project_id)?,
+                        RunningSnapshotLiveness::Stale
+                    ) {
+                    recover_stale_running_snapshot(
+                        &current_dir,
+                        &project_id,
+                        "failed (stopped by user; run `ralph-burning run resume` to continue)",
+                        format!("run stop interrupted the orchestrator; outcome={outcome}"),
+                        "cancellation",
+                    )
+                    .map_err(|error| AppError::RunStopFailed {
+                        reason: format!("failed to finalize stopped run state: {error}"),
+                    })?;
+                    format!(
+                        "Stopped run for project '{}' ({outcome}); run `ralph-burning run resume` to continue.",
+                        project_id
+                    )
+                } else {
+                    let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
+                    format!(
+                        "Run for project '{}' exited during stop with status '{}'.",
+                        project_id, final_snapshot.status
+                    )
+                };
+                guard.close().map_err(|error| AppError::RunStopFailed {
+                    reason: format!("failed to release recovery writer lease after stop: {error}"),
+                })?;
+                println!("{status_message}");
+                Ok(())
+            }
+
+            #[cfg(not(unix))]
+            {
+                let _ = pid_record;
+                Err(AppError::RunStopFailed {
+                    reason: "run stop is only supported on unix-like platforms".to_owned(),
+                })
+            }
+        }
     }
 }
 
@@ -5363,14 +5460,19 @@ async fn handle_status(as_json: bool) -> AppResult<()> {
         );
     }
 
-    let process_alive = if snapshot.status == RunStatus::Running {
-        running_snapshot_process_is_alive(&current_dir, &project_id)?
+    let running_liveness = if snapshot.status == RunStatus::Running {
+        Some(classify_running_snapshot_liveness(
+            &current_dir,
+            &project_id,
+        )?)
     } else {
-        false
+        None
     };
 
     if as_json {
-        let status = if snapshot.status == RunStatus::Running && !process_alive {
+        let status = if snapshot.status == RunStatus::Running
+            && matches!(running_liveness, Some(RunningSnapshotLiveness::Stale))
+        {
             stale_status_json_view(&project_id, &snapshot)
         } else {
             RunStatusJsonView::from_snapshot(project_id.as_str(), &snapshot)
@@ -5379,7 +5481,9 @@ async fn handle_status(as_json: bool) -> AppResult<()> {
         return Ok(());
     }
 
-    let status = if snapshot.status == RunStatus::Running && !process_alive {
+    let status = if snapshot.status == RunStatus::Running
+        && matches!(running_liveness, Some(RunningSnapshotLiveness::Stale))
+    {
         stale_status_view(&project_id, &snapshot)
     } else {
         RunStatusView::from_snapshot(project_id.as_str(), &snapshot)
