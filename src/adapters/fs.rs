@@ -159,6 +159,8 @@ pub struct RunPidRecord {
     pub owner: RunPidOwner,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proc_start_ticks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_start_marker: Option<String>,
 }
 
 pub struct FileSystem;
@@ -287,11 +289,13 @@ impl FileSystem {
         owner: RunPidOwner,
     ) -> AppResult<RunPidRecord> {
         let project_root = Self::ensure_live_project_root(base_dir, project_id)?;
+        let pid = std::process::id();
         let record = RunPidRecord {
-            pid: std::process::id(),
+            pid,
             started_at: Utc::now(),
             owner,
-            proc_start_ticks: Self::proc_start_ticks(std::process::id()),
+            proc_start_ticks: Self::proc_start_ticks(pid),
+            proc_start_marker: Self::proc_start_marker(pid),
         };
         Self::write_atomic(
             &project_root.join(PID_FILE),
@@ -326,6 +330,10 @@ impl FileSystem {
         }
     }
 
+    pub fn pid_record_is_authoritative(record: &RunPidRecord) -> bool {
+        record.proc_start_ticks.is_some() || record.proc_start_marker.is_some()
+    }
+
     pub fn is_pid_alive(record: &RunPidRecord) -> bool {
         #[cfg(unix)]
         {
@@ -336,12 +344,18 @@ impl FileSystem {
                 Err(_) => return false,
             }
 
-            let Some(expected_ticks) = record.proc_start_ticks else {
+            if let Some(expected_ticks) = record.proc_start_ticks {
+                match Self::proc_start_ticks(record.pid) {
+                    Some(actual_ticks) if actual_ticks == expected_ticks => {}
+                    _ => return false,
+                }
+            } else if let Some(expected_marker) = record.proc_start_marker.as_deref() {
+                match Self::proc_start_marker(record.pid).as_deref() {
+                    Some(actual_marker) if actual_marker == expected_marker => {}
+                    _ => return false,
+                }
+            } else {
                 return false;
-            };
-            match Self::proc_start_ticks(record.pid) {
-                Some(actual_ticks) if actual_ticks == expected_ticks => {}
-                _ => return false,
             }
 
             !matches!(Self::proc_state(record.pid), Some('Z'))
@@ -667,7 +681,7 @@ impl FileSystem {
         Ok(live_root)
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn proc_start_ticks(pid: u32) -> Option<u64> {
         let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let (_, rest) = stat.rsplit_once(") ")?;
@@ -675,21 +689,59 @@ impl FileSystem {
         fields.get(19)?.parse().ok()
     }
 
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn proc_start_ticks(_pid: u32) -> Option<u64> {
+        None
+    }
+
     #[cfg(not(unix))]
     fn proc_start_ticks(_pid: u32) -> Option<u64> {
         None
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn proc_start_marker(pid: u32) -> Option<String> {
+        Self::ps_field(pid, "lstart")
+    }
+
+    #[cfg(any(target_os = "linux", not(unix)))]
+    fn proc_start_marker(_pid: u32) -> Option<String> {
+        None
+    }
+
+    #[cfg(target_os = "linux")]
     fn proc_state(pid: u32) -> Option<char> {
         let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let (_, rest) = stat.rsplit_once(") ")?;
         rest.chars().next()
     }
 
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn proc_state(pid: u32) -> Option<char> {
+        Self::ps_field(pid, "stat").and_then(|value| value.chars().next())
+    }
+
     #[cfg(not(unix))]
     fn proc_state(_pid: u32) -> Option<char> {
         None
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn ps_field(pid: u32, field: &str) -> Option<String> {
+        let output = Command::new("ps")
+            .args(["-o", &format!("{field}="), "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value = String::from_utf8(output.stdout).ok()?;
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
     }
 
     pub(crate) fn mirror_project_file(
@@ -5174,6 +5226,7 @@ mod tests {
         assert_eq!(read_back.pid, written.pid);
         assert_eq!(read_back.started_at, written.started_at);
         assert_eq!(read_back.owner, RunPidOwner::Cli);
+        assert_eq!(read_back.proc_start_marker, written.proc_start_marker);
         assert!(FileSystem::is_pid_alive(&read_back));
 
         FileSystem::remove_pid_file(temp.path(), &project_id).expect("remove pid file");
@@ -5189,6 +5242,7 @@ mod tests {
             started_at: Utc::now(),
             owner: RunPidOwner::Cli,
             proc_start_ticks: None,
+            proc_start_marker: None,
         };
 
         assert!(!FileSystem::is_pid_alive(&record));
@@ -5202,6 +5256,7 @@ mod tests {
             started_at: Utc::now(),
             owner: RunPidOwner::Cli,
             proc_start_ticks: None,
+            proc_start_marker: None,
         };
 
         assert!(
@@ -5226,6 +5281,19 @@ mod tests {
             !FileSystem::is_pid_alive(&written),
             "mismatched proc_start_ticks should reject reused or stale pid records"
         );
+    }
+
+    #[test]
+    fn pid_record_with_start_marker_is_authoritative() {
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            proc_start_ticks: None,
+            proc_start_marker: Some("fallback-start-marker".to_owned()),
+        };
+
+        assert!(FileSystem::pid_record_is_authoritative(&record));
     }
 
     #[test]

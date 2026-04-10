@@ -715,7 +715,6 @@ fn milestone_plan_hash(base_dir: &std::path::Path, milestone_id: &str) -> String
     format!("{:x}", hasher.finalize())
 }
 
-#[cfg(feature = "test-stub")]
 fn write_daemon_task(base_dir: &std::path::Path, task: &DaemonTask) {
     let path = daemon_root(base_dir)
         .join("tasks")
@@ -10931,14 +10930,13 @@ fn cli_run_resume_recovers_stale_running_and_reclaims_writer_lock() {
 #[test]
 fn cli_run_resume_reclaims_writer_lock_for_failed_snapshot_cleanup_crash() {
     let temp_dir = initialize_workspace_fixture();
-    create_project_fixture(temp_dir.path(), "failed-cleanup-lock");
-    select_active_project_fixture(temp_dir.path(), "failed-cleanup-lock");
+    setup_standard_project(&temp_dir, "failed-cleanup-lock");
 
     let fail_output = Command::new(binary())
         .args(["run", "start"])
         .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
-        .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "implementation")
+        .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "review")
         .output()
         .expect("run start to fail");
     assert!(!fail_output.status.success());
@@ -10951,7 +10949,7 @@ fn cli_run_resume_reclaims_writer_lock_for_failed_snapshot_cleanup_crash() {
         owner: "cli".to_owned(),
         acquired_at: Utc::now(),
         ttl_seconds: 300,
-        last_heartbeat: Utc::now(),
+        last_heartbeat: Utc::now() - Duration::seconds(301),
     };
     fs::write(
         leases_dir.join("cli-failed-cleanup-lock.json"),
@@ -10991,6 +10989,120 @@ fn cli_run_resume_reclaims_writer_lock_for_failed_snapshot_cleanup_crash() {
     assert!(
         !leases_dir.join("cli-failed-cleanup-lock.json").exists(),
         "stranded cleanup cli lease should be pruned during resume recovery"
+    );
+}
+
+#[test]
+fn run_resume_does_not_reclaim_live_worktree_owner_for_failed_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "failed-live-owner");
+    select_active_project_fixture(temp_dir.path(), "failed-live-owner");
+
+    fs::write(
+        project_root(temp_dir.path(), "failed-live-owner").join("run.json"),
+        r#"{
+  "active_run": null,
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "failed at implementation"
+}"#,
+    )
+    .expect("write failed snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let now = Utc::now();
+    let worktree_lease = WorktreeLease {
+        lease_id: "lease-live-failed-resume".to_owned(),
+        task_id: "task-live-failed-resume".to_owned(),
+        project_id: "failed-live-owner".to_owned(),
+        worktree_path: temp_dir.path().join("worktrees/task-live-failed-resume"),
+        branch_name: "task-live-failed-resume".to_owned(),
+        acquired_at: now,
+        ttl_seconds: 300,
+        last_heartbeat: now,
+    };
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: worktree_lease.task_id.clone(),
+            issue_ref: "repo#77".to_owned(),
+            project_id: "failed-live-owner".to_owned(),
+            project_name: Some("failed live owner".to_owned()),
+            prompt: Some("prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(ralph_burning::shared::domain::FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some(worktree_lease.lease_id.clone()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            workflow_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        },
+    );
+    fs::write(
+        leases_dir.join("lease-live-failed-resume.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(worktree_lease))
+            .expect("serialize live daemon lease"),
+    )
+    .expect("write live daemon lease");
+    fs::write(
+        leases_dir.join("writer-failed-live-owner.lock"),
+        "lease-live-failed-resume",
+    )
+    .expect("write live daemon writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to acquire writer lease for resume")
+            || stderr.contains("project writer lock is already held"),
+        "resume should fail on a live competing writer owner instead of reclaiming it: {stderr}"
+    );
+    assert!(
+        leases_dir.join("writer-failed-live-owner.lock").exists(),
+        "live daemon writer lock must remain intact after refused resume"
+    );
+    assert!(
+        leases_dir.join("lease-live-failed-resume.json").exists(),
+        "live daemon lease must not be reclaimed during terminal resume contention"
+    );
+    let daemon_task: DaemonTask = serde_json::from_str(
+        &fs::read_to_string(
+            daemon_root(temp_dir.path())
+                .join("tasks")
+                .join("task-live-failed-resume.json"),
+        )
+        .expect("read daemon task"),
+    )
+    .expect("parse daemon task");
+    assert_eq!(daemon_task.status, TaskStatus::Active);
+    assert_eq!(
+        daemon_task.lease_id.as_deref(),
+        Some("lease-live-failed-resume")
     );
 }
 

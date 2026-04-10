@@ -1532,7 +1532,7 @@ fn classify_running_snapshot_liveness(
 ) -> AppResult<RunningSnapshotLiveness> {
     let pid_record = FileSystem::read_pid_file(base_dir, project_id)?;
     if let Some(record) = pid_record.as_ref() {
-        if record.proc_start_ticks.is_some() {
+        if FileSystem::pid_record_is_authoritative(record) {
             if FileSystem::is_pid_alive(record) {
                 return Ok(match record.owner {
                     crate::adapters::fs::RunPidOwner::Cli => {
@@ -1576,32 +1576,83 @@ fn classify_running_snapshot_liveness(
     Ok(RunningSnapshotLiveness::Stale)
 }
 
+fn observed_writer_owner_is_stale(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    expected_owner: &str,
+) -> AppResult<bool> {
+    let Some(current_owner) = read_project_writer_lock_owner(base_dir, project_id)? else {
+        return Ok(false);
+    };
+    if current_owner != expected_owner {
+        return Ok(false);
+    }
+
+    let Some((owner, record)) =
+        read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
+    else {
+        return Ok(true);
+    };
+    if owner != expected_owner {
+        return Ok(false);
+    }
+
+    let now = Utc::now();
+    Ok(match record {
+        LeaseRecord::CliWriter(lease) => {
+            lease.project_id == project_id.as_str() && lease.is_stale_at(now)
+        }
+        LeaseRecord::Worktree(lease) => {
+            lease.project_id == project_id.as_str() && lease.is_stale_at(now)
+        }
+    })
+}
+
 fn acquire_recovery_writer_guard(
     base_dir: &std::path::Path,
     repo_root: &std::path::Path,
     project_id: &ProjectId,
     observed_owner: Option<&str>,
+    observed_owner_proven_stale: bool,
 ) -> AppResult<CliWriterLeaseGuard> {
-    if let Some(owner) = observed_owner {
-        let _ = reclaim_specific_project_writer_owner(
-            &FsDaemonStore,
-            &WorktreeAdapter,
-            base_dir,
-            repo_root,
-            project_id,
-            owner,
-        )?;
-    }
-
     let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
         Arc::new(FsDaemonStore);
-    CliWriterLeaseGuard::acquire(
-        Arc::clone(&daemon_store),
+    let acquire = || {
+        CliWriterLeaseGuard::acquire(
+            Arc::clone(&daemon_store),
+            base_dir,
+            project_id.clone(),
+            CLI_LEASE_TTL_SECONDS,
+            CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+        )
+    };
+
+    let initial_error = match acquire() {
+        Ok(guard) => return Ok(guard),
+        Err(error) => error,
+    };
+    if !matches!(initial_error, AppError::ProjectWriterLockHeld { .. }) {
+        return Err(initial_error);
+    }
+
+    let Some(owner) = observed_owner else {
+        return Err(initial_error);
+    };
+    if !observed_owner_proven_stale && !observed_writer_owner_is_stale(base_dir, project_id, owner)?
+    {
+        return Err(initial_error);
+    }
+
+    let _ = reclaim_specific_project_writer_owner(
+        &FsDaemonStore,
+        &WorktreeAdapter,
         base_dir,
-        project_id.clone(),
-        CLI_LEASE_TTL_SECONDS,
-        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
-    )
+        repo_root,
+        project_id,
+        owner,
+    )?;
+
+    acquire()
 }
 
 struct ResumeRecoveryObservation {
@@ -2232,6 +2283,7 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
         &current_dir,
         &project_id,
         recovery_observation.observed_owner.as_deref(),
+        recovery_observation.should_reconcile_claimed_running_snapshot,
     )
     .map_err(|error| AppError::ResumeFailed {
         reason: format!("failed to acquire writer lease for resume: {error}"),
@@ -2386,6 +2438,7 @@ async fn handle_stop() -> AppResult<()> {
                     &current_dir,
                     &project_id,
                     observed_owner.as_deref(),
+                    true,
                 )
                     .map_err(|error| AppError::RunStopFailed {
                         reason: format!(
@@ -2486,6 +2539,7 @@ async fn handle_stop() -> AppResult<()> {
                     &current_dir,
                     &project_id,
                     observed_owner.as_deref(),
+                    true,
                 )
                 .map_err(|error| AppError::RunStopFailed {
                     reason: format!(
