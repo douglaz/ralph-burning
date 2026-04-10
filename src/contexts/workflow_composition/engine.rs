@@ -748,7 +748,6 @@ pub fn mark_running_run_interrupted(
 ) -> AppResult<bool> {
     let mut snapshot = run_snapshot_read.read_run_snapshot(base_dir, project_id)?;
     if snapshot.status != RunStatus::Running {
-        let _ = FileSystem::remove_pid_file(base_dir, project_id);
         return Ok(false);
     }
 
@@ -1401,7 +1400,9 @@ where
             // event that the snapshot write missed (e.g. fail_run snapshot write
             // failed).  Cross-check the journal to reconcile.
             let events = journal_store.read_journal(base_dir, project_id)?;
-            match journal::last_terminal_event_type(&events) {
+            let running_run_id = run_id_for_resume(&snapshot)?;
+            let running_run_events = events_for_run(&events, &running_run_id);
+            match journal::last_terminal_event_type(&running_run_events) {
                 Some(JournalEventType::RunFailed) => {
                     eprintln!(
                         "resume: snapshot shows Running but journal has run_failed — \
@@ -1466,7 +1467,9 @@ where
         queries::visible_journal_events(&events).map_err(|error| AppError::ResumeFailed {
             reason: error.to_string(),
         })?;
-    let stage_ids = stage_plan_for_resume(preset, &visible_events, &snapshot, effective_config)?;
+    let resume_run_id = run_id_for_resume(&snapshot)?;
+    let resume_events = events_for_run(&visible_events, &resume_run_id);
+    let stage_ids = stage_plan_for_resume(preset, &resume_events, &snapshot, effective_config)?;
     let semantics = flow_semantics(preset);
     let _workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
     let resume_cycle = snapshot
@@ -1486,13 +1489,19 @@ where
         project_id,
     )?;
 
-    let mut resume_state = derive_resume_state(&visible_events, &snapshot, &stage_plan, semantics)?;
+    let mut resume_state = derive_resume_state(
+        &resume_run_id,
+        &resume_events,
+        &snapshot,
+        &stage_plan,
+        semantics,
+    )?;
     let mut execution_context = derive_resume_execution_context(
         artifact_store,
         base_dir,
         project_id,
         &resume_state.cursor,
-        &visible_events,
+        &resume_events,
         semantics,
     )?;
 
@@ -1792,7 +1801,7 @@ where
     let resumed_snapshot = snapshot.last_stage_resolution_snapshot.clone();
     let (qa_iterations_current_cycle, review_iterations_current_cycle) =
         resume_iteration_counters(&snapshot, &resume_state.cursor)?;
-    let final_review_restart_count = resume_final_review_restart_count(&snapshot, &visible_events)?;
+    let final_review_restart_count = resume_final_review_restart_count(&snapshot, &resume_events)?;
     let resumed_at = Utc::now();
     snapshot.status = RunStatus::Running;
     snapshot.active_run = Some(build_active_run(
@@ -6492,18 +6501,12 @@ fn stage_plan_for_resume(
 }
 
 fn derive_resume_state(
+    run_id: &RunId,
     events: &[JournalEvent],
     snapshot: &RunSnapshot,
     stage_plan: &[StagePlan],
     semantics: FlowSemantics,
 ) -> AppResult<ResumeState> {
-    let run_id = if let Some(run_started) = events.iter().rev().find(|event| {
-        event.event_type == crate::contexts::project_run_record::model::JournalEventType::RunStarted
-    }) {
-        RunId::new(detail_string(run_started, "run_id")?.to_owned())?
-    } else {
-        RunId::new(resume_seed_active_run(snapshot)?.run_id.clone())?
-    };
     let execution_stage_index = stage_index_for(stage_plan, semantics.execution_stage)?;
     let planning_stage_index = stage_index_for(stage_plan, semantics.planning_stage)?;
     let mut current_cycle = snapshot
@@ -6632,10 +6635,24 @@ fn derive_resume_state(
     )?;
 
     Ok(ResumeState {
-        run_id,
+        run_id: run_id.clone(),
         stage_index: next_stage_index,
         cursor,
     })
+}
+
+fn run_id_for_resume(snapshot: &RunSnapshot) -> AppResult<RunId> {
+    RunId::new(resume_seed_active_run(snapshot)?.run_id.clone())
+}
+
+fn events_for_run(events: &[JournalEvent], run_id: &RunId) -> Vec<JournalEvent> {
+    events
+        .iter()
+        .filter(|event| {
+            event.details.get("run_id").and_then(Value::as_str) == Some(run_id.as_str())
+        })
+        .cloned()
+        .collect()
 }
 
 fn detail_string<'a>(event: &'a JournalEvent, key: &str) -> AppResult<&'a str> {
@@ -8168,6 +8185,7 @@ mod tests {
         ActiveRun, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin,
         TaskSource,
     };
+    use crate::contexts::project_run_record::service::RunSnapshotWritePort;
     use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
     use crate::shared::domain::{
         BackendFamily, FlowPreset, ProjectId, ResolvedBackendTarget, StageId,
@@ -8176,7 +8194,8 @@ mod tests {
 
     use super::{
         build_final_review_snapshot, complete_run, drift_still_satisfies_requirements,
-        milestone_lineage_plan_hash, resolution_has_drifted, sync_milestone_bead_start,
+        mark_running_run_interrupted, milestone_lineage_plan_hash, resolution_has_drifted,
+        sync_milestone_bead_start,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -8539,7 +8558,8 @@ mod tests {
             ];
 
             let snapshot = RunSnapshot::initial(20);
-            let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
+            let resume =
+                derive_resume_state(&run_id, &events, &snapshot, &stage_plan, semantics).unwrap();
 
             assert_eq!(resume.cursor.stage, StageId::Implementation);
             assert_eq!(resume.cursor.cycle, 1);
@@ -8571,7 +8591,8 @@ mod tests {
             ];
 
             let snapshot = RunSnapshot::initial(20);
-            let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
+            let resume =
+                derive_resume_state(&run_id, &events, &snapshot, &stage_plan, semantics).unwrap();
 
             assert_eq!(resume.cursor.stage, StageId::Implementation);
             assert_eq!(resume.cursor.attempt, 1);
@@ -8667,7 +8688,8 @@ mod tests {
             ];
 
             let snapshot = RunSnapshot::initial(20);
-            let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
+            let resume =
+                derive_resume_state(&run_id, &events, &snapshot, &stage_plan, semantics).unwrap();
 
             assert_eq!(resume.cursor.stage, StageId::Implementation);
             assert_eq!(resume.cursor.cycle, 1);
@@ -8748,7 +8770,8 @@ mod tests {
             ];
 
             let snapshot = RunSnapshot::initial(20);
-            let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
+            let resume =
+                derive_resume_state(&run_id, &events, &snapshot, &stage_plan, semantics).unwrap();
 
             assert_eq!(resume.cursor.stage, StageId::Planning);
             // Round 2: planning should start at attempt 1, not 3
@@ -8879,6 +8902,40 @@ mod tests {
                 .expect("read pid file")
                 .is_none(),
             "pid file should be removed even when run_completed append fails"
+        );
+    }
+
+    #[test]
+    fn mark_running_run_interrupted_preserves_pid_file_when_snapshot_is_not_running() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+        let project_id = ProjectId::new("pid-preserved-on-stale-race").expect("project id");
+        let mut snapshot = RunSnapshot::initial(20);
+        snapshot.status = RunStatus::Failed;
+        snapshot.status_summary = "failed: already reconciled".to_owned();
+
+        crate::adapters::fs::FsRunSnapshotWriteStore
+            .write_run_snapshot(temp_dir.path(), &project_id, &snapshot)
+            .expect("write failed snapshot");
+        FileSystem::write_pid_file(temp_dir.path(), &project_id).expect("write pid file");
+
+        let updated = mark_running_run_interrupted(
+            &crate::adapters::fs::FsRunSnapshotStore,
+            &crate::adapters::fs::FsRunSnapshotWriteStore,
+            &crate::adapters::fs::FsRuntimeLogWriteStore,
+            temp_dir.path(),
+            &project_id,
+            "failed (stale running snapshot recovered for resume)",
+            "should be ignored because the snapshot is no longer running",
+        )
+        .expect("mark interrupted");
+
+        assert!(!updated, "non-running snapshots should not be rewritten");
+        assert!(
+            FileSystem::read_pid_file(temp_dir.path(), &project_id)
+                .expect("read pid file")
+                .is_some(),
+            "pid file should remain untouched when another process already reconciled the snapshot"
         );
     }
 }
