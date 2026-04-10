@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 11
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-10-3bf6da63",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 10,
-        "body": "Handle crashes that occur after a resumed attempt writes `run.json`/`run.pid` but before `run_resumed` is appended. In `src/contexts/project_run_record/queries.rs:31-59`, `terminal_status_for_running_attempt()` requires a durable `run_started`/`run_resumed` boundary and then trusts the last terminal event after that boundary. If the process dies in the resume window before `run_resumed` is durable, the helper falls back to the original `run_started`, so an older `run_failed` from the previous attempt is treated as the current outcome. `run status` (`src/cli/run.rs:5885-5890`) then reports `failed`/`completed` instead of `stale`, and the same helper also feeds stale stop/resume reconciliation. Use the active snapshot metadata (for example `active_run.started_at`) as a fallback boundary for an unjournaled resumed attempt, and add a regression test for 'crash after resume snapshot write, before run_resumed append'.",
-        "created_at": "2026-04-10T16:03:43.474579206Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "2e9749bc335541f3ee69ce7639ee12b309271670c561c8e36629ccf8f564ed42"
-      },
-      {
-        "amendment_id": "fr-10-1089b525",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 10,
-        "body": "Do not make stale-run recovery depend on a leftover writer-lock owner file. In `src/cli/run.rs:2211-2235`, the new pre-recovery path only runs when `stale_recovery_owner.is_some()`. If the stale writer lock was already cleaned up, `run resume` skips reconciliation and falls back to `engine::resume_run_with_retry()`, whose `RunStatus::Running` branch in `src/contexts/workflow_composition/engine.rs:1452-1481` still just returns 'already completed per journal' for a durable `run_completed` event without rewriting `run.json`. That leaves the on-disk snapshot stuck at `status = \"running\"` even after `run resume` proves the run is terminal. Once the CLI has acquired the fresh writer lease, it should reconcile any stale Running snapshot regardless of whether an old owner string was present, and there should be a regression test for a stale completed run with no writer-lock files remaining.",
-        "created_at": "2026-04-10T16:03:43.474582312Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "78e8b4380635e982775ff1401b5855891084b290336e6b0bd5b15be6d96a0b1a"
-      },
-      {
-        "amendment_id": "fr-10-8ba8c1df",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 10,
-        "body": "Patch does not include any runtime implementation for the requested lifecycle hardening. `git diff` shows changes only in `.ralph-burning/projects/rlm/run.json` (`lines 15-37`, `52-72`) and `.ralph-burning/projects/rlm/journal.ndjson` (`lines 186-189`) and adds no edits to `src/adapters/fs.rs`, `src/cli/run.rs`, or `src/contexts/workflow_composition/engine.rs`. Therefore required behaviors for `run.pid` tracking, `run stop`, stale `run status` reporting, stale-run recovery in `run resume`, and signal-based interruption cleanup are not delivered by this change set.",
-        "created_at": "2026-04-10T16:03:43.474584086Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "eb47b5921ebcf85495278464d4bc06ade23b7da35ed8f2e4aac7ec991769da24"
-      }
-    ],
-    "processed_count": 26
+    "pending": [],
+    "processed_count": 29
   },
-  "status_summary": "running: final review restart round 11 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-10T15:51:50.102471808Z",

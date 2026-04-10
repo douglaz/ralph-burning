@@ -5600,6 +5600,52 @@ fn run_status_ignores_terminal_journal_events_before_latest_resume_for_same_run_
 }
 
 #[test]
+fn run_status_ignores_terminal_journal_events_before_unjournaled_resume_snapshot_started_at() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-current",
+    "stage_cursor": { "stage": "implementation", "cycle": 2, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-01T10:20:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-current","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:15:00Z","event_type":"run_failed","details":{"run_id":"run-current","stage_id":"review","failure_class":"stage_failure","message":"older attempt failed","completion_rounds":1,"max_completion_rounds":20}}"#,
+    )
+    .expect("write journal");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: stale (process not found)"));
+    assert!(
+        !stdout.contains("Status: failed"),
+        "the stale resumed snapshot must not inherit a previous attempt's failure: {stdout}"
+    );
+}
+
+#[test]
 fn run_status_keeps_daemon_owned_running_snapshot_active_with_live_pid_file() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -6009,7 +6055,7 @@ fn run_stop_preserves_completed_journal_outcome_for_stale_running_snapshot() {
   "active_run": {
     "run_id": "run-stop-completed",
     "stage_cursor": { "stage": "review", "cycle": 1, "attempt": 1, "completion_round": 1 },
-    "started_at": "2026-04-10T00:00:00Z"
+    "started_at": "2026-04-01T10:01:00Z"
   },
   "status": "running",
   "cycle_history": [],
@@ -6500,7 +6546,7 @@ fn run_resume_preserves_completed_journal_outcome_for_stale_running_snapshot() {
   "active_run": {
     "run_id": "run-resume-completed",
     "stage_cursor": { "stage": "review", "cycle": 1, "attempt": 1, "completion_round": 1 },
-    "started_at": "2026-04-10T00:00:00Z"
+    "started_at": "2026-04-01T10:01:00Z"
   },
   "status": "running",
   "cycle_history": [],
@@ -6551,6 +6597,63 @@ fn run_resume_preserves_completed_journal_outcome_for_stale_running_snapshot() {
     assert!(
         stderr.contains("already completed"),
         "resume should refuse when the journal already completed the run: {stderr}"
+    );
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "completed");
+    assert_eq!(
+        run_json["status_summary"],
+        "completed (reconciled from journal)"
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn run_resume_reconciles_completed_stale_running_snapshot_without_writer_lock_owner() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-resume-completed-no-owner",
+    "stage_cursor": { "stage": "review", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-01T10:01:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Review"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-resume-completed-no-owner","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_completed","details":{"run_id":"run-resume-completed-no-owner","completion_rounds":1,"max_completion_rounds":20}}"#,
+    )
+    .expect("write journal");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already completed"),
+        "resume should still reconcile a stale completed run without any writer lock owner: {stderr}"
     );
     let run_json: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),

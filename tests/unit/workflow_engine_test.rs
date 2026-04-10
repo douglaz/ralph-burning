@@ -7575,6 +7575,72 @@ fn status_reconciliation_ignores_terminal_events_before_latest_resume_boundary()
     assert!(snapshot.active_run.is_some());
 }
 
+/// Status reconciliation must also ignore terminal events from the previous
+/// attempt when a resumed snapshot was persisted before `run_resumed` became
+/// durable in the journal.
+#[test]
+fn status_reconciliation_ignores_terminal_events_before_unjournaled_resume_snapshot_started_at() {
+    use ralph_burning::contexts::project_run_record::queries;
+
+    let run_id = RunId::new("run-resume-window-status").unwrap();
+    let started_at = Utc::now();
+    let resumed_at = started_at + chrono::Duration::minutes(10);
+
+    let mut snapshot = RunSnapshot {
+        active_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::new(
+                    StageId::Implementation,
+                    2,
+                    1,
+                    1,
+                )
+                .unwrap(),
+                started_at: resumed_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
+        interrupted_run: None,
+        status: RunStatus::Running,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        max_completion_rounds: Some(20),
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "running: implementation".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+
+    let events = vec![
+        journal::run_started_event(1, started_at, &run_id, StageId::Planning, 20),
+        journal::run_failed_event(
+            2,
+            started_at + chrono::Duration::minutes(5),
+            &run_id,
+            StageId::Review,
+            "stage_failure",
+            "older attempt failed",
+            1,
+            20,
+            None,
+        ),
+    ];
+
+    let patched = queries::reconcile_snapshot_status(&mut snapshot, &events);
+    assert!(
+        !patched,
+        "an unjournaled resumed attempt must not inherit terminal state from the previous attempt"
+    );
+    assert_eq!(snapshot.status, RunStatus::Running);
+    assert!(snapshot.active_run.is_some());
+}
+
 /// `last_terminal_event_type` returns the correct terminal event.
 #[test]
 fn last_terminal_event_type_returns_run_failed() {

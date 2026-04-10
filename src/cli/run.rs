@@ -1604,11 +1604,16 @@ fn acquire_recovery_writer_guard(
     )
 }
 
+struct ResumeRecoveryObservation {
+    observed_owner: Option<String>,
+    should_reconcile_claimed_running_snapshot: bool,
+}
+
 fn observed_resume_recovery_owner(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
     snapshot: &RunSnapshot,
-) -> AppResult<Option<String>> {
+) -> AppResult<ResumeRecoveryObservation> {
     match snapshot.status {
         RunStatus::Running => match classify_running_snapshot_liveness(base_dir, project_id)? {
             RunningSnapshotLiveness::CliProcess(_) => Err(AppError::ResumeFailed {
@@ -1622,10 +1627,19 @@ fn observed_resume_recovery_owner(
                     reason: "project has a daemon-owned running run; wait for the daemon task to finish or stop it through daemon controls".to_owned(),
                 })
             }
-            RunningSnapshotLiveness::Stale => read_project_writer_lock_owner(base_dir, project_id),
+            RunningSnapshotLiveness::Stale => Ok(ResumeRecoveryObservation {
+                observed_owner: read_project_writer_lock_owner(base_dir, project_id)?,
+                should_reconcile_claimed_running_snapshot: true,
+            }),
         },
-        RunStatus::Failed | RunStatus::Paused => read_project_writer_lock_owner(base_dir, project_id),
-        RunStatus::NotStarted | RunStatus::Completed => Ok(None),
+        RunStatus::Failed | RunStatus::Paused => Ok(ResumeRecoveryObservation {
+            observed_owner: read_project_writer_lock_owner(base_dir, project_id)?,
+            should_reconcile_claimed_running_snapshot: false,
+        }),
+        RunStatus::NotStarted | RunStatus::Completed => Ok(ResumeRecoveryObservation {
+            observed_owner: None,
+            should_reconcile_claimed_running_snapshot: false,
+        }),
     }
 }
 
@@ -2193,7 +2207,7 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             reason: "failed or paused snapshots must not retain an active run".to_owned(),
         });
     }
-    let stale_recovery_owner =
+    let recovery_observation =
         observed_resume_recovery_owner(&current_dir, &project_id, &run_snapshot)?;
 
     // Acquire the writer lock before any stale-run mutation so recovery never
@@ -2203,12 +2217,12 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
         &current_dir,
         &current_dir,
         &project_id,
-        stale_recovery_owner.as_deref(),
+        recovery_observation.observed_owner.as_deref(),
     )
     .map_err(|error| AppError::ResumeFailed {
         reason: format!("failed to acquire writer lease for resume: {error}"),
     })?;
-    if stale_recovery_owner.is_some() {
+    if recovery_observation.should_reconcile_claimed_running_snapshot {
         match reconcile_or_recover_claimed_running_snapshot(
             &current_dir,
             &project_id,

@@ -23,20 +23,19 @@ fn event_run_id(event: &JournalEvent) -> Option<&str> {
     event.details.get("run_id").and_then(|value| value.as_str())
 }
 
-/// Returns the durable terminal status for the current running attempt, if any.
-///
-/// Resumed attempts reuse the same `run_id`, so stale reconciliation must ignore
-/// terminal events that happened before the latest `run_started`/`run_resumed`
-/// boundary for the active attempt.
-pub fn terminal_status_for_running_attempt(
+fn active_run_started_at(snapshot: &RunSnapshot) -> Option<DateTime<Utc>> {
+    snapshot
+        .active_run
+        .as_ref()
+        .map(|active_run| active_run.started_at)
+}
+
+fn running_attempt_boundary_sequence(
     snapshot: &RunSnapshot,
     events: &[JournalEvent],
-) -> Option<RunStatus> {
-    if snapshot.status != RunStatus::Running {
-        return None;
-    }
+) -> Option<u64> {
     let run_id = snapshot_run_id(snapshot)?;
-    let boundary_sequence = events
+    let durable_boundary = events
         .iter()
         .rev()
         .find(|event| {
@@ -46,7 +45,34 @@ pub fn terminal_status_for_running_attempt(
                     JournalEventType::RunStarted | JournalEventType::RunResumed
                 )
         })
-        .map(|event| event.sequence)?;
+        .map(|event| event.sequence);
+    let snapshot_boundary = active_run_started_at(snapshot).and_then(|started_at| {
+        events
+            .iter()
+            .filter(|event| event_run_id(event) == Some(run_id) && event.timestamp <= started_at)
+            .map(|event| event.sequence)
+            .max()
+    });
+
+    durable_boundary.into_iter().chain(snapshot_boundary).max()
+}
+
+/// Returns the durable terminal status for the current running attempt, if any.
+///
+/// Resumed attempts reuse the same `run_id`, so stale reconciliation must ignore
+/// terminal events that happened before the latest `run_started`/`run_resumed`
+/// boundary for the active attempt. If a resumed attempt crashes after
+/// publishing `run.json` but before `run_resumed` is durable, the active
+/// snapshot's `started_at` timestamp becomes the fallback attempt boundary.
+pub fn terminal_status_for_running_attempt(
+    snapshot: &RunSnapshot,
+    events: &[JournalEvent],
+) -> Option<RunStatus> {
+    if snapshot.status != RunStatus::Running {
+        return None;
+    }
+    let run_id = snapshot_run_id(snapshot)?;
+    let boundary_sequence = running_attempt_boundary_sequence(snapshot, events)?;
 
     events.iter().rev().find_map(|event| {
         (event.sequence > boundary_sequence && event_run_id(event) == Some(run_id)).then_some(
