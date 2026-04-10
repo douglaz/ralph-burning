@@ -5574,6 +5574,50 @@ fn run_stop_terminates_pid_and_marks_snapshot_failed() {
     );
 }
 
+#[test]
+fn run_stop_does_not_delete_pid_file_when_snapshot_is_not_running() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": null,
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "failed: startup interrupted"
+}"#,
+    )
+    .expect("write failed snapshot");
+
+    let pid_file = serde_json::json!({
+        "pid": std::process::id(),
+        "started_at": Utc::now(),
+    });
+    let pid_path = project_root(temp_dir.path(), "alpha").join("run.pid");
+    fs::write(
+        &pid_path,
+        serde_json::to_string_pretty(&pid_file).expect("serialize pid file"),
+    )
+    .expect("write pid file");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        pid_path.exists(),
+        "run stop should not delete a live pid file when the snapshot is not running"
+    );
+}
+
 // ── Run History ──
 
 #[test]

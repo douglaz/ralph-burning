@@ -1909,7 +1909,6 @@ async fn handle_stop() -> AppResult<()> {
     let run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
 
     if run_snapshot.status != RunStatus::Running {
-        let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
         return Err(AppError::RunStopFailed {
             reason: format!(
                 "project is not currently running; current status is '{}'",
@@ -1960,7 +1959,14 @@ async fn handle_stop() -> AppResult<()> {
             "terminated gracefully with SIGTERM"
         } else {
             send_signal_to_pid(pid_record.pid, Signal::SIGKILL)?;
-            let _ = wait_for_pid_exit(&pid_record, Duration::from_secs(1)).await;
+            if !wait_for_pid_exit(&pid_record, Duration::from_secs(1)).await {
+                return Err(AppError::RunStopFailed {
+                    reason: format!(
+                        "sent SIGKILL to pid {} but the orchestrator is still alive; refusing to rewrite run state",
+                        pid_record.pid
+                    ),
+                });
+            }
             "required SIGKILL after timeout"
         };
 

@@ -5159,6 +5159,10 @@ async fn completion_guard_produces_resumable_snapshot_when_disk_amendments_remai
         "status_summary should mention blocked: {}",
         snapshot.status_summary
     );
+    assert!(
+        FileSystem::read_pid_file(base_dir, &pid).unwrap().is_none(),
+        "pid file should be removed when completion is blocked"
+    );
 
     // The orphaned amendment file must still be on disk (not deleted by the guard).
     assert!(
@@ -7174,6 +7178,86 @@ async fn resume_recovers_stale_running_snapshot_when_pid_file_is_missing() {
     assert!(
         FileSystem::read_pid_file(base_dir, &pid).unwrap().is_none(),
         "pid file should be removed after resumed run completes"
+    );
+}
+
+/// When a run dies after publishing `run.json` but before `run_started`
+/// reaches the journal, resume should fall back to the interrupted snapshot
+/// metadata instead of aborting on the missing event.
+#[tokio::test]
+async fn resume_recovers_stale_running_snapshot_without_run_started_event() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "stale-without-run-started");
+    let run_id = RunId::new("run-stale-without-run-started").unwrap();
+    let now = Utc::now();
+    let prompt_hash = FsProjectStore
+        .read_project_record(base_dir, &pid)
+        .unwrap()
+        .prompt_hash;
+
+    let snapshot = RunSnapshot {
+        active_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                    StageId::Planning,
+                ),
+                started_at: now,
+                prompt_hash_at_cycle_start: prompt_hash.clone(),
+                prompt_hash_at_stage_start: prompt_hash,
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
+        interrupted_run: None,
+        status: RunStatus::Running,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        max_completion_rounds: Some(20),
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "running: planning".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+    FsRunSnapshotWriteStore
+        .write_run_snapshot(base_dir, &pid, &snapshot)
+        .unwrap();
+    FileSystem::remove_pid_file(base_dir, &pid).unwrap();
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+    let result = engine::resume_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "resume should recover a stale run even without run_started: {result:?}"
+    );
+
+    let final_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(final_snapshot.status, RunStatus::Completed);
+    assert!(
+        final_snapshot.interrupted_run.is_none(),
+        "completed run should clear interrupted_run after successful resume"
     );
 }
 

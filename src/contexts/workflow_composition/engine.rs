@@ -717,6 +717,17 @@ fn interrupted_active_run(snapshot: &RunSnapshot) -> AppResult<&ActiveRun> {
         })
 }
 
+fn resume_seed_active_run(snapshot: &RunSnapshot) -> AppResult<&ActiveRun> {
+    snapshot
+        .interrupted_run
+        .as_ref()
+        .or(snapshot.active_run.as_ref())
+        .ok_or_else(|| AppError::ResumeFailed {
+            reason: "run journal does not contain a run_started event and snapshot has no resumable run metadata"
+                .to_owned(),
+        })
+}
+
 fn preserve_interrupted_run(snapshot: &mut RunSnapshot) {
     snapshot.interrupted_run = snapshot.active_run.clone();
 }
@@ -1455,7 +1466,7 @@ where
         queries::visible_journal_events(&events).map_err(|error| AppError::ResumeFailed {
             reason: error.to_string(),
         })?;
-    let stage_ids = stage_plan_for_resume(preset, &visible_events, effective_config)?;
+    let stage_ids = stage_plan_for_resume(preset, &visible_events, &snapshot, effective_config)?;
     let semantics = flow_semantics(preset);
     let _workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
     let resume_cycle = snapshot
@@ -5660,6 +5671,7 @@ fn complete_run(
                         e, write_err
                     ),
                 })?;
+            let _ = FileSystem::remove_pid_file(base_dir, project_id);
         }
         return Err(e);
     }
@@ -5679,9 +5691,11 @@ fn complete_run(
         snapshot.completion_rounds,
         snapshot.max_completion_rounds.unwrap_or(0),
     );
-    let run_completed_line = journal::serialize_event(&run_completed)?;
-    journal_store.append_event(base_dir, project_id, &run_completed_line)?;
+    let append_result = journal::serialize_event(&run_completed).and_then(|run_completed_line| {
+        journal_store.append_event(base_dir, project_id, &run_completed_line)
+    });
     let _ = FileSystem::remove_pid_file(base_dir, project_id);
+    append_result?;
     Ok(())
 }
 
@@ -6448,22 +6462,19 @@ fn derive_remediation_from_pre_commit_evidence(
 fn stage_plan_for_resume(
     preset: FlowPreset,
     events: &[JournalEvent],
+    snapshot: &RunSnapshot,
     effective_config: &EffectiveConfig,
 ) -> AppResult<Vec<StageId>> {
     match preset {
         FlowPreset::Standard => {
-            let run_started = events
-                .iter()
-                .rev()
-                .find(|event| {
-                    event.event_type
-                        == crate::contexts::project_run_record::model::JournalEventType::RunStarted
-                })
-                .ok_or_else(|| AppError::ResumeFailed {
-                    reason: "run journal does not contain a run_started event".to_owned(),
-                })?;
-
-            let first_stage = detail_stage_id(run_started, "first_stage")?;
+            let first_stage = if let Some(run_started) = events.iter().rev().find(|event| {
+                event.event_type
+                    == crate::contexts::project_run_record::model::JournalEventType::RunStarted
+            }) {
+                detail_stage_id(run_started, "first_stage")?
+            } else {
+                resume_seed_active_run(snapshot)?.stage_cursor.stage
+            };
             match first_stage {
                 StageId::PromptReview => Ok(stage_plan_for_flow(FlowPreset::Standard, true)),
                 StageId::Planning => Ok(stage_plan_for_flow(FlowPreset::Standard, false)),
@@ -6486,17 +6497,13 @@ fn derive_resume_state(
     stage_plan: &[StagePlan],
     semantics: FlowSemantics,
 ) -> AppResult<ResumeState> {
-    let run_started = events
-        .iter()
-        .rev()
-        .find(|event| {
-            event.event_type
-                == crate::contexts::project_run_record::model::JournalEventType::RunStarted
-        })
-        .ok_or_else(|| AppError::ResumeFailed {
-            reason: "run journal does not contain a run_started event".to_owned(),
-        })?;
-    let run_id = RunId::new(detail_string(run_started, "run_id")?.to_owned())?;
+    let run_id = if let Some(run_started) = events.iter().rev().find(|event| {
+        event.event_type == crate::contexts::project_run_record::model::JournalEventType::RunStarted
+    }) {
+        RunId::new(detail_string(run_started, "run_id")?.to_owned())?
+    } else {
+        RunId::new(resume_seed_active_run(snapshot)?.run_id.clone())?
+    };
     let execution_stage_index = stage_index_for(stage_plan, semantics.execution_stage)?;
     let planning_stage_index = stage_index_for(stage_plan, semantics.planning_stage)?;
     let mut current_cycle = snapshot
@@ -8137,12 +8144,14 @@ pub fn emit_resume_drift_warning(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use chrono::Utc;
     use serde_json::Value;
     use tempfile::tempdir;
 
     use crate::adapters::fs::{
-        FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+        FileSystem, FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
         FsMilestoneSnapshotStore, FsMilestoneStore,
     };
     use crate::contexts::agent_execution::policy::ResolvedPanelMember;
@@ -8156,16 +8165,17 @@ mod tests {
         create_milestone, persist_plan, CreateMilestoneInput,
     };
     use crate::contexts::project_run_record::model::{
-        ProjectRecord, ProjectStatusSummary, TaskOrigin, TaskSource,
+        ActiveRun, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin,
+        TaskSource,
     };
     use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
     use crate::shared::domain::{
         BackendFamily, FlowPreset, ProjectId, ResolvedBackendTarget, StageId,
     };
-    use crate::shared::error::AppError;
+    use crate::shared::error::{AppError, AppResult};
 
     use super::{
-        build_final_review_snapshot, drift_still_satisfies_requirements,
+        build_final_review_snapshot, complete_run, drift_still_satisfies_requirements,
         milestone_lineage_plan_hash, resolution_has_drifted, sync_milestone_bead_start,
     };
 
@@ -8745,5 +8755,130 @@ mod tests {
             // (the prior round's failures should not carry over).
             assert_eq!(resume.cursor.attempt, 1);
         }
+    }
+
+    struct NoPendingAmendmentQueue;
+
+    impl crate::contexts::project_run_record::service::AmendmentQueuePort for NoPendingAmendmentQueue {
+        fn write_amendment(
+            &self,
+            _base_dir: &Path,
+            _project_id: &ProjectId,
+            _amendment: &crate::contexts::project_run_record::model::QueuedAmendment,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn list_pending_amendments(
+            &self,
+            _base_dir: &Path,
+            _project_id: &ProjectId,
+        ) -> AppResult<Vec<crate::contexts::project_run_record::model::QueuedAmendment>> {
+            Ok(Vec::new())
+        }
+
+        fn remove_amendment(
+            &self,
+            _base_dir: &Path,
+            _project_id: &ProjectId,
+            _amendment_id: &str,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
+            Ok(0)
+        }
+
+        fn has_pending_amendments(
+            &self,
+            _base_dir: &Path,
+            _project_id: &ProjectId,
+        ) -> AppResult<bool> {
+            Ok(false)
+        }
+    }
+
+    struct AppendFailsJournalStore;
+
+    impl crate::contexts::project_run_record::service::JournalStorePort for AppendFailsJournalStore {
+        fn read_journal(
+            &self,
+            _base_dir: &Path,
+            _project_id: &ProjectId,
+        ) -> AppResult<Vec<crate::contexts::project_run_record::model::JournalEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn append_event(
+            &self,
+            _base_dir: &Path,
+            _project_id: &ProjectId,
+            _line: &str,
+        ) -> AppResult<()> {
+            Err(AppError::Io(std::io::Error::other(
+                "forced journal append failure",
+            )))
+        }
+    }
+
+    fn running_snapshot_for_pid_cleanup(run_id: &crate::shared::domain::RunId) -> RunSnapshot {
+        RunSnapshot {
+            active_run: Some(ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: crate::shared::domain::StageCursor::initial(StageId::Planning),
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            interrupted_run: None,
+            status: RunStatus::Running,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "running: planning".to_owned(),
+            last_stage_resolution_snapshot: None,
+        }
+    }
+
+    #[test]
+    fn complete_run_removes_pid_file_when_run_completed_append_fails() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+        let project_id = ProjectId::new("pid-cleanup-complete").expect("project id");
+        let run_id = crate::shared::domain::RunId::new("run-pid-cleanup-complete").expect("run id");
+        let mut snapshot = running_snapshot_for_pid_cleanup(&run_id);
+        let mut seq = 0;
+
+        FileSystem::write_pid_file(temp_dir.path(), &project_id).expect("write pid file");
+
+        let err = complete_run(
+            &mut snapshot,
+            &crate::adapters::fs::FsRunSnapshotWriteStore,
+            &AppendFailsJournalStore,
+            &NoPendingAmendmentQueue,
+            temp_dir.path(),
+            &project_id,
+            &run_id,
+            &mut seq,
+        )
+        .expect_err("completion append should fail");
+
+        assert!(
+            err.to_string().contains("forced journal append failure"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            FileSystem::read_pid_file(temp_dir.path(), &project_id)
+                .expect("read pid file")
+                .is_none(),
+            "pid file should be removed even when run_completed append fails"
+        );
     }
 }
