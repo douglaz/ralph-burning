@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T06:36:44.951435791Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI found two robustness issues in terminal-completion/finalization logic (`src/contexts/workflow_composition/engine.rs`) where `run.pid` is not always removed on non-running terminal outcomes; these can leave stale PID artifacts and state/journal inconsistencies. The working-tree diff itself only changed `.ralph-burning/projects/rlm/*` run metadata files.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/engine.rs:5649-5664` converts a resumable completion blocker into a failed snapshot path (`snapshot.status = RunStatus::Failed; snapshot.active_run = None;`), writes it, then returns early without calling `FileSystem::remove_pid_file`. This leaves `run.pid` behind after a terminal non-running outcome. Same function therefore violates PID cleanup in a normal terminal failure mode (`complete_guard`), which should always delete the orchestrator liveness file.\n   Rationale: Prevents stale PID files from persisting after completion-blocked runs and can cause later tools to treat a dead run as stale/liveness-ambiguous rather than fully cleaned.\n2. `src/contexts/workflow_composition/engine.rs:5667-5684` in `complete_run` writes a completed snapshot first, then appends `run_completed` with `?`; if that append fails, the function returns before reaching `remove_pid_file`, and the PID file is never removed. If the snapshot write succeeds, the run is marked `Completed` in durable state while the completion event is absent and the PID liveness file remains.\n   Rationale: Breaks cleanup-at-exit guarantees and can create terminal-state inconsistency (snapshot says completed, journal lacks completion event, PID file present), which weakens recovery behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

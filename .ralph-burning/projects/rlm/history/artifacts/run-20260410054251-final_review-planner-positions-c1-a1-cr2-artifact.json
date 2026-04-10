@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr2-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T06:55:12.848390596Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll five amendments describe real lifecycle bugs in run startup/stop/completion handling. They expose crash windows, liveness corruption, or split-brain risk, and the proposed fixes improve correctness and recovery behavior.\n\n## Votes\n\n- `fr-2-85624bb1`: Accept\n  `run resume` currently requires a durable `run_started` event even after stale-run reconciliation has already converted the snapshot into a resumable failed state with `interrupted_run` metadata. Because startup publishes a `Running` snapshot before `run_started` is durable, a crash in that window strands the run in a state resume rejects. Resume needs a fallback from snapshot metadata, or startup must invert the durability order.\n- `fr-2-a4b2ef72`: Accept\n  `run stop` can delete `run.pid` solely because the snapshot is not yet `Running`, but start/resume write the pid file before publishing that snapshot. That creates a real race where a live orchestrator loses its liveness record and later looks stale. PID cleanup must be conditioned on proving the recorded process is dead, or coordinated with startup through the writer-lease mechanism.\n- `fr-2-35bafcb9`: Accept\n  The SIGKILL path is not safe as written. Sending `SIGKILL` does not guarantee the process is gone immediately, and the code ignores the follow-up liveness result before reclaiming the writer lease and possibly rewriting `run.json`. If the process is still alive, that creates split-brain ownership of the project state. The stop path should fail and leave recovery state untouched when post-kill liveness still reports the pid alive.\n- `fr-2-119ee7f5`: Accept\n  The completion-blocked branch persists a non-running failed snapshot and returns without removing `run.pid`. After the orchestrator exits, that leaves stale liveness state behind for a normal process-termination path. Even if later commands often key off `status`, the durable pid record is now wrong and violates the cleanup invariant expected for terminal-or-interrupted non-running outcomes.\n- `fr-2-fa266dd6`: Accept\n  In `complete_run`, a successful completed-snapshot write followed by a failed `run_completed` append leaves two defects: no pid cleanup and a durable completed snapshot without the completion event some downstream code requires. That partial-commit state is real and already treated as corrupt in other paths. The completion path needs explicit handling so pid cleanup and recovery semantics remain correct when the journal append fails.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
