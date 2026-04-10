@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T19:52:18.341495361Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted. Each amendment identifies a concrete correctness and safety gap where the CLI can transition state as if run ownership/teardown succeeded while live processes or stale durable ownership artifacts remain, creating risk of duplicated orchestration and inconsistent snapshot semantics.\n\n## Votes\n\n- `fr-20-9af9a94d`: Accept\n  Correctly flags a real cleanup defect: stop logic only signals process groups with different PGIDs plus the orchestrator PID, so same-process-group descendants can survive. Marking run state as failed/resumable after this is misleading and unsafe.\n- `fr-20-036970e2`: Accept\n  The stale-detection fallback for legacy run.pid without authoritative markers is insufficiently conservative. Treating such entries as Stale can reclaim work while a live legacy orchestrator still runs, enabling conflicting resume/stop flows over the same project.\n- `fr-20-768d5ea2`: Accept\n  Ignoring `Ok(false)` from partial stale-owner recovery can permit recovery after partial state repair, with lock release but incomplete lease/worktree cleanup. Continuing then can operate on contradictory durable state and is not robust.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 20
+}
