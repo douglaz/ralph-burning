@@ -57,6 +57,7 @@ const PROJECT_CONFIG_FILE: &str = "project.toml";
 const PROJECT_POLICY_CONFIG_FILE: &str = "config.toml";
 const RUN_FILE: &str = "run.json";
 const PID_FILE: &str = "run.pid";
+const ACTIVE_BACKEND_PROCESSES_FILE: &str = "active-processes.json";
 const JOURNAL_FILE: &str = "journal.ndjson";
 const SESSIONS_FILE: &str = "sessions.json";
 const PROMPT_FILE: &str = "prompt.md";
@@ -169,9 +170,137 @@ pub struct RunPidRecord {
     pub proc_start_marker: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunBackendProcessRecord {
+    pub pid: u32,
+    pub recorded_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_start_ticks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_start_marker: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+struct RunBackendProcessSet {
+    #[serde(default)]
+    processes: Vec<RunBackendProcessRecord>,
+}
+
 pub struct FileSystem;
 
 impl FileSystem {
+    fn identity_is_authoritative(
+        proc_start_ticks: Option<u64>,
+        proc_start_marker: Option<&str>,
+    ) -> bool {
+        if proc_start_ticks.is_some() {
+            return true;
+        }
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            proc_start_marker.is_some_and(|marker| !marker.trim().is_empty())
+        }
+
+        #[cfg(any(target_os = "linux", not(unix)))]
+        {
+            let _ = proc_start_marker;
+            false
+        }
+    }
+
+    fn process_identity_is_alive(
+        pid: u32,
+        proc_start_ticks: Option<u64>,
+        proc_start_marker: Option<&str>,
+    ) -> bool {
+        if !Self::is_pid_running_unchecked(pid) {
+            return false;
+        }
+
+        if let Some(expected_ticks) = proc_start_ticks {
+            return matches!(Self::proc_start_ticks(pid), Some(actual_ticks) if actual_ticks == expected_ticks);
+        }
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            let Some(expected_marker) = proc_start_marker else {
+                return false;
+            };
+            return matches!(Self::proc_start_marker(pid), Some(actual_marker) if actual_marker == expected_marker);
+        }
+
+        #[cfg(any(target_os = "linux", not(unix)))]
+        {
+            let _ = proc_start_marker;
+            false
+        }
+    }
+
+    fn live_project_backend_processes_path(project_root: &Path) -> PathBuf {
+        project_root
+            .join("runtime")
+            .join("backend")
+            .join(ACTIVE_BACKEND_PROCESSES_FILE)
+    }
+
+    fn read_pid_file_from_project_root(project_root: &Path) -> AppResult<Option<RunPidRecord>> {
+        let path = project_root.join(PID_FILE);
+        match fs::read_to_string(&path) {
+            Ok(raw) => Ok(Some(serde_json::from_str(&raw).map_err(|error| {
+                AppError::CorruptRecord {
+                    file: format!("{PID_FILE} ({})", project_root.display()),
+                    details: error.to_string(),
+                }
+            })?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn read_backend_process_set_from_project_root(
+        project_root: &Path,
+    ) -> AppResult<RunBackendProcessSet> {
+        let path = Self::live_project_backend_processes_path(project_root);
+        match fs::read_to_string(&path) {
+            Ok(raw) => serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+                file: format!(
+                    "runtime/backend/{ACTIVE_BACKEND_PROCESSES_FILE} ({})",
+                    project_root.display()
+                ),
+                details: error.to_string(),
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(RunBackendProcessSet::default())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn write_backend_process_set_to_project_root(
+        project_root: &Path,
+        processes: &[RunBackendProcessRecord],
+    ) -> AppResult<()> {
+        let path = Self::live_project_backend_processes_path(project_root);
+        if processes.is_empty() {
+            match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        } else {
+            let mut set = RunBackendProcessSet {
+                processes: processes.to_vec(),
+            };
+            set.processes.sort_by_key(|left| left.pid);
+            Self::write_atomic(&path, &serde_json::to_string_pretty(&set)?)
+        }
+    }
+
     pub fn create_workspace(
         workspace_root: &Path,
         workspace_config: &str,
@@ -320,17 +449,55 @@ impl FileSystem {
         base_dir: &Path,
         project_id: &ProjectId,
     ) -> AppResult<Option<RunPidRecord>> {
-        let path = Self::live_project_root(base_dir, project_id).join(PID_FILE);
-        match fs::read_to_string(&path) {
-            Ok(raw) => Ok(Some(serde_json::from_str(&raw).map_err(|error| {
-                AppError::CorruptRecord {
-                    file: format!("projects/{}/{}", project_id, PID_FILE),
-                    details: error.to_string(),
-                }
-            })?)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
+        let project_root = Self::live_project_root(base_dir, project_id);
+        Self::read_pid_file_from_project_root(&project_root)
+    }
+
+    pub fn register_backend_process(
+        project_root: &Path,
+        pid: u32,
+    ) -> AppResult<RunBackendProcessRecord> {
+        let pid_record = Self::read_pid_file_from_project_root(project_root)?;
+        let mut process_set = Self::read_backend_process_set_from_project_root(project_root)?;
+        let record = RunBackendProcessRecord {
+            pid,
+            recorded_at: Utc::now(),
+            run_id: pid_record.as_ref().and_then(|record| record.run_id.clone()),
+            run_started_at: pid_record.as_ref().and_then(|record| record.run_started_at),
+            proc_start_ticks: Self::proc_start_ticks(pid),
+            proc_start_marker: Self::proc_start_marker(pid),
+        };
+        process_set.processes.retain(|existing| existing.pid != pid);
+        process_set.processes.push(record.clone());
+        Self::write_backend_process_set_to_project_root(project_root, &process_set.processes)?;
+        Ok(record)
+    }
+
+    pub fn remove_backend_process(project_root: &Path, pid: u32) -> AppResult<()> {
+        let mut process_set = Self::read_backend_process_set_from_project_root(project_root)?;
+        let original_len = process_set.processes.len();
+        process_set.processes.retain(|existing| existing.pid != pid);
+        if process_set.processes.len() == original_len {
+            return Ok(());
         }
+        Self::write_backend_process_set_to_project_root(project_root, &process_set.processes)
+    }
+
+    pub fn read_backend_processes(
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<RunBackendProcessRecord>> {
+        let project_root = Self::live_project_root(base_dir, project_id);
+        Ok(Self::read_backend_process_set_from_project_root(&project_root)?.processes)
+    }
+
+    pub fn write_backend_processes(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        processes: &[RunBackendProcessRecord],
+    ) -> AppResult<()> {
+        let project_root = Self::live_project_root(base_dir, project_id);
+        Self::write_backend_process_set_to_project_root(&project_root, processes)
     }
 
     pub fn remove_pid_file(base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
@@ -365,23 +532,26 @@ impl FileSystem {
         record.run_id.as_deref() == Some(run_id) && record.run_started_at == Some(run_started_at)
     }
 
+    pub fn backend_process_matches_attempt(
+        record: &RunBackendProcessRecord,
+        run_id: &str,
+        run_started_at: DateTime<Utc>,
+    ) -> bool {
+        record.run_id.as_deref() == Some(run_id) && record.run_started_at == Some(run_started_at)
+    }
+
     pub fn pid_record_is_authoritative(record: &RunPidRecord) -> bool {
-        if record.proc_start_ticks.is_some() {
-            return true;
-        }
+        Self::identity_is_authoritative(
+            record.proc_start_ticks,
+            record.proc_start_marker.as_deref(),
+        )
+    }
 
-        #[cfg(all(unix, not(target_os = "linux")))]
-        {
-            record
-                .proc_start_marker
-                .as_deref()
-                .is_some_and(|marker| !marker.trim().is_empty())
-        }
-
-        #[cfg(any(target_os = "linux", not(unix)))]
-        {
-            false
-        }
+    pub fn backend_process_is_authoritative(record: &RunBackendProcessRecord) -> bool {
+        Self::identity_is_authoritative(
+            record.proc_start_ticks,
+            record.proc_start_marker.as_deref(),
+        )
     }
 
     pub fn is_pid_running_unchecked(pid: u32) -> bool {
@@ -403,26 +573,19 @@ impl FileSystem {
     }
 
     pub fn is_pid_alive(record: &RunPidRecord) -> bool {
-        if !Self::is_pid_running_unchecked(record.pid) {
-            return false;
-        }
+        Self::process_identity_is_alive(
+            record.pid,
+            record.proc_start_ticks,
+            record.proc_start_marker.as_deref(),
+        )
+    }
 
-        if let Some(expected_ticks) = record.proc_start_ticks {
-            return matches!(Self::proc_start_ticks(record.pid), Some(actual_ticks) if actual_ticks == expected_ticks);
-        }
-
-        #[cfg(all(unix, not(target_os = "linux")))]
-        {
-            let Some(expected_marker) = record.proc_start_marker.as_deref() else {
-                return false;
-            };
-            return matches!(Self::proc_start_marker(record.pid), Some(actual_marker) if actual_marker == expected_marker);
-        }
-
-        #[cfg(any(target_os = "linux", not(unix)))]
-        {
-            false
-        }
+    pub fn is_backend_process_alive(record: &RunBackendProcessRecord) -> bool {
+        Self::process_identity_is_alive(
+            record.pid,
+            record.proc_start_ticks,
+            record.proc_start_marker.as_deref(),
+        )
     }
 
     pub fn proc_start_ticks_for_pid(pid: u32) -> Option<u64> {
@@ -5308,6 +5471,45 @@ mod tests {
         assert!(FileSystem::read_pid_file(temp.path(), &project_id)
             .expect("read after remove")
             .is_none());
+    }
+
+    #[test]
+    fn backend_process_tracking_round_trips_for_live_project() {
+        let temp = tempdir().expect("tempdir");
+        let project_id =
+            ProjectId::new("backend-process-roundtrip".to_owned()).expect("project id");
+        let project_root = FileSystem::ensure_live_project_root(temp.path(), &project_id)
+            .expect("ensure live project root");
+        let run_started_at = Utc::now();
+        FileSystem::write_pid_file(
+            temp.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            Some("lease-1"),
+            Some("run-1"),
+            Some(run_started_at),
+        )
+        .expect("write pid file");
+
+        let tracked = FileSystem::register_backend_process(&project_root, std::process::id())
+            .expect("register backend process");
+        let read_back = FileSystem::read_backend_processes(temp.path(), &project_id)
+            .expect("read backend processes");
+
+        assert_eq!(read_back, vec![tracked.clone()]);
+        assert!(FileSystem::backend_process_matches_attempt(
+            &tracked,
+            "run-1",
+            run_started_at
+        ));
+        assert!(FileSystem::backend_process_is_authoritative(&tracked));
+        assert!(FileSystem::is_backend_process_alive(&tracked));
+
+        FileSystem::remove_backend_process(&project_root, tracked.pid)
+            .expect("remove backend process");
+        assert!(FileSystem::read_backend_processes(temp.path(), &project_id)
+            .expect("read backend processes after remove")
+            .is_empty());
     }
 
     #[test]

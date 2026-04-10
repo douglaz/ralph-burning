@@ -1533,6 +1533,29 @@ fn pid_record_has_attempt_metadata(record: &crate::adapters::fs::RunPidRecord) -
     record.run_id.is_some() && record.run_started_at.is_some()
 }
 
+fn non_authoritative_pid_has_fresh_matching_lease(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    owner: &crate::adapters::fs::RunPidOwner,
+) -> AppResult<bool> {
+    let Some((_writer_owner, lease_record)) =
+        read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
+    else {
+        return Ok(false);
+    };
+
+    let now = Utc::now();
+    Ok(match (owner, lease_record) {
+        (crate::adapters::fs::RunPidOwner::Cli, LeaseRecord::CliWriter(lease)) => {
+            lease.project_id == project_id.as_str() && !lease.is_stale_at(now)
+        }
+        (crate::adapters::fs::RunPidOwner::Daemon, LeaseRecord::Worktree(lease)) => {
+            lease.project_id == project_id.as_str() && !lease.is_stale_at(now)
+        }
+        _ => false,
+    })
+}
+
 fn classify_running_snapshot_liveness(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
@@ -1564,7 +1587,9 @@ fn classify_running_snapshot_liveness(
             return Ok(RunningSnapshotLiveness::Stale);
         }
 
-        if FileSystem::is_pid_running_unchecked(record.pid) {
+        if FileSystem::is_pid_running_unchecked(record.pid)
+            && non_authoritative_pid_has_fresh_matching_lease(base_dir, project_id, &record.owner)?
+        {
             return Ok(match record.owner {
                 crate::adapters::fs::RunPidOwner::Cli => RunningSnapshotLiveness::LegacyCliProcess,
                 crate::adapters::fs::RunPidOwner::Daemon => {
@@ -2340,6 +2365,113 @@ fn kill_tracked_descendant_processes(processes: &[TrackedDescendantProcess]) -> 
     Ok(signaled)
 }
 
+fn stale_backend_processes_for_attempt(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    expected_attempt: &engine::RunningAttemptIdentity,
+) -> AppResult<(
+    Vec<crate::adapters::fs::RunBackendProcessRecord>,
+    Vec<crate::adapters::fs::RunBackendProcessRecord>,
+)> {
+    let processes = FileSystem::read_backend_processes(base_dir, project_id)?;
+    let (matching, remaining): (Vec<_>, Vec<_>) = processes.into_iter().partition(|record| {
+        FileSystem::backend_process_matches_attempt(
+            record,
+            &expected_attempt.run_id,
+            expected_attempt.started_at,
+        )
+    });
+    Ok((matching, remaining))
+}
+
+#[cfg(unix)]
+fn kill_stale_backend_process_group(
+    record: &crate::adapters::fs::RunBackendProcessRecord,
+) -> AppResult<bool> {
+    if !FileSystem::is_backend_process_alive(record) {
+        return Ok(false);
+    }
+    if !FileSystem::backend_process_is_authoritative(record) {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing stale recovery because backend pid {} is still alive but lacks authoritative process identity",
+            record.pid
+        ))));
+    }
+
+    let pid = i32::try_from(record.pid).map_err(|_| {
+        AppError::Io(std::io::Error::other(format!(
+            "backend pid {} exceeds libc::pid_t range",
+            record.pid
+        )))
+    })?;
+    match kill(Pid::from_raw(-pid), Signal::SIGKILL) {
+        Ok(()) => Ok(true),
+        Err(nix::errno::Errno::ESRCH) => match kill(Pid::from_raw(pid), Signal::SIGKILL) {
+            Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(true),
+            Err(error) => Err(AppError::Io(std::io::Error::other(format!(
+                "failed to SIGKILL stale backend pid {}: {error}",
+                record.pid
+            )))),
+        },
+        Err(error) => Err(AppError::Io(std::io::Error::other(format!(
+            "failed to SIGKILL stale backend process group {}: {error}",
+            record.pid
+        )))),
+    }
+}
+
+fn cleanup_stale_backend_process_groups(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    expected_attempt: &engine::RunningAttemptIdentity,
+) -> AppResult<usize> {
+    let (matching, remaining) =
+        stale_backend_processes_for_attempt(base_dir, project_id, expected_attempt)?;
+    if matching.is_empty() {
+        return Ok(0);
+    }
+
+    #[cfg(unix)]
+    {
+        let mut signaled = 0usize;
+        for record in &matching {
+            if kill_stale_backend_process_group(record)? {
+                signaled += 1;
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while matching.iter().any(FileSystem::is_backend_process_alive) {
+            if Instant::now() >= deadline {
+                let live_pids = matching
+                    .iter()
+                    .filter(|record| FileSystem::is_backend_process_alive(record))
+                    .map(|record| record.pid.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(AppError::Io(std::io::Error::other(format!(
+                    "stale backend subprocesses are still alive after SIGKILL: {live_pids}"
+                ))));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        FileSystem::write_backend_processes(base_dir, project_id, &remaining)?;
+        Ok(signaled)
+    }
+
+    #[cfg(not(unix))]
+    {
+        if matching.iter().any(FileSystem::is_backend_process_alive) {
+            return Err(AppError::Io(std::io::Error::other(
+                "stale backend subprocesses remain alive and cannot be cleaned automatically on this platform",
+            )));
+        }
+        FileSystem::write_backend_processes(base_dir, project_id, &remaining)?;
+        Ok(0)
+    }
+}
+
 fn recover_stale_running_snapshot(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
@@ -2394,6 +2526,8 @@ fn reconcile_or_recover_claimed_running_snapshot(
     }) {
         return Ok(ClaimedRunningSnapshotOutcome::AttemptChanged(snapshot));
     }
+
+    let _ = cleanup_stale_backend_process_groups(base_dir, project_id, expected_attempt)?;
 
     let journal_events = FsJournalStore.read_journal(base_dir, project_id)?;
     match crate::contexts::project_run_record::queries::terminal_status_for_running_attempt(

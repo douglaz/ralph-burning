@@ -112,6 +112,26 @@ fn project_root(base_dir: &std::path::Path, project_id: &str) -> std::path::Path
         .join(project_id)
 }
 
+fn backend_processes_path(base_dir: &std::path::Path, project_id: &str) -> std::path::PathBuf {
+    project_root(base_dir, project_id)
+        .join("runtime")
+        .join("backend")
+        .join("active-processes.json")
+}
+
+fn spawn_isolated_backend_group(pid_file: &std::path::Path) -> std::process::Child {
+    let script = format!(
+        "exec setsid sh -c 'echo $$ > \"{}\"; exec sleep 60'",
+        pid_file.display()
+    );
+    Command::new("bash")
+        .args(["-lc", &script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn isolated backend group")
+}
+
 #[cfg(target_os = "linux")]
 fn proc_start_ticks(pid: u32) -> u64 {
     let stat_path = std::path::PathBuf::from(format!("/proc/{pid}/stat"));
@@ -154,8 +174,54 @@ fn live_pid_record_json(
     record
 }
 
+fn live_backend_process_record_json(
+    pid: u32,
+    run_id: &str,
+    run_started_at: &str,
+) -> serde_json::Value {
+    let mut record = serde_json::json!({
+        "pid": pid,
+        "recorded_at": Utc::now(),
+        "run_id": run_id,
+        "run_started_at": run_started_at,
+    });
+    #[cfg(target_os = "linux")]
+    {
+        record["proc_start_ticks"] = serde_json::json!(proc_start_ticks(pid));
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        if let Some(marker) =
+            ralph_burning::adapters::fs::FileSystem::proc_start_marker_for_pid(pid)
+        {
+            record["proc_start_marker"] = serde_json::json!(marker);
+        }
+    }
+    record
+}
+
+fn wait_for_pid_file(path: &std::path::Path, what: &str) -> u32 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !path.exists() || fs::read_to_string(path).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what} pid file was never written"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    fs::read_to_string(path)
+        .expect("read pid file")
+        .trim()
+        .parse::<u32>()
+        .expect("parse pid")
+}
+
 fn pid_is_alive(pid: u32) -> bool {
     kill(Pid::from_raw(pid as i32), None).is_ok()
+}
+
+fn pid_is_running(pid: u32) -> bool {
+    ralph_burning::adapters::fs::FileSystem::is_pid_running_unchecked(pid)
 }
 
 fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str) {
@@ -5910,8 +5976,7 @@ fn run_status_reports_stale_daemon_owned_running_when_legacy_lease_expires() {
 }
 
 #[test]
-fn run_status_keeps_legacy_cli_owned_running_snapshot_active_with_live_pid_without_proc_start_ticks(
-) {
+fn run_status_reports_stale_for_live_legacy_pid_without_proc_start_ticks_when_no_lease_exists() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -5953,8 +6018,8 @@ fn run_status_keeps_legacy_cli_owned_running_snapshot_active_with_live_pid_witho
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Status: running"),
-        "live legacy pid-only records must stay active until recovery is safe: {stdout}"
+        stdout.contains("Status: stale (process not found)"),
+        "legacy pid-only records without a fresh lease should fall back to stale recovery: {stdout}"
     );
 }
 
@@ -6451,7 +6516,7 @@ fn run_stop_sigkill_terminates_same_process_group_backend_descendant() {
 }
 
 #[test]
-fn run_stop_refuses_live_legacy_pid_record_without_proc_start_ticks() {
+fn run_stop_recovers_live_legacy_pid_record_without_proc_start_ticks_when_no_lease_exists() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -6496,25 +6561,108 @@ fn run_stop_refuses_live_legacy_pid_record_without_proc_start_ticks() {
         .output()
         .expect("run stop");
 
-    assert!(!output.status.success(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("legacy CLI-owned run"),
-        "stop should refuse a live legacy pid-only run without safe attempt identity: {stderr}"
+        stdout.contains("already stale"),
+        "stop should recover an unleased legacy pid-only record as stale: {stdout}"
     );
     assert!(
         pid_is_alive(child.id()),
-        "run stop must not signal a live legacy pid-only process"
+        "stale recovery must not signal an unrelated live process that merely reused the pid"
     );
     assert!(
-        project_root(temp_dir.path(), "alpha")
+        !project_root(temp_dir.path(), "alpha")
             .join("run.pid")
             .exists(),
-        "refused stop must leave the legacy pid marker intact"
+        "stale recovery should remove the unsafe legacy pid marker"
+    );
+    let run_json = fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
+        .expect("read run snapshot");
+    assert!(
+        run_json.contains("\"status\": \"failed\""),
+        "stale stop recovery should mark the run failed and resumable: {run_json}"
     );
 
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[test]
+fn run_stop_recovers_stale_running_and_kills_persisted_backend_process_group() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-stale-backend",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+
+    let backend_pid_file = temp_dir.path().join("stale-backend-stop.pid");
+    let mut backend_group = spawn_isolated_backend_group(&backend_pid_file);
+    let backend_pid = wait_for_pid_file(&backend_pid_file, "stale backend");
+    assert!(
+        pid_is_running(backend_pid),
+        "persisted stale backend process should be alive before recovery"
+    );
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "processes": [
+                live_backend_process_record_json(
+                    backend_pid,
+                    "run-stop-stale-backend",
+                    "2026-04-10T00:00:00Z"
+                )
+            ]
+        }))
+        .expect("serialize backend process record"),
+    )
+    .expect("write backend process record");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("already stale"),
+        "stale stop should recover instead of refusing: {stdout}"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_running(backend_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_running(backend_pid),
+        "stale stop recovery must kill persisted backend process groups before returning"
+    );
+    assert!(
+        !backend_processes_path(temp_dir.path(), "alpha").exists(),
+        "successful stale backend cleanup should remove the persisted backend process file"
+    );
+
+    let _ = backend_group.kill();
+    let _ = backend_group.wait();
 }
 
 #[test]
@@ -7160,29 +7308,60 @@ fn run_resume_refuses_legacy_cli_owned_running_without_pid_file() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
-fn run_resume_refuses_live_legacy_pid_record_without_proc_start_ticks() {
+fn run_resume_recovers_live_legacy_pid_record_without_proc_start_ticks_when_no_lease_exists() {
     let temp_dir = initialize_workspace_fixture();
-    create_project_fixture(temp_dir.path(), "alpha");
-    select_active_project_fixture(temp_dir.path(), "alpha");
+    setup_standard_project(&temp_dir, "legacy-live-pid-resume");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("legacy-live-pid-resume".to_owned())
+            .expect("valid project id");
+    let prompt_hash = <ralph_burning::adapters::fs::FsProjectStore as ralph_burning::contexts::project_run_record::service::ProjectStorePort>::read_project_record(
+        &ralph_burning::adapters::fs::FsProjectStore,
+        temp_dir.path(),
+        &project_id,
+    )
+    .expect("read project record")
+    .prompt_hash;
+    let now = Utc::now();
 
     fs::write(
-        project_root(temp_dir.path(), "alpha").join("run.json"),
-        r#"{
-  "active_run": {
-    "run_id": "run-cli-legacy-resume-live-pid-only",
-    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
-    "started_at": "2026-04-10T00:00:00Z"
-  },
-  "status": "running",
-  "cycle_history": [],
-  "completion_rounds": 1,
-  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
-  "amendment_queue": { "pending": [], "processed_count": 0 },
-  "status_summary": "running: Implementation"
-}"#,
+        project_root(temp_dir.path(), "legacy-live-pid-resume").join("run.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "active_run": {
+                "run_id": "run-cli-legacy-resume-live-pid-only",
+                "stage_cursor": {
+                    "stage": "planning",
+                    "cycle": 1,
+                    "attempt": 1,
+                    "completion_round": 1
+                },
+                "started_at": now,
+                "prompt_hash_at_cycle_start": prompt_hash,
+                "prompt_hash_at_stage_start": prompt_hash,
+                "qa_iterations_current_cycle": 0,
+                "review_iterations_current_cycle": 0,
+                "final_review_restart_count": 0
+            },
+            "interrupted_run": serde_json::Value::Null,
+            "status": "running",
+            "cycle_history": [],
+            "completion_rounds": 1,
+            "max_completion_rounds": 20,
+            "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+            "amendment_queue": { "pending": [], "processed_count": 0 },
+            "status_summary": "running: Planning"
+        }))
+        .expect("serialize stale run.json"),
     )
     .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "legacy-live-pid-resume").join("journal.ndjson"),
+        format!(
+            "{{\"sequence\":1,\"timestamp\":\"2026-03-11T19:00:00Z\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"legacy-live-pid-resume\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{now}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-cli-legacy-resume-live-pid-only\",\"first_stage\":\"planning\",\"max_completion_rounds\":20}}}}"
+        ),
+    )
+    .expect("write stale resume journal");
 
     let mut child = Command::new("sleep")
         .arg("60")
@@ -7191,7 +7370,7 @@ fn run_resume_refuses_live_legacy_pid_record_without_proc_start_ticks() {
         .spawn()
         .expect("spawn sleep");
     fs::write(
-        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        project_root(temp_dir.path(), "legacy-live-pid-resume").join("run.pid"),
         serde_json::to_string_pretty(&serde_json::json!({
             "pid": child.id(),
             "started_at": Utc::now(),
@@ -7202,19 +7381,20 @@ fn run_resume_refuses_live_legacy_pid_record_without_proc_start_ticks() {
 
     let output = Command::new(binary())
         .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run resume");
 
-    assert!(!output.status.success(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("legacy CLI-owned running run"),
-        "resume should refuse a live legacy pid-only run without safe attempt identity: {stderr}"
+        stdout.contains("Run completed successfully"),
+        "resume should recover the stale legacy pid-only run instead of hard-refusing it: {stdout}"
     );
     assert!(
         pid_is_alive(child.id()),
-        "run resume must not race a live legacy pid-only process"
+        "stale recovery must not signal an unrelated live process that merely reused the pid"
     );
 
     let _ = child.kill();
@@ -11306,6 +11486,113 @@ fn cli_run_resume_acquires_and_releases_writer_lock() {
         cli_leases.is_empty(),
         "no CLI lease file should remain after successful run resume"
     );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn cli_run_resume_kills_persisted_stale_backend_process_group_before_restarting() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "stale-resume-backend");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("stale-resume-backend".to_owned())
+            .expect("valid project id");
+    let prompt_hash = <ralph_burning::adapters::fs::FsProjectStore as ralph_burning::contexts::project_run_record::service::ProjectStorePort>::read_project_record(
+        &ralph_burning::adapters::fs::FsProjectStore,
+        temp_dir.path(),
+        &project_id,
+    )
+    .expect("read project record")
+    .prompt_hash;
+    let now = Utc::now();
+    fs::write(
+        project_root(temp_dir.path(), "stale-resume-backend").join("run.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "active_run": {
+                "run_id": "run-stale-resume-backend",
+                "stage_cursor": {
+                    "stage": "planning",
+                    "cycle": 1,
+                    "attempt": 1,
+                    "completion_round": 1
+                },
+                "started_at": now,
+                "prompt_hash_at_cycle_start": prompt_hash,
+                "prompt_hash_at_stage_start": prompt_hash,
+                "qa_iterations_current_cycle": 0,
+                "review_iterations_current_cycle": 0,
+                "final_review_restart_count": 0
+            },
+            "interrupted_run": serde_json::Value::Null,
+            "status": "running",
+            "cycle_history": [],
+            "completion_rounds": 1,
+            "max_completion_rounds": 20,
+            "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+            "amendment_queue": { "pending": [], "processed_count": 0 },
+            "status_summary": "running: Planning"
+        }))
+        .expect("serialize stale run.json"),
+    )
+    .expect("write stale run.json");
+    fs::write(
+        project_root(temp_dir.path(), "stale-resume-backend").join("journal.ndjson"),
+        format!(
+            "{{\"sequence\":1,\"timestamp\":\"2026-03-11T19:00:00Z\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"stale-resume-backend\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{now}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-stale-resume-backend\",\"first_stage\":\"planning\",\"max_completion_rounds\":20}}}}"
+        ),
+    )
+    .expect("write stale resume journal");
+    fs::remove_file(project_root(temp_dir.path(), "stale-resume-backend").join("run.pid")).ok();
+
+    let backend_pid_file = temp_dir.path().join("stale-resume-backend.pid");
+    let mut backend_group = spawn_isolated_backend_group(&backend_pid_file);
+    let backend_pid = wait_for_pid_file(&backend_pid_file, "stale resume backend");
+    assert!(
+        pid_is_running(backend_pid),
+        "persisted stale backend process should be alive before resume recovery"
+    );
+    fs::write(
+        backend_processes_path(temp_dir.path(), "stale-resume-backend"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "processes": [
+                live_backend_process_record_json(
+                    backend_pid,
+                    "run-stale-resume-backend",
+                    &now.to_rfc3339()
+                )
+            ]
+        }))
+        .expect("serialize backend process record"),
+    )
+    .expect("write backend process record");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(
+        output.status.success(),
+        "stale resume should recover and succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_running(backend_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_running(backend_pid),
+        "stale resume must kill persisted backend process groups before restarting"
+    );
+    assert!(
+        !backend_processes_path(temp_dir.path(), "stale-resume-backend").exists(),
+        "successful stale backend cleanup should remove the persisted backend process file"
+    );
+
+    let _ = backend_group.kill();
+    let _ = backend_group.wait();
 }
 
 #[cfg(feature = "test-stub")]
