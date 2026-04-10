@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr19-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T19:24:48.363030720Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReject the daemon run-stop amendment because a daemon-owned run.pid points at the long-lived daemon process, so treating it like a CLI-owned per-run orchestrator would collapse an isolation boundary and could stop unrelated daemon work. Accept the shutdown-hardening and pid-cleanup amendments because daemon shutdown still lacks a forced terminalization path, and normal-completion pid cleanup is still dependent on caller-side teardown rather than being guaranteed by the run-completion path itself.\n\n## Votes\n\n- `fr-19-8cc86862`: Reject\n  The premise is not technically sound for daemon-owned runs. In daemon mode the pid file records the daemon process itself, not an isolated one-shot CLI orchestrator, so signaling that pid from run stop would shut down the daemon service and can affect unrelated daemon-managed work. The current refusal preserves that control-plane boundary; this is not the same kind of defect as stale-state cleanup.\n- `fr-19-425fac5b`: Accept\n  The daemon path only calls task_cancel.cancel() and then keeps awaiting dispatch completion. Unlike the CLI path, it has no bounded shutdown wrapper that forces interrupted-state reconciliation after a grace period. If the backend ignores cancellation and a supervisor later SIGKILLs the daemon, the run can remain stuck in Running with a lingering pid file and fresh lease state. That is a real robustness gap.\n- `fr-19-2581c4ab`: Accept\n  This is a valid invariant leak across layers. The retry APIs used by CLI and daemon callers do not guarantee pid cleanup themselves, and the callers only remove run.pid after successful external teardown such as close() or lease release. A run can therefore finish successfully yet return an error from teardown and leave stale pid state behind. Cleanup of run-liveness metadata should not depend on unrelated lock-release success.\n- `fr-19-2517427d`: Accept\n  complete_run is the engine-level transition to Completed, but unlike failure and interruption paths it does not clear run.pid internally. That means terminal-state persistence and pid cleanup are inconsistent across paths, and any failure after the Completed snapshot write can leave pid cleanup to outer callers or miss it entirely. The asymmetry is a maintainability and correctness issue.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 19
+}

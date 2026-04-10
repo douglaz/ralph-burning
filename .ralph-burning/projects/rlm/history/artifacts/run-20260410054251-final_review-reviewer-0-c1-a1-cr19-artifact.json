@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr19-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T19:19:02.159224270Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the rlm lifecycle changes against the project prompt and ran `cargo test -q` successfully. I found 2 correctness gaps, both around daemon-owned runs: live daemon runs are still excluded from `run stop`, and daemon shutdown still lacks the forced interrupted-state reconciliation that the CLI path now has.\n\n## Amendments\n\n1. `run stop` still does not work for a live daemon-owned run. In `src/cli/run.rs:2860-2865`, `handle_stop()` hard-errors on `RunningSnapshotLiveness::DaemonProcess` / `LegacyDaemonProcess` / `LegacyDaemonLease` instead of using the `run.pid` data to signal the orchestrator and transition the snapshot to a resumable terminal state. The project prompt for bead `ralph-burning-rlm` describes `run stop` as the way to stop the active orchestrator found via the PID file; with the current branch, any daemon-dispatched run is excluded from that contract and remains dependent on separate daemon-specific controls.\n   Rationale: This is a correctness gap against the stated stop-command behavior and acceptance criteria. Operators can still end up with an unstoppable live run even though the new lifecycle feature is supposed to provide a uniform stop path.\n2. Daemon-owned runs still lack the new forced SIGTERM cleanup path. The CLI wrapper now has `run_with_termination_signal()` in `src/cli/run.rs:1952-1984`, which cancels the run, waits a grace period, and then writes interrupted/failed state if graceful shutdown does not complete. The daemon dispatch path does not have an equivalent: in `src/contexts/automation_runtime/daemon_loop.rs:2568-2594` and `src/contexts/automation_runtime/daemon_loop.rs:2636-2653`, shutdown only calls `task_cancel.cancel()` and keeps waiting on `dispatch_future`. If the daemon is later SIGKILLed by a supervisor because the backend ignored cancellation, the run can still be left in stale `Running` state with a lingering `run.pid`, which is exactly the failure mode this bead is meant to harden.\n   Rationale: The prompt explicitly requires signal handling that writes a clean Failed snapshot on SIGTERM. Right now that guarantee only exists for CLI `run start`/`run resume`, not for daemon-owned orchestrators.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 19
+}

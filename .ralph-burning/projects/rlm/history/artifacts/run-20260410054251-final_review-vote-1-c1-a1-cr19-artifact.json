@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr19-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T19:25:50.098224571Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted 3/4 amendments as concrete cleanup/robustness issues at the daemon/engine boundary, but rejected the daemon-stop proposal because the current run PID for daemon-owned runs refers to the daemon process, so direct SIGTERM-based stop in `handle_stop` would breach run-vs-daemon control isolation.\n\n## Votes\n\n- `fr-19-8cc86862`: Reject\n  `RunningSnapshotLiveness::DaemonProcess`/daemon lease correspond to daemon-owned execution where `run.pid` tracks the daemon, not a per-run orchestrator process. `handle_stop` signaling that PID risks stopping broader daemon work and unrelated tasks; stopping should be through daemon task control (abort/reconcile) rather than PID targeting.\n- `fr-19-425fac5b`: Accept\n  The daemon dispatch loop only cancels via token and waits indefinitely, while backends may ignore cancellation, so shutdown can hang and leave a live-running state if the process is then killed externally. This is a real robustness gap versus the CLI bounded-shutdown path with grace-period fallback to interrupted-state reconciliation.\n- `fr-19-2581c4ab`: Accept\n  `execute_run_with_retry`/`resume_run_with_retry` are the shared engine API entry points used by both CLI and daemon and do not remove `run.pid`; cleanup is caller-dependent (`close`/lease release). If caller teardown fails, normal completion can return error and leave stale PID state, so pid cleanup should be made robust at the API/engine boundary.\n- `fr-19-2517427d`: Accept\n  `complete_run` writes terminal `Completed` state without removing PID metadata, unlike fail/interruption paths that remove it unconditionally. This asymmetry makes completion cleanup easy to miss when outer teardown fails; moving PID removal into completion transition is a valid correctness and maintainability fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 19
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr19-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T19:12:01.798832238Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound two correctness gaps in PID cleanup coverage around run completion paths. Both allow stale `run.pid` artifacts when completion succeeds but caller/lease teardown paths fail or are bypassed. Address by making completion-side PID cleanup guaranteed in the engine execution/transition path (or in a deferred post-run block in the public retry APIs) independent of lock-close success.\n\n## Amendments\n\n1. `run.pid` cleanup on normal completion is not guaranteed by the engine/API boundary and is currently conditional on caller-side lock-close behavior. `engine::execute_run_with_retry` and `engine::resume_run_with_retry` do not remove `run.pid` themselves (`src/contexts/workflow_composition/engine.rs:1090-1114` and `src/contexts/workflow_composition/engine.rs:1466-1510`), while CLI cleanup only runs after `close()` succeeds (`src/cli/run.rs:2577-2582`, `src/cli/run.rs:2811-2813`). If lock teardown fails, the run can end successfully but return an error and leave a stale `run.pid` on disk. This also affects daemon paths that call these same APIs (`src/contexts/automation_runtime/daemon_loop.rs:3217`, `src/contexts/automation_runtime/daemon_loop.rs:3239`) before any lease-based cleanup path.\n   Rationale: The goal requires PID cleanup on normal completion; without a guaranteed completion-path cleanup, stale PID files can persist after a successful run if caller cleanup is skipped.\n2. `complete_run` has no internal `remove_pid_file` call when transitioning to `Completed` (`src/contexts/workflow_composition/engine.rs:5869-5874`), unlike failure/interruption paths (`src/contexts/workflow_composition/engine.rs:827`, `src/contexts/workflow_composition/engine.rs:5999`). The cleanup logic is therefore split across callers and can be missed if external teardown fails or is incomplete.\n   Rationale: Normal completion should deterministically clear runtime liveness artifacts; leaving completion cleanup outside the core run transition creates a gap where a completed run can still be accompanied by an orphaned PID file.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 19
+}
