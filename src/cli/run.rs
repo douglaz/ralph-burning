@@ -6,11 +6,21 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use clap::{Args, Subcommand};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
+use nix::sys::signal::Signal;
+#[cfg(all(unix, not(target_os = "linux")))]
 use nix::sys::signal::{kill, Signal};
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 use nix::unistd::Pid;
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
+#[cfg(target_os = "linux")]
+use rustix::event::{poll, PollFd, PollFlags};
+#[cfg(target_os = "linux")]
+use rustix::fd::OwnedFd;
+#[cfg(target_os = "linux")]
+use rustix::process::{
+    pidfd_open, pidfd_send_signal, Pid as RustixPid, PidfdFlags, Signal as RustixSignal,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
@@ -177,6 +187,7 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
 const FOLLOW_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const FOLLOW_TRANSIENT_PARTIAL_PAIR_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const RUN_STOP_GRACE_PERIOD: Duration = Duration::from_secs(5);
+#[cfg(not(target_os = "linux"))]
 const RUN_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy)]
@@ -1508,6 +1519,8 @@ fn resume_attempt_has_exact_lineage(
 enum RunningSnapshotLiveness {
     CliProcess(crate::adapters::fs::RunPidRecord),
     DaemonProcess,
+    LegacyCliLease,
+    LegacyDaemonLease,
     Stale,
 }
 
@@ -1531,7 +1544,23 @@ fn classify_running_snapshot_liveness(
         read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
     {
         if lease.project_id == project_id.as_str() {
-            return Ok(RunningSnapshotLiveness::Stale);
+            return Ok(if lease.is_stale_at(Utc::now()) {
+                RunningSnapshotLiveness::Stale
+            } else {
+                RunningSnapshotLiveness::LegacyDaemonLease
+            });
+        }
+    }
+
+    if let Some((_owner, LeaseRecord::CliWriter(lease))) =
+        read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
+    {
+        if lease.project_id == project_id.as_str() {
+            return Ok(if lease.is_stale_at(Utc::now()) {
+                RunningSnapshotLiveness::Stale
+            } else {
+                RunningSnapshotLiveness::LegacyCliLease
+            });
         }
     }
 
@@ -1540,11 +1569,19 @@ fn classify_running_snapshot_liveness(
 
 fn acquire_recovery_writer_guard(
     base_dir: &std::path::Path,
+    repo_root: &std::path::Path,
     project_id: &ProjectId,
     observed_owner: Option<&str>,
 ) -> AppResult<CliWriterLeaseGuard> {
     if let Some(owner) = observed_owner {
-        let _ = reclaim_specific_project_writer_owner(&FsDaemonStore, base_dir, project_id, owner)?;
+        let _ = reclaim_specific_project_writer_owner(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            base_dir,
+            repo_root,
+            project_id,
+            owner,
+        )?;
     }
 
     let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
@@ -1621,33 +1658,146 @@ enum SignalSendOutcome {
 }
 
 #[cfg(unix)]
-fn send_signal_to_pid(
+enum StopProcessHandle {
+    #[cfg(target_os = "linux")]
+    Linux(OwnedFd),
+    #[cfg(not(target_os = "linux"))]
+    Legacy(crate::adapters::fs::RunPidRecord),
+}
+
+#[cfg(unix)]
+fn open_stop_process_handle(
     record: &crate::adapters::fs::RunPidRecord,
-    signal: Signal,
-) -> AppResult<SignalSendOutcome> {
-    if !FileSystem::is_pid_alive(record) {
-        return Ok(SignalSendOutcome::AlreadyExited);
+) -> AppResult<Option<StopProcessHandle>> {
+    #[cfg(target_os = "linux")]
+    {
+        let Some(_expected_ticks) = record.proc_start_ticks else {
+            return Err(AppError::RunStopFailed {
+                reason: format!(
+                    "run.pid for pid {} is missing proc_start_ticks; refusing unsafe stop of a legacy pid record",
+                    record.pid
+                ),
+            });
+        };
+
+        let pid = i32::try_from(record.pid).map_err(|_| AppError::RunStopFailed {
+            reason: format!("process id {} exceeds libc::pid_t range", record.pid),
+        })?;
+        let pid = RustixPid::from_raw(pid).ok_or_else(|| AppError::RunStopFailed {
+            reason: format!("process id {} is not a valid positive pid", record.pid),
+        })?;
+        let pidfd = match pidfd_open(pid, PidfdFlags::empty()) {
+            Ok(pidfd) => pidfd,
+            Err(rustix::io::Errno::SRCH) => return Ok(None),
+            Err(error) => {
+                return Err(AppError::Io(std::io::Error::other(format!(
+                    "failed to open pidfd for pid {}: {error}",
+                    record.pid
+                ))))
+            }
+        };
+        if !FileSystem::is_pid_alive(record) {
+            return Ok(None);
+        }
+        Ok(Some(StopProcessHandle::Linux(pidfd)))
     }
 
-    match kill(Pid::from_raw(record.pid as i32), signal) {
-        Ok(()) => Ok(SignalSendOutcome::Delivered),
-        Err(nix::errno::Errno::ESRCH) => Ok(SignalSendOutcome::AlreadyExited),
-        Err(error) => Err(AppError::Io(std::io::Error::other(format!(
-            "failed to send {signal:?} to pid {}: {error}",
-            record.pid
-        )))),
+    #[cfg(not(target_os = "linux"))]
+    {
+        if !FileSystem::is_pid_alive(record) {
+            return Ok(None);
+        }
+        Ok(Some(StopProcessHandle::Legacy(record.clone())))
     }
 }
 
-async fn wait_for_pid_exit(record: &crate::adapters::fs::RunPidRecord, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if !FileSystem::is_pid_alive(record) {
-            return true;
+#[cfg(unix)]
+fn send_signal_to_handle(
+    handle: &StopProcessHandle,
+    signal: Signal,
+) -> AppResult<SignalSendOutcome> {
+    #[cfg(target_os = "linux")]
+    {
+        let StopProcessHandle::Linux(pidfd) = handle;
+        let signal = match signal {
+            Signal::SIGTERM => RustixSignal::Term,
+            Signal::SIGKILL => RustixSignal::Kill,
+            other => {
+                return Err(AppError::Io(std::io::Error::other(format!(
+                    "unsupported stop signal on Linux pidfd path: {other:?}"
+                ))))
+            }
+        };
+        match pidfd_send_signal(pidfd, signal) {
+            Ok(()) => Ok(SignalSendOutcome::Delivered),
+            Err(rustix::io::Errno::SRCH) => Ok(SignalSendOutcome::AlreadyExited),
+            Err(error) => Err(AppError::Io(std::io::Error::other(format!(
+                "failed to send {signal:?} via pidfd: {error}"
+            )))),
         }
-        tokio::time::sleep(RUN_STOP_POLL_INTERVAL).await;
     }
-    !FileSystem::is_pid_alive(record)
+
+    #[cfg(not(target_os = "linux"))]
+    if let StopProcessHandle::Legacy(record) = handle {
+        if !FileSystem::is_pid_alive(record) {
+            return Ok(SignalSendOutcome::AlreadyExited);
+        }
+
+        match kill(Pid::from_raw(record.pid as i32), signal) {
+            Ok(()) => Ok(SignalSendOutcome::Delivered),
+            Err(nix::errno::Errno::ESRCH) => Ok(SignalSendOutcome::AlreadyExited),
+            Err(error) => Err(AppError::Io(std::io::Error::other(format!(
+                "failed to send {signal:?} to pid {}: {error}",
+                record.pid
+            )))),
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_handle_exit(handle: &StopProcessHandle, timeout: Duration) -> AppResult<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        let StopProcessHandle::Linux(pidfd) = handle;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as i32;
+            let mut poll_fd = [PollFd::new(pidfd, PollFlags::IN)];
+            match poll(&mut poll_fd, timeout_ms) {
+                Ok(0) => return Ok(false),
+                Ok(_) => return Ok(poll_fd[0].revents().contains(PollFlags::IN)),
+                Err(rustix::io::Errno::INTR) => {
+                    if Instant::now() >= deadline {
+                        return Ok(false);
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    return Err(AppError::Io(std::io::Error::other(format!(
+                        "failed while waiting on pidfd: {error}"
+                    ))))
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    if let StopProcessHandle::Legacy(record) = handle {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if !FileSystem::is_pid_alive(record) {
+                return Ok(true);
+            }
+            tokio::time::sleep(RUN_STOP_POLL_INTERVAL).await;
+        }
+        return Ok(!FileSystem::is_pid_alive(record));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(false)
+    }
 }
 
 fn recover_stale_running_snapshot(
@@ -1838,7 +1988,13 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
                     reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
                 });
                 }
-                RunningSnapshotLiveness::DaemonProcess => {
+                RunningSnapshotLiveness::LegacyCliLease => {
+                    return Err(AppError::ResumeFailed {
+                    reason: "project has a legacy CLI-owned running run without a pid file; wait for it to finish or let its lease go stale before resuming".to_owned(),
+                });
+                }
+                RunningSnapshotLiveness::DaemonProcess
+                | RunningSnapshotLiveness::LegacyDaemonLease => {
                     return Err(AppError::ResumeFailed {
                     reason: "project has a daemon-owned running run; wait for the daemon task to finish or stop it through daemon controls".to_owned(),
                 });
@@ -1874,11 +2030,15 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
 
     // Acquire the writer lock before any stale-run mutation so recovery never
     // tears down a fresh owner that wins the race after we detect staleness.
-    let lock_guard =
-        acquire_recovery_writer_guard(&current_dir, &project_id, stale_recovery_owner.as_deref())
-            .map_err(|error| AppError::ResumeFailed {
-            reason: format!("failed to acquire writer lease for resume: {error}"),
-        })?;
+    let lock_guard = acquire_recovery_writer_guard(
+        &current_dir,
+        &current_dir,
+        &project_id,
+        stale_recovery_owner.as_deref(),
+    )
+    .map_err(|error| AppError::ResumeFailed {
+        reason: format!("failed to acquire writer lease for resume: {error}"),
+    })?;
     if stale_recovery_owner.is_some() {
         let liveness = classify_running_snapshot_liveness(&current_dir, &project_id)?;
         if run_snapshot_read
@@ -2005,15 +2165,26 @@ async fn handle_stop() -> AppResult<()> {
     }
 
     match classify_running_snapshot_liveness(&current_dir, &project_id)? {
-        RunningSnapshotLiveness::DaemonProcess => Err(AppError::RunStopFailed {
+        RunningSnapshotLiveness::DaemonProcess
+        | RunningSnapshotLiveness::LegacyDaemonLease => Err(AppError::RunStopFailed {
             reason:
                 "run stop only supports CLI-owned runs; the active run is owned by a daemon task"
+                    .to_owned(),
+        }),
+        RunningSnapshotLiveness::LegacyCliLease => Err(AppError::RunStopFailed {
+            reason:
+                "run stop cannot safely signal a legacy CLI-owned run without a pid file; wait for it to finish or let the lease go stale before recovering"
                     .to_owned(),
         }),
         RunningSnapshotLiveness::Stale => {
             let observed_owner = read_project_writer_lock_owner(&current_dir, &project_id)?;
             let guard =
-                acquire_recovery_writer_guard(&current_dir, &project_id, observed_owner.as_deref())
+                acquire_recovery_writer_guard(
+                    &current_dir,
+                    &current_dir,
+                    &project_id,
+                    observed_owner.as_deref(),
+                )
                     .map_err(|error| AppError::RunStopFailed {
                         reason: format!(
                             "failed to acquire writer lease for stale stop recovery: {error}"
@@ -2052,31 +2223,38 @@ async fn handle_stop() -> AppResult<()> {
             #[cfg(unix)]
             {
                 let observed_owner = read_project_writer_lock_owner(&current_dir, &project_id)?;
-                let stop_outcome = match send_signal_to_pid(&pid_record, Signal::SIGTERM)? {
-                    SignalSendOutcome::AlreadyExited => "process already exited before SIGTERM",
-                    SignalSendOutcome::Delivered => {
-                        if wait_for_pid_exit(&pid_record, RUN_STOP_GRACE_PERIOD).await {
-                            "terminated gracefully with SIGTERM"
-                        } else {
-                            match send_signal_to_pid(&pid_record, Signal::SIGKILL)? {
-                                SignalSendOutcome::AlreadyExited => "process exited before SIGKILL",
-                                SignalSendOutcome::Delivered => {
-                                    if !wait_for_pid_exit(&pid_record, Duration::from_secs(1)).await
-                                    {
-                                        return Err(AppError::RunStopFailed {
-                                            reason: format!(
-                                                "sent SIGKILL to pid {} but the orchestrator is still alive; refusing to rewrite run state",
-                                                pid_record.pid
-                                            ),
-                                        });
+                let stop_outcome = match open_stop_process_handle(&pid_record)? {
+                    None => "process already exited before SIGTERM",
+                    Some(handle) => match send_signal_to_handle(&handle, Signal::SIGTERM)? {
+                        SignalSendOutcome::AlreadyExited => "process already exited before SIGTERM",
+                        SignalSendOutcome::Delivered => {
+                            if wait_for_handle_exit(&handle, RUN_STOP_GRACE_PERIOD).await? {
+                                "terminated gracefully with SIGTERM"
+                            } else {
+                                match send_signal_to_handle(&handle, Signal::SIGKILL)? {
+                                    SignalSendOutcome::AlreadyExited => {
+                                        "process exited before SIGKILL"
                                     }
-                                    "required SIGKILL after timeout"
+                                    SignalSendOutcome::Delivered => {
+                                        if !wait_for_handle_exit(&handle, Duration::from_secs(1))
+                                            .await?
+                                        {
+                                            return Err(AppError::RunStopFailed {
+                                                reason: format!(
+                                                    "sent SIGKILL to pid {} but the orchestrator is still alive; refusing to rewrite run state",
+                                                    pid_record.pid
+                                                ),
+                                            });
+                                        }
+                                        "required SIGKILL after timeout"
+                                    }
                                 }
                             }
                         }
-                    }
+                    },
                 };
                 let guard = acquire_recovery_writer_guard(
+                    &current_dir,
                     &current_dir,
                     &project_id,
                     observed_owner.as_deref(),

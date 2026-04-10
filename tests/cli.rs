@@ -112,6 +112,20 @@ fn project_root(base_dir: &std::path::Path, project_id: &str) -> std::path::Path
         .join(project_id)
 }
 
+#[cfg(target_os = "linux")]
+fn proc_start_ticks(pid: u32) -> u64 {
+    let stat_path = std::path::PathBuf::from(format!("/proc/{pid}/stat"));
+    let raw = fs::read_to_string(&stat_path).expect("read /proc stat");
+    let (_, tail) = raw
+        .rsplit_once(") ")
+        .expect("process stat should contain comm terminator");
+    tail.split_whitespace()
+        .nth(19)
+        .expect("process stat should expose start ticks")
+        .parse::<u64>()
+        .expect("parse start ticks")
+}
+
 fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = project_root(base_dir, project_id);
     let long_artifact = format!("# Planning\n{}\n", "A".repeat(140));
@@ -5545,7 +5559,67 @@ fn run_status_keeps_daemon_owned_running_snapshot_active_with_live_pid_file() {
 }
 
 #[test]
-fn run_status_reports_stale_daemon_owned_running_when_pid_file_is_missing() {
+fn run_status_keeps_legacy_daemon_owned_running_snapshot_active_without_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-daemon-stale",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let worktree_lease = WorktreeLease {
+        lease_id: "lease-daemon-legacy".to_owned(),
+        task_id: "task-daemon-legacy".to_owned(),
+        project_id: "alpha".to_owned(),
+        worktree_path: temp_dir.path().join("worktrees/task-daemon-legacy"),
+        branch_name: "task-daemon-legacy".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-daemon-legacy.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(worktree_lease))
+            .expect("serialize daemon lease"),
+    )
+    .expect("write daemon lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), "lease-daemon-legacy")
+        .expect("write daemon writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: running"));
+    assert!(
+        !stdout.contains("stale"),
+        "fresh legacy daemon lease should keep the run active during mixed-version rollouts: {stdout}"
+    );
+}
+
+#[test]
+fn run_status_reports_stale_daemon_owned_running_when_legacy_lease_expires() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -5578,7 +5652,7 @@ fn run_status_reports_stale_daemon_owned_running_when_pid_file_is_missing() {
         branch_name: "task-daemon-stale".to_owned(),
         acquired_at: Utc::now(),
         ttl_seconds: 300,
-        last_heartbeat: Utc::now(),
+        last_heartbeat: Utc::now() - Duration::seconds(301),
     };
     fs::write(
         leases_dir.join("lease-daemon-stale.json"),
@@ -5635,6 +5709,7 @@ fn run_stop_terminates_pid_and_marks_snapshot_failed() {
     let pid_file = serde_json::json!({
         "pid": pid,
         "started_at": Utc::now(),
+        "proc_start_ticks": proc_start_ticks(pid),
     });
     fs::write(
         project_root(temp_dir.path(), "alpha").join("run.pid"),
@@ -5753,6 +5828,63 @@ fn run_stop_does_not_delete_pid_file_when_snapshot_is_not_running() {
 }
 
 #[test]
+fn run_stop_rejects_legacy_pid_record_without_proc_start_ticks() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-legacy-pid",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "pid": child.id(),
+            "started_at": Utc::now(),
+        }))
+        .expect("serialize pid file"),
+    )
+    .expect("write legacy pid file");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("missing proc_start_ticks"),
+        "stop should refuse unsafe legacy pid records: {stderr}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn run_stop_refuses_daemon_owned_running_snapshot() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -5828,6 +5960,76 @@ fn run_stop_refuses_daemon_owned_running_snapshot() {
     assert!(
         leases_dir.join("writer-alpha.lock").exists(),
         "daemon writer lock should remain intact after refused stop"
+    );
+}
+
+#[test]
+fn run_resume_refuses_legacy_daemon_owned_running_without_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-daemon-legacy-resume",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let worktree_lease = WorktreeLease {
+        lease_id: "lease-daemon-legacy-resume".to_owned(),
+        task_id: "task-daemon-legacy-resume".to_owned(),
+        project_id: "alpha".to_owned(),
+        worktree_path: temp_dir.path().join("worktrees/task-daemon-legacy-resume"),
+        branch_name: "task-daemon-legacy-resume".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-daemon-legacy-resume.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(worktree_lease))
+            .expect("serialize daemon lease"),
+    )
+    .expect("write daemon lease");
+    fs::write(
+        leases_dir.join("writer-alpha.lock"),
+        "lease-daemon-legacy-resume",
+    )
+    .expect("write daemon writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("daemon-owned running run"),
+        "resume should refuse mixed-version daemon runs until the lease goes stale: {stderr}"
+    );
+    assert!(
+        leases_dir.join("writer-alpha.lock").exists(),
+        "legacy daemon writer lock must remain intact after refused resume"
+    );
+    assert!(
+        leases_dir.join("lease-daemon-legacy-resume.json").exists(),
+        "legacy daemon lease must not be reclaimed while it is still fresh"
     );
 }
 
@@ -10089,8 +10291,40 @@ fn cli_run_resume_recovers_stale_daemon_owned_running_and_reclaims_worktree_lock
         branch_name: "task-stale-daemon-resume".to_owned(),
         acquired_at: Utc::now(),
         ttl_seconds: 300,
-        last_heartbeat: Utc::now(),
+        last_heartbeat: Utc::now() - Duration::seconds(301),
     };
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: stale_worktree_lease.task_id.clone(),
+            issue_ref: "repo#42".to_owned(),
+            project_id: "stale-daemon-resume".to_owned(),
+            project_name: Some("stale daemon".to_owned()),
+            prompt: Some("prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(ralph_burning::shared::domain::FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some(stale_worktree_lease.lease_id.clone()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            workflow_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        },
+    );
     fs::write(
         leases_dir.join("lease-stale-daemon-resume.json"),
         serde_json::to_string_pretty(&LeaseRecord::Worktree(stale_worktree_lease))
@@ -10129,6 +10363,20 @@ fn cli_run_resume_recovers_stale_daemon_owned_running_and_reclaims_worktree_lock
     assert!(
         !leases_dir.join("lease-stale-daemon-resume.json").exists(),
         "stale daemon worktree lease should be pruned during resume recovery"
+    );
+    let daemon_task: DaemonTask = serde_json::from_str(
+        &fs::read_to_string(
+            daemon_root(temp_dir.path())
+                .join("tasks")
+                .join("task-stale-daemon-resume.json"),
+        )
+        .expect("read daemon task"),
+    )
+    .expect("parse daemon task");
+    assert_eq!(daemon_task.status, TaskStatus::Failed);
+    assert!(
+        daemon_task.lease_id.is_none(),
+        "stale daemon recovery must clear the daemon task lease reference"
     );
 }
 
