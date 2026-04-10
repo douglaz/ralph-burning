@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr24-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T21:29:47.631919095Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness and safety regressions: stale-run recovery can reclaim state from a still-live legacy owner, and backend PID tracking can lose updates under concurrent reviewer launches.\n\n## Votes\n\n- `fr-24-0b2c9492`: Accept\n  `src/cli/run.rs:1590-1599` now classifies a non-authoritative but still-running pid record as `Stale` unless a fresh matching lease exists. That is not proof the orchestrator is dead: `run resume` and `run stop` both treat `Stale` as recoverable (`src/cli/run.rs:1911-1918`, `3042-3067`), and the recovery path can reclaim a writer owner when the lease record is missing (`src/cli/run.rs:1690-1694`, `1831-1845`). A live legacy owner can therefore have its lock reclaimed and snapshot rewritten underneath it, leaving two orchestrators able to act on the same project.\n- `fr-24-5968d876`: Accept\n  `src/adapters/fs.rs:456-483` updates `active-processes.json` with unsynchronized read-modify-write cycles. Those helpers are called on backend start and exit (`src/adapters/process_backend.rs:1160-1169`, `1255-1256`), while final-review proposal reviewers are launched concurrently via `FuturesUnordered` (`src/contexts/workflow_composition/final_review.rs:320-348`) on the normal multi-thread runtime. Atomic rename only makes each individual write atomic; it does not prevent lost updates between concurrent writers, so one pid record can overwrite another and stale cleanup will miss orphaned backend process groups.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 24
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr24-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T21:24:20.656704550Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the run-lifecycle changes in `fs`, `process_backend`, `run`, and the related engine paths. I found two correctness issues: unsafe stale classification for live legacy runs, and racy backend-process tracking that can drop pids under concurrent reviewer execution.\n\n## Amendments\n\n1. `src/cli/run.rs:1536-1599` now treats a live pid-only legacy run as `Stale` unless a fresh writer lease also exists. That flows into automatic stale recovery in `src/cli/run.rs:1874-1919` and `src/cli/run.rs:3042-3070`, so `run status` can report \"stale\" and `run resume`/`run stop` can rewrite the snapshot even while a mixed-version orchestrator is still alive. Recovery should only happen when the orchestrator PID is actually dead or missing; otherwise this change can leave two orchestrators acting on the same project.\n   Rationale: A legacy CLI/daemon process that never wrote a current-version lease is still a live owner. Treating lease absence as death is unsafe and violates the stale-recovery contract.\n2. `active-processes.json` updates are not concurrency-safe. `ProcessBackendAdapter` now registers/removes child pids around each spawn (`src/adapters/process_backend.rs:1160-1169`, `src/adapters/process_backend.rs:1255-1256`), but the filesystem helpers do unsynchronized read-modify-write cycles (`src/adapters/fs.rs:456-483`). Final-review reviewers are launched concurrently (`src/contexts/workflow_composition/final_review.rs:320-348`), so two backend starts/exits can overwrite each other's file contents. Once one pid record is lost, stale-run recovery will miss orphaned backend process groups and the new cleanup guarantee stops being reliable.\n   Rationale: The new safety feature depends on complete backend-process tracking. Lost updates are likely during parallel panel stages and directly undermine stale cleanup.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 24
+}

@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 24
+      "completion_round": 25
     },
     "started_at": "2026-04-10T13:01:46.204377009Z",
     "prompt_hash_at_cycle_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "prompt_hash_at_stage_start": "af902b4fb4e3903c206f345b95d60691e143af7d02006d331da5a0084b16ba56",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 23
+    "final_review_restart_count": 24
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 24,
+  "completion_rounds": 25,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-24-0b2c9492",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 24,
+        "body": "`src/cli/run.rs:1536-1599` now treats a live pid-only legacy run as `Stale` unless a fresh writer lease also exists. That flows into automatic stale recovery in `src/cli/run.rs:1874-1919` and `src/cli/run.rs:3042-3070`, so `run status` can report \"stale\" and `run resume`/`run stop` can rewrite the snapshot even while a mixed-version orchestrator is still alive. Recovery should only happen when the orchestrator PID is actually dead or missing; otherwise this change can leave two orchestrators acting on the same project.",
+        "created_at": "2026-04-10T21:29:47.654863451Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "0bab095fea8cc6cd244f37703a1ccbab3e7201980f25daf7b9cde6f4827af2bd"
+      },
+      {
+        "amendment_id": "fr-24-5968d876",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 24,
+        "body": "`active-processes.json` updates are not concurrency-safe. `ProcessBackendAdapter` now registers/removes child pids around each spawn (`src/adapters/process_backend.rs:1160-1169`, `src/adapters/process_backend.rs:1255-1256`), but the filesystem helpers do unsynchronized read-modify-write cycles (`src/adapters/fs.rs:456-483`). Final-review reviewers are launched concurrently (`src/contexts/workflow_composition/final_review.rs:320-348`), so two backend starts/exits can overwrite each other's file contents. Once one pid record is lost, stale-run recovery will miss orphaned backend process groups and the new cleanup guarantee stops being reliable.",
+        "created_at": "2026-04-10T21:29:47.654866556Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "953d5666491892a8312481fa93468df8a7a4970e7011f9c72602cae58b30d3c1"
+      }
+    ],
     "processed_count": 58
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 25 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-10T20:48:39.730473952Z",
+    "resolved_at": "2026-04-10T21:17:25.264897105Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
