@@ -7261,6 +7261,115 @@ async fn resume_recovers_stale_running_snapshot_without_run_started_event() {
     );
 }
 
+/// When a resumed attempt crashes after writing `run.json` but before
+/// `run_resumed` reaches the journal, engine-level stale recovery must ignore
+/// terminal events from the previous attempt and reconcile based on pid
+/// liveness instead.
+#[tokio::test]
+async fn resume_recovers_unjournaled_resumed_attempt_without_inheriting_previous_attempt_failure() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "stale-unjournaled-resume-engine");
+    let run_id = RunId::new("run-stale-unjournaled-resume-engine").unwrap();
+    let initial_started_at = Utc::now();
+    let resumed_at = initial_started_at + chrono::Duration::minutes(10);
+    let prompt_hash = FsProjectStore
+        .read_project_record(base_dir, &pid)
+        .unwrap()
+        .prompt_hash;
+
+    let snapshot = RunSnapshot {
+        active_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                    StageId::Planning,
+                ),
+                started_at: resumed_at,
+                prompt_hash_at_cycle_start: prompt_hash.clone(),
+                prompt_hash_at_stage_start: prompt_hash,
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
+        interrupted_run: None,
+        status: RunStatus::Running,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        max_completion_rounds: Some(20),
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "running: planning".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+    FsRunSnapshotWriteStore
+        .write_run_snapshot(base_dir, &pid, &snapshot)
+        .unwrap();
+    for event in [
+        journal::run_started_event(2, initial_started_at, &run_id, StageId::Planning, 20),
+        journal::run_failed_event(
+            3,
+            initial_started_at + chrono::Duration::minutes(5),
+            &run_id,
+            StageId::Planning,
+            "stage_failure",
+            "older attempt failed",
+            1,
+            20,
+            None,
+        ),
+    ] {
+        FsJournalStore
+            .append_event(base_dir, &pid, &journal::serialize_event(&event).unwrap())
+            .unwrap();
+    }
+    FileSystem::remove_pid_file(base_dir, &pid).unwrap();
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+    let result = engine::resume_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "resume should recover the unjournaled resumed attempt: {result:?}"
+    );
+
+    let final_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(final_snapshot.status, RunStatus::Completed);
+
+    let runtime_logs = fs::read_to_string(
+        project_root(base_dir, "stale-unjournaled-resume-engine").join("runtime/logs/run.ndjson"),
+    )
+    .expect("read runtime logs");
+    assert!(
+        runtime_logs.contains("orchestrator process was not alive"),
+        "stale recovery should use pid liveness for the active attempt: {runtime_logs}"
+    );
+    assert!(
+        !runtime_logs.contains("durable run_failed journal event"),
+        "previous-attempt run_failed should not be treated as the active attempt's terminal state: {runtime_logs}"
+    );
+}
+
 /// When the journal still contains an older completed run, resume must keep
 /// using the recovered snapshot's run id instead of binding to the last
 /// visible historical run_started event.

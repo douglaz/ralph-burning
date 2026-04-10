@@ -1450,10 +1450,8 @@ where
             // event that the snapshot write missed (e.g. fail_run snapshot write
             // failed).  Cross-check the journal to reconcile.
             let events = journal_store.read_journal(base_dir, project_id)?;
-            let running_run_id = run_id_for_resume(&snapshot)?;
-            let running_run_events = events_for_run(&events, &running_run_id);
-            match journal::last_terminal_event_type(&running_run_events) {
-                Some(JournalEventType::RunFailed) => {
+            match queries::terminal_status_for_running_attempt(&snapshot, &events) {
+                Some(RunStatus::Failed) => {
                     eprintln!(
                         "resume: snapshot shows Running but journal has run_failed — \
                          reconciling snapshot to Failed (stale snapshot from failed write)"
@@ -1474,7 +1472,7 @@ where
                     )?;
                     snapshot = run_snapshot_read.read_run_snapshot(base_dir, project_id)?;
                 }
-                Some(JournalEventType::RunCompleted) => {
+                Some(RunStatus::Completed) => {
                     return Err(AppError::ResumeFailed {
                         reason:
                             "project is already completed per journal; there is nothing to resume"
