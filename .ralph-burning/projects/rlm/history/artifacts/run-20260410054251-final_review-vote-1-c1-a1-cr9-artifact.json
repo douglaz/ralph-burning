@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T15:41:32.284060612Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed all three amendments on correctness and safety. I agree with accepting the two regressions that can corrupt terminal-state reconciliation (fr-9-fc2b4c4f, fr-9-5fed1ae0) and reject the missing-PID-as-stale change (fr-9-08c4309f) due to a concrete ownership/race safety regression.\n\n## Votes\n\n- `fr-9-fc2b4c4f`: Accept\n  This is a real correctness issue: bypassing journal-first reconciliation after lease claim can overwrite a durable terminal outcome with a synthetic interruption/failure state when the prior orchestrator already wrote run_completed/run_failed but missed snapshot persist. The fix correctly preserves durable terminal truth and prevents illegal resume of terminal runs.\n- `fr-9-08c4309f`: Reject\n  Treating any fresh lease without pid as stale is unsafe because it can enable another CLI to reclaim ownership while a legacy orchestrator may still be actively managing the same run. This creates a real double-owner/ state corruption risk; a safer approach needs stronger stale proof than missing pid alone in mixed-version/legacy contexts.\n- `fr-9-5fed1ae0`: Accept\n  Filtering only by run_id is insufficient when attempts reuse run_id across resume. Older terminal events can be replayed against a live resumed attempt and force a Running snapshot to terminal incorrectly. Attempt-aware boundary checks at run_started/run_resumed are required to avoid false terminal transitions.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 9
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr9-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T15:41:27.915919179Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo amendments identify real correctness bugs in run/journal reconciliation. The missing-pid amendment would trade those off for a live-ownership safety regression in mixed-version or legacy CLI cases, so I would not take it as written.\n\n## Votes\n\n- `fr-9-fc2b4c4f`: Accept\n  The bug is real. In the current CLI paths, once the writer lease is reclaimed they call stale-run recovery directly, which rewrites a Running snapshot to Failed and can append a new run_failed event before consulting the journal. That bypasses the existing journal-first logic that distinguishes stale-after-run_failed from stale-after-run_completed. If the old orchestrator already durably wrote run_completed or run_failed and only the snapshot/cleanup step was missed, these paths can corrupt the terminal outcome and even let run resume restart a run that should stay terminal.\n- `fr-9-08c4309f`: Reject\n  I would not take this change as stated. Once you support legacy CLI owners that may hold a fresh writer lease without an authoritative pid tuple, a missing run.pid is not sufficient proof of staleness. Treating every fresh CLI lease with no pid file as stale would let a new CLI reclaim the writer lease and rewrite shared run state while an older orchestrator may still be running. The 300 second lease wait is an availability cost, but it is safer than double ownership or state corruption. A better fix would need stronger legacy-owner identification, not blanket stale classification.\n- `fr-9-5fed1ae0`: Accept\n  The bug is real. reconcile_snapshot_status now filters by run_id, but resumed attempts intentionally reuse the same run_id. That means a later Running attempt can still see an older run_failed for the same run_id and be patched in memory to Failed even though the current attempt is active after run_resumed. The reconciliation has to be attempt-aware and only trust terminal events that occur after the latest run_started or run_resumed boundary for the active attempt.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

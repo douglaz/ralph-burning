@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260410054251-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260410054251-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T15:43:05.658942140Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 9/25\n\n## Accepted\n\n- `fr-9-fc2b4c4f`\n- `fr-9-5fed1ae0`\n\n## Rejected\n\n- `fr-9-08c4309f`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-fc2b4c4f`\n\nPreserve journal-terminal outcomes before stale-owner recovery in `run resume`/`run stop`. `src/cli/run.rs:2117-2132`, `src/cli/run.rs:2263-2277`, and `src/cli/run.rs:2349-2363` now unconditionally call `recover_stale_running_snapshot` once the writer lease is claimed. That bypasses the existing journal-first reconciliation in `src/contexts/workflow_composition/engine.rs:1449-1504`, which is the code that distinguishes 'snapshot write missed a durable run_failed' from 'snapshot write missed a durable run_completed'. If the previous orchestrator already appended `run_completed` or `run_failed` and only the snapshot write failed, these new CLI paths will rewrite the run to `Failed` with an interruption/cancellation summary, and `run resume` can then restart a run that should have stayed terminal.\n\n### `fr-9-5fed1ae0`\n\nMake status reconciliation attempt-aware before trusting terminal journal events. The updated `reconcile_snapshot_status` in `src/contexts/project_run_record/queries.rs:27-40` now filters by `run_id`, but resumed attempts reuse the same run id (`tests/unit/workflow_engine_test.rs:3792-3800`). A live resumed run therefore still has an older `run_failed` for that same `run_id`, and `handle_status` (`src/cli/run.rs:5744-5749`) will incorrectly patch the current Running snapshot to Failed/Completed even though the resumed attempt is still active. The reconciliation needs to ignore terminal events that occurred before the most recent `run_started`/`run_resumed` boundary for the current attempt.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}
