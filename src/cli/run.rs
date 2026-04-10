@@ -1521,9 +1521,15 @@ fn resume_attempt_has_exact_lineage(
 enum RunningSnapshotLiveness {
     CliProcess(crate::adapters::fs::RunPidRecord),
     DaemonProcess(crate::adapters::fs::RunPidRecord),
+    LegacyCliProcess,
+    LegacyDaemonProcess,
     LegacyCliLease,
     LegacyDaemonLease,
     Stale,
+}
+
+fn pid_record_has_attempt_metadata(record: &crate::adapters::fs::RunPidRecord) -> bool {
+    record.run_id.is_some() && record.run_started_at.is_some()
 }
 
 fn classify_running_snapshot_liveness(
@@ -1534,14 +1540,25 @@ fn classify_running_snapshot_liveness(
     if let Some(record) = pid_record.as_ref() {
         if FileSystem::pid_record_is_authoritative(record) {
             if FileSystem::is_pid_alive(record) {
-                return Ok(match record.owner {
-                    crate::adapters::fs::RunPidOwner::Cli => {
-                        RunningSnapshotLiveness::CliProcess(record.clone())
-                    }
-                    crate::adapters::fs::RunPidOwner::Daemon => {
-                        RunningSnapshotLiveness::DaemonProcess(record.clone())
-                    }
-                });
+                return Ok(
+                    match (
+                        record.owner.clone(),
+                        pid_record_has_attempt_metadata(record),
+                    ) {
+                        (crate::adapters::fs::RunPidOwner::Cli, true) => {
+                            RunningSnapshotLiveness::CliProcess(record.clone())
+                        }
+                        (crate::adapters::fs::RunPidOwner::Daemon, true) => {
+                            RunningSnapshotLiveness::DaemonProcess(record.clone())
+                        }
+                        (crate::adapters::fs::RunPidOwner::Cli, false) => {
+                            RunningSnapshotLiveness::LegacyCliProcess
+                        }
+                        (crate::adapters::fs::RunPidOwner::Daemon, false) => {
+                            RunningSnapshotLiveness::LegacyDaemonProcess
+                        }
+                    },
+                );
             }
             return Ok(RunningSnapshotLiveness::Stale);
         }
@@ -1597,7 +1614,9 @@ fn liveness_matches_running_attempt(
             &expected_attempt.run_id,
             expected_attempt.started_at,
         ),
-        RunningSnapshotLiveness::LegacyCliLease
+        RunningSnapshotLiveness::LegacyCliProcess
+        | RunningSnapshotLiveness::LegacyDaemonProcess
+        | RunningSnapshotLiveness::LegacyCliLease
         | RunningSnapshotLiveness::LegacyDaemonLease
         | RunningSnapshotLiveness::Stale => true,
     }
@@ -1770,8 +1789,9 @@ fn observed_resume_recovery_owner(
                 RunningSnapshotLiveness::CliProcess(_) => Err(AppError::ResumeFailed {
                     reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
                 }),
-                RunningSnapshotLiveness::LegacyCliLease => Err(AppError::ResumeFailed {
-                    reason: "project has a legacy CLI-owned running run without authoritative pid tracking; wait for it to finish or for its writer lease to go stale before resuming".to_owned(),
+                RunningSnapshotLiveness::LegacyCliProcess
+                | RunningSnapshotLiveness::LegacyCliLease => Err(AppError::ResumeFailed {
+                    reason: "project has a legacy CLI-owned running run without current-version attempt tracking; wait for it to finish or for stale recovery to become safe before resuming".to_owned(),
                 }),
                 RunningSnapshotLiveness::DaemonProcess(record)
                     if !FileSystem::pid_record_matches_attempt(
@@ -1785,6 +1805,7 @@ fn observed_resume_recovery_owner(
                     })
                 }
                 RunningSnapshotLiveness::DaemonProcess(_)
+                | RunningSnapshotLiveness::LegacyDaemonProcess
                 | RunningSnapshotLiveness::LegacyDaemonLease => Err(AppError::ResumeFailed {
                     reason: "project has a daemon-owned running run; wait for the daemon task to finish or stop it through daemon controls".to_owned(),
                 }),
@@ -2699,13 +2720,15 @@ async fn handle_stop() -> AppResult<()> {
 
     match running_liveness {
         RunningSnapshotLiveness::DaemonProcess(_)
+        | RunningSnapshotLiveness::LegacyDaemonProcess
         | RunningSnapshotLiveness::LegacyDaemonLease => Err(AppError::RunStopFailed {
             reason:
                 "run stop only supports CLI-owned runs; the active run is owned by a daemon task"
                     .to_owned(),
         }),
-        RunningSnapshotLiveness::LegacyCliLease => Err(AppError::RunStopFailed {
-            reason: "run stop cannot safely target a legacy CLI-owned run without authoritative pid tracking; wait for the original process to exit or for its writer lease to go stale".to_owned(),
+        RunningSnapshotLiveness::LegacyCliProcess
+        | RunningSnapshotLiveness::LegacyCliLease => Err(AppError::RunStopFailed {
+            reason: "run stop cannot safely target a legacy CLI-owned run without current-version attempt tracking; wait for the original process to exit or for stale recovery to become safe".to_owned(),
         }),
         RunningSnapshotLiveness::Stale => {
             let observed_owner =

@@ -6567,6 +6567,75 @@ fn run_stop_refuses_legacy_cli_owned_running_without_pid_file() {
 }
 
 #[test]
+fn run_stop_refuses_legacy_cli_owned_running_with_authoritative_pid_without_attempt_metadata() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-cli-legacy-stop-live-pid",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            child.id(),
+            "cli",
+            None,
+            None,
+            Some("legacy-cli-live-pid"),
+        ))
+        .expect("serialize legacy cli pid"),
+    )
+    .expect("write legacy cli pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("legacy CLI-owned run"),
+        "stop should refuse a live legacy CLI pid without attempt metadata: {stderr}"
+    );
+    assert!(
+        !stderr.contains("project run changed"),
+        "legacy pid handling should not surface a handoff retry error: {stderr}"
+    );
+    assert!(
+        pid_is_alive(child.id()),
+        "run stop must not signal a legacy live process without attempt metadata"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn run_resume_refuses_legacy_daemon_owned_running_without_pid_file() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -6633,6 +6702,62 @@ fn run_resume_refuses_legacy_daemon_owned_running_without_pid_file() {
     assert!(
         leases_dir.join("lease-daemon-legacy-resume.json").exists(),
         "legacy daemon lease must not be reclaimed while it is still fresh"
+    );
+}
+
+#[test]
+fn run_resume_refuses_legacy_daemon_owned_running_with_authoritative_pid_without_attempt_metadata()
+{
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-daemon-legacy-resume-live-pid",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            std::process::id(),
+            "daemon",
+            None,
+            None,
+            Some("legacy-daemon-live-pid"),
+        ))
+        .expect("serialize legacy daemon pid"),
+    )
+    .expect("write legacy daemon pid");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("daemon-owned running run"),
+        "resume should refuse a live legacy daemon pid without attempt metadata: {stderr}"
+    );
+    assert!(
+        !stderr.contains("project run changed"),
+        "legacy daemon pid handling should not surface a handoff retry error: {stderr}"
     );
 }
 
