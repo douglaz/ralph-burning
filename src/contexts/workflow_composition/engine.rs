@@ -1024,7 +1024,7 @@ where
 {
     let rollback_store = FsRollbackPointStore;
     let checkpoint_port = WorktreeAdapter;
-    execute_run_with_retry_internal(
+    let result = execute_run_with_retry_internal(
         agent_service,
         run_snapshot_read,
         run_snapshot_write,
@@ -1037,13 +1037,16 @@ where
         base_dir,
         None,
         project_id,
+        None,
         preset,
         effective_config,
         &RetryPolicy::default_policy()
             .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations),
         CancellationToken::new(),
     )
-    .await
+    .await;
+    let _ = FileSystem::remove_pid_file(base_dir, project_id);
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1058,6 +1061,7 @@ pub async fn execute_run_with_retry<A, R, S>(
     base_dir: &Path,
     execution_cwd: Option<&Path>,
     project_id: &ProjectId,
+    writer_owner: Option<&str>,
     preset: FlowPreset,
     effective_config: &EffectiveConfig,
     retry_policy: &RetryPolicy,
@@ -1083,6 +1087,7 @@ where
         base_dir,
         execution_cwd,
         project_id,
+        writer_owner,
         preset,
         effective_config,
         retry_policy,
@@ -1105,6 +1110,7 @@ async fn execute_run_with_retry_internal<A, R, S>(
     base_dir: &Path,
     execution_cwd: Option<&Path>,
     project_id: &ProjectId,
+    writer_owner: Option<&str>,
     preset: FlowPreset,
     effective_config: &EffectiveConfig,
     retry_policy: &RetryPolicy,
@@ -1190,7 +1196,7 @@ where
     } else {
         RunPidOwner::Daemon
     };
-    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id, pid_owner) {
+    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id, pid_owner, writer_owner) {
         return Err(AppError::RunStartFailed {
             reason: format!("failed to persist run pid file: {error}"),
         });
@@ -1342,7 +1348,7 @@ where
     R: RawOutputPort,
     S: SessionStorePort,
 {
-    execute_run_with_retry(
+    let result = execute_run_with_retry(
         agent_service,
         run_snapshot_read,
         run_snapshot_write,
@@ -1353,12 +1359,15 @@ where
         base_dir,
         None,
         project_id,
+        None,
         FlowPreset::Standard,
         effective_config,
         retry_policy,
         cancellation_token,
     )
-    .await
+    .await;
+    let _ = FileSystem::remove_pid_file(base_dir, project_id);
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1383,7 +1392,7 @@ where
 {
     let rollback_store = FsRollbackPointStore;
     let checkpoint_port = WorktreeAdapter;
-    resume_run_with_retry_internal(
+    let result = resume_run_with_retry_internal(
         agent_service,
         run_snapshot_read,
         run_snapshot_write,
@@ -1397,13 +1406,16 @@ where
         base_dir,
         None,
         project_id,
+        None,
         preset,
         effective_config,
         &RetryPolicy::default_policy()
             .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations),
         CancellationToken::new(),
     )
-    .await
+    .await;
+    let _ = FileSystem::remove_pid_file(base_dir, project_id);
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1419,6 +1431,7 @@ pub async fn resume_run_with_retry<A, R, S>(
     base_dir: &Path,
     execution_cwd: Option<&Path>,
     project_id: &ProjectId,
+    writer_owner: Option<&str>,
     preset: FlowPreset,
     effective_config: &EffectiveConfig,
     retry_policy: &RetryPolicy,
@@ -1445,6 +1458,7 @@ where
         base_dir,
         execution_cwd,
         project_id,
+        writer_owner,
         preset,
         effective_config,
         retry_policy,
@@ -1468,6 +1482,7 @@ async fn resume_run_with_retry_internal<A, R, S>(
     base_dir: &Path,
     execution_cwd: Option<&Path>,
     project_id: &ProjectId,
+    writer_owner: Option<&str>,
     preset: FlowPreset,
     effective_config: &EffectiveConfig,
     retry_policy: &RetryPolicy,
@@ -1939,7 +1954,7 @@ where
     } else {
         RunPidOwner::Daemon
     };
-    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id, pid_owner) {
+    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id, pid_owner, writer_owner) {
         return Err(AppError::ResumeFailed {
             reason: format!("failed to persist run pid file: {error}"),
         });
@@ -2106,7 +2121,7 @@ where
     R: RawOutputPort,
     S: SessionStorePort,
 {
-    resume_run_with_retry(
+    let result = resume_run_with_retry(
         agent_service,
         run_snapshot_read,
         run_snapshot_write,
@@ -2118,12 +2133,15 @@ where
         base_dir,
         None,
         project_id,
+        None,
         FlowPreset::Standard,
         effective_config,
         retry_policy,
         cancellation_token,
     )
-    .await
+    .await;
+    let _ = FileSystem::remove_pid_file(base_dir, project_id);
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5793,7 +5811,6 @@ fn complete_run(
                         e, write_err
                     ),
                 })?;
-            let _ = FileSystem::remove_pid_file(base_dir, project_id);
         }
         return Err(e);
     }
@@ -5816,7 +5833,6 @@ fn complete_run(
     let append_result = journal::serialize_event(&run_completed).and_then(|run_completed_line| {
         journal_store.append_event(base_dir, project_id, &run_completed_line)
     });
-    let _ = FileSystem::remove_pid_file(base_dir, project_id);
     append_result?;
     Ok(())
 }
@@ -5838,7 +5854,6 @@ fn pause_run(
     snapshot.active_run = None;
     snapshot.status_summary = summary;
     run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
-    let _ = FileSystem::remove_pid_file(base_dir, project_id);
     Ok(())
 }
 
@@ -5930,8 +5945,6 @@ async fn fail_run(
     if let Ok(run_failed_line) = journal::serialize_event(&run_failed) {
         let _ = journal_store.append_event(base_dir, project_id, &run_failed_line);
     }
-    let _ = FileSystem::remove_pid_file(base_dir, project_id);
-
     Err(origin.error(format!("stage {} failed: {}", stage_id.as_str(), message)))
 }
 
@@ -8995,7 +9008,7 @@ mod tests {
         let mut snapshot = running_snapshot_for_pid_cleanup(&run_id);
         let mut seq = 0;
 
-        FileSystem::write_pid_file(temp_dir.path(), &project_id, RunPidOwner::Cli)
+        FileSystem::write_pid_file(temp_dir.path(), &project_id, RunPidOwner::Cli, None)
             .expect("write pid file");
 
         let err = complete_run(
@@ -9017,8 +9030,8 @@ mod tests {
         assert!(
             FileSystem::read_pid_file(temp_dir.path(), &project_id)
                 .expect("read pid file")
-                .is_none(),
-            "pid file should be removed even when run_completed append fails"
+                .is_some(),
+            "engine-level completion should leave pid cleanup to the caller that releases the writer lease"
         );
     }
 
@@ -9034,7 +9047,7 @@ mod tests {
         crate::adapters::fs::FsRunSnapshotWriteStore
             .write_run_snapshot(temp_dir.path(), &project_id, &snapshot)
             .expect("write failed snapshot");
-        FileSystem::write_pid_file(temp_dir.path(), &project_id, RunPidOwner::Cli)
+        FileSystem::write_pid_file(temp_dir.path(), &project_id, RunPidOwner::Cli, None)
             .expect("write pid file");
         let expected_attempt = RunningAttemptIdentity {
             run_id: "run-stale-attempt".to_owned(),
@@ -9158,7 +9171,7 @@ mod tests {
         crate::adapters::fs::FsRunSnapshotWriteStore
             .write_run_snapshot(temp_dir.path(), &project_id, &fresh_snapshot)
             .expect("write fresh running snapshot");
-        FileSystem::write_pid_file(temp_dir.path(), &project_id, RunPidOwner::Cli)
+        FileSystem::write_pid_file(temp_dir.path(), &project_id, RunPidOwner::Cli, None)
             .expect("write pid file");
 
         let updated = mark_running_run_interrupted(

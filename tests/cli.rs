@@ -10949,7 +10949,7 @@ fn cli_run_resume_reclaims_writer_lock_for_failed_snapshot_cleanup_crash() {
         owner: "cli".to_owned(),
         acquired_at: Utc::now(),
         ttl_seconds: 300,
-        last_heartbeat: Utc::now() - Duration::seconds(301),
+        last_heartbeat: Utc::now(),
     };
     fs::write(
         leases_dir.join("cli-failed-cleanup-lock.json"),
@@ -10962,6 +10962,28 @@ fn cli_run_resume_reclaims_writer_lock_for_failed_snapshot_cleanup_crash() {
         &stranded_lease.lease_id,
     )
     .expect("write stranded cleanup lock");
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn helper process");
+    let child_pid = child.id();
+    let child_start_ticks = proc_start_ticks(child_pid);
+    child.kill().expect("kill helper process");
+    child.wait().expect("wait helper process");
+    fs::write(
+        project_root(temp_dir.path(), "failed-cleanup-lock").join("run.pid"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "pid": child_pid,
+            "started_at": Utc::now(),
+            "owner": "cli",
+            "writer_owner": stranded_lease.lease_id,
+            "proc_start_ticks": child_start_ticks,
+        }))
+        .expect("serialize dead pid record"),
+    )
+    .expect("write dead pid record");
 
     let output = Command::new(binary())
         .args(["run", "resume"])
@@ -10989,6 +11011,12 @@ fn cli_run_resume_reclaims_writer_lock_for_failed_snapshot_cleanup_crash() {
     assert!(
         !leases_dir.join("cli-failed-cleanup-lock.json").exists(),
         "stranded cleanup cli lease should be pruned during resume recovery"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "failed-cleanup-lock")
+            .join("run.pid")
+            .exists(),
+        "pid file should be removed after the recovered resume releases its writer lease"
     );
 }
 

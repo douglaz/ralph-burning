@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 15
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-14-668ce2b3",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 14,
-        "body": "`src/cli/run.rs:1579-1655` regresses post-run cleanup crash recovery. `acquire_recovery_writer_guard()` now refuses to reclaim the observed writer owner unless its lease has already gone stale, but `complete_run`/`pause_run`/`fail_run` remove `run.pid` before the writer lease is released in `src/contexts/workflow_composition/engine.rs:5796`, `src/contexts/workflow_composition/engine.rs:5819`, `src/contexts/workflow_composition/engine.rs:5841`, and `src/contexts/workflow_composition/engine.rs:5933`. If the CLI dies in that cleanup window, the snapshot is already terminal and there is no pid file left to prove the process is gone, so `run resume` stays blocked for the full lease TTL even though nothing is running. Recovery needs a fresh-death path for stranded CLI cleanup locks instead of forcing users to wait for lease expiry.",
-        "created_at": "2026-04-10T17:19:49.729534804Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "67841969559ea6e0dbf587f3efb4524bf991eec760ef785ab96a8d331dd552af"
-      },
-      {
-        "amendment_id": "fr-14-a2d4eb47",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 14,
-        "body": "`src/adapters/fs.rs:333-361` plus `src/adapters/fs.rs:702-745` now treat `ps -o lstart` as an authoritative process identity on non-Linux Unix, and `src/cli/run.rs:1804-1853` uses that identity to send SIGTERM/SIGKILL during `run stop`. `lstart` is only second-granularity text, so a recycled PID started within the same second can satisfy the check and let `run stop` target an unrelated process. Until there is a stronger per-process identifier on these platforms, pid records backed only by `proc_start_marker` should not be considered authoritative for stop/resume decisions.",
-        "created_at": "2026-04-10T17:19:49.729537249Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "04b1db701117c011846ec6f01c2c41c2b8d632b7478b25c9e783f0d8c27cf203"
-      }
-    ],
-    "processed_count": 35
+    "pending": [],
+    "processed_count": 37
   },
-  "status_summary": "running: final review restart round 15 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-10T17:06:34.703381420Z",

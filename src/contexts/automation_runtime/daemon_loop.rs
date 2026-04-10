@@ -2553,6 +2553,7 @@ where
             run_snapshot.status,
             effective_config,
             &lease.worktree_path,
+            Some(lease.lease_id.as_str()),
             task_cancel.clone(),
         );
         tokio::pin!(dispatch_future);
@@ -2623,6 +2624,7 @@ where
             run_snapshot.status,
             effective_config,
             &lease.worktree_path,
+            Some(lease.lease_id.as_str()),
             task_cancel.clone(),
         );
         tokio::pin!(dispatch_future);
@@ -2660,6 +2662,7 @@ where
         run_status: RunStatus,
         effective_config: &EffectiveConfig,
         worktree_path: &Path,
+        writer_owner: Option<&str>,
         cancellation_token: CancellationToken,
     ) -> AppResult<()> {
         if let Some(builder) = self.configured_agent_service_builder {
@@ -2679,6 +2682,7 @@ where
                 run_status,
                 effective_config,
                 worktree_path,
+                writer_owner,
                 cancellation_token,
             )
             .await;
@@ -2699,6 +2703,7 @@ where
             run_status,
             effective_config,
             worktree_path,
+            writer_owner,
             cancellation_token,
         )
         .await
@@ -3160,7 +3165,15 @@ where
         match release_result {
             Ok(ref r) if r.resources_released => {
                 // All sub-steps succeeded — safe to clear durable lease reference.
-                DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id).map(|_| ())
+                let cleared =
+                    DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id)
+                        .map(|_| ());
+                if cleared.is_ok() {
+                    if let Ok(project_id) = ProjectId::new(lease.project_id.clone()) {
+                        let _ = FileSystem::remove_pid_file(base_dir, &project_id);
+                    }
+                }
+                cleared
             }
             Ok(_) => {
                 // Partial cleanup: some resources remain. Do NOT clear lease
@@ -3191,6 +3204,7 @@ async fn dispatch_in_worktree_with_service<A, R, S>(
     run_status: RunStatus,
     effective_config: &EffectiveConfig,
     worktree_path: &Path,
+    writer_owner: Option<&str>,
     cancellation_token: CancellationToken,
 ) -> AppResult<()>
 where
@@ -3211,6 +3225,7 @@ where
                 base_dir,
                 Some(worktree_path),
                 project_id,
+                writer_owner,
                 flow,
                 effective_config,
                 &RetryPolicy::default_policy().with_max_remediation_cycles(
@@ -3233,6 +3248,7 @@ where
                 base_dir,
                 Some(worktree_path),
                 project_id,
+                writer_owner,
                 flow,
                 effective_config,
                 &RetryPolicy::default_policy().with_max_remediation_cycles(

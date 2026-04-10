@@ -1608,12 +1608,50 @@ fn observed_writer_owner_is_stale(
     })
 }
 
+fn observed_cli_cleanup_owner_has_dead_pid(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    expected_owner: &str,
+) -> AppResult<bool> {
+    let Some((owner, record)) =
+        read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
+    else {
+        return Ok(false);
+    };
+    if owner != expected_owner {
+        return Ok(false);
+    }
+
+    let LeaseRecord::CliWriter(lease) = record else {
+        return Ok(false);
+    };
+    if lease.project_id != project_id.as_str() {
+        return Ok(false);
+    }
+
+    let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? else {
+        return Ok(false);
+    };
+    if pid_record.owner != crate::adapters::fs::RunPidOwner::Cli {
+        return Ok(false);
+    }
+    if pid_record.writer_owner.as_deref() != Some(expected_owner) {
+        return Ok(false);
+    }
+    if !FileSystem::pid_record_is_authoritative(&pid_record) {
+        return Ok(false);
+    }
+
+    Ok(!FileSystem::is_pid_alive(&pid_record))
+}
+
 fn acquire_recovery_writer_guard(
     base_dir: &std::path::Path,
     repo_root: &std::path::Path,
     project_id: &ProjectId,
     observed_owner: Option<&str>,
     observed_owner_proven_stale: bool,
+    allow_dead_cli_cleanup_reclaim: bool,
 ) -> AppResult<CliWriterLeaseGuard> {
     let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
         Arc::new(FsDaemonStore);
@@ -1638,8 +1676,11 @@ fn acquire_recovery_writer_guard(
     let Some(owner) = observed_owner else {
         return Err(initial_error);
     };
-    if !observed_owner_proven_stale && !observed_writer_owner_is_stale(base_dir, project_id, owner)?
-    {
+    let owner_is_reclaimable = observed_owner_proven_stale
+        || observed_writer_owner_is_stale(base_dir, project_id, owner)?
+        || (allow_dead_cli_cleanup_reclaim
+            && observed_cli_cleanup_owner_has_dead_pid(base_dir, project_id, owner)?);
+    if !owner_is_reclaimable {
         return Err(initial_error);
     }
 
@@ -1658,6 +1699,7 @@ fn acquire_recovery_writer_guard(
 struct ResumeRecoveryObservation {
     observed_owner: Option<String>,
     should_reconcile_claimed_running_snapshot: bool,
+    allow_dead_cli_cleanup_reclaim: bool,
 }
 
 fn observed_resume_recovery_owner(
@@ -1681,15 +1723,18 @@ fn observed_resume_recovery_owner(
             RunningSnapshotLiveness::Stale => Ok(ResumeRecoveryObservation {
                 observed_owner: read_project_writer_lock_owner(base_dir, project_id)?,
                 should_reconcile_claimed_running_snapshot: true,
+                allow_dead_cli_cleanup_reclaim: false,
             }),
         },
         RunStatus::Failed | RunStatus::Paused => Ok(ResumeRecoveryObservation {
             observed_owner: read_project_writer_lock_owner(base_dir, project_id)?,
             should_reconcile_claimed_running_snapshot: false,
+            allow_dead_cli_cleanup_reclaim: true,
         }),
         RunStatus::NotStarted | RunStatus::Completed => Ok(ResumeRecoveryObservation {
             observed_owner: None,
             should_reconcile_claimed_running_snapshot: false,
+            allow_dead_cli_cleanup_reclaim: false,
         }),
     }
 }
@@ -2186,6 +2231,7 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             &current_dir,
             None,
             &project_id,
+            Some(lock_guard.lease_id()),
             project_record.flow,
             &effective_config,
             &retry_policy,
@@ -2221,6 +2267,9 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     // Explicit guard shutdown before printing success — surfaces cleanup
     // failures as non-zero exit instead of silently succeeding.
     let close_result = lock_guard.close();
+    if close_result.is_ok() {
+        let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
+    }
     match (run_result, milestone_sync_result) {
         (Err(run_error), Err(sync_error)) => {
             return Err(combine_run_and_sync_error(run_error, sync_error, false));
@@ -2284,6 +2333,7 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
         &project_id,
         recovery_observation.observed_owner.as_deref(),
         recovery_observation.should_reconcile_claimed_running_snapshot,
+        recovery_observation.allow_dead_cli_cleanup_reclaim,
     )
     .map_err(|error| AppError::ResumeFailed {
         reason: format!("failed to acquire writer lease for resume: {error}"),
@@ -2352,6 +2402,7 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             &current_dir,
             None,
             &project_id,
+            Some(lock_guard.lease_id()),
             project_record.flow,
             &effective_config,
             &retry_policy,
@@ -2386,6 +2437,9 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     // Explicit guard shutdown before printing success — surfaces cleanup
     // failures as non-zero exit instead of silently succeeding.
     let close_result = lock_guard.close();
+    if close_result.is_ok() {
+        let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
+    }
     match (run_result, milestone_sync_result) {
         (Err(run_error), Err(sync_error)) => {
             return Err(combine_run_and_sync_error(run_error, sync_error, true));
@@ -2439,6 +2493,7 @@ async fn handle_stop() -> AppResult<()> {
                     &project_id,
                     observed_owner.as_deref(),
                     true,
+                    false,
                 )
                     .map_err(|error| AppError::RunStopFailed {
                         reason: format!(
@@ -2540,6 +2595,7 @@ async fn handle_stop() -> AppResult<()> {
                     &project_id,
                     observed_owner.as_deref(),
                     true,
+                    false,
                 )
                 .map_err(|error| AppError::RunStopFailed {
                     reason: format!(
@@ -2548,6 +2604,10 @@ async fn handle_stop() -> AppResult<()> {
                 })?;
                 let final_snapshot =
                     run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+                let should_remove_pid_after_close = final_snapshot.status != RunStatus::Running
+                    && FileSystem::read_pid_file(&current_dir, &project_id)?
+                        .as_ref()
+                        .is_some_and(|current_record| current_record == &pid_record);
                 let status_message = if final_snapshot.status == RunStatus::Running
                     && matches!(
                         classify_running_snapshot_liveness(&current_dir, &project_id)?,
@@ -2589,18 +2649,16 @@ async fn handle_stop() -> AppResult<()> {
                         ),
                     }
                 } else {
-                    if FileSystem::read_pid_file(&current_dir, &project_id)?
-                        .as_ref()
-                        .is_some_and(|current_record| current_record == &pid_record)
-                    {
-                        let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
-                    }
                     format!(
                         "Run for project '{}' exited during stop with status '{}'.",
                         project_id, final_snapshot.status
                     )
                 };
-                guard.close().map_err(|error| AppError::RunStopFailed {
+                let close_result = guard.close();
+                if close_result.is_ok() && should_remove_pid_after_close {
+                    let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
+                }
+                close_result.map_err(|error| AppError::RunStopFailed {
                     reason: format!("failed to release recovery writer lease after stop: {error}"),
                 })?;
                 println!("{status_message}");
