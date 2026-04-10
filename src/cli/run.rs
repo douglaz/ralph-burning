@@ -1709,11 +1709,47 @@ fn observed_cli_cleanup_owner_has_dead_pid(
     Ok(!FileSystem::is_pid_alive(&pid_record))
 }
 
+fn observed_stale_running_owner_still_matches_attempt(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    expected_owner: &str,
+    expected_attempt: &engine::RunningAttemptIdentity,
+) -> AppResult<bool> {
+    let Some(current_owner) = read_project_writer_lock_owner(base_dir, project_id)? else {
+        return Ok(false);
+    };
+    if current_owner != expected_owner {
+        return Ok(false);
+    }
+
+    if let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? {
+        if FileSystem::pid_record_matches_attempt(
+            &pid_record,
+            &expected_attempt.run_id,
+            expected_attempt.started_at,
+        ) {
+            return Ok(match pid_record.writer_owner.as_deref() {
+                Some(writer_owner) => writer_owner == expected_owner,
+                None => true,
+            });
+        }
+
+        if FileSystem::pid_record_is_authoritative(&pid_record)
+            && FileSystem::is_pid_alive(&pid_record)
+        {
+            return Ok(false);
+        }
+    }
+
+    observed_writer_owner_is_stale(base_dir, project_id, expected_owner)
+}
+
 fn acquire_recovery_writer_guard(
     base_dir: &std::path::Path,
     repo_root: &std::path::Path,
     project_id: &ProjectId,
     observed_owner: Option<&str>,
+    stale_running_attempt: Option<&engine::RunningAttemptIdentity>,
     observed_owner_proven_stale: bool,
     allow_dead_cli_cleanup_reclaim: bool,
 ) -> AppResult<CliWriterLeaseGuard> {
@@ -1740,8 +1776,19 @@ fn acquire_recovery_writer_guard(
     let Some(owner) = observed_owner else {
         return Err(initial_error);
     };
-    let owner_is_reclaimable = observed_owner_proven_stale
-        || observed_writer_owner_is_stale(base_dir, project_id, owner)?
+    let owner_is_reclaimable = (if observed_owner_proven_stale {
+        match stale_running_attempt {
+            Some(expected_attempt) => observed_stale_running_owner_still_matches_attempt(
+                base_dir,
+                project_id,
+                owner,
+                expected_attempt,
+            )?,
+            None => true,
+        }
+    } else {
+        false
+    }) || observed_writer_owner_is_stale(base_dir, project_id, owner)?
         || (allow_dead_cli_cleanup_reclaim
             && observed_cli_cleanup_owner_has_dead_pid(base_dir, project_id, owner)?);
     if !owner_is_reclaimable {
@@ -2166,6 +2213,96 @@ fn kill_descendant_process_groups(root_pid: u32) -> AppResult<usize> {
     Ok(signaled_groups)
 }
 
+#[cfg(all(unix, not(target_os = "linux")))]
+fn unix_process_snapshot() -> AppResult<Vec<(u32, u32, u32)>> {
+    let output = Command::new("ps")
+        .args(["-ax", "-o", "pid=", "-o", "ppid=", "-o", "pgid="])
+        .output()
+        .map_err(|error| {
+            AppError::Io(std::io::Error::other(format!(
+                "failed to enumerate processes via ps: {error}"
+            )))
+        })?;
+    if !output.status.success() {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "failed to enumerate processes via ps: exit status {}",
+            output.status
+        ))));
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+        AppError::Io(std::io::Error::other(format!(
+            "ps returned non-UTF-8 output while enumerating processes: {error}"
+        )))
+    })?;
+    Ok(stdout
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse::<u32>().ok()?;
+            let ppid = fields.next()?.parse::<u32>().ok()?;
+            let pgid = fields.next()?.parse::<u32>().ok()?;
+            Some((pid, ppid, pgid))
+        })
+        .collect())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn kill_descendant_process_groups(root_pid: u32) -> AppResult<usize> {
+    let process_snapshot = unix_process_snapshot()?;
+    let mut children_by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut process_group_by_pid = HashMap::new();
+
+    for (pid, ppid, pgid) in process_snapshot {
+        children_by_parent.entry(ppid).or_default().push(pid);
+        process_group_by_pid.insert(pid, pgid);
+    }
+
+    let mut stack = vec![root_pid];
+    let mut seen_pids = HashSet::from([root_pid]);
+    let mut process_groups = HashSet::new();
+    let root_process_group = process_group_by_pid.get(&root_pid).copied();
+
+    while let Some(pid) = stack.pop() {
+        if let Some(child_pids) = children_by_parent.get(&pid) {
+            for child_pid in child_pids {
+                if seen_pids.insert(*child_pid) {
+                    stack.push(*child_pid);
+                    if let Some(process_group_id) = process_group_by_pid.get(child_pid).copied() {
+                        process_groups.insert(process_group_id);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut signaled_groups = 0usize;
+    for process_group_id in process_groups {
+        if process_group_id == root_pid || Some(process_group_id) == root_process_group {
+            continue;
+        }
+
+        let process_group_id =
+            i32::try_from(process_group_id).map_err(|_| AppError::RunStopFailed {
+                reason: format!(
+                    "process group id {} exceeds libc::pid_t range",
+                    process_group_id
+                ),
+            })?;
+        match kill(Pid::from_raw(-process_group_id), Signal::SIGKILL) {
+            Ok(()) => signaled_groups += 1,
+            Err(nix::errno::Errno::ESRCH) => {}
+            Err(error) => {
+                return Err(AppError::Io(std::io::Error::other(format!(
+                    "failed to SIGKILL descendant process group {process_group_id}: {error}"
+                ))))
+            }
+        }
+    }
+
+    Ok(signaled_groups)
+}
+
 fn recover_stale_running_snapshot(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
@@ -2512,6 +2649,7 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             &current_dir,
             &project_id,
             recovery_observation.observed_owner.as_deref(),
+            observed_running_attempt.as_ref(),
             recovery_observation.should_reconcile_claimed_running_snapshot,
             recovery_observation.allow_dead_cli_cleanup_reclaim,
         )
@@ -2739,6 +2877,7 @@ async fn handle_stop() -> AppResult<()> {
                     &current_dir,
                     &project_id,
                     observed_owner.as_deref(),
+                    Some(&observed_attempt),
                     true,
                     false,
                 )
@@ -2825,7 +2964,7 @@ async fn handle_stop() -> AppResult<()> {
                             if wait_for_handle_exit(&handle, RUN_STOP_GRACE_PERIOD).await? {
                                 "terminated gracefully with SIGTERM"
                             } else {
-                                #[cfg(target_os = "linux")]
+                                #[cfg(unix)]
                                 let killed_descendant_groups =
                                     kill_descendant_process_groups(pid_record.pid)?;
                                 match send_signal_to_handle(&handle, Signal::SIGKILL)? {
@@ -2843,17 +2982,13 @@ async fn handle_stop() -> AppResult<()> {
                                                 ),
                                             });
                                         }
-                                        #[cfg(target_os = "linux")]
+                                        #[cfg(unix)]
                                         {
                                             if killed_descendant_groups == 0 {
                                                 "required SIGKILL after timeout"
                                             } else {
                                                 "required SIGKILL after timeout and killed backend subprocess groups"
                                             }
-                                        }
-                                        #[cfg(not(target_os = "linux"))]
-                                        {
-                                            "required SIGKILL after timeout"
                                         }
                                     }
                                 }
@@ -2866,6 +3001,7 @@ async fn handle_stop() -> AppResult<()> {
                     &current_dir,
                     &project_id,
                     observed_owner.as_deref(),
+                    None,
                     true,
                     false,
                 )
@@ -3013,9 +3149,13 @@ mod tests {
 
     use crate::adapters::bv_process::NextBeadResponse;
     use crate::adapters::fs::{
-        FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
-        FsMilestoneSnapshotStore, FsMilestoneStore, FsTaskRunLineageStore,
+        FileSystem, FsDaemonStore, FsMilestoneControllerStore, FsMilestoneJournalStore,
+        FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore, FsTaskRunLineageStore,
     };
+    use crate::contexts::automation_runtime::model::{
+        DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
+    };
+    use crate::contexts::automation_runtime::{DaemonStorePort, LeaseRecord};
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
     };
@@ -6280,6 +6420,121 @@ mod tests {
             })
             .collect();
         assert_eq!(completion_events.len(), 1);
+    }
+
+    #[test]
+    fn acquire_recovery_writer_guard_does_not_reclaim_fresh_worktree_owner_for_stale_running_attempt(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("stale-running-owner-race").expect("project id");
+        let now = Utc::now();
+        let worktree_lease = WorktreeLease {
+            lease_id: "lease-fresh-running-owner".to_owned(),
+            task_id: "task-fresh-running-owner".to_owned(),
+            project_id: project_id.to_string(),
+            worktree_path: base_dir.join("worktrees/task-fresh-running-owner"),
+            branch_name: "task-fresh-running-owner".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::Worktree(worktree_lease.clone()),
+        )
+        .expect("write fresh worktree lease");
+        <FsDaemonStore as DaemonStorePort>::acquire_writer_lock(
+            &FsDaemonStore,
+            base_dir,
+            &project_id,
+            &worktree_lease.lease_id,
+        )
+        .expect("acquire writer lock");
+        <FsDaemonStore as DaemonStorePort>::write_task(
+            &FsDaemonStore,
+            base_dir,
+            &DaemonTask {
+                task_id: worktree_lease.task_id.clone(),
+                issue_ref: "repo#42".to_owned(),
+                project_id: project_id.to_string(),
+                project_name: Some("fresh owner".to_owned()),
+                prompt: Some("prompt".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Active,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: Some(worktree_lease.lease_id.clone()),
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                workflow_run_id: None,
+                repo_slug: None,
+                issue_number: None,
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            },
+        )
+        .expect("write daemon task");
+
+        let stale_attempt = crate::contexts::workflow_composition::engine::RunningAttemptIdentity {
+            run_id: "run-stale-attempt".to_owned(),
+            started_at: now - chrono::Duration::minutes(5),
+        };
+
+        let result = super::acquire_recovery_writer_guard(
+            base_dir,
+            base_dir,
+            &project_id,
+            Some(worktree_lease.lease_id.as_str()),
+            Some(&stale_attempt),
+            true,
+            false,
+        );
+        assert!(
+            matches!(result, Err(AppError::ProjectWriterLockHeld { .. })),
+            "fresh owner should not be reclaimed just because stale proof was observed earlier"
+        );
+
+        let writer_lock_path = FileSystem::daemon_root(base_dir)
+            .join("leases")
+            .join(format!("writer-{}.lock", project_id.as_str()));
+        assert_eq!(
+            std::fs::read_to_string(&writer_lock_path)
+                .expect("read writer lock")
+                .trim(),
+            worktree_lease.lease_id
+        );
+        assert!(
+            <FsDaemonStore as DaemonStorePort>::read_lease_record(
+                &FsDaemonStore,
+                base_dir,
+                &worktree_lease.lease_id,
+            )
+            .is_ok(),
+            "fresh worktree lease must remain intact"
+        );
+        let task = <FsDaemonStore as DaemonStorePort>::read_task(
+            &FsDaemonStore,
+            base_dir,
+            &worktree_lease.task_id,
+        )
+        .expect("read daemon task");
+        assert_eq!(task.status, TaskStatus::Active);
+        assert_eq!(
+            task.lease_id.as_deref(),
+            Some(worktree_lease.lease_id.as_str())
+        );
     }
 }
 

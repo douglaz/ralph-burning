@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 19
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-18-26ff8117",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 18,
-        "body": "Do not reclaim whatever writer lock is currently present just because an earlier liveness probe said the old attempt was stale. `observed_running_attempt_owner` falls back to the current `writer-<project>.lock` owner whenever the pid record no longer matches the expected attempt (`src/cli/run.rs:1630-1640`), and `acquire_recovery_writer_guard` then treats that owner as reclaimable whenever `observed_owner_proven_stale` is true (`src/cli/run.rs:1743-1756`). Both stale `run resume` and stale `run stop` pass `true` there (`src/cli/run.rs:2506-2517`, `src/cli/run.rs:2733-2744`). If a fresh run grabs the writer lock after the stale check but before recovery acquires the guard, these paths will tear down the fresh owner and only afterwards notice the attempt changed. `reclaim_specific_project_writer_owner` can even mark an active daemon task failed while doing that (`src/contexts/automation_runtime/cli_writer_lease.rs:163-176`). Revalidate that the current owner/pid still belongs to the stale attempt before reclaiming.",
-        "created_at": "2026-04-10T19:00:20.949082940Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "908ee70935c0eef2350f2256863b71b4e97f825aa7760dee51158b5a68f6cc9e"
-      },
-      {
-        "amendment_id": "fr-18-8f3b8c1d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 18,
-        "body": "Make the forced-stop cleanup kill backend process groups on every Unix target, not just Linux. Backends are launched into a dedicated process group on all Unix builds (`src/adapters/process_backend.rs:1122-1126`), but the extra descendant-group cleanup helper only exists behind the Linux cfg (`src/cli/run.rs:2134-2166`). In the hard-stop path, non-Linux Unix builds fall through to killing only the orchestrator PID and then reporting success (`src/cli/run.rs:2828-2856`). On macOS/BSD, a timed-out `run stop` can therefore rewrite `run.json` to a failed/interrupted state while the backend subprocess group keeps running in the background.",
-        "created_at": "2026-04-10T19:00:20.949086376Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "6d4052a171e5a70fbc25fa0a73a607089b39d9efe12af7728b43a7e1fcd04ffd"
-      }
-    ],
-    "processed_count": 42
+    "pending": [],
+    "processed_count": 44
   },
-  "status_summary": "running: final review restart round 19 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-10T18:46:04.553267784Z",
