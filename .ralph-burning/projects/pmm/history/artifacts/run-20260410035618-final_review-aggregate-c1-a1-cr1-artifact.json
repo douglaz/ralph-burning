@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260410035618-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260410035618-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T04:15:33.250371255Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-e5d149ba`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-e5d149ba`\n\nPreserve the legacy `backend(model)` syntax when parsing panel backend specs. In `src/shared/domain.rs:532-550`, `PanelBackendSpec::from_str` now does `raw_selection.split_once('/')` before falling back to `BackendSelection::from_backend_name()`. That breaks previously valid panel entries whose old-style model override contains a slash, such as `?openrouter(openai/gpt-5.4)`: the slash inside the parentheses is misread as the new `family/model` separator, so the family becomes `openrouter(openai)` and parsing fails. Because `config set` now validates panel lists through this parser in `src/contexts/workspace_governance/config.rs:2115-2118`, existing workspace/project configs using the old serialized form can no longer be reloaded or updated. Update the parser to accept the legacy parenthesized form first (or otherwise ignore `/` inside parentheses), and add regression tests for direct parse plus `config set`/serde round-trip of an old-style OpenRouter value.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

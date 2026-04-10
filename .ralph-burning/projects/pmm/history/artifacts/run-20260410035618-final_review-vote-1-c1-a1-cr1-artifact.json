@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410035618-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260410035618-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T04:15:33.236565409Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the amendment: the parser change introduces a real backward-compatibility regression for legacy parenthesized backend specs that include `/` in the model string, and that failure now affects config validation and deserialization paths.\n\n## Votes\n\n- `fr-1-e5d149ba`: Accept\n  `PanelBackendSpec::from_str` now checks `raw_selection.split_once('/')` before delegating to `BackendSelection::from_backend_name()`. For a legacy value like `?openrouter(openai/gpt-5.4)`, that eagerly splits inside the parenthesized model override, producing `openrouter(openai)` as the family and failing to parse. `BackendSelection::from_backend_name()` would accept that same value, so this is a real regression in previously valid input. The impact is broader than one parser call: `validate_string_list_entries` uses `PanelBackendSpec` for `prompt_review.validator_backends`, `completion.backends`, and `final_review.backends`, and TOML deserialization of config structs also routes through this parser, so existing workspace or project configs in the legacy form can fail to load or block `config set`. Restoring support for the legacy parenthesized form first, or otherwise ignoring `/` inside parentheses, is the correct fix. Regression coverage should verify direct parsing and config/serde acceptance of old-style OpenRouter values so the compatibility path stays protected.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

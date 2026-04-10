@@ -494,9 +494,13 @@ fn render_probe_text(result: &BackendProbeResult) {
             );
         }
         for omitted in &panel.omitted {
+            let identity = match &omitted.model_id {
+                Some(model) => format!("{}/{}", omitted.backend_family, model),
+                None => omitted.backend_family.clone(),
+            };
             println!(
                 "    [omitted] {} — {} (was_optional={})",
-                omitted.backend_family, omitted.reason, omitted.was_optional,
+                identity, omitted.reason, omitted.was_optional,
             );
         }
     }

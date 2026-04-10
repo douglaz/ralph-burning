@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410035618-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260410035618-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-10T04:20:04.103120924Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the panel-backend parsing regression by teaching `PanelBackendSpec::from_str` to split `family/model` only on `/` characters that occur outside parentheses, so legacy `backend(model)` entries like `?openrouter(openai/gpt-5.4)` continue to parse while the new inline `family/model` syntax still works. Added regression coverage for direct parsing, serde acceptance/normalization of legacy parenthesized OpenRouter values, and `config set` acceptance plus effective-config display for legacy panel backend entries.\n\n## Steps\n\n1. [Completed] Updated `src/shared/domain.rs` so panel backend parsing recognizes `family/model` only when the slash is outside parentheses, preserving legacy `backend(model)` panel specs with slash-containing model ids.\n2. [Completed] Added regression tests covering legacy parenthesized panel backend parsing and serde normalization for OpenRouter values that include `/` inside the model spec.\n3. [Completed] Added config validation coverage proving `EffectiveConfig::set` accepts legacy parenthesized panel backend entries and that effective config display normalizes them to the canonical `family/model` form.\n4. [Completed] Ran validation commands for the amended change set and confirmed formatting and test coverage status.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test --test unit parenthesized_model_overrides` passed, covering the new legacy-parse and serde regression tests.\n- `cargo test --test unit config_set_accepts_legacy_parenthesized_panel_backend_model_overrides` passed.\n- `cargo test` passed on rerun after one transient unrelated checkpoint-test failure; the successful rerun completed with all test suites passing.\n- Verified by inspection that `apply_string_list` validation in `src/contexts/workspace_governance/config.rs` reuses `PanelBackendSpec::from_str`, so the parser fix restores `config set` acceptance for legacy panel specs without additional code changes there.\n- `cargo clippy --all-targets --all-features -- -D warnings` was run and failed only on unrelated existing repo-wide warnings, not on the panel-backend parser or the new regression tests.\n\n## Outstanding Risks\n\n- `cargo clippy --all-targets --all-features -- -D warnings` still fails on pre-existing repo-wide issues outside this change set, including dead code in `src/cli/run.rs`, unrelated clippy findings in `src/adapters/fs.rs`, multiple `too_many_arguments` findings in milestone services, and existing `items_after_test_module` violations.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

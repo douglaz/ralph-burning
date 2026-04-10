@@ -209,3 +209,76 @@ fn effective_config_rejects_unknown_keys_and_invalid_values() {
         .expect_err("invalid bool should fail");
     assert!(matches!(invalid_bool, AppError::InvalidConfigValue { .. }));
 }
+
+#[test]
+fn config_set_accepts_panel_backend_model_overrides_and_displays_them() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let entry = EffectiveConfig::set(
+        temp_dir.path(),
+        "final_review.backends",
+        r#"["codex/gpt-5.4-xhigh", "?codex/gpt-5.3-codex-spark-xhigh"]"#,
+    )
+    .expect("set final review backends");
+
+    assert_eq!(
+        r#"["codex/gpt-5.4-xhigh", "?codex/gpt-5.3-codex-spark-xhigh"]"#,
+        entry.value.toml_like_value()
+    );
+
+    let loaded = EffectiveConfig::load(temp_dir.path()).expect("reload config");
+    let fetched = loaded
+        .get("final_review.backends")
+        .expect("get final review backends");
+    assert_eq!(
+        r#"["codex/gpt-5.4-xhigh", "?codex/gpt-5.3-codex-spark-xhigh"]"#,
+        fetched.value.toml_like_value()
+    );
+}
+
+#[test]
+fn config_set_accepts_legacy_parenthesized_panel_backend_model_overrides() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let entry = EffectiveConfig::set(
+        temp_dir.path(),
+        "final_review.backends",
+        r#"["openrouter(openai/gpt-5.4)", "?openrouter(openai/gpt-5.4-mini)"]"#,
+    )
+    .expect("set final review backends");
+
+    assert_eq!(
+        r#"["openrouter/openai/gpt-5.4", "?openrouter/openai/gpt-5.4-mini"]"#,
+        entry.value.toml_like_value()
+    );
+
+    let loaded = EffectiveConfig::load(temp_dir.path()).expect("reload config");
+    let fetched = loaded
+        .get("final_review.backends")
+        .expect("get final review backends");
+    assert_eq!(
+        r#"["openrouter/openai/gpt-5.4", "?openrouter/openai/gpt-5.4-mini"]"#,
+        fetched.value.toml_like_value()
+    );
+}
+
+#[test]
+fn config_set_rejects_invalid_panel_backend_model_overrides_before_writing() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let workspace_root = initialize_workspace_fixture(temp_dir.path());
+    let config_path = workspace_root.join("workspace.toml");
+    let original = fs::read_to_string(&config_path).expect("read original config");
+
+    let error = EffectiveConfig::set(temp_dir.path(), "final_review.backends", r#"["codex/"]"#)
+        .expect_err("invalid panel backend override should fail");
+
+    assert!(matches!(
+        error,
+        AppError::InvalidConfigValue { ref key, .. } if key == "final_review.backends"
+    ));
+
+    let after = fs::read_to_string(&config_path).expect("read config after failed set");
+    assert_eq!(original, after);
+}

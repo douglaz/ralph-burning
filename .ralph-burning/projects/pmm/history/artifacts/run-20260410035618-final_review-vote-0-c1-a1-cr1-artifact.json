@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410035618-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260410035618-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T04:14:16.675810571Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept: the amendment identifies a real backward-compatibility regression in panel backend parsing that can break existing configs and config edits.\n\n## Votes\n\n- `fr-1-e5d149ba`: Accept\n  `PanelBackendSpec::from_str` now checks `split_once('/')` before delegating to the legacy `BackendSelection::from_backend_name()` parser. For `?openrouter(openai/gpt-5.4)`, that consumes the slash inside the parenthesized model, turns the family into `openrouter(openai`, and fails parsing even though the legacy form was previously valid. Because `PanelBackendSpec` deserialization goes through this parser and `EffectiveConfig::set` first reloads and validates config values through the same path, old workspace or project configs can fail to load and block updates. Restoring precedence for the legacy parenthesized form, or otherwise ignoring `/` inside parentheses, is the correct fix, and regression tests for direct parse plus config load/set round-trips are warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

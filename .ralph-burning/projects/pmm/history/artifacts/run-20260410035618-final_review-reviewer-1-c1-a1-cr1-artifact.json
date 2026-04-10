@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410035618-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260410035618-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T04:11:23.750791755Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 correctness issue: the new panel-backend parser regresses compatibility with previously valid `backend(model)` specs containing slashes.\n\n## Amendments\n\n1. Preserve the legacy `backend(model)` syntax when parsing panel backend specs. In `src/shared/domain.rs:532-550`, `PanelBackendSpec::from_str` now does `raw_selection.split_once('/')` before falling back to `BackendSelection::from_backend_name()`. That breaks previously valid panel entries whose old-style model override contains a slash, such as `?openrouter(openai/gpt-5.4)`: the slash inside the parentheses is misread as the new `family/model` separator, so the family becomes `openrouter(openai)` and parsing fails. Because `config set` now validates panel lists through this parser in `src/contexts/workspace_governance/config.rs:2115-2118`, existing workspace/project configs using the old serialized form can no longer be reloaded or updated. Update the parser to accept the legacy parenthesized form first (or otherwise ignore `/` inside parentheses), and add regression tests for direct parse plus `config set`/serde round-trip of an old-style OpenRouter value.\n   Rationale: This is a backward-compatibility regression in a config parser. Older panel backend values that were previously valid can now hard-fail load/set paths, especially for OpenRouter models where slashes are normal in model IDs.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

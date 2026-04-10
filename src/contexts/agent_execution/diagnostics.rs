@@ -154,6 +154,8 @@ pub struct PanelMemberView {
 #[derive(Debug, Clone, Serialize)]
 pub struct PanelOmittedView {
     pub backend_family: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
     pub reason: String,
     pub was_optional: bool,
 }
@@ -1209,6 +1211,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                     Err(_) if !member.required => {
                         panel.omitted.push(PanelOmittedView {
                             backend_family: member.backend_family,
+                            model_id: Some(member.model_id),
                             reason: "backend unavailable".to_owned(),
                             was_optional: true,
                         });
@@ -1414,6 +1417,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             {
                 omitted.push(PanelOmittedView {
                     backend_family: backend.as_str().to_owned(),
+                    model_id: spec.selection().model.clone(),
                     reason: "backend disabled".to_owned(),
                     was_optional: true,
                 });

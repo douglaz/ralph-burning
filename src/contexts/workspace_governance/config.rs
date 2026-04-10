@@ -1987,7 +1987,9 @@ fn apply_string_list(document: &mut DocumentMut, path: &[&str], raw_value: &str)
         return Ok(());
     }
 
-    let values = parse_string_list(path.join(".").as_str(), raw_value)?;
+    let key = path.join(".");
+    let values = parse_string_list(&key, raw_value)?;
+    validate_string_list_entries(&key, &values)?;
     let mut array = Array::default();
     for entry in values {
         array.push(entry.as_str());
@@ -2077,7 +2079,7 @@ fn parse_string_list(key: &str, raw_value: &str) -> AppResult<Vec<String>> {
     let parsed =
         raw_value
             .trim()
-            .parse::<toml::Value>()
+            .parse::<toml_edit::Value>()
             .map_err(|_| AppError::InvalidConfigValue {
                 key: key.to_owned(),
                 value: raw_value.to_owned(),
@@ -2100,4 +2102,32 @@ fn parse_string_list(key: &str, raw_value: &str) -> AppResult<Vec<String>> {
         values.push(string.to_owned());
     }
     Ok(values)
+}
+
+fn validate_string_list_entries(key: &str, values: &[String]) -> AppResult<()> {
+    if !matches!(
+        key,
+        "prompt_review.validator_backends" | "completion.backends" | "final_review.backends"
+    ) {
+        return Ok(());
+    }
+
+    for value in values {
+        value
+            .parse::<PanelBackendSpec>()
+            .map_err(|err| remap_config_error_key(err, key, value))?;
+    }
+
+    Ok(())
+}
+
+fn remap_config_error_key(err: AppError, key: &str, raw_value: &str) -> AppError {
+    match err {
+        AppError::InvalidConfigValue { reason, .. } => AppError::InvalidConfigValue {
+            key: key.to_owned(),
+            value: raw_value.to_owned(),
+            reason,
+        },
+        other => other,
+    }
 }

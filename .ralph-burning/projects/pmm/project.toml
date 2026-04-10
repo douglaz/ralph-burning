@@ -1,0 +1,7 @@
+id = "pmm"
+name = "pmm"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "6dd4990241bce956bfc78563e91712694ef9d2852922f53ffc62bd7920548be6"
+created_at = "2026-04-10T03:37:14.823600115Z"
+status_summary = "created"

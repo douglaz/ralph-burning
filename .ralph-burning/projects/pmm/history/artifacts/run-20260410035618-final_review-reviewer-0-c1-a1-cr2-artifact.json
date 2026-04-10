@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410035618-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260410035618-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T04:23:24.765465591Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the panel-backend parser/display changes in src/shared/domain.rs, config-set validation in src/contexts/workspace_governance/config.rs, and panel resolution in src/contexts/agent_execution/policy.rs, along with the added unit coverage. The legacy parenthesized-format regression appears fixed, inline model overrides still take precedence during panel resolution, and I did not find additional correctness or robustness issues in this change set.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

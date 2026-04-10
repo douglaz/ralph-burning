@@ -513,52 +513,53 @@ where
             }
         };
 
-        let proposal: FinalReviewProposalPayload = match serde_json::from_value(reviewer_payload.clone())
-        {
-            Ok(v) => v,
-            Err(e) => {
-                let duration = started_at.elapsed();
-                let _ = append_panel_member_completed_event_with_identity(
-                    journal_store,
-                    base_dir,
-                    project_id,
-                    seq,
-                    run_id,
-                    cursor,
-                    "proposal",
-                    reviewer_id,
-                    "reviewer",
-                    &backend_family,
-                    &model_id,
-                    duration,
-                    "failed_schema_validation",
-                    0,
-                );
-                append_panel_member_runtime_log_with_identity(
-                    log_write,
-                    base_dir,
-                    project_id,
-                    "completed",
-                    "proposal",
-                    reviewer_id,
-                    "reviewer",
-                    &backend_family,
-                    &model_id,
-                    Some(duration),
-                    Some("failed_schema_validation"),
-                    Some(0),
-                );
-                if deferred_processing_error.is_none() {
-                    deferred_processing_error = Some(AppError::InvocationFailed {
-                        backend: member.target.backend.family.to_string(),
-                        contract_id: "final_review:reviewer".to_owned(),
-                        failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                        details: format!("final-review proposal schema validation failed: {e}"),
-                    });
+        let proposal: FinalReviewProposalPayload =
+            match serde_json::from_value(reviewer_payload.clone()) {
+                Ok(v) => v,
+                Err(e) => {
+                    let duration = started_at.elapsed();
+                    let _ = append_panel_member_completed_event_with_identity(
+                        journal_store,
+                        base_dir,
+                        project_id,
+                        seq,
+                        run_id,
+                        cursor,
+                        "proposal",
+                        reviewer_id,
+                        "reviewer",
+                        &backend_family,
+                        &model_id,
+                        duration,
+                        "failed_schema_validation",
+                        0,
+                    );
+                    append_panel_member_runtime_log_with_identity(
+                        log_write,
+                        base_dir,
+                        project_id,
+                        "completed",
+                        "proposal",
+                        reviewer_id,
+                        "reviewer",
+                        &backend_family,
+                        &model_id,
+                        Some(duration),
+                        Some("failed_schema_validation"),
+                        Some(0),
+                    );
+                    if deferred_processing_error.is_none() {
+                        deferred_processing_error = Some(AppError::InvocationFailed {
+                            backend: member.target.backend.family.to_string(),
+                            contract_id: "final_review:reviewer".to_owned(),
+                            failure_class:
+                                crate::shared::domain::FailureClass::SchemaValidationFailure,
+                            details: format!("final-review proposal schema validation failed: {e}"),
+                        });
+                    }
+                    continue;
                 }
-                continue;
-            }
-        };
+            };
 
         let duration = started_at.elapsed();
         if let Err(e) = append_panel_member_completed_event_with_identity(
@@ -1121,12 +1122,10 @@ where
                 );
                 match &first_optional_vote_failure {
                     None => {
-                        first_optional_vote_failure =
-                            Some((reviewer.member_index, error));
+                        first_optional_vote_failure = Some((reviewer.member_index, error));
                     }
                     Some((prev_idx, _)) if reviewer.member_index < *prev_idx => {
-                        first_optional_vote_failure =
-                            Some((reviewer.member_index, error));
+                        first_optional_vote_failure = Some((reviewer.member_index, error));
                     }
                     _ => {}
                 }
@@ -1167,8 +1166,7 @@ where
                         .is_some_and(|fc| fc == FailureClass::Cancellation);
                     match &first_required_vote_failure {
                         None => {
-                            first_required_vote_failure =
-                                Some((reviewer.member_index, error));
+                            first_required_vote_failure = Some((reviewer.member_index, error));
                             if !is_cancellation {
                                 cancellation_token.cancel();
                             }
@@ -1176,8 +1174,7 @@ where
                         Some((prev_idx, _))
                             if reviewer.member_index < *prev_idx && !is_cancellation =>
                         {
-                            first_required_vote_failure =
-                                Some((reviewer.member_index, error));
+                            first_required_vote_failure = Some((reviewer.member_index, error));
                         }
                         _ => {}
                     }
@@ -1200,52 +1197,51 @@ where
             }
         };
 
-        let votes: FinalReviewVotePayload =
-            match serde_json::from_value(vote_payload.clone()) {
-                Ok(v) => v,
-                Err(e) => {
-                    let duration = started_at.elapsed();
-                    let _ = append_panel_member_completed_event_with_identity(
-                        journal_store,
-                        base_dir,
-                        project_id,
-                        seq,
-                        run_id,
-                        cursor,
-                        "vote",
-                        &reviewer.reviewer_id,
-                        "reviewer",
-                        &backend_family,
-                        &model_id,
-                        duration,
-                        "failed_schema_validation",
-                        0,
-                    );
-                    append_panel_member_runtime_log_with_identity(
-                        log_write,
-                        base_dir,
-                        project_id,
-                        "completed",
-                        "vote",
-                        &reviewer.reviewer_id,
-                        "reviewer",
-                        &backend_family,
-                        &model_id,
-                        Some(duration),
-                        Some("failed_schema_validation"),
-                        Some(0),
-                    );
-                    if deferred_vote_processing_error.is_none() {
-                        deferred_vote_processing_error = Some(AppError::InvocationFailed {
-                            backend: reviewer.target.backend.family.to_string(),
-                            contract_id: "final_review:voter".to_owned(),
-                            failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                            details: format!("final-review vote schema validation failed: {e}"),
-                        });
-                    }
-                    continue;
+        let votes: FinalReviewVotePayload = match serde_json::from_value(vote_payload.clone()) {
+            Ok(v) => v,
+            Err(e) => {
+                let duration = started_at.elapsed();
+                let _ = append_panel_member_completed_event_with_identity(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &backend_family,
+                    &model_id,
+                    duration,
+                    "failed_schema_validation",
+                    0,
+                );
+                append_panel_member_runtime_log_with_identity(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &backend_family,
+                    &model_id,
+                    Some(duration),
+                    Some("failed_schema_validation"),
+                    Some(0),
+                );
+                if deferred_vote_processing_error.is_none() {
+                    deferred_vote_processing_error = Some(AppError::InvocationFailed {
+                        backend: reviewer.target.backend.family.to_string(),
+                        contract_id: "final_review:voter".to_owned(),
+                        failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                        details: format!("final-review vote schema validation failed: {e}"),
+                    });
                 }
-            };
+                continue;
+            }
+        };
         if let Err(error) = validate_vote_payload(&votes, &amendments, &reviewer.target) {
             let duration = started_at.elapsed();
             let _ = append_panel_member_completed_event_with_identity(
