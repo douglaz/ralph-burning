@@ -126,12 +126,27 @@ fn proc_start_ticks(pid: u32) -> u64 {
         .expect("parse start ticks")
 }
 
-fn live_pid_record_json(pid: u32, owner: &str) -> serde_json::Value {
+fn live_pid_record_json(
+    pid: u32,
+    owner: &str,
+    run_id: Option<&str>,
+    run_started_at: Option<&str>,
+    writer_owner: Option<&str>,
+) -> serde_json::Value {
     let mut record = serde_json::json!({
         "pid": pid,
         "started_at": Utc::now(),
         "owner": owner,
     });
+    if let Some(run_id) = run_id {
+        record["run_id"] = serde_json::json!(run_id);
+    }
+    if let Some(run_started_at) = run_started_at {
+        record["run_started_at"] = serde_json::json!(run_started_at);
+    }
+    if let Some(writer_owner) = writer_owner {
+        record["writer_owner"] = serde_json::json!(writer_owner);
+    }
     #[cfg(target_os = "linux")]
     {
         record["proc_start_ticks"] = serde_json::json!(proc_start_ticks(pid));
@@ -5690,8 +5705,14 @@ fn run_status_keeps_daemon_owned_running_snapshot_active_with_live_pid_file() {
         .expect("write daemon writer lock");
     fs::write(
         project_root(temp_dir.path(), "alpha").join("run.pid"),
-        serde_json::to_string_pretty(&live_pid_record_json(std::process::id(), "daemon"))
-            .expect("serialize daemon pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            std::process::id(),
+            "daemon",
+            Some("run-daemon"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("lease-daemon-alpha"),
+        ))
+        .expect("serialize daemon pid"),
     )
     .expect("write daemon pid");
 
@@ -5968,6 +5989,10 @@ fn run_stop_terminates_pid_and_marks_snapshot_failed() {
     let pid_file = serde_json::json!({
         "pid": pid,
         "started_at": Utc::now(),
+        "owner": "cli",
+        "writer_owner": "cli-stop-test",
+        "run_id": "run-stop",
+        "run_started_at": "2026-04-10T00:00:00Z",
         "proc_start_ticks": proc_start_ticks(pid),
     });
     fs::write(
@@ -6040,6 +6065,73 @@ fn run_stop_terminates_pid_and_marks_snapshot_failed() {
         !child_status.success(),
         "sleep child should not exit successfully after stop: {child_status:?}"
     );
+}
+
+#[test]
+fn run_stop_refuses_pid_for_different_running_attempt() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-old",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    let pid = child.id();
+    let pid_file = serde_json::json!({
+        "pid": pid,
+        "started_at": Utc::now(),
+        "owner": "cli",
+        "writer_owner": "cli-stop-race",
+        "run_id": "run-stop-new",
+        "run_started_at": "2026-04-10T00:05:00Z",
+        "proc_start_ticks": proc_start_ticks(pid),
+    });
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&pid_file).expect("serialize pid file"),
+    )
+    .expect("write pid file");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("project run changed while preparing stop"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        pid_is_alive(pid),
+        "run stop must not signal a different attempt"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[test]
@@ -6217,8 +6309,14 @@ fn run_stop_sigkill_terminates_backend_subprocess_group() {
 
     fs::write(
         project_root(temp_dir.path(), "alpha").join("run.pid"),
-        serde_json::to_string_pretty(&live_pid_record_json(orchestrator_pid, "cli"))
-            .expect("serialize cli pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator_pid,
+            "cli",
+            Some("run-stop-sigkill-tree"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-tree"),
+        ))
+        .expect("serialize cli pid"),
     )
     .expect("write run pid");
 
@@ -6365,8 +6463,14 @@ fn run_stop_refuses_daemon_owned_running_snapshot() {
         .expect("write daemon writer lock");
     fs::write(
         project_root(temp_dir.path(), "alpha").join("run.pid"),
-        serde_json::to_string_pretty(&live_pid_record_json(std::process::id(), "daemon"))
-            .expect("serialize daemon pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            std::process::id(),
+            "daemon",
+            Some("run-daemon-stop"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("lease-daemon-stop"),
+        ))
+        .expect("serialize daemon pid"),
     )
     .expect("write daemon pid");
 

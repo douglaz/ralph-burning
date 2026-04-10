@@ -1520,7 +1520,7 @@ fn resume_attempt_has_exact_lineage(
 
 enum RunningSnapshotLiveness {
     CliProcess(crate::adapters::fs::RunPidRecord),
-    DaemonProcess,
+    DaemonProcess(crate::adapters::fs::RunPidRecord),
     LegacyCliLease,
     LegacyDaemonLease,
     Stale,
@@ -1539,7 +1539,7 @@ fn classify_running_snapshot_liveness(
                         RunningSnapshotLiveness::CliProcess(record.clone())
                     }
                     crate::adapters::fs::RunPidOwner::Daemon => {
-                        RunningSnapshotLiveness::DaemonProcess
+                        RunningSnapshotLiveness::DaemonProcess(record.clone())
                     }
                 });
             }
@@ -1574,6 +1574,51 @@ fn classify_running_snapshot_liveness(
     }
 
     Ok(RunningSnapshotLiveness::Stale)
+}
+
+fn running_snapshot_attempt(snapshot: &RunSnapshot) -> AppResult<engine::RunningAttemptIdentity> {
+    let Some(active_run) = snapshot.active_run.as_ref() else {
+        return Err(AppError::CorruptRecord {
+            file: "run.json".to_owned(),
+            details: "running snapshot is missing active_run".to_owned(),
+        });
+    };
+    Ok(engine::RunningAttemptIdentity::from_active_run(active_run))
+}
+
+fn liveness_matches_running_attempt(
+    liveness: &RunningSnapshotLiveness,
+    expected_attempt: &engine::RunningAttemptIdentity,
+) -> bool {
+    match liveness {
+        RunningSnapshotLiveness::CliProcess(record)
+        | RunningSnapshotLiveness::DaemonProcess(record) => FileSystem::pid_record_matches_attempt(
+            record,
+            &expected_attempt.run_id,
+            expected_attempt.started_at,
+        ),
+        RunningSnapshotLiveness::LegacyCliLease
+        | RunningSnapshotLiveness::LegacyDaemonLease
+        | RunningSnapshotLiveness::Stale => true,
+    }
+}
+
+fn observed_running_attempt_owner(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    expected_attempt: &engine::RunningAttemptIdentity,
+) -> AppResult<Option<String>> {
+    if let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? {
+        if FileSystem::pid_record_matches_attempt(
+            &pid_record,
+            &expected_attempt.run_id,
+            expected_attempt.started_at,
+        ) && pid_record.writer_owner.is_some()
+        {
+            return Ok(pid_record.writer_owner);
+        }
+    }
+    read_project_writer_lock_owner(base_dir, project_id)
 }
 
 fn observed_writer_owner_is_stale(
@@ -1708,24 +1753,52 @@ fn observed_resume_recovery_owner(
     snapshot: &RunSnapshot,
 ) -> AppResult<ResumeRecoveryObservation> {
     match snapshot.status {
-        RunStatus::Running => match classify_running_snapshot_liveness(base_dir, project_id)? {
-            RunningSnapshotLiveness::CliProcess(_) => Err(AppError::ResumeFailed {
-                reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
-            }),
-            RunningSnapshotLiveness::LegacyCliLease => Err(AppError::ResumeFailed {
-                reason: "project has a legacy CLI-owned running run without authoritative pid tracking; wait for it to finish or for its writer lease to go stale before resuming".to_owned(),
-            }),
-            RunningSnapshotLiveness::DaemonProcess | RunningSnapshotLiveness::LegacyDaemonLease => {
-                Err(AppError::ResumeFailed {
+        RunStatus::Running => {
+            let expected_attempt = running_snapshot_attempt(snapshot)?;
+            match classify_running_snapshot_liveness(base_dir, project_id)? {
+                RunningSnapshotLiveness::CliProcess(record)
+                    if !FileSystem::pid_record_matches_attempt(
+                        &record,
+                        &expected_attempt.run_id,
+                        expected_attempt.started_at,
+                    ) =>
+                {
+                    Err(AppError::ResumeFailed {
+                        reason: "project run changed while checking stale state; retry `ralph-burning run resume`".to_owned(),
+                    })
+                }
+                RunningSnapshotLiveness::CliProcess(_) => Err(AppError::ResumeFailed {
+                    reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
+                }),
+                RunningSnapshotLiveness::LegacyCliLease => Err(AppError::ResumeFailed {
+                    reason: "project has a legacy CLI-owned running run without authoritative pid tracking; wait for it to finish or for its writer lease to go stale before resuming".to_owned(),
+                }),
+                RunningSnapshotLiveness::DaemonProcess(record)
+                    if !FileSystem::pid_record_matches_attempt(
+                        &record,
+                        &expected_attempt.run_id,
+                        expected_attempt.started_at,
+                    ) =>
+                {
+                    Err(AppError::ResumeFailed {
+                        reason: "project run changed while checking stale state; retry `ralph-burning run resume`".to_owned(),
+                    })
+                }
+                RunningSnapshotLiveness::DaemonProcess(_)
+                | RunningSnapshotLiveness::LegacyDaemonLease => Err(AppError::ResumeFailed {
                     reason: "project has a daemon-owned running run; wait for the daemon task to finish or stop it through daemon controls".to_owned(),
-                })
+                }),
+                RunningSnapshotLiveness::Stale => Ok(ResumeRecoveryObservation {
+                    observed_owner: observed_running_attempt_owner(
+                        base_dir,
+                        project_id,
+                        &expected_attempt,
+                    )?,
+                    should_reconcile_claimed_running_snapshot: true,
+                    allow_dead_cli_cleanup_reclaim: false,
+                }),
             }
-            RunningSnapshotLiveness::Stale => Ok(ResumeRecoveryObservation {
-                observed_owner: read_project_writer_lock_owner(base_dir, project_id)?,
-                should_reconcile_claimed_running_snapshot: true,
-                allow_dead_cli_cleanup_reclaim: false,
-            }),
-        },
+        }
         RunStatus::Failed | RunStatus::Paused => Ok(ResumeRecoveryObservation {
             observed_owner: read_project_writer_lock_owner(base_dir, project_id)?,
             should_reconcile_claimed_running_snapshot: false,
@@ -1758,8 +1831,59 @@ fn stale_status_json_view(project_id: &ProjectId, snapshot: &RunSnapshot) -> Run
     status
 }
 
+#[derive(Clone, Copy)]
+enum RunSignalCleanupOrigin {
+    Start,
+    Resume,
+}
+
+impl RunSignalCleanupOrigin {
+    fn error(self, reason: impl Into<String>) -> AppError {
+        match self {
+            Self::Start => AppError::RunStartFailed {
+                reason: reason.into(),
+            },
+            Self::Resume => AppError::ResumeFailed {
+                reason: reason.into(),
+            },
+        }
+    }
+}
+
+struct RunSignalCleanupContext<'a> {
+    origin: RunSignalCleanupOrigin,
+    run_snapshot_read: &'a dyn RunSnapshotPort,
+    run_snapshot_write: &'a dyn RunSnapshotWritePort,
+    journal_store: &'a dyn JournalStorePort,
+    log_write: &'a dyn RuntimeLogWritePort,
+    base_dir: &'a std::path::Path,
+    project_id: &'a ProjectId,
+    writer_owner: Option<&'a str>,
+}
+
+fn reconcile_signal_interruption(context: &RunSignalCleanupContext<'_>) -> AppResult<bool> {
+    engine::mark_current_process_running_run_interrupted(
+        engine::InterruptedRunContext {
+            run_snapshot_read: context.run_snapshot_read,
+            run_snapshot_write: context.run_snapshot_write,
+            journal_store: context.journal_store,
+            log_write: context.log_write,
+            base_dir: context.base_dir,
+            project_id: context.project_id,
+        },
+        context.writer_owner,
+        engine::InterruptedRunUpdate {
+            summary: "failed (interrupted by termination signal)",
+            log_message:
+                "termination signal interrupted the orchestrator before graceful shutdown completed",
+            failure_class: Some("cancellation"),
+        },
+    )
+}
+
 async fn run_with_termination_signal<F>(
     cancellation_token: CancellationToken,
+    cleanup_context: RunSignalCleanupContext<'_>,
     future: F,
 ) -> AppResult<()>
 where
@@ -1773,7 +1897,20 @@ where
             signal?;
             eprintln!("termination signal received; stopping run gracefully...");
             cancellation_token.cancel();
-            future.await
+            match tokio::time::timeout(RUN_STOP_GRACE_PERIOD, &mut future).await {
+                Ok(result) => result,
+                Err(_) => {
+                    let cleanup_result = reconcile_signal_interruption(&cleanup_context);
+                    let reason = match cleanup_result {
+                        Ok(true) => "run interrupted by termination signal after graceful shutdown timed out".to_owned(),
+                        Ok(false) => "termination signal received and graceful shutdown timed out before interrupted state could be confirmed".to_owned(),
+                        Err(error) => format!(
+                            "termination signal received and graceful shutdown timed out; interrupted-state cleanup also failed: {error}"
+                        ),
+                    };
+                    Err(cleanup_context.origin.error(reason))
+                }
+            }
         }
     }
 }
@@ -2038,6 +2175,7 @@ fn recover_stale_running_snapshot(
 
 enum ClaimedRunningSnapshotOutcome {
     NotRunning(RunSnapshot),
+    AttemptChanged(RunSnapshot),
     JournalFailed,
     JournalCompleted(RunSnapshot),
     RecoveredAsInterrupted,
@@ -2046,6 +2184,7 @@ enum ClaimedRunningSnapshotOutcome {
 fn reconcile_or_recover_claimed_running_snapshot(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
+    expected_attempt: &engine::RunningAttemptIdentity,
     stale_summary: impl Into<String>,
     stale_log_message: impl Into<String>,
     stale_failure_class: &str,
@@ -2054,14 +2193,14 @@ fn reconcile_or_recover_claimed_running_snapshot(
     if snapshot.status != RunStatus::Running {
         return Ok(ClaimedRunningSnapshotOutcome::NotRunning(snapshot));
     }
+    if !snapshot.active_run.as_ref().is_some_and(|active_run| {
+        active_run.run_id == expected_attempt.run_id
+            && active_run.started_at == expected_attempt.started_at
+    }) {
+        return Ok(ClaimedRunningSnapshotOutcome::AttemptChanged(snapshot));
+    }
 
     let journal_events = FsJournalStore.read_journal(base_dir, project_id)?;
-    let observed_attempt = engine::RunningAttemptIdentity::from_active_run(
-        snapshot
-            .active_run
-            .as_ref()
-            .expect("running snapshot must include active_run"),
-    );
     match crate::contexts::project_run_record::queries::terminal_status_for_running_attempt(
         &snapshot,
         &journal_events,
@@ -2080,7 +2219,7 @@ fn reconcile_or_recover_claimed_running_snapshot(
                     base_dir,
                     project_id,
                 },
-                &observed_attempt,
+                expected_attempt,
                 engine::InterruptedRunUpdate {
                     summary: "failed (reconciled from journal)",
                     log_message:
@@ -2129,7 +2268,7 @@ fn reconcile_or_recover_claimed_running_snapshot(
             recover_stale_running_snapshot(
                 base_dir,
                 project_id,
-                &observed_attempt,
+                expected_attempt,
                 stale_summary,
                 stale_log_message,
                 stale_failure_class,
@@ -2194,6 +2333,7 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
         CLI_LEASE_TTL_SECONDS,
         CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
     )?;
+    let lock_guard_lease_id = lock_guard.lease_id().to_owned();
 
     let cli_overrides = parse_cli_backend_overrides(&overrides)?;
     let effective_config =
@@ -2220,6 +2360,16 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
         .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations);
     let run_result = run_with_termination_signal(
         cancellation_token.clone(),
+        RunSignalCleanupContext {
+            origin: RunSignalCleanupOrigin::Start,
+            run_snapshot_read: &run_snapshot_read,
+            run_snapshot_write: &run_snapshot_write,
+            journal_store: &journal_store,
+            log_write: &log_write,
+            base_dir: &current_dir,
+            project_id: &project_id,
+            writer_owner: Some(lock_guard_lease_id.as_str()),
+        },
         engine::execute_run_with_retry(
             &agent_service,
             &run_snapshot_read,
@@ -2231,7 +2381,7 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             &current_dir,
             None,
             &project_id,
-            Some(lock_guard.lease_id()),
+            Some(lock_guard_lease_id.as_str()),
             project_record.flow,
             &effective_config,
             &retry_policy,
@@ -2266,9 +2416,12 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
 
     // Explicit guard shutdown before printing success — surfaces cleanup
     // failures as non-zero exit instead of silently succeeding.
+    let pid_record_before_close = FileSystem::read_pid_file(&current_dir, &project_id)?;
     let close_result = lock_guard.close();
     if close_result.is_ok() {
-        let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
+        if let Some(pid_record) = pid_record_before_close.as_ref() {
+            let _ = FileSystem::remove_pid_file_if_matches(&current_dir, &project_id, pid_record);
+        }
     }
     match (run_result, milestone_sync_result) {
         (Err(run_error), Err(sync_error)) => {
@@ -2321,27 +2474,42 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             reason: "failed or paused snapshots must not retain an active run".to_owned(),
         });
     }
+    let observed_running_attempt = if run_snapshot.status == RunStatus::Running {
+        Some(running_snapshot_attempt(&run_snapshot)?)
+    } else {
+        None
+    };
     let recovery_observation =
         observed_resume_recovery_owner(&current_dir, &project_id, &run_snapshot)?;
 
     // Acquire the writer lock before any stale-run mutation so recovery never
     // tears down a fresh owner that wins the race after we detect staleness or
     // leaves behind a stranded post-run cleanup lease after a crash.
-    let lock_guard = acquire_recovery_writer_guard(
-        &current_dir,
-        &current_dir,
-        &project_id,
-        recovery_observation.observed_owner.as_deref(),
-        recovery_observation.should_reconcile_claimed_running_snapshot,
-        recovery_observation.allow_dead_cli_cleanup_reclaim,
-    )
-    .map_err(|error| AppError::ResumeFailed {
-        reason: format!("failed to acquire writer lease for resume: {error}"),
-    })?;
+    let mut lock_guard = Some(
+        acquire_recovery_writer_guard(
+            &current_dir,
+            &current_dir,
+            &project_id,
+            recovery_observation.observed_owner.as_deref(),
+            recovery_observation.should_reconcile_claimed_running_snapshot,
+            recovery_observation.allow_dead_cli_cleanup_reclaim,
+        )
+        .map_err(|error| AppError::ResumeFailed {
+            reason: format!("failed to acquire writer lease for resume: {error}"),
+        })?,
+    );
+    let lock_guard_lease_id = lock_guard
+        .as_ref()
+        .expect("writer guard just created")
+        .lease_id()
+        .to_owned();
     if recovery_observation.should_reconcile_claimed_running_snapshot {
         match reconcile_or_recover_claimed_running_snapshot(
             &current_dir,
             &project_id,
+            observed_running_attempt
+                .as_ref()
+                .expect("running recovery must capture observed attempt"),
             "failed (stale running snapshot recovered for resume)",
             "run resume reconciled a stale running snapshot after claiming the writer lease",
             "interruption",
@@ -2352,15 +2520,45 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             ClaimedRunningSnapshotOutcome::JournalCompleted(snapshot)
                 if snapshot.status == RunStatus::Completed =>
             {
-                lock_guard.close().map_err(|error| AppError::ResumeFailed {
-                    reason: format!(
+                lock_guard
+                    .take()
+                    .expect("writer guard still held")
+                    .close()
+                    .map_err(|error| AppError::ResumeFailed {
+                        reason: format!(
                         "failed to release writer lease after completed-run reconciliation: {error}"
                     ),
-                })?;
+                    })?;
                 return Err(AppError::ResumeFailed {
                     reason: "project is already completed per journal; there is nothing to resume"
                         .to_owned(),
                 });
+            }
+            ClaimedRunningSnapshotOutcome::AttemptChanged(snapshot) => {
+                lock_guard
+                    .take()
+                    .expect("writer guard still held")
+                    .close()
+                    .map_err(|error| AppError::ResumeFailed {
+                        reason: format!(
+                            "failed to release writer lease after run-attempt handoff: {error}"
+                        ),
+                    })?;
+                match snapshot.status {
+                    RunStatus::Completed => {
+                        return Err(AppError::ResumeFailed {
+                            reason:
+                                "project is already completed per journal; there is nothing to resume"
+                                    .to_owned(),
+                        });
+                    }
+                    RunStatus::Running => {
+                        return Err(AppError::ResumeFailed {
+                            reason: "project run changed while recovering stale state; retry `ralph-burning run resume`".to_owned(),
+                        });
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -2390,6 +2588,16 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
         .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations);
     let run_result = run_with_termination_signal(
         cancellation_token.clone(),
+        RunSignalCleanupContext {
+            origin: RunSignalCleanupOrigin::Resume,
+            run_snapshot_read: &run_snapshot_read,
+            run_snapshot_write: &run_snapshot_write,
+            journal_store: &journal_store,
+            log_write: &log_write,
+            base_dir: &current_dir,
+            project_id: &project_id,
+            writer_owner: Some(lock_guard_lease_id.as_str()),
+        },
         engine::resume_run_with_retry(
             &agent_service,
             &run_snapshot_read,
@@ -2402,7 +2610,7 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
             &current_dir,
             None,
             &project_id,
-            Some(lock_guard.lease_id()),
+            Some(lock_guard_lease_id.as_str()),
             project_record.flow,
             &effective_config,
             &retry_policy,
@@ -2436,9 +2644,15 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
 
     // Explicit guard shutdown before printing success — surfaces cleanup
     // failures as non-zero exit instead of silently succeeding.
-    let close_result = lock_guard.close();
+    let pid_record_before_close = FileSystem::read_pid_file(&current_dir, &project_id)?;
+    let close_result = lock_guard
+        .take()
+        .expect("writer guard should still be held before final close")
+        .close();
     if close_result.is_ok() {
-        let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
+        if let Some(pid_record) = pid_record_before_close.as_ref() {
+            let _ = FileSystem::remove_pid_file_if_matches(&current_dir, &project_id, pid_record);
+        }
     }
     match (run_result, milestone_sync_result) {
         (Err(run_error), Err(sync_error)) => {
@@ -2474,8 +2688,17 @@ async fn handle_stop() -> AppResult<()> {
         });
     }
 
-    match classify_running_snapshot_liveness(&current_dir, &project_id)? {
-        RunningSnapshotLiveness::DaemonProcess
+    let observed_attempt = running_snapshot_attempt(&run_snapshot)?;
+    let running_liveness = classify_running_snapshot_liveness(&current_dir, &project_id)?;
+    if !liveness_matches_running_attempt(&running_liveness, &observed_attempt) {
+        return Err(AppError::RunStopFailed {
+            reason: "project run changed while preparing stop; retry `ralph-burning run stop`"
+                .to_owned(),
+        });
+    }
+
+    match running_liveness {
+        RunningSnapshotLiveness::DaemonProcess(_)
         | RunningSnapshotLiveness::LegacyDaemonLease => Err(AppError::RunStopFailed {
             reason:
                 "run stop only supports CLI-owned runs; the active run is owned by a daemon task"
@@ -2485,7 +2708,8 @@ async fn handle_stop() -> AppResult<()> {
             reason: "run stop cannot safely target a legacy CLI-owned run without authoritative pid tracking; wait for the original process to exit or for its writer lease to go stale".to_owned(),
         }),
         RunningSnapshotLiveness::Stale => {
-            let observed_owner = read_project_writer_lock_owner(&current_dir, &project_id)?;
+            let observed_owner =
+                observed_running_attempt_owner(&current_dir, &project_id, &observed_attempt)?;
             let guard =
                 acquire_recovery_writer_guard(
                     &current_dir,
@@ -2503,6 +2727,7 @@ async fn handle_stop() -> AppResult<()> {
             let outcome = reconcile_or_recover_claimed_running_snapshot(
                 &current_dir,
                 &project_id,
+                &observed_attempt,
                 "failed (stale running snapshot recovered by stop)",
                 "run stop reconciled a stale running snapshot after claiming the writer lease",
                 "interruption",
@@ -2518,6 +2743,27 @@ async fn handle_stop() -> AppResult<()> {
                     "Run was already stale for project '{}'; snapshot marked failed and ready for resume.",
                     project_id
                 ),
+                ClaimedRunningSnapshotOutcome::AttemptChanged(snapshot) => match snapshot.status {
+                    RunStatus::Running => {
+                        return Err(AppError::RunStopFailed {
+                            reason:
+                                "project run changed while recovering stale state; retry `ralph-burning run stop`"
+                                    .to_owned(),
+                        });
+                    }
+                    RunStatus::Completed => println!(
+                        "Run for project '{}' was already completed; no stop was required.",
+                        project_id
+                    ),
+                    RunStatus::Failed => println!(
+                        "Run for project '{}' was already failed and remains ready for resume.",
+                        project_id
+                    ),
+                    status => println!(
+                        "Run for project '{}' exited during stop with status '{}'.",
+                        project_id, status
+                    ),
+                },
                 ClaimedRunningSnapshotOutcome::JournalCompleted(_)
                 | ClaimedRunningSnapshotOutcome::NotRunning(RunSnapshot {
                     status: RunStatus::Completed,
@@ -2544,7 +2790,10 @@ async fn handle_stop() -> AppResult<()> {
         RunningSnapshotLiveness::CliProcess(pid_record) => {
             #[cfg(unix)]
             {
-                let observed_owner = read_project_writer_lock_owner(&current_dir, &project_id)?;
+                let observed_owner = pid_record
+                    .writer_owner
+                    .clone()
+                    .or(read_project_writer_lock_owner(&current_dir, &project_id)?);
                 let stop_outcome = match open_stop_process_handle(&pid_record)? {
                     None => "process already exited before SIGTERM",
                     Some(handle) => match send_signal_to_handle(&handle, Signal::SIGTERM)? {
@@ -2616,6 +2865,7 @@ async fn handle_stop() -> AppResult<()> {
                     match reconcile_or_recover_claimed_running_snapshot(
                         &current_dir,
                         &project_id,
+                        &observed_attempt,
                         "failed (stopped by user; run `ralph-burning run resume` to continue)",
                         format!("run stop interrupted the orchestrator; outcome={stop_outcome}"),
                         "cancellation",
@@ -2627,6 +2877,19 @@ async fn handle_stop() -> AppResult<()> {
                             "Stopped run for project '{}' ({stop_outcome}); run `ralph-burning run resume` to continue.",
                             project_id
                         ),
+                        ClaimedRunningSnapshotOutcome::AttemptChanged(snapshot) => {
+                            if snapshot.status == RunStatus::Running {
+                                return Err(AppError::RunStopFailed {
+                                    reason:
+                                        "project run changed while finalizing stop; retry `ralph-burning run stop`"
+                                            .to_owned(),
+                                });
+                            }
+                            format!(
+                                "Run for project '{}' exited during stop with status '{}'.",
+                                project_id, snapshot.status
+                            )
+                        }
                         ClaimedRunningSnapshotOutcome::JournalCompleted(_)
                         | ClaimedRunningSnapshotOutcome::NotRunning(RunSnapshot {
                             status: RunStatus::Completed,
@@ -2656,7 +2919,11 @@ async fn handle_stop() -> AppResult<()> {
                 };
                 let close_result = guard.close();
                 if close_result.is_ok() && should_remove_pid_after_close {
-                    let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
+                    let _ = FileSystem::remove_pid_file_if_matches(
+                        &current_dir,
+                        &project_id,
+                        &pid_record,
+                    );
                 }
                 close_result.map_err(|error| AppError::RunStopFailed {
                     reason: format!("failed to release recovery writer lease after stop: {error}"),
@@ -6031,10 +6298,23 @@ async fn handle_status(as_json: bool) -> AppResult<()> {
     }
 
     let running_liveness = if snapshot.status == RunStatus::Running {
-        Some(classify_running_snapshot_liveness(
-            &current_dir,
-            &project_id,
-        )?)
+        let expected_attempt = running_snapshot_attempt(&snapshot)?;
+        let mut liveness = classify_running_snapshot_liveness(&current_dir, &project_id)?;
+        if !liveness_matches_running_attempt(&liveness, &expected_attempt) {
+            snapshot = FsRunSnapshotStore.read_run_snapshot(&current_dir, &project_id)?;
+            if let Ok(events) = FsJournalStore.read_journal(&current_dir, &project_id) {
+                crate::contexts::project_run_record::queries::reconcile_snapshot_status(
+                    &mut snapshot,
+                    &events,
+                );
+            }
+            liveness = if snapshot.status == RunStatus::Running {
+                classify_running_snapshot_liveness(&current_dir, &project_id)?
+            } else {
+                RunningSnapshotLiveness::Stale
+            };
+        }
+        Some(liveness)
     } else {
         None
     };

@@ -160,6 +160,10 @@ pub struct RunPidRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writer_owner: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proc_start_ticks: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proc_start_marker: Option<String>,
@@ -290,6 +294,8 @@ impl FileSystem {
         project_id: &ProjectId,
         owner: RunPidOwner,
         writer_owner: Option<&str>,
+        run_id: Option<&str>,
+        run_started_at: Option<DateTime<Utc>>,
     ) -> AppResult<RunPidRecord> {
         let project_root = Self::ensure_live_project_root(base_dir, project_id)?;
         let pid = std::process::id();
@@ -298,6 +304,8 @@ impl FileSystem {
             started_at: Utc::now(),
             owner,
             writer_owner: writer_owner.map(str::to_owned),
+            run_id: run_id.map(str::to_owned),
+            run_started_at,
             proc_start_ticks: Self::proc_start_ticks(pid),
             proc_start_marker: Self::proc_start_marker(pid),
         };
@@ -332,6 +340,29 @@ impl FileSystem {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         }
+    }
+
+    pub fn remove_pid_file_if_matches(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        expected_record: &RunPidRecord,
+    ) -> AppResult<bool> {
+        let Some(current_record) = Self::read_pid_file(base_dir, project_id)? else {
+            return Ok(false);
+        };
+        if &current_record != expected_record {
+            return Ok(false);
+        }
+        Self::remove_pid_file(base_dir, project_id)?;
+        Ok(true)
+    }
+
+    pub fn pid_record_matches_attempt(
+        record: &RunPidRecord,
+        run_id: &str,
+        run_started_at: DateTime<Utc>,
+    ) -> bool {
+        record.run_id.as_deref() == Some(run_id) && record.run_started_at == Some(run_started_at)
     }
 
     pub fn pid_record_is_authoritative(record: &RunPidRecord) -> bool {
@@ -5245,9 +5276,15 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let project_id = ProjectId::new("pid-roundtrip".to_owned()).expect("project id");
 
-        let written =
-            FileSystem::write_pid_file(temp.path(), &project_id, RunPidOwner::Cli, Some("lease-1"))
-                .expect("write pid file");
+        let written = FileSystem::write_pid_file(
+            temp.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            Some("lease-1"),
+            Some("run-1"),
+            Some(Utc::now()),
+        )
+        .expect("write pid file");
         let read_back = FileSystem::read_pid_file(temp.path(), &project_id)
             .expect("read pid file")
             .expect("pid file present");
@@ -5256,6 +5293,8 @@ mod tests {
         assert_eq!(read_back.started_at, written.started_at);
         assert_eq!(read_back.owner, RunPidOwner::Cli);
         assert_eq!(read_back.writer_owner.as_deref(), Some("lease-1"));
+        assert_eq!(read_back.run_id.as_deref(), Some("run-1"));
+        assert_eq!(read_back.run_started_at, written.run_started_at);
         assert_eq!(read_back.proc_start_marker, written.proc_start_marker);
         assert!(FileSystem::is_pid_alive(&read_back));
 
@@ -5272,6 +5311,8 @@ mod tests {
             started_at: Utc::now(),
             owner: RunPidOwner::Cli,
             writer_owner: None,
+            run_id: None,
+            run_started_at: None,
             proc_start_ticks: None,
             proc_start_marker: None,
         };
@@ -5287,6 +5328,8 @@ mod tests {
             started_at: Utc::now(),
             owner: RunPidOwner::Cli,
             writer_owner: None,
+            run_id: None,
+            run_started_at: None,
             proc_start_ticks: None,
             proc_start_marker: None,
         };
@@ -5302,9 +5345,15 @@ mod tests {
     fn pid_liveness_rejects_mismatched_start_ticks() {
         let temp = tempdir().expect("tempdir");
         let project_id = ProjectId::new("pid-start-ticks".to_owned()).expect("project id");
-        let mut written =
-            FileSystem::write_pid_file(temp.path(), &project_id, RunPidOwner::Cli, None)
-                .expect("write pid file");
+        let mut written = FileSystem::write_pid_file(
+            temp.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            None,
+            None,
+            None,
+        )
+        .expect("write pid file");
         let expected_ticks = written
             .proc_start_ticks
             .expect("unix pid records should capture proc_start_ticks");
@@ -5323,6 +5372,8 @@ mod tests {
             started_at: Utc::now(),
             owner: RunPidOwner::Cli,
             writer_owner: None,
+            run_id: None,
+            run_started_at: None,
             proc_start_ticks: None,
             proc_start_marker: Some("fallback-start-marker".to_owned()),
         };
@@ -5342,6 +5393,8 @@ mod tests {
             started_at: Utc::now(),
             owner: RunPidOwner::Cli,
             writer_owner: None,
+            run_id: None,
+            run_started_at: None,
             proc_start_ticks: None,
             proc_start_marker: FileSystem::proc_start_marker(std::process::id()),
         };
@@ -5358,6 +5411,8 @@ mod tests {
             started_at: Utc::now(),
             owner: RunPidOwner::Cli,
             writer_owner: None,
+            run_id: None,
+            run_started_at: None,
             proc_start_ticks: None,
             proc_start_marker: Some("mismatched-start-marker".to_owned()),
         };

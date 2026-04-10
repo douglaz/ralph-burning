@@ -812,7 +812,7 @@ pub fn mark_running_run_interrupted(
         context.project_id,
         &snapshot,
     )?;
-    if let Some(failure_class) = update.failure_class {
+    let append_result = if let Some(failure_class) = update.failure_class {
         append_interrupted_run_failed_event(
             context.journal_store,
             context.base_dir,
@@ -820,8 +820,10 @@ pub fn mark_running_run_interrupted(
             &snapshot,
             update.log_message,
             failure_class,
-        )?;
-    }
+        )
+    } else {
+        Ok(())
+    };
     let _ = FileSystem::remove_pid_file(context.base_dir, context.project_id);
     let _ = context.log_write.append_runtime_log(
         context.base_dir,
@@ -833,7 +835,42 @@ pub fn mark_running_run_interrupted(
             message: update.log_message.to_owned(),
         },
     );
+    append_result?;
     Ok(true)
+}
+
+pub fn mark_current_process_running_run_interrupted(
+    context: InterruptedRunContext<'_>,
+    expected_writer_owner: Option<&str>,
+    update: InterruptedRunUpdate<'_>,
+) -> AppResult<bool> {
+    let snapshot = context
+        .run_snapshot_read
+        .read_run_snapshot(context.base_dir, context.project_id)?;
+    if snapshot.status != RunStatus::Running {
+        return Ok(false);
+    }
+    let expected_attempt = current_running_attempt_identity(&snapshot)?;
+    let Some(pid_record) = FileSystem::read_pid_file(context.base_dir, context.project_id)? else {
+        return Ok(false);
+    };
+    if pid_record.pid != std::process::id() {
+        return Ok(false);
+    }
+    if let Some(writer_owner) = expected_writer_owner {
+        if pid_record.writer_owner.as_deref() != Some(writer_owner) {
+            return Ok(false);
+        }
+    }
+    if !FileSystem::pid_record_matches_attempt(
+        &pid_record,
+        &expected_attempt.run_id,
+        expected_attempt.started_at,
+    ) {
+        return Ok(false);
+    }
+
+    mark_running_run_interrupted(context, &expected_attempt, update)
 }
 
 fn append_interrupted_run_failed_event(
@@ -1196,7 +1233,14 @@ where
     } else {
         RunPidOwner::Daemon
     };
-    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id, pid_owner, writer_owner) {
+    if let Err(error) = FileSystem::write_pid_file(
+        base_dir,
+        project_id,
+        pid_owner,
+        writer_owner,
+        Some(run_id.as_str()),
+        Some(now),
+    ) {
         return Err(AppError::RunStartFailed {
             reason: format!("failed to persist run pid file: {error}"),
         });
@@ -1954,7 +1998,14 @@ where
     } else {
         RunPidOwner::Daemon
     };
-    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id, pid_owner, writer_owner) {
+    if let Err(error) = FileSystem::write_pid_file(
+        base_dir,
+        project_id,
+        pid_owner,
+        writer_owner,
+        Some(resume_state.run_id.as_str()),
+        Some(resumed_at),
+    ) {
         return Err(AppError::ResumeFailed {
             reason: format!("failed to persist run pid file: {error}"),
         });
@@ -5945,6 +5996,7 @@ async fn fail_run(
     if let Ok(run_failed_line) = journal::serialize_event(&run_failed) {
         let _ = journal_store.append_event(base_dir, project_id, &run_failed_line);
     }
+    let _ = FileSystem::remove_pid_file(base_dir, project_id);
     Err(origin.error(format!("stage {} failed: {}", stage_id.as_str(), message)))
 }
 
@@ -9008,8 +9060,15 @@ mod tests {
         let mut snapshot = running_snapshot_for_pid_cleanup(&run_id);
         let mut seq = 0;
 
-        FileSystem::write_pid_file(temp_dir.path(), &project_id, RunPidOwner::Cli, None)
-            .expect("write pid file");
+        FileSystem::write_pid_file(
+            temp_dir.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            None,
+            None,
+            None,
+        )
+        .expect("write pid file");
 
         let err = complete_run(
             &mut snapshot,
@@ -9047,8 +9106,15 @@ mod tests {
         crate::adapters::fs::FsRunSnapshotWriteStore
             .write_run_snapshot(temp_dir.path(), &project_id, &snapshot)
             .expect("write failed snapshot");
-        FileSystem::write_pid_file(temp_dir.path(), &project_id, RunPidOwner::Cli, None)
-            .expect("write pid file");
+        FileSystem::write_pid_file(
+            temp_dir.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            None,
+            None,
+            None,
+        )
+        .expect("write pid file");
         let expected_attempt = RunningAttemptIdentity {
             run_id: "run-stale-attempt".to_owned(),
             started_at: Utc::now(),
@@ -9137,6 +9203,61 @@ mod tests {
     }
 
     #[test]
+    fn mark_running_run_interrupted_removes_pid_file_when_run_failed_append_fails() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+        let project_id = ProjectId::new("interrupted-pid-cleanup").expect("project id");
+        let run_id =
+            crate::shared::domain::RunId::new("run-interrupted-pid-cleanup").expect("run id");
+        let snapshot = running_snapshot_for_pid_cleanup(&run_id);
+        let expected_attempt = RunningAttemptIdentity::from_active_run(
+            snapshot.active_run.as_ref().expect("active run"),
+        );
+
+        crate::adapters::fs::FsRunSnapshotWriteStore
+            .write_run_snapshot(temp_dir.path(), &project_id, &snapshot)
+            .expect("write running snapshot");
+        FileSystem::write_pid_file(
+            temp_dir.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            Some("lease-interrupted"),
+            Some(run_id.as_str()),
+            Some(expected_attempt.started_at),
+        )
+        .expect("write pid file");
+
+        let error = mark_running_run_interrupted(
+            InterruptedRunContext {
+                run_snapshot_read: &crate::adapters::fs::FsRunSnapshotStore,
+                run_snapshot_write: &crate::adapters::fs::FsRunSnapshotWriteStore,
+                journal_store: &AppendFailsJournalStore,
+                log_write: &crate::adapters::fs::FsRuntimeLogWriteStore,
+                base_dir: temp_dir.path(),
+                project_id: &project_id,
+            },
+            &expected_attempt,
+            InterruptedRunUpdate {
+                summary: "failed (interrupted)",
+                log_message: "forced interruption cleanup path",
+                failure_class: Some("cancellation"),
+            },
+        )
+        .expect_err("forced journal append failure should bubble up");
+
+        assert!(
+            error.to_string().contains("forced journal append failure"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            FileSystem::read_pid_file(temp_dir.path(), &project_id)
+                .expect("read pid file")
+                .is_none(),
+            "pid file should be removed even when run_failed journal append fails"
+        );
+    }
+
+    #[test]
     fn mark_running_run_interrupted_skips_newer_running_attempt_after_stale_resume_race() {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
@@ -9171,8 +9292,15 @@ mod tests {
         crate::adapters::fs::FsRunSnapshotWriteStore
             .write_run_snapshot(temp_dir.path(), &project_id, &fresh_snapshot)
             .expect("write fresh running snapshot");
-        FileSystem::write_pid_file(temp_dir.path(), &project_id, RunPidOwner::Cli, None)
-            .expect("write pid file");
+        FileSystem::write_pid_file(
+            temp_dir.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            None,
+            None,
+            None,
+        )
+        .expect("write pid file");
 
         let updated = mark_running_run_interrupted(
             InterruptedRunContext {
