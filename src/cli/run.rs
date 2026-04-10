@@ -1533,29 +1533,6 @@ fn pid_record_has_attempt_metadata(record: &crate::adapters::fs::RunPidRecord) -
     record.run_id.is_some() && record.run_started_at.is_some()
 }
 
-fn non_authoritative_pid_has_fresh_matching_lease(
-    base_dir: &std::path::Path,
-    project_id: &ProjectId,
-    owner: &crate::adapters::fs::RunPidOwner,
-) -> AppResult<bool> {
-    let Some((_writer_owner, lease_record)) =
-        read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
-    else {
-        return Ok(false);
-    };
-
-    let now = Utc::now();
-    Ok(match (owner, lease_record) {
-        (crate::adapters::fs::RunPidOwner::Cli, LeaseRecord::CliWriter(lease)) => {
-            lease.project_id == project_id.as_str() && !lease.is_stale_at(now)
-        }
-        (crate::adapters::fs::RunPidOwner::Daemon, LeaseRecord::Worktree(lease)) => {
-            lease.project_id == project_id.as_str() && !lease.is_stale_at(now)
-        }
-        _ => false,
-    })
-}
-
 fn classify_running_snapshot_liveness(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
@@ -1587,9 +1564,7 @@ fn classify_running_snapshot_liveness(
             return Ok(RunningSnapshotLiveness::Stale);
         }
 
-        if FileSystem::is_pid_running_unchecked(record.pid)
-            && non_authoritative_pid_has_fresh_matching_lease(base_dir, project_id, &record.owner)?
-        {
+        if FileSystem::is_pid_running_unchecked(record.pid) {
             return Ok(match record.owner {
                 crate::adapters::fs::RunPidOwner::Cli => RunningSnapshotLiveness::LegacyCliProcess,
                 crate::adapters::fs::RunPidOwner::Daemon => {
@@ -2425,7 +2400,7 @@ fn cleanup_stale_backend_process_groups(
     project_id: &ProjectId,
     expected_attempt: &engine::RunningAttemptIdentity,
 ) -> AppResult<usize> {
-    let (matching, remaining) =
+    let (matching, _remaining) =
         stale_backend_processes_for_attempt(base_dir, project_id, expected_attempt)?;
     if matching.is_empty() {
         return Ok(0);
@@ -2456,7 +2431,12 @@ fn cleanup_stale_backend_process_groups(
             std::thread::sleep(Duration::from_millis(25));
         }
 
-        FileSystem::write_backend_processes(base_dir, project_id, &remaining)?;
+        FileSystem::remove_backend_processes_for_attempt(
+            base_dir,
+            project_id,
+            &expected_attempt.run_id,
+            expected_attempt.started_at,
+        )?;
         Ok(signaled)
     }
 
@@ -2467,7 +2447,12 @@ fn cleanup_stale_backend_process_groups(
                 "stale backend subprocesses remain alive and cannot be cleaned automatically on this platform",
             )));
         }
-        FileSystem::write_backend_processes(base_dir, project_id, &remaining)?;
+        FileSystem::remove_backend_processes_for_attempt(
+            base_dir,
+            project_id,
+            &expected_attempt.run_id,
+            expected_attempt.started_at,
+        )?;
         Ok(0)
     }
 }

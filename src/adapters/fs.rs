@@ -58,6 +58,7 @@ const PROJECT_POLICY_CONFIG_FILE: &str = "config.toml";
 const RUN_FILE: &str = "run.json";
 const PID_FILE: &str = "run.pid";
 const ACTIVE_BACKEND_PROCESSES_FILE: &str = "active-processes.json";
+const ACTIVE_BACKEND_PROCESSES_LOCK_FILE: &str = "active-processes.lock";
 const JOURNAL_FILE: &str = "journal.ndjson";
 const SESSIONS_FILE: &str = "sessions.json";
 const PROMPT_FILE: &str = "prompt.md";
@@ -248,6 +249,13 @@ impl FileSystem {
             .join(ACTIVE_BACKEND_PROCESSES_FILE)
     }
 
+    fn live_project_backend_processes_lock_path(project_root: &Path) -> PathBuf {
+        project_root
+            .join("runtime")
+            .join("backend")
+            .join(ACTIVE_BACKEND_PROCESSES_LOCK_FILE)
+    }
+
     fn read_pid_file_from_project_root(project_root: &Path) -> AppResult<Option<RunPidRecord>> {
         let path = project_root.join(PID_FILE);
         match fs::read_to_string(&path) {
@@ -299,6 +307,20 @@ impl FileSystem {
             set.processes.sort_by_key(|left| left.pid);
             Self::write_atomic(&path, &serde_json::to_string_pretty(&set)?)
         }
+    }
+
+    fn mutate_backend_process_set_in_project_root<T>(
+        project_root: &Path,
+        mutator: impl FnOnce(&mut Vec<RunBackendProcessRecord>) -> AppResult<T>,
+    ) -> AppResult<T> {
+        let _lock = AdvisoryFileLock::acquire(&Self::live_project_backend_processes_lock_path(
+            project_root,
+        ))?;
+        let mut processes =
+            Self::read_backend_process_set_from_project_root(project_root)?.processes;
+        let result = mutator(&mut processes)?;
+        Self::write_backend_process_set_to_project_root(project_root, &processes)?;
+        Ok(result)
     }
 
     pub fn create_workspace(
@@ -458,7 +480,6 @@ impl FileSystem {
         pid: u32,
     ) -> AppResult<RunBackendProcessRecord> {
         let pid_record = Self::read_pid_file_from_project_root(project_root)?;
-        let mut process_set = Self::read_backend_process_set_from_project_root(project_root)?;
         let record = RunBackendProcessRecord {
             pid,
             recorded_at: Utc::now(),
@@ -467,20 +488,19 @@ impl FileSystem {
             proc_start_ticks: Self::proc_start_ticks(pid),
             proc_start_marker: Self::proc_start_marker(pid),
         };
-        process_set.processes.retain(|existing| existing.pid != pid);
-        process_set.processes.push(record.clone());
-        Self::write_backend_process_set_to_project_root(project_root, &process_set.processes)?;
+        Self::mutate_backend_process_set_in_project_root(project_root, |processes| {
+            processes.retain(|existing| existing.pid != pid);
+            processes.push(record.clone());
+            Ok(())
+        })?;
         Ok(record)
     }
 
     pub fn remove_backend_process(project_root: &Path, pid: u32) -> AppResult<()> {
-        let mut process_set = Self::read_backend_process_set_from_project_root(project_root)?;
-        let original_len = process_set.processes.len();
-        process_set.processes.retain(|existing| existing.pid != pid);
-        if process_set.processes.len() == original_len {
-            return Ok(());
-        }
-        Self::write_backend_process_set_to_project_root(project_root, &process_set.processes)
+        Self::mutate_backend_process_set_in_project_root(project_root, |processes| {
+            processes.retain(|existing| existing.pid != pid);
+            Ok(())
+        })
     }
 
     pub fn read_backend_processes(
@@ -497,7 +517,26 @@ impl FileSystem {
         processes: &[RunBackendProcessRecord],
     ) -> AppResult<()> {
         let project_root = Self::live_project_root(base_dir, project_id);
-        Self::write_backend_process_set_to_project_root(&project_root, processes)
+        let updated = processes.to_vec();
+        Self::mutate_backend_process_set_in_project_root(&project_root, |current| {
+            *current = updated;
+            Ok(())
+        })
+    }
+
+    pub fn remove_backend_processes_for_attempt(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        run_id: &str,
+        run_started_at: DateTime<Utc>,
+    ) -> AppResult<()> {
+        let project_root = Self::live_project_root(base_dir, project_id);
+        Self::mutate_backend_process_set_in_project_root(&project_root, |processes| {
+            processes.retain(|record| {
+                !Self::backend_process_matches_attempt(record, run_id, run_started_at)
+            });
+            Ok(())
+        })
     }
 
     pub fn remove_pid_file(base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
@@ -5510,6 +5549,50 @@ mod tests {
         assert!(FileSystem::read_backend_processes(temp.path(), &project_id)
             .expect("read backend processes after remove")
             .is_empty());
+    }
+
+    #[test]
+    fn backend_process_tracking_preserves_concurrent_registrations() {
+        use std::sync::{Arc, Barrier};
+
+        let temp = tempdir().expect("tempdir");
+        let project_id =
+            ProjectId::new("backend-process-concurrent".to_owned()).expect("project id");
+        let project_root = FileSystem::ensure_live_project_root(temp.path(), &project_id)
+            .expect("ensure live project root");
+        FileSystem::write_pid_file(
+            temp.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            Some("lease-1"),
+            Some("run-1"),
+            Some(Utc::now()),
+        )
+        .expect("write pid file");
+
+        let barrier = Arc::new(Barrier::new(9));
+        let mut threads = Vec::new();
+        for pid in 20_000..20_008u32 {
+            let barrier = Arc::clone(&barrier);
+            let project_root = project_root.clone();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                FileSystem::register_backend_process(&project_root, pid)
+                    .expect("register backend process");
+            }));
+        }
+
+        barrier.wait();
+        for thread in threads {
+            thread.join().expect("join concurrent register");
+        }
+
+        let tracked = FileSystem::read_backend_processes(temp.path(), &project_id)
+            .expect("read backend processes after concurrent register");
+        let tracked_pids: std::collections::BTreeSet<_> =
+            tracked.into_iter().map(|record| record.pid).collect();
+        let expected_pids: std::collections::BTreeSet<_> = (20_000..20_008u32).collect();
+        assert_eq!(tracked_pids, expected_pids);
     }
 
     #[test]

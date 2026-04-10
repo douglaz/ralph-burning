@@ -5976,7 +5976,8 @@ fn run_status_reports_stale_daemon_owned_running_when_legacy_lease_expires() {
 }
 
 #[test]
-fn run_status_reports_stale_for_live_legacy_pid_without_proc_start_ticks_when_no_lease_exists() {
+fn run_status_keeps_legacy_cli_owned_running_snapshot_active_with_live_pid_without_proc_start_ticks_when_no_lease_exists(
+) {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -6018,8 +6019,12 @@ fn run_status_reports_stale_for_live_legacy_pid_without_proc_start_ticks_when_no
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Status: stale (process not found)"),
-        "legacy pid-only records without a fresh lease should fall back to stale recovery: {stdout}"
+        stdout.contains("Status: running"),
+        "live legacy pid-only records must stay running until the orchestrator pid is actually gone: {stdout}"
+    );
+    assert!(
+        !stdout.contains("stale"),
+        "live legacy pid-only records must not be auto-recovered while the orchestrator pid still exists: {stdout}"
     );
 }
 
@@ -6516,7 +6521,7 @@ fn run_stop_sigkill_terminates_same_process_group_backend_descendant() {
 }
 
 #[test]
-fn run_stop_recovers_live_legacy_pid_record_without_proc_start_ticks_when_no_lease_exists() {
+fn run_stop_refuses_live_legacy_pid_record_without_proc_start_ticks_when_no_lease_exists() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -6561,27 +6566,21 @@ fn run_stop_recovers_live_legacy_pid_record_without_proc_start_ticks_when_no_lea
         .output()
         .expect("run stop");
 
-    assert!(output.status.success(), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("already stale"),
-        "stop should recover an unleased legacy pid-only record as stale: {stdout}"
+        stderr.contains("legacy CLI-owned run"),
+        "stop should refuse a live legacy pid-only run instead of recovering it as stale: {stderr}"
     );
     assert!(
         pid_is_alive(child.id()),
-        "stale recovery must not signal an unrelated live process that merely reused the pid"
+        "refused stop must not signal the live legacy orchestrator"
     );
     assert!(
-        !project_root(temp_dir.path(), "alpha")
+        project_root(temp_dir.path(), "alpha")
             .join("run.pid")
             .exists(),
-        "stale recovery should remove the unsafe legacy pid marker"
-    );
-    let run_json = fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
-        .expect("read run snapshot");
-    assert!(
-        run_json.contains("\"status\": \"failed\""),
-        "stale stop recovery should mark the run failed and resumable: {run_json}"
+        "refused stop must leave the live legacy pid marker in place"
     );
 
     let _ = child.kill();
@@ -7310,7 +7309,7 @@ fn run_resume_refuses_legacy_cli_owned_running_without_pid_file() {
 
 #[cfg(feature = "test-stub")]
 #[test]
-fn run_resume_recovers_live_legacy_pid_record_without_proc_start_ticks_when_no_lease_exists() {
+fn run_resume_refuses_live_legacy_pid_record_without_proc_start_ticks_when_no_lease_exists() {
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "legacy-live-pid-resume");
     let project_id =
@@ -7386,15 +7385,21 @@ fn run_resume_recovers_live_legacy_pid_record_without_proc_start_ticks_when_no_l
         .output()
         .expect("run resume");
 
-    assert!(output.status.success(), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("Run completed successfully"),
-        "resume should recover the stale legacy pid-only run instead of hard-refusing it: {stdout}"
+        stderr.contains("legacy CLI-owned running run"),
+        "resume should refuse a live legacy pid-only run until the orchestrator pid is gone: {stderr}"
     );
     assert!(
         pid_is_alive(child.id()),
-        "stale recovery must not signal an unrelated live process that merely reused the pid"
+        "refused resume must not signal the live legacy orchestrator"
+    );
+    assert!(
+        project_root(temp_dir.path(), "legacy-live-pid-resume")
+            .join("run.pid")
+            .exists(),
+        "refused resume must leave the live legacy pid marker in place"
     );
 
     let _ = child.kill();
