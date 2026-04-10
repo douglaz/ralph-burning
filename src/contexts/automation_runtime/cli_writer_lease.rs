@@ -113,6 +113,46 @@ pub fn reclaim_specific_cli_writer_lease(
     Ok(true)
 }
 
+/// Release the exact observed writer-lock owner for a project when recovery has
+/// already proven the owner stale. This is used by `run resume` / `run stop`
+/// so they never tear down a replacement owner that won the lock later.
+pub fn reclaim_specific_project_writer_owner(
+    store: &dyn DaemonStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    expected_owner: &str,
+) -> AppResult<bool> {
+    let Some(current_owner) = read_project_writer_lock_owner(base_dir, project_id)? else {
+        return Ok(false);
+    };
+    if current_owner != expected_owner {
+        return Ok(false);
+    }
+
+    let Some(record) = read_lease_record_if_present(store, base_dir, expected_owner)? else {
+        match store.release_writer_lock(base_dir, project_id, expected_owner)? {
+            WriterLockReleaseOutcome::Released | WriterLockReleaseOutcome::AlreadyAbsent => {
+                return Ok(true);
+            }
+            WriterLockReleaseOutcome::OwnerMismatch { .. } => return Ok(false),
+        }
+    };
+    let owns_project = match &record {
+        LeaseRecord::CliWriter(lease) => lease.project_id == project_id.as_str(),
+        LeaseRecord::Worktree(lease) => lease.project_id == project_id.as_str(),
+    };
+    if !owns_project {
+        return Ok(false);
+    }
+
+    match store.release_writer_lock(base_dir, project_id, expected_owner)? {
+        WriterLockReleaseOutcome::Released | WriterLockReleaseOutcome::AlreadyAbsent => {}
+        WriterLockReleaseOutcome::OwnerMismatch { .. } => return Ok(false),
+    }
+    let _ = store.remove_lease(base_dir, expected_owner)?;
+    Ok(true)
+}
+
 /// Best-effort stale CLI lease cleanup for a project after the owning CLI
 /// process has died. Releases the stranded writer lock using the observed lock
 /// owner token, then prunes any remaining CLI lease records for the project.
@@ -368,6 +408,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::adapters::fs::FsDaemonStore;
+    use crate::contexts::automation_runtime::model::WorktreeLease;
 
     fn store() -> Arc<dyn DaemonStorePort + Send + Sync> {
         Arc::new(FsDaemonStore)
@@ -644,5 +685,49 @@ mod tests {
         FsDaemonStore
             .release_writer_lock(temp.path(), &project_id, &fresh_lease.lease_id)
             .expect("cleanup fresh writer lock");
+    }
+
+    #[test]
+    fn reclaim_specific_project_writer_owner_releases_observed_worktree_owner() {
+        let temp = tempdir().expect("tempdir");
+        let project_id = ProjectId::new("stale-daemon-owner".to_owned()).expect("valid id");
+        let worktree_lease = WorktreeLease {
+            lease_id: "lease-stale-daemon-owner".to_owned(),
+            task_id: "task-stale-daemon-owner".to_owned(),
+            project_id: project_id.to_string(),
+            worktree_path: temp.path().join("worktrees/task-stale-daemon-owner"),
+            branch_name: "task-stale-daemon-owner".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: Utc::now(),
+        };
+        FsDaemonStore
+            .write_lease_record(temp.path(), &LeaseRecord::Worktree(worktree_lease.clone()))
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(temp.path(), &project_id, &worktree_lease.lease_id)
+            .expect("acquire writer lock");
+
+        let reclaimed = reclaim_specific_project_writer_owner(
+            &FsDaemonStore,
+            temp.path(),
+            &project_id,
+            &worktree_lease.lease_id,
+        )
+        .expect("reclaim observed worktree owner");
+
+        assert!(reclaimed, "observed worktree owner should be reclaimed");
+        assert!(
+            read_project_writer_lock_owner(temp.path(), &project_id)
+                .expect("read writer owner")
+                .is_none(),
+            "writer lock should be released"
+        );
+        assert!(
+            FsDaemonStore
+                .read_lease_record(temp.path(), &worktree_lease.lease_id)
+                .is_err(),
+            "worktree lease record should be removed"
+        );
     }
 }

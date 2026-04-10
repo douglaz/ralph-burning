@@ -148,6 +148,7 @@ fn parse_failpoint_config(raw: &str) -> Option<(Option<&str>, u32)> {
 pub enum RunPidOwner {
     #[default]
     Cli,
+    Daemon,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -5190,6 +5191,24 @@ mod tests {
         };
 
         assert!(!FileSystem::is_pid_alive(&record));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_liveness_rejects_mismatched_start_ticks() {
+        let temp = tempdir().expect("tempdir");
+        let project_id = ProjectId::new("pid-start-ticks".to_owned()).expect("project id");
+        let mut written = FileSystem::write_pid_file(temp.path(), &project_id, RunPidOwner::Cli)
+            .expect("write pid file");
+        let expected_ticks = written
+            .proc_start_ticks
+            .expect("unix pid records should capture proc_start_ticks");
+        written.proc_start_ticks = Some(expected_ticks.saturating_add(1));
+
+        assert!(
+            !FileSystem::is_pid_alive(&written),
+            "mismatched proc_start_ticks should reject reused or stale pid records"
+        );
     }
 
     #[test]

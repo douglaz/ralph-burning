@@ -29,8 +29,8 @@ use crate::composition::agent_execution_builder;
 use crate::contexts::agent_execution::model::CancellationToken;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     read_project_writer_lease_record, read_project_writer_lock_owner,
-    reclaim_specific_cli_writer_lease, CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
-    CLI_LEASE_TTL_SECONDS,
+    reclaim_specific_project_writer_owner, CliWriterLeaseGuard,
+    CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
 use crate::contexts::automation_runtime::LeaseRecord;
 use crate::contexts::milestone_record::bundle::{planned_bead_membership_refs, MilestoneBundle};
@@ -1507,7 +1507,7 @@ fn resume_attempt_has_exact_lineage(
 
 enum RunningSnapshotLiveness {
     CliProcess(crate::adapters::fs::RunPidRecord),
-    DaemonLease,
+    DaemonProcess,
     Stale,
 }
 
@@ -1517,15 +1517,21 @@ fn classify_running_snapshot_liveness(
 ) -> AppResult<RunningSnapshotLiveness> {
     if let Some(record) = FileSystem::read_pid_file(base_dir, project_id)? {
         if FileSystem::is_pid_alive(&record) {
-            return Ok(RunningSnapshotLiveness::CliProcess(record));
+            return Ok(match record.owner {
+                crate::adapters::fs::RunPidOwner::Cli => {
+                    RunningSnapshotLiveness::CliProcess(record)
+                }
+                crate::adapters::fs::RunPidOwner::Daemon => RunningSnapshotLiveness::DaemonProcess,
+            });
         }
+        return Ok(RunningSnapshotLiveness::Stale);
     }
 
     if let Some((_owner, LeaseRecord::Worktree(lease))) =
         read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
     {
-        if lease.project_id == project_id.as_str() && !lease.is_stale_at(Utc::now()) {
-            return Ok(RunningSnapshotLiveness::DaemonLease);
+        if lease.project_id == project_id.as_str() {
+            return Ok(RunningSnapshotLiveness::Stale);
         }
     }
 
@@ -1538,7 +1544,7 @@ fn acquire_recovery_writer_guard(
     observed_owner: Option<&str>,
 ) -> AppResult<CliWriterLeaseGuard> {
     if let Some(owner) = observed_owner {
-        let _ = reclaim_specific_cli_writer_lease(&FsDaemonStore, base_dir, project_id, owner)?;
+        let _ = reclaim_specific_project_writer_owner(&FsDaemonStore, base_dir, project_id, owner)?;
     }
 
     let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
@@ -1609,12 +1615,26 @@ async fn wait_for_run_termination_signal() -> AppResult<()> {
 }
 
 #[cfg(unix)]
-fn send_signal_to_pid(pid: u32, signal: Signal) -> AppResult<()> {
-    match kill(Pid::from_raw(pid as i32), signal) {
-        Ok(()) => Ok(()),
-        Err(nix::errno::Errno::ESRCH) => Ok(()),
+enum SignalSendOutcome {
+    Delivered,
+    AlreadyExited,
+}
+
+#[cfg(unix)]
+fn send_signal_to_pid(
+    record: &crate::adapters::fs::RunPidRecord,
+    signal: Signal,
+) -> AppResult<SignalSendOutcome> {
+    if !FileSystem::is_pid_alive(record) {
+        return Ok(SignalSendOutcome::AlreadyExited);
+    }
+
+    match kill(Pid::from_raw(record.pid as i32), signal) {
+        Ok(()) => Ok(SignalSendOutcome::Delivered),
+        Err(nix::errno::Errno::ESRCH) => Ok(SignalSendOutcome::AlreadyExited),
         Err(error) => Err(AppError::Io(std::io::Error::other(format!(
-            "failed to send {signal:?} to pid {pid}: {error}"
+            "failed to send {signal:?} to pid {}: {error}",
+            record.pid
         )))),
     }
 }
@@ -1818,7 +1838,7 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
                     reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
                 });
                 }
-                RunningSnapshotLiveness::DaemonLease => {
+                RunningSnapshotLiveness::DaemonProcess => {
                     return Err(AppError::ResumeFailed {
                     reason: "project has a daemon-owned running run; wait for the daemon task to finish or stop it through daemon controls".to_owned(),
                 });
@@ -1985,7 +2005,7 @@ async fn handle_stop() -> AppResult<()> {
     }
 
     match classify_running_snapshot_liveness(&current_dir, &project_id)? {
-        RunningSnapshotLiveness::DaemonLease => Err(AppError::RunStopFailed {
+        RunningSnapshotLiveness::DaemonProcess => Err(AppError::RunStopFailed {
             reason:
                 "run stop only supports CLI-owned runs; the active run is owned by a daemon task"
                     .to_owned(),
@@ -2031,25 +2051,31 @@ async fn handle_stop() -> AppResult<()> {
         RunningSnapshotLiveness::CliProcess(pid_record) => {
             #[cfg(unix)]
             {
-                send_signal_to_pid(pid_record.pid, Signal::SIGTERM)?;
-                let stopped_gracefully =
-                    wait_for_pid_exit(&pid_record, RUN_STOP_GRACE_PERIOD).await;
-                let outcome = if stopped_gracefully {
-                    "terminated gracefully with SIGTERM"
-                } else {
-                    send_signal_to_pid(pid_record.pid, Signal::SIGKILL)?;
-                    if !wait_for_pid_exit(&pid_record, Duration::from_secs(1)).await {
-                        return Err(AppError::RunStopFailed {
-                            reason: format!(
-                                "sent SIGKILL to pid {} but the orchestrator is still alive; refusing to rewrite run state",
-                                pid_record.pid
-                            ),
-                        });
-                    }
-                    "required SIGKILL after timeout"
-                };
-
                 let observed_owner = read_project_writer_lock_owner(&current_dir, &project_id)?;
+                let stop_outcome = match send_signal_to_pid(&pid_record, Signal::SIGTERM)? {
+                    SignalSendOutcome::AlreadyExited => "process already exited before SIGTERM",
+                    SignalSendOutcome::Delivered => {
+                        if wait_for_pid_exit(&pid_record, RUN_STOP_GRACE_PERIOD).await {
+                            "terminated gracefully with SIGTERM"
+                        } else {
+                            match send_signal_to_pid(&pid_record, Signal::SIGKILL)? {
+                                SignalSendOutcome::AlreadyExited => "process exited before SIGKILL",
+                                SignalSendOutcome::Delivered => {
+                                    if !wait_for_pid_exit(&pid_record, Duration::from_secs(1)).await
+                                    {
+                                        return Err(AppError::RunStopFailed {
+                                            reason: format!(
+                                                "sent SIGKILL to pid {} but the orchestrator is still alive; refusing to rewrite run state",
+                                                pid_record.pid
+                                            ),
+                                        });
+                                    }
+                                    "required SIGKILL after timeout"
+                                }
+                            }
+                        }
+                    }
+                };
                 let guard = acquire_recovery_writer_guard(
                     &current_dir,
                     &project_id,
@@ -2071,18 +2097,23 @@ async fn handle_stop() -> AppResult<()> {
                         &current_dir,
                         &project_id,
                         "failed (stopped by user; run `ralph-burning run resume` to continue)",
-                        format!("run stop interrupted the orchestrator; outcome={outcome}"),
+                        format!("run stop interrupted the orchestrator; outcome={stop_outcome}"),
                         "cancellation",
                     )
                     .map_err(|error| AppError::RunStopFailed {
                         reason: format!("failed to finalize stopped run state: {error}"),
                     })?;
                     format!(
-                        "Stopped run for project '{}' ({outcome}); run `ralph-burning run resume` to continue.",
+                        "Stopped run for project '{}' ({stop_outcome}); run `ralph-burning run resume` to continue.",
                         project_id
                     )
                 } else {
-                    let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
+                    if FileSystem::read_pid_file(&current_dir, &project_id)?
+                        .as_ref()
+                        .is_some_and(|current_record| current_record == &pid_record)
+                    {
+                        let _ = FileSystem::remove_pid_file(&current_dir, &project_id);
+                    }
                     format!(
                         "Run for project '{}' exited during stop with status '{}'.",
                         project_id, final_snapshot.status

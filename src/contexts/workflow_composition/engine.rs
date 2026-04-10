@@ -1142,14 +1142,15 @@ where
         status_summary: format!("running: {}", first_stage.display_name()),
         last_stage_resolution_snapshot: None,
     };
-    if execution_cwd.is_none() {
-        if let Err(error) = FileSystem::write_pid_file(base_dir, project_id, RunPidOwner::Cli) {
-            return Err(AppError::RunStartFailed {
-                reason: format!("failed to persist run pid file: {error}"),
-            });
-        }
+    let pid_owner = if execution_cwd.is_none() {
+        RunPidOwner::Cli
     } else {
-        let _ = FileSystem::remove_pid_file(base_dir, project_id);
+        RunPidOwner::Daemon
+    };
+    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id, pid_owner) {
+        return Err(AppError::RunStartFailed {
+            reason: format!("failed to persist run pid file: {error}"),
+        });
     }
     if let Err(error) =
         run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot)
@@ -1885,14 +1886,15 @@ where
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(effective_config.run_policy().max_completion_rounds),
     );
-    if execution_cwd.is_none() {
-        if let Err(error) = FileSystem::write_pid_file(base_dir, project_id, RunPidOwner::Cli) {
-            return Err(AppError::ResumeFailed {
-                reason: format!("failed to persist run pid file: {error}"),
-            });
-        }
+    let pid_owner = if execution_cwd.is_none() {
+        RunPidOwner::Cli
     } else {
-        let _ = FileSystem::remove_pid_file(base_dir, project_id);
+        RunPidOwner::Daemon
+    };
+    if let Err(error) = FileSystem::write_pid_file(base_dir, project_id, pid_owner) {
+        return Err(AppError::ResumeFailed {
+            reason: format!("failed to persist run pid file: {error}"),
+        });
     }
     if let Err(error) = run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot) {
         let _ = FileSystem::remove_pid_file(base_dir, project_id);

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260410054251",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 6
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-5-df12fd3f",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "`run stop` can tear down a brand-new CLI run that wins the handoff after the old orchestrator exits. In `src/cli/run.rs:2052-2057` the stop path re-reads the current writer-lock owner after waiting for the target PID to exit, then `acquire_recovery_writer_guard` immediately calls `reclaim_specific_cli_writer_lease` (`src/cli/run.rs:1535-1542`, `src/contexts/automation_runtime/cli_writer_lease.rs:85-113`) without proving that owner is stale. If another `run start` or `run resume` acquires the lock in that window, `run stop` steals its live lease; the fallback branch at `src/cli/run.rs:2085-2088` then deletes whichever `run.pid` is present, which can orphan the new run. Capture the owner before sending SIGTERM/SIGKILL and only reclaim that exact stale lease, or otherwise verify the replacement owner is dead before releasing its lock or pid file.",
-        "created_at": "2026-04-10T13:52:02.049710295Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "333205ed4abd7ce8b3f93ecfb3c0dca880c5c621c7f51cc3519e0e9b94827053"
-      },
-      {
-        "amendment_id": "fr-5-bee729a6",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "`run stop` stores `proc_start_ticks` to avoid PID reuse, but it does not use that information when delivering signals. The stop path only does a one-time liveness check during classification, then calls `kill` on the raw PID in `src/cli/run.rs:2034-2041` via `send_signal_to_pid` (`src/cli/run.rs:1612-1619`). If the orchestrator exits and the PID is recycled before SIGTERM/SIGKILL is sent, `run stop` can signal an unrelated process. Revalidate the `RunPidRecord` against `/proc/<pid>/stat` immediately before each signal (or make the signal helper reject mismatched `proc_start_ticks`) instead of trusting the numeric PID alone.",
-        "created_at": "2026-04-10T13:52:02.049713261Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "e4f4ac2aff14e9ecd4814bf4407cc7dfc4945910ba85f3517661366490bcdd04"
-      },
-      {
-        "amendment_id": "fr-5-79c8dac9",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "Daemon-owned runs still do not have real crash detection. The daemon always invokes `execute_run_with_retry` / `resume_run_with_retry` with `Some(worktree_path)` (`src/contexts/automation_runtime/daemon_loop.rs:3203-3235`), and the engine explicitly removes `run.pid` instead of writing one in that mode (`src/contexts/workflow_composition/engine.rs:1145-1153`, `src/contexts/workflow_composition/engine.rs:1888-1896`). `run status` / `run resume` then treat any fresh worktree lease as alive (`src/cli/run.rs:1524-1529`). A hard-killed daemon task therefore stays `running` until the lease TTL expires, and `run resume` keeps refusing during that window. Either persist a real liveness marker for daemon-owned orchestrators too, or make status/resume consult an actual daemon-task/process health signal rather than lease freshness.",
-        "created_at": "2026-04-10T13:52:02.049715785Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "c15c167b890f2e2c69810f4fa9bff7909a890ba2ac08e75491a0d60addbc2b67"
-      }
-    ],
-    "processed_count": 12
+    "pending": [],
+    "processed_count": 15
   },
-  "status_summary": "running: final review restart round 6 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-10T13:40:50.133473860Z",
