@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr14-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T17:13:58.798160392Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the current round’s diff and the affected run lifecycle code. Found two issues: fresh stranded CLI cleanup locks are no longer reclaimable until their TTL expires, and the new non-Linux `proc_start_marker` fallback is not strong enough to authorize stop/resume decisions. Targeted checks `cargo test run_stop_` and `cargo test run_resume_does_not_reclaim_live_worktree_owner_for_failed_snapshot` passed; `cargo test --features test-stub cli_run_resume_reclaims_writer_lock_for_failed_snapshot_cleanup_crash` failed with `cannot resume run: project has not started a run yet`, which is consistent with the first regression.\n\n## Amendments\n\n1. `src/cli/run.rs:1579-1655` regresses post-run cleanup crash recovery. `acquire_recovery_writer_guard()` now refuses to reclaim the observed writer owner unless its lease has already gone stale, but `complete_run`/`pause_run`/`fail_run` remove `run.pid` before the writer lease is released in `src/contexts/workflow_composition/engine.rs:5796`, `src/contexts/workflow_composition/engine.rs:5819`, `src/contexts/workflow_composition/engine.rs:5841`, and `src/contexts/workflow_composition/engine.rs:5933`. If the CLI dies in that cleanup window, the snapshot is already terminal and there is no pid file left to prove the process is gone, so `run resume` stays blocked for the full lease TTL even though nothing is running. Recovery needs a fresh-death path for stranded CLI cleanup locks instead of forcing users to wait for lease expiry.\n   Rationale: This reintroduces a real stuck state after process death, which is the main lifecycle-hardening goal of the bead.\n2. `src/adapters/fs.rs:333-361` plus `src/adapters/fs.rs:702-745` now treat `ps -o lstart` as an authoritative process identity on non-Linux Unix, and `src/cli/run.rs:1804-1853` uses that identity to send SIGTERM/SIGKILL during `run stop`. `lstart` is only second-granularity text, so a recycled PID started within the same second can satisfy the check and let `run stop` target an unrelated process. Until there is a stronger per-process identifier on these platforms, pid records backed only by `proc_start_marker` should not be considered authoritative for stop/resume decisions.\n   Rationale: This is a safety issue: a false positive here can kill the wrong process, which is worse than conservatively refusing stop on platforms without a robust pid identity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}
