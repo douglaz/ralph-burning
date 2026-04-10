@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:25:39.181485441Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBlocking correctness gap: the change set is limited to run metadata journaling and does not deliver any of the mandated `ralph-burning-rlm` run-lifecycle fixes.\n\n## Amendments\n\n1. The diff introduces no runtime code changes for the lifecycle hardening work and therefore does not implement the requested behaviors. `git diff --name-only` includes only `.ralph-burning/projects/rlm/journal.ndjson` (new events at lines 223-226) and `.ralph-burning/projects/rlm/run.json` (new `stage_resolution_snapshot` block at lines 16-37), while no hunks exist in the required implementation files `src/adapters/fs.rs`, `src/cli/run.rs`, or `src/contexts/workflow_composition/engine.rs`. This leaves PID tracking, `run stop`, stale-state detection/recovery, and SIGTERM cleanup unimplemented, so acceptance criteria are unmet.\n   Rationale: Without touching the engine/CLI/runtime code, the system will continue to expose stale `Running` states after process death and still lacks recovery and graceful shutdown paths.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 12
+}

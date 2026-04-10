@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr12-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:30:40.795656838Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the engine stale-running reconciliation change and its new regression coverage. I found one correctness issue: the new `run resume` recovery path can race with another resume and incorrectly fail a newer live attempt because the interruption helper does not verify attempt identity before rewriting the snapshot.\n\n## Amendments\n\n1. Guard the new stale-running reconciliation path in `src/contexts/workflow_composition/engine.rs:1453-1502` against clobbering a newer run. Both new branches call `mark_running_run_interrupted()`, but that helper rereads `run.json` and unconditionally rewrites any still-`Running` snapshot at `src/contexts/workflow_composition/engine.rs:755-782` without checking that it is the same `(run_id, started_at)` attempt that was just classified as stale. Two overlapping `run resume` invocations can therefore race: one invocation starts a fresh run, while the slower invocation still holding the stale preflight view marks that new run as `Failed`, removes its pid file, and may append a bogus interruption event. Thread the expected attempt identity into `mark_running_run_interrupted` (or do a compare-and-swap before rewriting) and add a regression that simulates concurrent resumes.\n   Rationale: Before this patch, `run resume` rejected `Running` snapshots and could not stomp a concurrently restarted run. The new recovery flow makes that race possible and can corrupt on-disk lifecycle state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}
