@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260410054251-final_review-aggregate-c1-a1-cr18-artifact",
+  "payload_id": "run-20260410054251-final_review-aggregate-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T19:00:20.949093890Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 18/25\n\n## Accepted\n\n- `fr-18-26ff8117`\n- `fr-18-8f3b8c1d`\n\n## Rejected\n\n- `fr-18-023ea3f2`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-18-26ff8117`\n\nDo not reclaim whatever writer lock is currently present just because an earlier liveness probe said the old attempt was stale. `observed_running_attempt_owner` falls back to the current `writer-<project>.lock` owner whenever the pid record no longer matches the expected attempt (`src/cli/run.rs:1630-1640`), and `acquire_recovery_writer_guard` then treats that owner as reclaimable whenever `observed_owner_proven_stale` is true (`src/cli/run.rs:1743-1756`). Both stale `run resume` and stale `run stop` pass `true` there (`src/cli/run.rs:2506-2517`, `src/cli/run.rs:2733-2744`). If a fresh run grabs the writer lock after the stale check but before recovery acquires the guard, these paths will tear down the fresh owner and only afterwards notice the attempt changed. `reclaim_specific_project_writer_owner` can even mark an active daemon task failed while doing that (`src/contexts/automation_runtime/cli_writer_lease.rs:163-176`). Revalidate that the current owner/pid still belongs to the stale attempt before reclaiming.\n\n### `fr-18-8f3b8c1d`\n\nMake the forced-stop cleanup kill backend process groups on every Unix target, not just Linux. Backends are launched into a dedicated process group on all Unix builds (`src/adapters/process_backend.rs:1122-1126`), but the extra descendant-group cleanup helper only exists behind the Linux cfg (`src/cli/run.rs:2134-2166`). In the hard-stop path, non-Linux Unix builds fall through to killing only the orchestrator PID and then reporting success (`src/cli/run.rs:2828-2856`). On macOS/BSD, a timed-out `run stop` can therefore rewrite `run.json` to a failed/interrupted state while the backend subprocess group keeps running in the background.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 18
+}
