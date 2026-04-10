@@ -11971,11 +11971,13 @@ fn cli_run_resume_recovers_stale_daemon_owned_running_and_reclaims_worktree_lock
 
     let leases_dir = daemon_root(temp_dir.path()).join("leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let stale_worktree_path = temp_dir.path().join("worktrees/task-stale-daemon-resume");
+    fs::create_dir_all(&stale_worktree_path).expect("create stale worktree dir");
     let stale_worktree_lease = WorktreeLease {
         lease_id: "lease-stale-daemon-resume".to_owned(),
         task_id: "task-stale-daemon-resume".to_owned(),
         project_id: "stale-daemon-resume".to_owned(),
-        worktree_path: temp_dir.path().join("worktrees/task-stale-daemon-resume"),
+        worktree_path: stale_worktree_path,
         branch_name: "task-stale-daemon-resume".to_owned(),
         acquired_at: Utc::now(),
         ttl_seconds: 300,
