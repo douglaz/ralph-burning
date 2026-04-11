@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
     "started_at": "2026-04-11T21:27:18.356800744Z",
     "prompt_hash_at_cycle_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "prompt_hash_at_stage_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-9025353e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "Propagate non-cancellation errors from the aborted-task fast paths in `src/contexts/automation_runtime/daemon_loop.rs`. After `drive_dispatch_multi_repo()` / `drive_dispatch()` returns, the code at lines 844-862 and 1545-1548 exits as soon as `latest_task.status == TaskStatus::Aborted`, without inspecting `outcome`. That drops the new errors returned by `finish_cancelled_dispatch()` at lines 3003-3114 (for example, failed backend-process cleanup during daemon shutdown/cancellation), then still releases the task lease and reports a clean abort. Only `Ok(())` / `Err(AppError::InvocationCancelled { .. })` should be swallowed here; any other error needs to surface before the lease is cleared.",
+        "created_at": "2026-04-11T22:12:51.266117547Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "2f07b8b57a436b9f1ea962af8cf04932686f8d3973fed826b04d674cec3fd8e2"
+      }
+    ],
     "processed_count": 2
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-11T21:37:28.232862344Z",
+    "resolved_at": "2026-04-11T22:01:40.116327498Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

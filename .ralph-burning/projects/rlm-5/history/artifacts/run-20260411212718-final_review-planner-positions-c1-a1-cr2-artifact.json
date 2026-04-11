@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:11:45.298757533Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe amendment identifies a real error-handling defect: the aborted-task fast paths currently return success based only on task status and can mask non-cancellation failures produced during cancellation cleanup.\n\n## Votes\n\n- `fr-2-9025353e`: Accept\n  In `src/contexts/automation_runtime/daemon_loop.rs`, the post-dispatch checks around lines 845-862 and 1545-1548 return early whenever the persisted task status is `TaskStatus::Aborted`, releasing the lease before examining `outcome`. That is now incorrect because `drive_dispatch_multi_repo()` / `drive_dispatch()` can return non-cancellation errors from `finish_cancelled_dispatch()` (notably the cleanup failures handled around lines 3085-3114). Treating every aborted status as a clean abort drops those errors, hides failed shutdown/cleanup work, and clears the lease as if cancellation succeeded. Swallowing only `Ok(())` and `Err(AppError::InvocationCancelled { .. })` while propagating any other error is the safer and more maintainable behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
