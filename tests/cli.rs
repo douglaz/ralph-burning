@@ -6577,7 +6577,7 @@ fn run_stop_sigkill_terminates_same_process_group_backend_descendant() {
 }
 
 #[test]
-fn run_stop_refuses_unsafe_orphaned_backend_process_group_cleanup_after_leader_exit() {
+fn run_stop_sigkill_terminates_orphaned_backend_process_group_after_leader_exit() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -6664,15 +6664,11 @@ fn run_stop_refuses_unsafe_orphaned_backend_process_group_cleanup_after_leader_e
         .output()
         .expect("run stop");
 
-    assert!(!output.status.success(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("required SIGKILL after timeout"),
-        "stop should escalate to SIGKILL for the TERM-ignoring orchestrator before reporting backend cleanup refusal: {stderr}"
-    );
-    assert!(
-        stderr.contains("refusing stale backend cleanup for pid"),
-        "stop should refuse unsafe orphaned backend cleanup after the leader exits: {stderr}"
+        stdout.contains("required SIGKILL after timeout"),
+        "stop should escalate to SIGKILL for the TERM-ignoring orchestrator before killing the orphaned backend group: {stdout}"
     );
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -6680,8 +6676,8 @@ fn run_stop_refuses_unsafe_orphaned_backend_process_group_cleanup_after_leader_e
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     assert!(
-        pid_is_alive(backend_orphan_pid),
-        "refused cleanup must not target an orphaned backend group once the leader identity is gone"
+        !pid_is_alive(backend_orphan_pid),
+        "forced stop must kill an orphaned backend child even after the backend leader exits"
     );
 
     let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
@@ -6704,14 +6700,85 @@ fn run_stop_refuses_unsafe_orphaned_backend_process_group_cleanup_after_leader_e
         !project_root(temp_dir.path(), "alpha")
             .join("run.pid")
             .exists(),
-        "run.pid should be removed once the orchestrator is stopped even when backend cleanup is refused"
+        "run.pid should be removed once the orchestrator is stopped"
     );
+}
 
-    let _ = kill(Pid::from_raw(backend_orphan_pid as i32), Signal::SIGKILL);
+#[test]
+fn run_stop_recovers_stale_running_with_dead_legacy_backend_record() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-stale-legacy-backend",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+
+    let backend_pid_file = temp_dir.path().join("stale-legacy-backend.pid");
+    let mut backend_group = spawn_isolated_backend_group(&backend_pid_file);
+    let backend_pid = wait_for_pid_file(&backend_pid_file, "stale legacy backend");
+    backend_group.kill().expect("kill isolated backend leader");
+    let backend_status = backend_group.wait().expect("wait for isolated backend");
+    assert!(
+        !backend_status.success(),
+        "killed backend helper should not exit successfully: {backend_status:?}"
+    );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while pid_is_alive(backend_orphan_pid) && std::time::Instant::now() < deadline {
+    while pid_is_running(backend_pid) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
+    assert!(
+        !pid_is_running(backend_pid),
+        "legacy backend pid should be gone before stale recovery"
+    );
+
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "processes": [
+                {
+                    "pid": backend_pid,
+                    "recorded_at": Utc::now(),
+                    "run_id": "run-stop-stale-legacy-backend",
+                    "run_started_at": "2026-04-10T00:00:00Z"
+                }
+            ]
+        }))
+        .expect("serialize legacy backend process record"),
+    )
+    .expect("write legacy backend process record");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("already stale"),
+        "stale stop should prune dead legacy backend records instead of failing cleanup: {stdout}"
+    );
+    assert!(
+        !backend_processes_path(temp_dir.path(), "alpha").exists(),
+        "dead legacy backend records should be removed during stale recovery"
+    );
 }
 
 #[test]

@@ -2629,9 +2629,13 @@ fn stale_backend_processes_for_attempt(
 fn kill_stale_backend_process_group(
     record: &crate::adapters::fs::RunBackendProcessRecord,
 ) -> AppResult<(bool, Vec<TrackedProcess>)> {
-    if !FileSystem::backend_process_is_authoritative(record) {
+    let leader_is_authoritative = FileSystem::backend_process_is_authoritative(record);
+    let leader_matches_record = FileSystem::is_backend_process_alive(record);
+    let raw_pid_running = FileSystem::is_pid_running_unchecked(record.pid);
+
+    if !leader_is_authoritative && raw_pid_running {
         return Err(AppError::Io(std::io::Error::other(format!(
-            "refusing stale backend cleanup for pid {} because the recorded process identity is not authoritative",
+            "refusing stale backend cleanup for pid {} because the recorded process identity is not authoritative and the pid is still live",
             record.pid
         ))));
     }
@@ -2640,20 +2644,17 @@ fn kill_stale_backend_process_group(
         .filter(|pid| FileSystem::is_pid_running_unchecked(*pid))
         .map(TrackedProcess::from_pid)
         .collect::<Vec<_>>();
-    if !FileSystem::is_backend_process_alive(record) {
-        if tracked_group_members.is_empty() {
-            return Ok((false, tracked_group_members));
-        }
-        return Err(AppError::Io(std::io::Error::other(format!(
-            "refusing stale backend cleanup for pid {} after the recorded process-group leader exited because PGID reuse cannot be ruled out",
-            record.pid
-        ))));
-    }
-    if tracked_group_members
-        .iter()
-        .all(|process| process.pid != record.pid)
+
+    if leader_matches_record
+        && tracked_group_members
+            .iter()
+            .all(|process| process.pid != record.pid)
     {
         tracked_group_members.push(TrackedProcess::from_pid(record.pid));
+    }
+
+    if !leader_matches_record && tracked_group_members.is_empty() {
+        return Ok((false, tracked_group_members));
     }
 
     let pid = i32::try_from(record.pid).map_err(|_| {
@@ -2664,14 +2665,17 @@ fn kill_stale_backend_process_group(
     })?;
     match kill(Pid::from_raw(-pid), Signal::SIGKILL) {
         Ok(()) => Ok((true, tracked_group_members)),
-        Err(nix::errno::Errno::ESRCH) => match kill(Pid::from_raw(pid), Signal::SIGKILL) {
-            Ok(()) => Ok((true, tracked_group_members)),
-            Err(nix::errno::Errno::ESRCH) => Ok((false, tracked_group_members)),
-            Err(error) => Err(AppError::Io(std::io::Error::other(format!(
-                "failed to SIGKILL stale backend pid {}: {error}",
-                record.pid
-            )))),
-        },
+        Err(nix::errno::Errno::ESRCH) if leader_matches_record => {
+            match kill(Pid::from_raw(pid), Signal::SIGKILL) {
+                Ok(()) => Ok((true, tracked_group_members)),
+                Err(nix::errno::Errno::ESRCH) => Ok((false, tracked_group_members)),
+                Err(error) => Err(AppError::Io(std::io::Error::other(format!(
+                    "failed to SIGKILL stale backend pid {}: {error}",
+                    record.pid
+                )))),
+            }
+        }
+        Err(nix::errno::Errno::ESRCH) => Ok((false, tracked_group_members)),
         Err(error) => Err(AppError::Io(std::io::Error::other(format!(
             "failed to SIGKILL stale backend process group {}: {error}",
             record.pid

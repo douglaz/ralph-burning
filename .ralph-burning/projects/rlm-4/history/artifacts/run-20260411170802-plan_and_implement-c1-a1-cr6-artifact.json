@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260411170802-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-11T19:06:02.063961838Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated Unix stale-backend cleanup so forced stop/stale recovery now SIGKILLs orphaned backend process groups by recorded PGID after the backend leader exits, while still refusing live non-authoritative backend records. Dead legacy or partially written backend records are now treated as stale no-ops and pruned instead of failing cleanup. Updated CLI coverage to assert orphaned backend children are terminated and that dead legacy backend records no longer block stale recovery.\n\n## Steps\n\n1. [Completed] Inspect the current stale backend cleanup flow in `src/cli/run.rs` and the existing CLI regressions to confirm the orphaned-PGID refusal and dead non-authoritative record failure paths.\n2. [Completed] Patch Unix stale backend cleanup so live non-authoritative backend records are still refused, dead legacy records are pruned, and orphaned backend process groups with surviving members are SIGKILLed by PGID.\n3. [Completed] Replace the orphaned-backend refusal regression with a successful forced-stop cleanup assertion and add coverage for stale recovery with a dead legacy backend record.\n4. [Completed] Run targeted regressions and the acceptance suite (`cargo test`, `cargo clippy`, `cargo fmt --check`) on the patched tree.\n\n## Validation Evidence\n\n- Targeted regression passed: `cargo test run_stop_sigkill_terminates_orphaned_backend_process_group_after_leader_exit -- --nocapture`.\n- Targeted regression passed: `cargo test run_stop_recovers_stale_running_with_dead_legacy_backend_record -- --nocapture`.\n- Full suite passed: `cargo test`.\n- Lint suite passed with pre-existing warnings only: `cargo clippy`.\n- Formatting check passed: `cargo fmt --check`.\n\n## Outstanding Risks\n\n- `cargo clippy` passes but still reports pre-existing warnings outside this change set (for example `dead_code`, `ptr_arg`, `large_enum_variant`, and related style warnings).\n- The Unix process-group path was validated on this Linux host; the shared non-Linux Unix implementation was not exercised end-to-end in this pass.\n- The worktree still contains unrelated runtime artifact changes under `.ralph-burning/projects/rlm-4/`; they were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 6
+}
