@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411212718-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-11T22:01:40.004297860Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the pending daemon cleanup amendments by reusing the CLI stale-backend cleanup helper from the daemon cancellation path, forcing tracked backend process-group cleanup before a cancelled daemon-owned run is surfaced as resumable, and by fail-closing daemon lease cleanup on aborted/shutdown paths instead of swallowing `release_task_lease()` partial failures. Added regression coverage for daemon cancellation killing tracked backend processes and for shutdown lease cleanup surfacing `LeaseCleanupPartialFailure` while preserving durable lease/task state.\n\n## Steps\n\n1. [Completed] Inspected the daemon cancellation handoff, stale backend cleanup path, and shutdown lease cleanup handling to confirm where daemon-owned cancelled runs were left without forced backend cleanup and where partial lease cleanup errors were still ignored.\n2. [Completed] Updated `src/contexts/automation_runtime/daemon_loop.rs` to force tracked backend cleanup during cancelled daemon dispatch reconciliation, propagate partial lease cleanup failures on aborted/shutdown paths, and aggregate multi-repo shutdown cleanup failures; exposed the existing CLI stale-backend cleanup helper from `src/cli/run.rs` for reuse.\n3. [Completed] Added regression tests covering daemon cancellation backend-process cleanup and shutdown lease partial-failure surfacing, then ran the required validation commands.\n\n## Validation Evidence\n\n- `cargo test` passed.\n- `cargo clippy` passed with only pre-existing unrelated warnings.\n- `cargo fmt --check` passed.\n- `br lint --json` was run and reports only the pre-existing unrelated bead template warnings listed above.\n\n## Outstanding Risks\n\n- `br lint --json` still reports unrelated pre-existing template warnings on other beads (`ralph-burning-rlm.1`, `ralph-burning-rlm.2`, `ralph-burning-rlm.3`, `ralph-burning-utm`, `ralph-burning-kvc`, `ralph-burning-gsp`, `ralph-burning-p2h`, `ralph-burning-fyj`, `ralph-burning-hg4`).\n- `cargo clippy` still emits pre-existing repository warnings unrelated to this change.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

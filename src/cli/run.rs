@@ -2807,7 +2807,7 @@ fn stale_backend_processes_still_alive(processes: &[TrackedProcess]) -> Vec<u32>
     tracked_processes_still_alive(processes)
 }
 
-fn cleanup_stale_backend_process_groups(
+pub(crate) fn cleanup_stale_backend_process_groups(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
     expected_attempt: &engine::RunningAttemptIdentity,

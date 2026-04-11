@@ -11,6 +11,7 @@ use crate::adapters::fs::{
     FsMilestoneStore, FsTaskRunLineageStore,
 };
 use crate::adapters::github::GithubPort;
+use crate::cli::run::cleanup_stale_backend_process_groups;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
@@ -306,14 +307,7 @@ where
 
         loop {
             if shutdown.is_cancelled() {
-                // Cleanup active leases across all repos using daemon shard for
-                // store reads and checkout root for Git/worktree operations.
-                for reg in &active_registrations {
-                    if let Ok((owner, repo)) = parse_repo_slug(&reg.repo_slug) {
-                        let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
-                        let _ = self.cleanup_active_leases(&daemon_dir, &reg.repo_root);
-                    }
-                }
+                self.cleanup_registered_active_leases(data_dir, &active_registrations)?;
                 break;
             }
 
@@ -331,12 +325,7 @@ where
 
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    for reg in &active_registrations {
-                        if let Ok((owner, repo)) = parse_repo_slug(&reg.repo_slug) {
-                            let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
-                            let _ = self.cleanup_active_leases(&daemon_dir, &reg.repo_root);
-                        }
-                    }
+                    self.cleanup_registered_active_leases(data_dir, &active_registrations)?;
                     break;
                 }
                 _ = tokio::time::sleep(config.poll_interval) => {}
@@ -783,7 +772,7 @@ where
                 );
                 return Err(e);
             }
-            let _ = self.release_task_lease(store_dir, repo_root, &task_on_disk.task_id, &lease);
+            self.release_task_lease(store_dir, repo_root, &task_on_disk.task_id, &lease)?;
             return Ok(());
         }
 
@@ -869,7 +858,7 @@ where
                 );
                 return Err(e);
             }
-            let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+            self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease)?;
             return Ok(());
         }
 
@@ -1518,7 +1507,7 @@ where
         }
         let task_on_disk = self.store.read_task(base_dir, &claimed_task.task_id)?;
         if task_on_disk.status == TaskStatus::Aborted {
-            let _ = self.release_task_lease(base_dir, repo_root, &task_on_disk.task_id, &lease);
+            self.release_task_lease(base_dir, repo_root, &task_on_disk.task_id, &lease)?;
             return Ok(());
         }
 
@@ -1555,7 +1544,7 @@ where
 
         let latest_task = self.store.read_task(base_dir, &active_task.task_id)?;
         if latest_task.status == TaskStatus::Aborted {
-            let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
+            self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
             return Ok(());
         }
 
@@ -2982,6 +2971,19 @@ where
         Ok(true)
     }
 
+    fn cleanup_cancelled_dispatch_backend_processes(
+        &self,
+        workspace_dir: &Path,
+        project_id: &ProjectId,
+        expected_attempt: Option<&engine::RunningAttemptIdentity>,
+    ) -> AppResult<()> {
+        let Some(expected_attempt) = expected_attempt else {
+            return Ok(());
+        };
+        cleanup_stale_backend_process_groups(workspace_dir, project_id, expected_attempt)
+            .map(|_| ())
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn finish_cancelled_dispatch<F>(
         &self,
@@ -3025,15 +3027,42 @@ where
                         interrupted_handoff.expected_attempt.as_ref(),
                         log_message,
                     ) {
-                        Ok(true) => Err(AppError::InvocationCancelled {
-                            backend: "daemon".to_owned(),
-                            contract_id: task.task_id.clone(),
-                        }),
+                        Ok(true) => {
+                            self.cleanup_cancelled_dispatch_backend_processes(
+                                workspace_dir,
+                                project_id,
+                                interrupted_handoff.expected_attempt.as_ref(),
+                            )?;
+                            Err(AppError::InvocationCancelled {
+                                backend: "daemon".to_owned(),
+                                contract_id: task.task_id.clone(),
+                            })
+                        }
                         Ok(false) => result,
                         Err(error) => Err(error),
                     }
                 } else {
-                    result
+                    match self.reconcile_cancelled_dispatch_run(
+                        workspace_dir,
+                        project_id,
+                        &lease.lease_id,
+                        summary,
+                        log_message,
+                    ) {
+                        Ok(true) => {
+                            self.cleanup_cancelled_dispatch_backend_processes(
+                                workspace_dir,
+                                project_id,
+                                interrupted_handoff.expected_attempt.as_ref(),
+                            )?;
+                            Err(AppError::InvocationCancelled {
+                                backend: "daemon".to_owned(),
+                                contract_id: task.task_id.clone(),
+                            })
+                        }
+                        Ok(false) => result,
+                        Err(error) => Err(error),
+                    }
                 }
             }
             Err(_) => {
@@ -3053,6 +3082,11 @@ where
                         log_message,
                     )
                 };
+                let backend_cleanup = self.cleanup_cancelled_dispatch_backend_processes(
+                    workspace_dir,
+                    project_id,
+                    interrupted_handoff.expected_attempt.as_ref(),
+                );
                 match cleanup {
                     Ok(true) => eprintln!(
                         "daemon: cancellation grace period expired for task '{}'; reconciled run state directly",
@@ -3062,21 +3096,31 @@ where
                         "daemon: cancellation grace period expired for task '{}' but no matching running attempt was left to reconcile",
                         task.task_id
                     ),
-                    Err(error) => eprintln!(
+                    Err(ref error) => eprintln!(
                         "daemon: cancellation grace period expired for task '{}' and interrupted-state cleanup failed: {}",
                         task.task_id, error
                     ),
                 }
-                Err(AppError::InvocationCancelled {
-                    backend: "daemon".to_owned(),
-                    contract_id: task.task_id.clone(),
-                })
+                match (cleanup, backend_cleanup) {
+                    (Ok(_), Ok(())) => Err(AppError::InvocationCancelled {
+                        backend: "daemon".to_owned(),
+                        contract_id: task.task_id.clone(),
+                    }),
+                    (Err(error), Ok(())) => Err(error),
+                    (Ok(_), Err(error)) => Err(error),
+                    (Err(cleanup_error), Err(backend_error)) => {
+                        Err(AppError::Io(std::io::Error::other(format!(
+                            "daemon cancellation cleanup failed: interrupted-state cleanup error: {cleanup_error}; backend cleanup error: {backend_error}"
+                        ))))
+                    }
+                }
             }
         }
     }
 
     fn cleanup_active_leases(&self, store_dir: &Path, repo_root: &Path) -> AppResult<()> {
         let leases = self.store.list_leases(store_dir)?;
+        let mut failures = Vec::new();
         for lease in &leases {
             // Preserve checkpoint branch for tasks that were already failed
             // before shutdown (e.g. retained lease after label-sync failure).
@@ -3091,9 +3135,60 @@ where
                     "daemon: cleanup failed for lease '{}' (task '{}'): {}",
                     lease.lease_id, lease.task_id, e
                 );
+                failures.push((lease.lease_id.clone(), lease.task_id.clone(), e));
             }
         }
-        Ok(())
+        match failures.len() {
+            0 => Ok(()),
+            1 => Err(failures
+                .into_iter()
+                .next()
+                .expect("single cleanup failure")
+                .2),
+            _ => Err(AppError::Io(std::io::Error::other(format!(
+                "daemon lease cleanup failed for multiple leases: {}",
+                failures
+                    .into_iter()
+                    .map(|(lease_id, task_id, error)| {
+                        format!("lease '{lease_id}' (task '{task_id}'): {error}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )))),
+        }
+    }
+
+    fn cleanup_registered_active_leases(
+        &self,
+        data_dir: &Path,
+        registrations: &[RepoRegistration],
+    ) -> AppResult<()> {
+        let mut failures = Vec::new();
+        for reg in registrations {
+            if let Ok((owner, repo)) = parse_repo_slug(&reg.repo_slug) {
+                let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
+                if let Err(error) = self.cleanup_active_leases(&daemon_dir, &reg.repo_root) {
+                    failures.push((reg.repo_slug.clone(), error));
+                }
+            }
+        }
+
+        match failures.len() {
+            0 => Ok(()),
+            1 => Err(failures
+                .into_iter()
+                .next()
+                .expect("single repo cleanup failure")
+                .1),
+            _ => Err(AppError::Io(std::io::Error::other(format!(
+                "daemon lease cleanup failed across multiple repos: {}",
+                failures
+                    .into_iter()
+                    .map(|(repo_slug, error)| format!("{repo_slug}: {error}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )))),
+        }
     }
 
     async fn ingest_pr_feedback_for_repo<G: GithubPort>(
@@ -4479,6 +4574,289 @@ mod tests {
                 .is_none(),
             "timeout cleanup should remove run.pid before returning"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn finish_cancelled_dispatch_cleans_tracked_backend_processes_before_returning() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-cancel-backend-cleanup");
+        let started_at = Utc::now();
+        let run_id = "run-daemon-cancel-backend-cleanup".to_owned();
+
+        let snapshot = RunSnapshot {
+            active_run: Some(ActiveRun {
+                run_id: run_id.clone(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            interrupted_run: None,
+            status: RunStatus::Running,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "running: implementation".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base, &project_id, &snapshot)
+            .expect("write running snapshot");
+
+        FileSystem::write_pid_file(
+            base,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some("lease-daemon-backend-cleanup"),
+            Some(run_id.as_str()),
+            Some(started_at),
+        )
+        .expect("write pid file");
+
+        let backend_pid_path = base.join("tracked-backend.pid");
+        let script = format!(
+            "setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done",
+            backend_pid_path.display(),
+            backend_pid_path.display(),
+        );
+        let mut parent = std::process::Command::new("bash")
+            .args(["-lc", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn backend helper");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while (!backend_pid_path.exists() || std::fs::read_to_string(&backend_pid_path).is_err())
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let backend_pid = std::fs::read_to_string(&backend_pid_path)
+            .expect("read backend pid")
+            .trim()
+            .parse::<u32>()
+            .expect("parse backend pid");
+        assert!(
+            FileSystem::is_pid_running_unchecked(backend_pid),
+            "tracked backend should be alive before cleanup"
+        );
+        let status = parent.wait().expect("wait for backend helper");
+        assert!(
+            status.success(),
+            "backend helper should exit cleanly: {status:?}"
+        );
+
+        let project_root = FileSystem::live_project_root(base, &project_id);
+        FileSystem::register_backend_process(&project_root, backend_pid)
+            .expect("register tracked backend process");
+        assert_eq!(
+            FileSystem::read_backend_processes(base, &project_id)
+                .expect("read tracked backend processes")
+                .len(),
+            1,
+            "tracked backend cleanup precondition should be durable"
+        );
+
+        let mut task = sample_waiting_task("daemon-cancel-backend-cleanup-task", "req-run");
+        task.project_id = project_id.as_str().to_owned();
+        task.status = TaskStatus::Active;
+        task.dispatch_mode = DispatchMode::Workflow;
+        task.requirements_run_id = None;
+
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-backend-cleanup".to_owned(),
+            task_id: task.task_id.clone(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.to_path_buf(),
+            branch_name: "rb/test".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: 300,
+            last_heartbeat: Utc::now(),
+        };
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+        let dispatch_future = std::future::pending::<AppResult<()>>();
+        tokio::pin!(dispatch_future);
+        let mut cleanup_future = std::pin::pin!(daemon.finish_cancelled_dispatch(
+            base,
+            base,
+            &task,
+            &lease,
+            &project_id,
+            &mut heartbeat,
+            &mut dispatch_future,
+            "failed (interrupted by daemon shutdown)",
+            "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+        ));
+
+        poll_fn(|cx| {
+            assert!(
+                cleanup_future.as_mut().poll(cx).is_pending(),
+                "cleanup future should remain pending until the grace period expires"
+            );
+            Poll::Ready(())
+        })
+        .await;
+
+        tokio::time::advance(DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD + Duration::from_millis(1))
+            .await;
+        let error = cleanup_future
+            .await
+            .expect_err("timeout cleanup should surface a cancellation error");
+        assert!(
+            matches!(error, AppError::InvocationCancelled { .. }),
+            "unexpected error after daemon cancellation cleanup: {error:?}"
+        );
+        assert!(
+            FileSystem::read_backend_processes(base, &project_id)
+                .expect("read tracked backend processes after cleanup")
+                .is_empty(),
+            "daemon cancellation cleanup should prune tracked backend processes"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while FileSystem::is_pid_running_unchecked(backend_pid)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            !FileSystem::is_pid_running_unchecked(backend_pid),
+            "daemon cancellation cleanup should SIGKILL the tracked backend process group"
+        );
+    }
+
+    #[test]
+    fn cleanup_active_leases_surfaces_partial_release_failures() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-cleanup-partial");
+        let now = Utc::now();
+
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-cleanup-partial".to_owned(),
+            task_id: "task-daemon-cleanup-partial".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.join("missing-worktree"),
+            branch_name: "rb/test".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        };
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .expect("acquire writer lock");
+        FsDaemonStore
+            .write_task(
+                base,
+                &DaemonTask {
+                    task_id: lease.task_id.clone(),
+                    issue_ref: "acme/widgets#partial".to_owned(),
+                    project_id: project_id.as_str().to_owned(),
+                    project_name: Some("Partial cleanup".to_owned()),
+                    prompt: Some("Prompt".to_owned()),
+                    routing_command: None,
+                    routing_labels: vec![],
+                    resolved_flow: Some(FlowPreset::Standard),
+                    routing_source: None,
+                    routing_warnings: vec![],
+                    status: TaskStatus::Active,
+                    created_at: now,
+                    updated_at: now,
+                    attempt_count: 0,
+                    lease_id: Some(lease.lease_id.clone()),
+                    failure_class: None,
+                    failure_message: None,
+                    dispatch_mode: DispatchMode::Workflow,
+                    source_revision: None,
+                    requirements_run_id: None,
+                    workflow_run_id: None,
+                    repo_slug: None,
+                    issue_number: None,
+                    pr_url: None,
+                    last_seen_comment_id: None,
+                    last_seen_review_id: None,
+                    label_dirty: false,
+                },
+            )
+            .expect("write daemon task");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .cleanup_active_leases(base, base)
+            .expect_err("missing worktree should surface partial cleanup failure");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected cleanup error: {error:?}"
+        );
+        assert!(
+            FsDaemonStore.read_lease(base, &lease.lease_id).is_ok(),
+            "partial cleanup must preserve the durable lease record"
+        );
+        let task = FsDaemonStore
+            .read_task(base, &lease.task_id)
+            .expect("read daemon task after cleanup failure");
+        assert_eq!(
+            task.lease_id.as_deref(),
+            Some(lease.lease_id.as_str()),
+            "partial cleanup must preserve the task lease reference"
+        );
+        assert!(matches!(
+            FsDaemonStore
+                .release_writer_lock(base, &project_id, &lease.lease_id)
+                .expect("writer lock state after partial cleanup"),
+            WriterLockReleaseOutcome::AlreadyAbsent
+        ));
     }
 
     /// Regression test: dispatch_in_worktree_with_service must return Ok(())
