@@ -6577,7 +6577,7 @@ fn run_stop_sigkill_terminates_same_process_group_backend_descendant() {
 }
 
 #[test]
-fn run_stop_sigkill_terminates_orphaned_backend_process_group_child() {
+fn run_stop_refuses_unsafe_orphaned_backend_process_group_cleanup_after_leader_exit() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -6664,11 +6664,15 @@ fn run_stop_sigkill_terminates_orphaned_backend_process_group_child() {
         .output()
         .expect("run stop");
 
-    assert!(output.status.success(), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("required SIGKILL after timeout"),
-        "stop should escalate to SIGKILL for the TERM-ignoring orchestrator: {stdout}"
+        stderr.contains("required SIGKILL after timeout"),
+        "stop should escalate to SIGKILL for the TERM-ignoring orchestrator before reporting backend cleanup refusal: {stderr}"
+    );
+    assert!(
+        stderr.contains("refusing stale backend cleanup for pid"),
+        "stop should refuse unsafe orphaned backend cleanup after the leader exits: {stderr}"
     );
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -6676,8 +6680,8 @@ fn run_stop_sigkill_terminates_orphaned_backend_process_group_child() {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     assert!(
-        !pid_is_alive(backend_orphan_pid),
-        "orphaned backend group member should be gone after SIGKILL escalation"
+        pid_is_alive(backend_orphan_pid),
+        "refused cleanup must not target an orphaned backend group once the leader identity is gone"
     );
 
     let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
@@ -6685,6 +6689,29 @@ fn run_stop_sigkill_terminates_orphaned_backend_process_group_child() {
         !orchestrator_status.success(),
         "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
     );
+
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
+            .expect("read run.json"),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "failed");
+    assert!(
+        !run_json["interrupted_run"].is_null(),
+        "stop should still finalize the interrupted snapshot before surfacing cleanup refusal"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "alpha")
+            .join("run.pid")
+            .exists(),
+        "run.pid should be removed once the orchestrator is stopped even when backend cleanup is refused"
+    );
+
+    let _ = kill(Pid::from_raw(backend_orphan_pid as i32), Signal::SIGKILL);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_orphan_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 #[test]

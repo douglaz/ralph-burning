@@ -1983,6 +1983,7 @@ struct RunSignalCleanupContext<'a> {
 fn reconcile_signal_interruption_for_attempt(
     context: &RunSignalCleanupContext<'_>,
     expected_attempt: Option<&engine::RunningAttemptIdentity>,
+    update: engine::InterruptedRunUpdate<'_>,
 ) -> AppResult<bool> {
     let interrupted_context = engine::InterruptedRunContext {
         run_snapshot_read: context.run_snapshot_read,
@@ -1991,12 +1992,6 @@ fn reconcile_signal_interruption_for_attempt(
         log_write: context.log_write,
         base_dir: context.base_dir,
         project_id: context.project_id,
-    };
-    let update = engine::InterruptedRunUpdate {
-        summary: "failed (interrupted by termination signal)",
-        log_message:
-            "termination signal interrupted the orchestrator before graceful shutdown completed",
-        failure_class: Some("cancellation"),
     };
 
     match expected_attempt {
@@ -2011,29 +2006,82 @@ fn reconcile_signal_interruption_for_attempt(
     }
 }
 
+fn persist_signal_interruption_marker(
+    context: &RunSignalCleanupContext<'_>,
+    expected_attempt: Option<&engine::RunningAttemptIdentity>,
+) -> AppResult<bool> {
+    reconcile_signal_interruption_for_attempt(
+        context,
+        expected_attempt,
+        engine::InterruptedRunUpdate {
+            summary: "failed (interrupted by termination signal)",
+            log_message:
+                "termination signal interrupted the orchestrator before graceful shutdown completed",
+            failure_class: Some("cancellation"),
+        },
+    )
+}
+
+fn signal_interruption_marker_still_matches_attempt(
+    context: &RunSignalCleanupContext<'_>,
+    expected_attempt: Option<&engine::RunningAttemptIdentity>,
+) -> AppResult<bool> {
+    let Some(expected_attempt) = expected_attempt else {
+        return Ok(false);
+    };
+    let snapshot = context
+        .run_snapshot_read
+        .read_run_snapshot(context.base_dir, context.project_id)?;
+    Ok(snapshot.status == RunStatus::Failed
+        && snapshot.active_run.is_none()
+        && snapshot.interrupted_run.as_ref().is_some_and(|run| {
+            run.run_id == expected_attempt.run_id && run.started_at == expected_attempt.started_at
+        }))
+}
+
+struct PreparedSignalInterruptionHandoff {
+    expected_attempt: Option<engine::RunningAttemptIdentity>,
+    interrupted_marker_persisted: bool,
+}
+
 fn prepare_signal_interruption_handoff(
     context: &RunSignalCleanupContext<'_>,
-) -> AppResult<Option<engine::RunningAttemptIdentity>> {
+) -> AppResult<PreparedSignalInterruptionHandoff> {
     let snapshot = context
         .run_snapshot_read
         .read_run_snapshot(context.base_dir, context.project_id)?;
     if snapshot.status != RunStatus::Running {
-        return Ok(None);
+        return Ok(PreparedSignalInterruptionHandoff {
+            expected_attempt: None,
+            interrupted_marker_persisted: false,
+        });
     }
 
     let Some(active_run) = snapshot.active_run.as_ref() else {
-        return Ok(None);
+        return Ok(PreparedSignalInterruptionHandoff {
+            expected_attempt: None,
+            interrupted_marker_persisted: false,
+        });
     };
     let expected_attempt = engine::RunningAttemptIdentity::from_active_run(active_run);
     let Some(pid_record) = FileSystem::read_pid_file(context.base_dir, context.project_id)? else {
-        return Ok(None);
+        return Ok(PreparedSignalInterruptionHandoff {
+            expected_attempt: Some(expected_attempt),
+            interrupted_marker_persisted: false,
+        });
     };
     if pid_record.pid != std::process::id() {
-        return Ok(None);
+        return Ok(PreparedSignalInterruptionHandoff {
+            expected_attempt: Some(expected_attempt),
+            interrupted_marker_persisted: false,
+        });
     }
     if let Some(writer_owner) = context.writer_owner {
         if pid_record.writer_owner.as_deref() != Some(writer_owner) {
-            return Ok(None);
+            return Ok(PreparedSignalInterruptionHandoff {
+                expected_attempt: Some(expected_attempt),
+                interrupted_marker_persisted: false,
+            });
         }
     }
     if !FileSystem::pid_record_matches_attempt(
@@ -2041,33 +2089,18 @@ fn prepare_signal_interruption_handoff(
         &expected_attempt.run_id,
         expected_attempt.started_at,
     ) {
-        return Ok(None);
+        return Ok(PreparedSignalInterruptionHandoff {
+            expected_attempt: Some(expected_attempt),
+            interrupted_marker_persisted: false,
+        });
     }
 
-    if !FileSystem::remove_pid_file_if_matches(context.base_dir, context.project_id, &pid_record)? {
-        if let Some(current_record) =
-            FileSystem::read_pid_file(context.base_dir, context.project_id)?
-        {
-            return Err(AppError::Io(std::io::Error::other(format!(
-                "run.pid changed during signal cleanup handoff; refusing to continue waiting on stale ownership (observed pid {})",
-                current_record.pid
-            ))));
-        }
-    }
-
-    let _ = context.log_write.append_runtime_log(
-        context.base_dir,
-        context.project_id,
-        &crate::contexts::project_run_record::model::RuntimeLogEntry {
-            timestamp: Utc::now(),
-            level: crate::contexts::project_run_record::model::LogLevel::Warn,
-            source: "engine".to_owned(),
-            message: "termination signal received; removed run.pid before graceful-shutdown wait"
-                .to_owned(),
-        },
-    );
-
-    Ok(Some(expected_attempt))
+    let interrupted_marker_persisted =
+        persist_signal_interruption_marker(context, Some(&expected_attempt))?;
+    Ok(PreparedSignalInterruptionHandoff {
+        expected_attempt: Some(expected_attempt),
+        interrupted_marker_persisted,
+    })
 }
 
 async fn run_with_termination_signal<F>(
@@ -2106,38 +2139,82 @@ where
             signal?;
             eprintln!("termination signal received; stopping run gracefully...");
             cancellation_token.cancel();
-            let interrupted_attempt = prepare_signal_interruption_handoff(&cleanup_context)
+            let interrupted_handoff = prepare_signal_interruption_handoff(&cleanup_context)
                 .map_err(|error| cleanup_context.origin.error(format!(
                     "termination signal received; failed to persist signal-cleanup handoff before graceful shutdown: {error}"
                 )))?;
             match tokio::time::timeout(RUN_STOP_GRACE_PERIOD, &mut future).await {
                 Ok(result) => {
-                    match reconcile_signal_interruption_for_attempt(
-                        &cleanup_context,
-                        interrupted_attempt.as_ref(),
-                    ) {
-                        Ok(true) => Err(cleanup_context.origin.error(
-                            "run interrupted by termination signal",
-                        )),
-                        Ok(false) => result,
-                        Err(error) => Err(cleanup_context.origin.error(format!(
-                            "termination signal received; interrupted-state cleanup failed: {error}"
-                        ))),
+                    if interrupted_handoff.interrupted_marker_persisted {
+                        match signal_interruption_marker_still_matches_attempt(
+                            &cleanup_context,
+                            interrupted_handoff.expected_attempt.as_ref(),
+                        ) {
+                            Ok(true) => Err(cleanup_context.origin.error(
+                                "run interrupted by termination signal",
+                            )),
+                            Ok(false) => result,
+                            Err(error) => Err(cleanup_context.origin.error(format!(
+                                "termination signal received; interrupted-state cleanup failed: {error}"
+                            ))),
+                        }
+                    } else {
+                        match reconcile_signal_interruption_for_attempt(
+                            &cleanup_context,
+                            interrupted_handoff.expected_attempt.as_ref(),
+                            engine::InterruptedRunUpdate {
+                                summary: "failed (interrupted by termination signal)",
+                                log_message:
+                                    "termination signal interrupted the orchestrator before graceful shutdown completed",
+                                failure_class: Some("cancellation"),
+                            },
+                        ) {
+                            Ok(true) => Err(cleanup_context.origin.error(
+                                "run interrupted by termination signal",
+                            )),
+                            Ok(false) => result,
+                            Err(error) => Err(cleanup_context.origin.error(format!(
+                                "termination signal received; interrupted-state cleanup failed: {error}"
+                            ))),
+                        }
                     }
                 }
                 Err(_) => {
-                    let cleanup_result = reconcile_signal_interruption_for_attempt(
-                        &cleanup_context,
-                        interrupted_attempt.as_ref(),
-                    );
-                    let reason = match cleanup_result {
-                        Ok(true) => "run interrupted by termination signal after graceful shutdown timed out".to_owned(),
-                        Ok(false) => "termination signal received and graceful shutdown timed out before interrupted state could be confirmed".to_owned(),
-                        Err(error) => format!(
-                            "termination signal received and graceful shutdown timed out; interrupted-state cleanup also failed: {error}"
-                        ),
-                    };
-                    Err(cleanup_context.origin.error(reason))
+                    if interrupted_handoff.interrupted_marker_persisted {
+                        match signal_interruption_marker_still_matches_attempt(
+                            &cleanup_context,
+                            interrupted_handoff.expected_attempt.as_ref(),
+                        ) {
+                            Ok(true) => Err(cleanup_context.origin.error(
+                                "run interrupted by termination signal after graceful shutdown timed out",
+                            )),
+                            Ok(false) => Err(cleanup_context.origin.error(
+                                "termination signal received and graceful shutdown timed out before interrupted state could be confirmed",
+                            )),
+                            Err(error) => Err(cleanup_context.origin.error(format!(
+                                "termination signal received and graceful shutdown timed out; interrupted-state cleanup also failed: {error}"
+                            ))),
+                        }
+                    } else {
+                        let cleanup_result = reconcile_signal_interruption_for_attempt(
+                            &cleanup_context,
+                            interrupted_handoff.expected_attempt.as_ref(),
+                            engine::InterruptedRunUpdate {
+                                summary: "failed (interrupted by termination signal)",
+                                log_message:
+                                    "termination signal interrupted the orchestrator before graceful shutdown completed",
+                                failure_class: Some("cancellation"),
+                            },
+                        );
+                        let reason = match cleanup_result {
+                            Ok(true) => "run interrupted by termination signal after graceful shutdown timed out".to_owned(),
+                            Ok(false) => "termination signal received and graceful shutdown timed out before interrupted state could be confirmed".to_owned(),
+                            Err(error) => format!(
+                                "termination signal received and graceful shutdown timed out; interrupted-state cleanup also failed: {error}"
+                            ),
+                        };
+                        Err(cleanup_context.origin.error(reason))
+                    }
                 }
             }
         }
@@ -2434,14 +2511,14 @@ fn unix_descendant_pids(root_pid: u32) -> AppResult<Vec<u32>> {
 
 #[cfg(unix)]
 #[derive(Clone)]
-struct TrackedDescendantProcess {
+struct TrackedProcess {
     pid: u32,
     proc_start_ticks: Option<u64>,
     proc_start_marker: Option<String>,
 }
 
 #[cfg(unix)]
-impl TrackedDescendantProcess {
+impl TrackedProcess {
     fn from_pid(pid: u32) -> Self {
         Self {
             pid,
@@ -2465,7 +2542,7 @@ impl TrackedDescendantProcess {
 }
 
 #[cfg(unix)]
-fn snapshot_descendant_processes(root_pid: u32) -> AppResult<Vec<TrackedDescendantProcess>> {
+fn snapshot_descendant_processes(root_pid: u32) -> AppResult<Vec<TrackedProcess>> {
     #[cfg(target_os = "linux")]
     let descendant_pids = linux_descendant_pids(root_pid);
     #[cfg(all(unix, not(target_os = "linux")))]
@@ -2473,12 +2550,12 @@ fn snapshot_descendant_processes(root_pid: u32) -> AppResult<Vec<TrackedDescenda
 
     Ok(descendant_pids
         .into_iter()
-        .map(TrackedDescendantProcess::from_pid)
+        .map(TrackedProcess::from_pid)
         .collect())
 }
 
 #[cfg(unix)]
-fn kill_tracked_descendant_processes(processes: &[TrackedDescendantProcess]) -> AppResult<usize> {
+fn kill_tracked_descendant_processes(processes: &[TrackedProcess]) -> AppResult<usize> {
     let mut signaled = 0usize;
     for process in processes {
         if !process.matches_live_process() {
@@ -2499,6 +2576,18 @@ fn kill_tracked_descendant_processes(processes: &[TrackedDescendantProcess]) -> 
     }
 
     Ok(signaled)
+}
+
+#[cfg(unix)]
+fn tracked_processes_still_alive(processes: &[TrackedProcess]) -> Vec<u32> {
+    let mut live_pids = processes
+        .iter()
+        .filter(|process| process.matches_live_process())
+        .map(|process| process.pid)
+        .collect::<Vec<_>>();
+    live_pids.sort_unstable();
+    live_pids.dedup();
+    live_pids
 }
 
 fn stale_backend_processes_for_attempt(
@@ -2523,16 +2612,30 @@ fn stale_backend_processes_for_attempt(
 #[cfg(unix)]
 fn kill_stale_backend_process_group(
     record: &crate::adapters::fs::RunBackendProcessRecord,
-) -> AppResult<bool> {
-    let authoritative_leader_is_alive = FileSystem::is_backend_process_alive(record);
+) -> AppResult<(bool, Vec<TrackedProcess>)> {
     if !FileSystem::backend_process_is_authoritative(record) {
-        if !authoritative_leader_is_alive {
-            return Ok(false);
-        }
         return Err(AppError::Io(std::io::Error::other(format!(
-            "refusing stale recovery because backend pid {} is still alive but lacks authoritative process identity",
+            "refusing stale backend cleanup for pid {} because the recorded process identity is not authoritative",
             record.pid
         ))));
+    }
+    if !FileSystem::is_backend_process_alive(record) {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing stale backend cleanup for pid {} after the recorded process-group leader exited because PGID reuse cannot be ruled out",
+            record.pid
+        ))));
+    }
+
+    let mut tracked_group_members = unix_process_group_members(record.pid)?
+        .into_iter()
+        .filter(|pid| FileSystem::is_pid_running_unchecked(*pid))
+        .map(TrackedProcess::from_pid)
+        .collect::<Vec<_>>();
+    if tracked_group_members
+        .iter()
+        .all(|process| process.pid != record.pid)
+    {
+        tracked_group_members.push(TrackedProcess::from_pid(record.pid));
     }
 
     let pid = i32::try_from(record.pid).map_err(|_| {
@@ -2542,18 +2645,15 @@ fn kill_stale_backend_process_group(
         )))
     })?;
     match kill(Pid::from_raw(-pid), Signal::SIGKILL) {
-        Ok(()) => Ok(true),
-        Err(nix::errno::Errno::ESRCH) if authoritative_leader_is_alive => {
-            match kill(Pid::from_raw(pid), Signal::SIGKILL) {
-                Ok(()) => Ok(true),
-                Err(nix::errno::Errno::ESRCH) => Ok(false),
-                Err(error) => Err(AppError::Io(std::io::Error::other(format!(
-                    "failed to SIGKILL stale backend pid {}: {error}",
-                    record.pid
-                )))),
-            }
-        }
-        Err(nix::errno::Errno::ESRCH) => Ok(false),
+        Ok(()) => Ok((true, tracked_group_members)),
+        Err(nix::errno::Errno::ESRCH) => match kill(Pid::from_raw(pid), Signal::SIGKILL) {
+            Ok(()) => Ok((true, tracked_group_members)),
+            Err(nix::errno::Errno::ESRCH) => Ok((false, tracked_group_members)),
+            Err(error) => Err(AppError::Io(std::io::Error::other(format!(
+                "failed to SIGKILL stale backend pid {}: {error}",
+                record.pid
+            )))),
+        },
         Err(error) => Err(AppError::Io(std::io::Error::other(format!(
             "failed to SIGKILL stale backend process group {}: {error}",
             record.pid
@@ -2562,27 +2662,8 @@ fn kill_stale_backend_process_group(
 }
 
 #[cfg(unix)]
-fn stale_backend_processes_still_alive(
-    records: &[crate::adapters::fs::RunBackendProcessRecord],
-) -> AppResult<Vec<u32>> {
-    let mut live_pids = Vec::new();
-
-    for record in records {
-        if FileSystem::is_backend_process_alive(record) {
-            live_pids.push(record.pid);
-            continue;
-        }
-
-        live_pids.extend(
-            unix_process_group_members(record.pid)?
-                .into_iter()
-                .filter(|pid| FileSystem::is_pid_running_unchecked(*pid)),
-        );
-    }
-
-    live_pids.sort_unstable();
-    live_pids.dedup();
-    Ok(live_pids)
+fn stale_backend_processes_still_alive(processes: &[TrackedProcess]) -> Vec<u32> {
+    tracked_processes_still_alive(processes)
 }
 
 fn cleanup_stale_backend_process_groups(
@@ -2599,15 +2680,18 @@ fn cleanup_stale_backend_process_groups(
     #[cfg(unix)]
     {
         let mut signaled = 0usize;
+        let mut tracked_group_members = Vec::new();
         for record in &matching {
-            if kill_stale_backend_process_group(record)? {
+            let (killed, tracked_members) = kill_stale_backend_process_group(record)?;
+            tracked_group_members.extend(tracked_members);
+            if killed {
                 signaled += 1;
             }
         }
 
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
-            let live_pids = stale_backend_processes_still_alive(&matching)?;
+            let live_pids = stale_backend_processes_still_alive(&tracked_group_members);
             if live_pids.is_empty() {
                 break;
             }
@@ -7205,8 +7289,12 @@ mod tests {
                 .expect("read snapshot during signal handoff");
             assert_eq!(
                 running_snapshot.status,
-                RunStatus::Running,
-                "signal handoff should remove run.pid before rewriting the snapshot"
+                RunStatus::Failed,
+                "signal handoff should persist an interrupted snapshot before the run future settles"
+            );
+            assert!(
+                running_snapshot.interrupted_run.is_some(),
+                "signal handoff should preserve interrupted_run before graceful shutdown waits"
             );
             assert!(
                 FileSystem::read_pid_file(&future_base_dir, &future_project_id)
@@ -7256,14 +7344,14 @@ mod tests {
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn tracked_descendant_process_matches_live_marker_only_identity() {
-        let tracked = super::TrackedDescendantProcess {
+        let tracked = super::TrackedProcess {
             pid: std::process::id(),
             proc_start_ticks: None,
             proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
         };
         assert!(tracked.matches_live_process());
 
-        let mismatched = super::TrackedDescendantProcess {
+        let mismatched = super::TrackedProcess {
             proc_start_marker: Some("mismatched-start-marker".to_owned()),
             ..tracked
         };
