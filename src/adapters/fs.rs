@@ -267,7 +267,8 @@ impl FileSystem {
 
         #[cfg(all(unix, not(target_os = "linux")))]
         {
-            if let (Some(expected), Some(actual)) = (proc_start_marker, Self::proc_start_marker(pid))
+            if let (Some(expected), Some(actual)) =
+                (proc_start_marker, Self::proc_start_marker(pid))
             {
                 if actual == expected {
                     return true;

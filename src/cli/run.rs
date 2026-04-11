@@ -1650,6 +1650,28 @@ fn observed_running_attempt_owner(
     read_project_writer_lock_owner(base_dir, project_id)
 }
 
+fn stop_target_pid_record_is_unchanged(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    expected_attempt: &engine::RunningAttemptIdentity,
+    observed_pid_record: &crate::adapters::fs::RunPidRecord,
+) -> AppResult<bool> {
+    let Some(current_pid_record) = FileSystem::read_pid_file(base_dir, project_id)? else {
+        // PID file was removed — the orchestrator exited cleanly between
+        // liveness classification and this revalidation.  Treat as
+        // unchanged so the caller falls through to the post-exit path
+        // instead of reporting a spurious handoff error.
+        return Ok(true);
+    };
+
+    Ok(current_pid_record == *observed_pid_record
+        && FileSystem::pid_record_matches_attempt(
+            &current_pid_record,
+            &expected_attempt.run_id,
+            expected_attempt.started_at,
+        ))
+}
+
 fn observed_writer_owner_is_stale(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
@@ -3104,6 +3126,18 @@ async fn handle_stop() -> AppResult<()> {
         RunningSnapshotLiveness::CliProcess(pid_record) => {
             #[cfg(unix)]
             {
+                if !stop_target_pid_record_is_unchanged(
+                    &current_dir,
+                    &project_id,
+                    &observed_attempt,
+                    &pid_record,
+                )? {
+                    return Err(AppError::RunStopFailed {
+                        reason:
+                            "project run changed while preparing stop; retry `ralph-burning run stop`"
+                                .to_owned(),
+                    });
+                }
                 let observed_owner = pid_record
                     .writer_owner
                     .clone()
@@ -6714,6 +6748,63 @@ mod tests {
         assert_eq!(
             task.lease_id.as_deref(),
             Some(worktree_lease.lease_id.as_str())
+        );
+    }
+
+    #[test]
+    fn stop_target_pid_record_is_unchanged_rejects_pid_handoff_to_new_attempt() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("stop-target-handoff").expect("project id");
+        let stale_attempt_started_at = Utc::now() - chrono::Duration::minutes(5);
+        let fresh_attempt_started_at = stale_attempt_started_at + chrono::Duration::minutes(1);
+        let stale_pid_record = FileSystem::write_pid_file(
+            base_dir,
+            &project_id,
+            crate::adapters::fs::RunPidOwner::Cli,
+            Some("writer-stale"),
+            Some("run-stale"),
+            Some(stale_attempt_started_at),
+        )
+        .expect("write stale pid file");
+        let stale_attempt = crate::contexts::workflow_composition::engine::RunningAttemptIdentity {
+            run_id: "run-stale".to_owned(),
+            started_at: stale_attempt_started_at,
+        };
+
+        assert!(super::stop_target_pid_record_is_unchanged(
+            base_dir,
+            &project_id,
+            &stale_attempt,
+            &stale_pid_record,
+        )
+        .expect("stale pid record should match before handoff"));
+
+        let fresh_pid_record = crate::adapters::fs::RunPidRecord {
+            pid: stale_pid_record.pid,
+            started_at: stale_pid_record.started_at,
+            owner: crate::adapters::fs::RunPidOwner::Cli,
+            writer_owner: Some("writer-fresh".to_owned()),
+            run_id: Some("run-fresh".to_owned()),
+            run_started_at: Some(fresh_attempt_started_at),
+            proc_start_ticks: stale_pid_record.proc_start_ticks,
+            proc_start_marker: stale_pid_record.proc_start_marker.clone(),
+        };
+        std::fs::write(
+            FileSystem::live_project_root(base_dir, &project_id).join("run.pid"),
+            serde_json::to_string_pretty(&fresh_pid_record).expect("serialize fresh pid record"),
+        )
+        .expect("overwrite run.pid with fresh attempt");
+
+        assert!(
+            !super::stop_target_pid_record_is_unchanged(
+                base_dir,
+                &project_id,
+                &stale_attempt,
+                &stale_pid_record,
+            )
+            .expect("handoff should be detected"),
+            "stop must refuse to signal after run.pid moves to a different attempt"
         );
     }
 
