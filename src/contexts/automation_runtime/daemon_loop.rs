@@ -42,6 +42,7 @@ use crate::contexts::project_run_record::service::{
     RuntimeLogWritePort,
 };
 use crate::contexts::project_run_record::CreateProjectInput;
+use crate::contexts::project_run_record::{journal, queries};
 use crate::contexts::requirements_drafting::model::{RequirementsOutputKind, RequirementsStatus};
 use crate::contexts::requirements_drafting::service::{self as req_service, RequirementsStorePort};
 use crate::contexts::workflow_composition::engine;
@@ -49,7 +50,8 @@ use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
 use crate::contexts::workspace_governance::config::{EffectiveConfig, DEFAULT_FLOW_PRESET};
 use crate::contexts::workspace_governance::WORKSPACE_DIR;
 use crate::shared::domain::{
-    BackendPolicyRole, BackendRole, FlowPreset, ProjectId, ResolvedBackendTarget, SessionPolicy,
+    BackendPolicyRole, BackendRole, FlowPreset, ProjectId, ResolvedBackendTarget, RunId,
+    SessionPolicy,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -87,6 +89,11 @@ impl Default for DaemonLoopConfig {
 }
 
 const DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+struct PreparedCancelledDispatchHandoff {
+    expected_attempt: Option<engine::RunningAttemptIdentity>,
+    interrupted_marker_persisted: bool,
+}
 
 pub struct DaemonLoop<'a, A, R, S> {
     store: &'a dyn DaemonStorePort,
@@ -2841,6 +2848,140 @@ where
         )
     }
 
+    fn prepare_cancelled_dispatch_handoff(
+        &self,
+        workspace_dir: &Path,
+        project_id: &ProjectId,
+        writer_owner: &str,
+        summary: &'static str,
+        log_message: &'static str,
+    ) -> AppResult<PreparedCancelledDispatchHandoff> {
+        let snapshot = self
+            .run_snapshot_read
+            .read_run_snapshot(workspace_dir, project_id)?;
+        if snapshot.status != RunStatus::Running {
+            return Ok(PreparedCancelledDispatchHandoff {
+                expected_attempt: None,
+                interrupted_marker_persisted: false,
+            });
+        }
+
+        let Some(active_run) = snapshot.active_run.as_ref() else {
+            return Ok(PreparedCancelledDispatchHandoff {
+                expected_attempt: None,
+                interrupted_marker_persisted: false,
+            });
+        };
+        let expected_attempt = engine::RunningAttemptIdentity::from_active_run(active_run);
+        let Some(pid_record) = FileSystem::read_pid_file(workspace_dir, project_id)? else {
+            return Ok(PreparedCancelledDispatchHandoff {
+                expected_attempt: Some(expected_attempt),
+                interrupted_marker_persisted: false,
+            });
+        };
+        if pid_record.pid != std::process::id()
+            || pid_record.writer_owner.as_deref() != Some(writer_owner)
+            || !FileSystem::pid_record_matches_attempt(
+                &pid_record,
+                &expected_attempt.run_id,
+                expected_attempt.started_at,
+            )
+        {
+            return Ok(PreparedCancelledDispatchHandoff {
+                expected_attempt: Some(expected_attempt),
+                interrupted_marker_persisted: false,
+            });
+        }
+
+        let interrupted_marker_persisted = engine::mark_running_run_interrupted(
+            engine::InterruptedRunContext {
+                run_snapshot_read: self.run_snapshot_read,
+                run_snapshot_write: self.run_snapshot_write,
+                journal_store: self.journal_store,
+                log_write: self.log_write,
+                base_dir: workspace_dir,
+                project_id,
+            },
+            &expected_attempt,
+            engine::InterruptedRunUpdate {
+                summary,
+                log_message,
+                failure_class: None,
+            },
+        )?;
+        Ok(PreparedCancelledDispatchHandoff {
+            expected_attempt: Some(expected_attempt),
+            interrupted_marker_persisted,
+        })
+    }
+
+    fn finalize_cancelled_dispatch_handoff(
+        &self,
+        workspace_dir: &Path,
+        project_id: &ProjectId,
+        expected_attempt: Option<&engine::RunningAttemptIdentity>,
+        log_message: &'static str,
+    ) -> AppResult<bool> {
+        let Some(expected_attempt) = expected_attempt else {
+            return Ok(false);
+        };
+        let snapshot = self
+            .run_snapshot_read
+            .read_run_snapshot(workspace_dir, project_id)?;
+        if !(snapshot.status == RunStatus::Failed
+            && snapshot.active_run.is_none()
+            && snapshot
+                .interrupted_run
+                .as_ref()
+                .is_some_and(|interrupted_run| {
+                    interrupted_run.run_id == expected_attempt.run_id
+                        && interrupted_run.started_at == expected_attempt.started_at
+                }))
+        {
+            return Ok(false);
+        }
+
+        let events = self.journal_store.read_journal(workspace_dir, project_id)?;
+        if queries::terminal_status_for_attempt(
+            &expected_attempt.run_id,
+            expected_attempt.started_at,
+            &events,
+        )
+        .is_none()
+        {
+            let interrupted_run =
+                snapshot
+                    .interrupted_run
+                    .as_ref()
+                    .ok_or_else(|| AppError::CorruptRecord {
+                        file: "run.json".to_owned(),
+                        details: "expected interrupted_run while finalizing daemon cancellation"
+                            .to_owned(),
+                    })?;
+            let run_id =
+                RunId::new(&interrupted_run.run_id).map_err(|error| AppError::CorruptRecord {
+                    file: "run.json".to_owned(),
+                    details: format!("interrupted_run contains invalid run_id: {error}"),
+                })?;
+            let event = journal::run_failed_event(
+                journal::last_sequence(&events) + 1,
+                Utc::now(),
+                &run_id,
+                interrupted_run.stage_cursor.stage,
+                "cancellation",
+                log_message,
+                snapshot.completion_rounds,
+                snapshot.max_completion_rounds.unwrap_or(0),
+                None,
+            );
+            let line = journal::serialize_event(&event)?;
+            self.journal_store
+                .append_event(workspace_dir, project_id, &line)?;
+        }
+
+        Ok(true)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn finish_cancelled_dispatch<F>(
         &self,
@@ -2857,6 +2998,13 @@ where
     where
         F: Future<Output = AppResult<()>>,
     {
+        let interrupted_handoff = self.prepare_cancelled_dispatch_handoff(
+            workspace_dir,
+            project_id,
+            &lease.lease_id,
+            summary,
+            log_message,
+        )?;
         match tokio::time::timeout(DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD, async {
             loop {
                 tokio::select! {
@@ -2869,15 +3017,42 @@ where
         })
         .await
         {
-            Ok(result) => result,
+            Ok(result) => {
+                if interrupted_handoff.interrupted_marker_persisted {
+                    match self.finalize_cancelled_dispatch_handoff(
+                        workspace_dir,
+                        project_id,
+                        interrupted_handoff.expected_attempt.as_ref(),
+                        log_message,
+                    ) {
+                        Ok(true) => Err(AppError::InvocationCancelled {
+                            backend: "daemon".to_owned(),
+                            contract_id: task.task_id.clone(),
+                        }),
+                        Ok(false) => result,
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    result
+                }
+            }
             Err(_) => {
-                let cleanup = self.reconcile_cancelled_dispatch_run(
-                    workspace_dir,
-                    project_id,
-                    &lease.lease_id,
-                    summary,
-                    log_message,
-                );
+                let cleanup = if interrupted_handoff.interrupted_marker_persisted {
+                    self.finalize_cancelled_dispatch_handoff(
+                        workspace_dir,
+                        project_id,
+                        interrupted_handoff.expected_attempt.as_ref(),
+                        log_message,
+                    )
+                } else {
+                    self.reconcile_cancelled_dispatch_run(
+                        workspace_dir,
+                        project_id,
+                        &lease.lease_id,
+                        summary,
+                        log_message,
+                    )
+                };
                 match cleanup {
                     Ok(true) => eprintln!(
                         "daemon: cancellation grace period expired for task '{}'; reconciled run state directly",
@@ -4261,6 +4436,23 @@ mod tests {
             Poll::Ready(())
         })
         .await;
+
+        let interrupted = FsRunSnapshotStore
+            .read_run_snapshot(base, &project_id)
+            .expect("read interrupted snapshot");
+        assert_eq!(interrupted.status, RunStatus::Failed);
+        assert!(interrupted.active_run.is_none());
+        assert!(
+            interrupted.interrupted_run.is_some(),
+            "interrupted run metadata should be preserved before the grace period expires"
+        );
+        assert!(
+            FileSystem::read_pid_file(base, &project_id)
+                .expect("read pid file")
+                .is_none(),
+            "daemon cancellation handoff should remove run.pid before the grace period expires"
+        );
+
         tokio::time::advance(DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD + Duration::from_millis(1))
             .await;
 

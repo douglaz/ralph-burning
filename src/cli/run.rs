@@ -7371,6 +7371,104 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn acquire_recovery_writer_guard_blocks_on_detached_partial_cleanup_failure() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("detached-cleanup-blocked").expect("project id");
+        let now = Utc::now();
+        let worktree_lease = WorktreeLease {
+            lease_id: "lease-detached-cleanup-blocked".to_owned(),
+            task_id: "task-detached-cleanup-blocked".to_owned(),
+            project_id: project_id.to_string(),
+            worktree_path: base_dir.join("worktrees/missing-detached-cleanup-blocked"),
+            branch_name: "task-detached-cleanup-blocked".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::Worktree(worktree_lease.clone()),
+        )
+        .expect("write detached worktree lease");
+        <FsDaemonStore as DaemonStorePort>::write_task(
+            &FsDaemonStore,
+            base_dir,
+            &DaemonTask {
+                task_id: worktree_lease.task_id.clone(),
+                issue_ref: "repo#43".to_owned(),
+                project_id: project_id.to_string(),
+                project_name: Some("detached partial".to_owned()),
+                prompt: Some("prompt".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Failed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: Some(worktree_lease.lease_id.clone()),
+                failure_class: Some("stale_writer_owner_reclaimed".to_owned()),
+                failure_message: Some("partial cleanup preserved lease state".to_owned()),
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                workflow_run_id: None,
+                repo_slug: None,
+                issue_number: None,
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            },
+        )
+        .expect("write detached daemon task");
+
+        let result = super::acquire_recovery_writer_guard(
+            base_dir,
+            base_dir,
+            &project_id,
+            Some(worktree_lease.lease_id.as_str()),
+            None,
+            false,
+            false,
+        );
+        assert!(
+            matches!(result, Err(AppError::LeaseCleanupPartialFailure { .. })),
+            "detached partial cleanup must block recovery guard acquisition"
+        );
+        assert!(
+            super::read_project_writer_lock_owner(base_dir, &project_id)
+                .expect("read writer owner")
+                .is_none(),
+            "recovery guard should close itself after detached cleanup fails"
+        );
+        assert!(
+            <FsDaemonStore as DaemonStorePort>::read_lease_record(
+                &FsDaemonStore,
+                base_dir,
+                &worktree_lease.lease_id,
+            )
+            .is_ok(),
+            "detached worktree lease should remain durable after partial cleanup"
+        );
+        let task = <FsDaemonStore as DaemonStorePort>::read_task(
+            &FsDaemonStore,
+            base_dir,
+            &worktree_lease.task_id,
+        )
+        .expect("read daemon task");
+        assert_eq!(
+            task.lease_id.as_deref(),
+            Some(worktree_lease.lease_id.as_str()),
+            "partial detached cleanup must preserve the task lease reference"
+        );
+    }
+
     #[test]
     fn stop_target_pid_record_is_unchanged_rejects_pid_handoff_to_new_attempt() {
         let temp_dir = tempfile::tempdir().expect("tempdir");

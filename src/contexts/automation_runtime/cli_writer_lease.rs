@@ -19,7 +19,7 @@ use crate::contexts::automation_runtime::model::{
 };
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::{
-    DaemonStorePort, ResourceCleanupOutcome, WriterLockReleaseOutcome,
+    DaemonStorePort, ResourceCleanupOutcome, WorktreeCleanupOutcome, WriterLockReleaseOutcome,
 };
 use crate::shared::domain::ProjectId;
 use crate::shared::error::{AppError, AppResult};
@@ -84,6 +84,26 @@ fn read_lease_record_if_present(
     }
 }
 
+fn strict_lease_cleanup_failure(task_id: &str) -> AppError {
+    AppError::LeaseCleanupPartialFailure {
+        task_id: task_id.to_owned(),
+    }
+}
+
+fn require_removed_lease_record(outcome: ResourceCleanupOutcome, task_id: &str) -> AppResult<()> {
+    match outcome {
+        ResourceCleanupOutcome::Removed => Ok(()),
+        ResourceCleanupOutcome::AlreadyAbsent => Err(strict_lease_cleanup_failure(task_id)),
+    }
+}
+
+fn require_removed_worktree(outcome: WorktreeCleanupOutcome, task_id: &str) -> AppResult<()> {
+    match outcome {
+        WorktreeCleanupOutcome::Removed => Ok(()),
+        WorktreeCleanupOutcome::AlreadyAbsent => Err(strict_lease_cleanup_failure(task_id)),
+    }
+}
+
 pub fn read_project_writer_lease_record(
     store: &dyn DaemonStorePort,
     base_dir: &Path,
@@ -122,7 +142,10 @@ pub fn reclaim_specific_cli_writer_lease(
         WriterLockReleaseOutcome::Released | WriterLockReleaseOutcome::AlreadyAbsent => {}
         WriterLockReleaseOutcome::OwnerMismatch { .. } => return Ok(false),
     }
-    let _ = store.remove_lease(base_dir, expected_owner)?;
+    require_removed_lease_record(
+        store.remove_lease(base_dir, expected_owner)?,
+        expected_owner,
+    )?;
     Ok(true)
 }
 
@@ -198,7 +221,10 @@ pub fn reclaim_specific_project_writer_owner(
                 WriterLockReleaseOutcome::Released | WriterLockReleaseOutcome::AlreadyAbsent => {}
                 WriterLockReleaseOutcome::OwnerMismatch { .. } => return Ok(false),
             }
-            let _ = store.remove_lease(base_dir, expected_owner)?;
+            require_removed_lease_record(
+                store.remove_lease(base_dir, expected_owner)?,
+                expected_owner,
+            )?;
             Ok(true)
         }
         LeaseRecord::Worktree(lease) => {
@@ -241,7 +267,6 @@ pub fn reclaim_specific_project_writer_owner(
                 });
             }
 
-            let _ = store.remove_lease(base_dir, &lease.lease_id)?;
             if store
                 .read_task(base_dir, &lease.task_id)
                 .ok()
@@ -340,7 +365,10 @@ pub fn cleanup_detached_project_writer_owner(
 
     match record {
         LeaseRecord::CliWriter(_) => {
-            let _ = store.remove_lease(base_dir, expected_owner)?;
+            require_removed_lease_record(
+                store.remove_lease(base_dir, expected_owner)?,
+                expected_owner,
+            )?;
             Ok(true)
         }
         LeaseRecord::Worktree(lease) => {
@@ -366,16 +394,14 @@ pub fn cleanup_detached_project_writer_owner(
                 }
             }
 
-            worktree
+            let worktree_outcome = worktree
                 .remove_worktree(repo_root, &lease.worktree_path, &lease.task_id)
-                .map_err(|_| AppError::LeaseCleanupPartialFailure {
-                    task_id: lease.task_id.clone(),
-                })?;
-            let _ = store.remove_lease(base_dir, &lease.lease_id).map_err(|_| {
-                AppError::LeaseCleanupPartialFailure {
-                    task_id: lease.task_id.clone(),
-                }
-            })?;
+                .map_err(|_| strict_lease_cleanup_failure(&lease.task_id))?;
+            require_removed_worktree(worktree_outcome, &lease.task_id)?;
+            let lease_outcome = store
+                .remove_lease(base_dir, &lease.lease_id)
+                .map_err(|_| strict_lease_cleanup_failure(&lease.task_id))?;
+            require_removed_lease_record(lease_outcome, &lease.task_id)?;
 
             if store
                 .read_task(base_dir, &lease.task_id)
@@ -1226,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_detached_project_writer_owner_finishes_partial_cleanup_after_lock_loss() {
+    fn cleanup_detached_project_writer_owner_surfaces_partial_cleanup_after_lock_loss() {
         let temp = tempdir().expect("tempdir");
         let project_id =
             ProjectId::new("stale-daemon-owner-detached".to_owned()).expect("valid id");
@@ -1281,7 +1307,7 @@ mod tests {
             .write_lease_record(temp.path(), &LeaseRecord::Worktree(worktree_lease.clone()))
             .expect("write detached worktree lease");
 
-        let cleaned = cleanup_detached_project_writer_owner(
+        let error = cleanup_detached_project_writer_owner(
             &FsDaemonStore,
             &StubWorktreePort {
                 cleanup: StubWorktreeCleanup::AlreadyAbsent,
@@ -1291,22 +1317,26 @@ mod tests {
             &project_id,
             &worktree_lease.lease_id,
         )
-        .expect("finish detached cleanup");
+        .expect_err("partial detached cleanup should surface an error");
 
-        assert!(cleaned, "detached cleanup residue should be reclaimed");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "expected partial cleanup error, got: {error:?}"
+        );
         assert!(
             FsDaemonStore
                 .read_lease_record(temp.path(), &worktree_lease.lease_id)
-                .is_err(),
-            "detached lease record should be removed"
+                .is_ok(),
+            "detached lease record should remain durable after partial cleanup"
         );
         let task = FsDaemonStore
             .read_task(temp.path(), &worktree_lease.task_id)
             .expect("read daemon task");
         assert_eq!(task.status, TaskStatus::Failed);
-        assert!(
-            task.lease_id.is_none(),
-            "detached cleanup should clear the stale task lease reference"
+        assert_eq!(
+            task.lease_id.as_deref(),
+            Some(worktree_lease.lease_id.as_str()),
+            "detached cleanup must preserve the stale task lease reference on partial failure"
         );
     }
 }
