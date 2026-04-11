@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T23:14:55.148930369Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the current diff plus the affected run/daemon/engine code paths and targeted tests. I found one remaining correctness gap: the new partial-cleanup fail-closed behavior was added only to the single-repo daemon loop, while the multi-repo GitHub daemon path still swallows the same lease-cleanup failure and continues on later cycles.\n\n## Amendments\n\n1. Propagate or persistently quarantine `AppError::LeaseCleanupPartialFailure` in the multi-repo daemon loop as well. The new fail-closed behavior only exists in the single-repo path (`src/contexts/automation_runtime/daemon_loop.rs:1130-1139`), but `process_task_multi_repo()` still bubbles `release_task_lease()` failures up into `process_cycle_multi_repo()`, where the generic branch at `src/contexts/automation_runtime/daemon_loop.rs:589-610` just logs and breaks the current cycle. On the next poll that repo is eligible again even though the prior task kept contradictory durable lease/worktree state, so GitHub/multi-repo daemon deployments still do not actually block on partial cleanup failures.\n   Rationale: This leaves one production daemon mode continuing after a known cleanup-consistency breach. The retained lease makes the failed task visible, but the daemon no longer surfaces the problem as a hard failure and can resume dispatching other work in the same repo on later cycles, which is the exact class of silent continuation this bead is supposed to eliminate.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

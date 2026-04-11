@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411212718-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260411212718-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T23:19:15.400841169Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 5/25\n\n## Accepted\n\n- `fr-5-e406e00a`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-e406e00a`\n\nPropagate or persistently quarantine `AppError::LeaseCleanupPartialFailure` in the multi-repo daemon loop as well. The new fail-closed behavior only exists in the single-repo path (`src/contexts/automation_runtime/daemon_loop.rs:1130-1139`), but `process_task_multi_repo()` still bubbles `release_task_lease()` failures up into `process_cycle_multi_repo()`, where the generic branch at `src/contexts/automation_runtime/daemon_loop.rs:589-610` just logs and breaks the current cycle. On the next poll that repo is eligible again even though the prior task kept contradictory durable lease/worktree state, so GitHub/multi-repo daemon deployments still do not actually block on partial cleanup failures.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 5
+      "completion_round": 6
     },
     "started_at": "2026-04-11T21:27:18.356800744Z",
     "prompt_hash_at_cycle_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "prompt_hash_at_stage_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 4
+    "final_review_restart_count": 5
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 5,
+  "completion_rounds": 6,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-5-e406e00a",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "Propagate or persistently quarantine `AppError::LeaseCleanupPartialFailure` in the multi-repo daemon loop as well. The new fail-closed behavior only exists in the single-repo path (`src/contexts/automation_runtime/daemon_loop.rs:1130-1139`), but `process_task_multi_repo()` still bubbles `release_task_lease()` failures up into `process_cycle_multi_repo()`, where the generic branch at `src/contexts/automation_runtime/daemon_loop.rs:589-610` just logs and breaks the current cycle. On the next poll that repo is eligible again even though the prior task kept contradictory durable lease/worktree state, so GitHub/multi-repo daemon deployments still do not actually block on partial cleanup failures.",
+        "created_at": "2026-04-11T23:19:15.400834817Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "478f3f28cd70bf9139925498acc1a582419ee5690fd99d959959b24398c7132b"
+      }
+    ],
     "processed_count": 7
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 6 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-11T22:47:31.115838856Z",
+    "resolved_at": "2026-04-11T23:05:40.948022679Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
