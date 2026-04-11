@@ -1100,6 +1100,12 @@ fn sync_terminal_milestone_task_with_options(
     final_snapshot: &RunSnapshot,
     allow_missing_lineage_repair: bool,
 ) -> AppResult<bool> {
+    let mut final_snapshot = final_snapshot.clone();
+    let _ = repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+        base_dir,
+        project_id,
+        &mut final_snapshot,
+    )?;
     let Some(task_source) = project_record.task_source.as_ref() else {
         return Ok(false);
     };
@@ -1135,7 +1141,6 @@ fn sync_terminal_milestone_task_with_options(
         }
         RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => return Ok(false),
     };
-    let _ = repair_missing_signal_handoff_run_failed_event(base_dir, project_id, final_snapshot)?;
     let journal_events = FsJournalStore.read_journal(base_dir, project_id)?;
     let matching_lineage_run = milestone_service::find_runs_for_bead(
         &FsTaskRunLineageStore,
@@ -1997,6 +2002,18 @@ fn repair_missing_signal_handoff_run_failed_event(
     )
 }
 
+fn repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    snapshot: &mut RunSnapshot,
+) -> AppResult<bool> {
+    let repaired = repair_missing_signal_handoff_run_failed_event(base_dir, project_id, snapshot)?;
+    if repaired {
+        *snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
+    }
+    Ok(repaired)
+}
+
 fn stale_status_view(project_id: &ProjectId, snapshot: &RunSnapshot) -> RunStatusView {
     let mut status = RunStatusView::from_snapshot(project_id.as_str(), snapshot);
     status.status = "stale (process not found)".to_owned();
@@ -2719,22 +2736,6 @@ fn kill_stale_backend_process_group(
     let leader_matches_record = FileSystem::is_backend_process_alive(record);
     let raw_pid_running = FileSystem::is_pid_running_unchecked(record.pid);
 
-    if !leader_is_authoritative && raw_pid_running {
-        return Err(AppError::Io(std::io::Error::other(format!(
-            "refusing stale backend cleanup for pid {} because the recorded process identity is not authoritative and the pid is still live",
-            record.pid
-        ))));
-    }
-    if !leader_is_authoritative {
-        return Ok((false, Vec::new()));
-    }
-    if !leader_matches_record && raw_pid_running {
-        return Err(AppError::Io(std::io::Error::other(format!(
-            "refusing stale backend cleanup for pid {} because the recorded backend pid now belongs to a different live process",
-            record.pid
-        ))));
-    }
-
     let mut tracked_group_members = unix_process_group_members(record.pid)?
         .into_iter()
         .filter(|pid| FileSystem::is_pid_running_unchecked(*pid))
@@ -2749,6 +2750,18 @@ fn kill_stale_backend_process_group(
         tracked_group_members.push(TrackedProcess::from_pid(record.pid));
     }
 
+    if !leader_is_authoritative && raw_pid_running {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing stale backend cleanup for pid {} because the recorded process identity is not authoritative and the pid is still live",
+            record.pid
+        ))));
+    }
+    if !leader_matches_record && raw_pid_running {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing stale backend cleanup for pid {} because the recorded backend pid now belongs to a different live process",
+            record.pid
+        ))));
+    }
     if !leader_matches_record && tracked_group_members.is_empty() {
         return Ok((false, tracked_group_members));
     }
@@ -3186,7 +3199,12 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let project_store = FsProjectStore;
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
     let run_snapshot_read = FsRunSnapshotStore;
-    let run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+    let mut run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+    let _ = repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+        &current_dir,
+        &project_id,
+        &mut run_snapshot,
+    )?;
     match run_snapshot.status {
         RunStatus::Failed | RunStatus::Paused | RunStatus::Running => {}
         RunStatus::NotStarted => {
@@ -7823,6 +7841,11 @@ async fn handle_status(as_json: bool) -> AppResult<()> {
             &events,
         );
     }
+    let _ = repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+        &current_dir,
+        &project_id,
+        &mut snapshot,
+    )?;
 
     let running_liveness = if snapshot.status == RunStatus::Running {
         let expected_attempt = running_snapshot_attempt(&snapshot)?;
