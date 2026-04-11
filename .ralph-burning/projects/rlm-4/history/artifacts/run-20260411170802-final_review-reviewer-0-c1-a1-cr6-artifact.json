@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-reviewer-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260411170802-final_review-reviewer-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T19:17:02.079262614Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the lifecycle cleanup changes against `origin/master..HEAD`, read the changed implementation files (`src/cli/run.rs`, `src/contexts/project_run_record/queries.rs`, `src/contexts/workflow_composition/engine.rs`) and the new CLI tests, and ran targeted `cargo test run_stop_ -- --nocapture` plus the signal-wrapper regression test. Two correctness issues remain in stale/forced-stop finalization.\n\n## Amendments\n\n1. `src/cli/run.rs:2795-2817` runs `cleanup_stale_backend_process_groups()` before any snapshot/journal reconciliation, and the stale-recovery call sites at `src/cli/run.rs:3142-3155` and `src/cli/run.rs:3348-3376` propagate that error immediately. If backend metadata is corrupt or cleanup partially fails, `run stop`/`run resume` leave `run.json` stuck at `status = \"running\"` even though the orchestrator was already classified stale and the writer lease was reclaimed. I reproduced this with a stale run plus malformed `runtime/backend/active-processes.json`: `run stop` failed with the cleanup parse error and left `run.json` unchanged. The helper needs to persist the interrupted snapshot first and then surface backend-cleanup failures separately.\n   Rationale: This wedges the project in a false-running state after the command has already proven the run is stale, blocking recovery and undermining the durable-stop behavior this bead is trying to provide.\n2. `src/cli/run.rs:3577-3603` acquires a fresh recovery writer lease before deciding whether the stopped run still needs stale reconciliation, and the reused liveness check at `src/cli/run.rs:1536-1597` treats any fresh CLI lease without an authoritative pid as `LegacyCliLease` instead of `Stale`. If the orchestrator removes `run.pid` during SIGTERM handling but exits before rewriting `run.json`, `run stop` now returns success with `Run for project '…' exited during stop with status 'running'.` and leaves the snapshot at `running`. I reproduced this with a TERM handler that deletes `run.pid` and exits: the command succeeded, `run.pid` was gone, and `run.json` still said `running`. The stop path should decide stale-vs-running before taking its own lease, or explicitly ignore the lease it just acquired when rechecking liveness.\n   Rationale: The new early pid cleanup makes this case realistic; as written, `run stop` can report success while the persisted run state remains running, which is a correctness bug and leaves the project requiring manual repair.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

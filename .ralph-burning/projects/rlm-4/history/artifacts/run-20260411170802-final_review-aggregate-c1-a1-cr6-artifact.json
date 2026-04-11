@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411170802-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260411170802-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T19:24:47.309162783Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 6/25\n\n## Accepted\n\n- `fr-6-18624587`\n- `fr-6-c9beaa21`\n\n## Rejected\n\n- `fr-6-a621368a`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-18624587`\n\n`src/cli/run.rs:2795-2817` runs `cleanup_stale_backend_process_groups()` before any snapshot/journal reconciliation, and the stale-recovery call sites at `src/cli/run.rs:3142-3155` and `src/cli/run.rs:3348-3376` propagate that error immediately. If backend metadata is corrupt or cleanup partially fails, `run stop`/`run resume` leave `run.json` stuck at `status = \"running\"` even though the orchestrator was already classified stale and the writer lease was reclaimed. I reproduced this with a stale run plus malformed `runtime/backend/active-processes.json`: `run stop` failed with the cleanup parse error and left `run.json` unchanged. The helper needs to persist the interrupted snapshot first and then surface backend-cleanup failures separately.\n\n### `fr-6-c9beaa21`\n\n`src/cli/run.rs:3577-3603` acquires a fresh recovery writer lease before deciding whether the stopped run still needs stale reconciliation, and the reused liveness check at `src/cli/run.rs:1536-1597` treats any fresh CLI lease without an authoritative pid as `LegacyCliLease` instead of `Stale`. If the orchestrator removes `run.pid` during SIGTERM handling but exits before rewriting `run.json`, `run stop` now returns success with `Run for project '…' exited during stop with status 'running'.` and leaves the snapshot at `running`. I reproduced this with a TERM handler that deletes `run.pid` and exits: the command succeeded, `run.pid` was gone, and `run.json` still said `running`. The stop path should decide stale-vs-running before taking its own lease, or explicitly ignore the lease it just acquired when rechecking liveness.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}
