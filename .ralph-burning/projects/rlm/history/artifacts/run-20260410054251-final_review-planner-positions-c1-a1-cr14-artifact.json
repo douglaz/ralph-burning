@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr14-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T17:17:47.402392882Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the two amendments that identify real regressions in the new recovery and pid-authority logic, and reject the amendment claiming no relevant implementation files changed because the reviewed patch does modify the fs, cli, and test code.\n\n## Votes\n\n- `fr-14-668ce2b3`: Accept\n  The regression is real. The new `acquire_recovery_writer_guard()` only reclaims an observed owner when it is already proven stale or its lease TTL has expired, while `pause_run()` and `fail_run()` clear `run.pid` before the CLI-level writer lease is closed. If the CLI dies in that post-snapshot cleanup window, resume sees a failed or paused snapshot with no pid file but a fresh writer lease and refuses recovery until the 300-second lease expires. The updated cleanup-crash test now has to backdate the stranded lease to make resume succeed, which confirms the fresh-death recovery path is missing.\n- `fr-14-a2d4eb47`: Accept\n  The safety issue is real. On non-Linux Unix, `proc_start_marker()` is derived from `ps -o lstart`, which is only second-granularity text, yet the patch makes marker-only pid records authoritative and uses that identity before sending SIGTERM or SIGKILL in `run stop`. A pid reused within the same second can satisfy the marker check and let `run stop` target an unrelated process. That is not a strong enough identity for authoritative stop or resume decisions.\n- `fr-14-32ff26fd`: Reject\n  Its factual premise is wrong for the patch under review. The implementation commit does modify `src/adapters/fs.rs`, `src/cli/run.rs`, and `tests/cli.rs`, including the new `proc_start_marker` path, changed recovery-lock reclamation behavior, and stop or resume coverage. There may still be bugs in those changes, but this amendment's claim that only bookkeeping files were touched is false.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}

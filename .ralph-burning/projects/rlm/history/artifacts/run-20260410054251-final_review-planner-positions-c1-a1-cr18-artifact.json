@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr18-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T18:58:10.050968211Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo amendments identify real correctness defects: stale-run recovery can reclaim a fresh writer owner due to a TOCTOU gap, and forced stop can leave backend process groups running on non-Linux Unix targets. The daemon-owned `run stop` amendment does not demonstrate a bug because stale daemon runs already enter stale recovery, while live daemon-owned runs are intentionally controlled through daemon task operations.\n\n## Votes\n\n- `fr-18-26ff8117`: Accept\n  This is a real race. Recovery first decides attempt A is stale, but `observed_running_attempt_owner` can later fall back to the current writer-lock owner, and `acquire_recovery_writer_guard` will reclaim that owner unconditionally when `observed_owner_proven_stale` is true. If a fresh attempt B acquires the lock in that window, recovery can tear down B's lease and even mark an active daemon task failed before later noticing the attempt changed. Revalidating that the current owner/pid still belongs to the stale attempt before reclaiming is necessary.\n- `fr-18-023ea3f2`: Reject\n  The cited failure mode is not established. When a daemon-owned process dies, liveness classification already becomes `Stale`, so the stale recovery path can reconcile the running snapshot; stale daemon-owned runs are not blocked solely because `run stop` rejects live daemon ownership. For live daemon-owned runs, the code intentionally preserves the ownership boundary and directs callers to daemon task controls instead of having `run stop` seize daemon-managed work. This amendment does not show a correctness or safety defect in the current behavior.\n- `fr-18-8f3b8c1d`: Accept\n  This is a real Unix portability bug. Backend processes are launched into dedicated process groups on all Unix builds, but only Linux has extra descendant-group cleanup during forced stop. On macOS/BSD, the hard-stop path kills only the orchestrator PID, then proceeds to rewrite run state as though shutdown succeeded. That can leave backend subprocess groups running in the background while the run is recorded as failed/interrupted, which is incorrect and unsafe process cleanup.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 18
+}

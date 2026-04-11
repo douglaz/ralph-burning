@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr7-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T14:50:59.247382567Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo amendments identify real correctness/safety gaps in stale-owner and PID liveness handling. The lease-only fallback amendment is less persuasive because the fresh lease is the only positive liveness signal available for mixed-version owners, so immediate recovery would trade safety for faster availability.\n\n## Votes\n\n- `fr-7-45babe55`: Accept\n  `handle_resume` only captures an observed stale writer owner when the snapshot is still `running`, but the CLI keeps the `CliWriterLeaseGuard` alive until after post-run sync and only calls `close()` at the end. If the process dies after the engine has already persisted a resumable `failed` or `paused` snapshot, the orphaned writer lock can survive while the snapshot is no longer `running`. The next resume then skips stale-owner recovery and can fail at writer-lock acquisition with `ProjectWriterLockHeld`, leaving a genuinely resumable run wedged. Recovery should extend to resumable terminal snapshots as well, with the same owner-aware checks to avoid reclaiming a live cleanup path.\n- `fr-7-cee54496`: Accept\n  Treating a PID as live when `proc_start_ticks` is missing is not a safe identity check; it only proves that some process currently owns that PID. `classify_running_snapshot_liveness` then treats reused PIDs as authoritative and blocks stale recovery, and on non-Linux the stop path can signal that unrelated process directly. The Linux stop path already recognizes missing `proc_start_ticks` as unsafe, so the broader liveness classification is currently inconsistent with that safety model. Missing start-time identity data should be treated as stale/unsafe unless a platform-specific equivalent check is available.\n- `fr-7-81e934dc`: Reject\n  A missing `run.pid` file is ambiguous, not definitive evidence that the owner is gone. For mixed-version runs that never wrote pid files, the fresh CLI/worktree lease is the only remaining positive liveness signal, and the current fallback preserves safety by refusing to reclaim an owner that is still heartbeating. Declaring such runs stale immediately would risk stealing the writer lock from a live legacy CLI or daemon task. The TTL delay is an availability tradeoff, but it is not by itself a correctness defect without a stronger liveness mechanism or an explicit force/override path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

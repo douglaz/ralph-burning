@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr12-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:34:02.365455794Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the stale-run identity amendment: `mark_running_run_interrupted` can rewrite any `Running` snapshot and should verify attempt identity before mutating shared state. Reject the no-runtime-code amendment: the review branch does contain runtime and test changes, and the cited lifecycle features already exist in the codebase, so its premise is incorrect.\n\n## Votes\n\n- `fr-12-6869bf03`: Accept\n  `mark_running_run_interrupted()` rereads `run.json` and only checks `status == Running` before clearing `active_run`, removing the pid file, and optionally appending `run_failed`. It does not verify that the snapshot still represents the same `(run_id, started_at)` attempt that was classified as stale. That makes the helper unsafe against overlapping resume/recovery flows and able to clobber a newer live attempt. Threading expected attempt identity or doing a compare-and-swap is the right hardening, and the current tests only cover the easier 'already non-running' race, not the 'newer running attempt' case.\n- `fr-12-3bd1eea7`: Reject\n  The amendment's factual basis is wrong for the change under review. Relative to the prior round checkpoint, the branch includes runtime code in `src/contexts/workflow_composition/engine.rs` plus new regression coverage in `tests/unit/workflow_engine_test.rs`, not just `.ralph-burning/...` metadata files. More broadly, PID tracking, stale-running detection and recovery, `run stop`, and signal-cleanup logic already exist in `src/cli/run.rs` and related runtime/filesystem code, so the claim that these behaviors remain unimplemented is not supported by the actual code.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

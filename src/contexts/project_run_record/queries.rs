@@ -7,11 +7,85 @@ use crate::contexts::workflow_composition::panel_contracts::RecordKind;
 use crate::shared::domain::StageId;
 use crate::shared::error::AppResult;
 
-use super::journal;
 use super::model::{
     ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, RunSnapshot, RunStatus,
     RuntimeLogEntry,
 };
+
+fn snapshot_run_id(snapshot: &RunSnapshot) -> Option<&str> {
+    snapshot
+        .active_run
+        .as_ref()
+        .map(|active_run| active_run.run_id.as_str())
+}
+
+fn event_run_id(event: &JournalEvent) -> Option<&str> {
+    event.details.get("run_id").and_then(|value| value.as_str())
+}
+
+fn active_run_started_at(snapshot: &RunSnapshot) -> Option<DateTime<Utc>> {
+    snapshot
+        .active_run
+        .as_ref()
+        .map(|active_run| active_run.started_at)
+}
+
+fn running_attempt_boundary_sequence(
+    snapshot: &RunSnapshot,
+    events: &[JournalEvent],
+) -> Option<u64> {
+    let run_id = snapshot_run_id(snapshot)?;
+    let durable_boundary = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event_run_id(event) == Some(run_id)
+                && matches!(
+                    event.event_type,
+                    JournalEventType::RunStarted | JournalEventType::RunResumed
+                )
+        })
+        .map(|event| event.sequence);
+    let snapshot_boundary = active_run_started_at(snapshot).and_then(|started_at| {
+        events
+            .iter()
+            .filter(|event| {
+                event_run_id(event) == Some(run_id) && event.timestamp < started_at
+            })
+            .map(|event| event.sequence)
+            .max()
+    });
+
+    durable_boundary.into_iter().chain(snapshot_boundary).max()
+}
+
+/// Returns the durable terminal status for the current running attempt, if any.
+///
+/// Resumed attempts reuse the same `run_id`, so stale reconciliation must ignore
+/// terminal events that happened before the latest `run_started`/`run_resumed`
+/// boundary for the active attempt. If a resumed attempt crashes after
+/// publishing `run.json` but before `run_resumed` is durable, the active
+/// snapshot's `started_at` timestamp becomes the fallback attempt boundary.
+pub fn terminal_status_for_running_attempt(
+    snapshot: &RunSnapshot,
+    events: &[JournalEvent],
+) -> Option<RunStatus> {
+    if snapshot.status != RunStatus::Running {
+        return None;
+    }
+    let run_id = snapshot_run_id(snapshot)?;
+    let boundary_sequence = running_attempt_boundary_sequence(snapshot, events)?;
+
+    events.iter().rev().find_map(|event| {
+        (event.sequence > boundary_sequence && event_run_id(event) == Some(run_id)).then_some(
+            match event.event_type {
+                JournalEventType::RunFailed => Some(RunStatus::Failed),
+                JournalEventType::RunCompleted => Some(RunStatus::Completed),
+                _ => None,
+            },
+        )?
+    })
+}
 
 /// Reconcile a snapshot's status against the journal's last terminal event.
 ///
@@ -22,11 +96,8 @@ use super::model::{
 ///
 /// Returns `true` if the snapshot was patched.
 pub fn reconcile_snapshot_status(snapshot: &mut RunSnapshot, events: &[JournalEvent]) -> bool {
-    if snapshot.status != RunStatus::Running {
-        return false;
-    }
-    match journal::last_terminal_event_type(events) {
-        Some(JournalEventType::RunFailed) => {
+    match terminal_status_for_running_attempt(snapshot, events) {
+        Some(RunStatus::Failed) => {
             eprintln!(
                 "status: snapshot shows Running but journal has run_failed — \
                  reporting as Failed (stale snapshot from failed write)"
@@ -36,7 +107,7 @@ pub fn reconcile_snapshot_status(snapshot: &mut RunSnapshot, events: &[JournalEv
             snapshot.status_summary = "failed (reconciled from journal)".to_owned();
             true
         }
-        Some(JournalEventType::RunCompleted) => {
+        Some(RunStatus::Completed) => {
             eprintln!(
                 "status: snapshot shows Running but journal has run_completed — \
                  reporting as Completed (stale snapshot from failed write)"

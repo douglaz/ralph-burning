@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T18:39:28.474640782Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted. The amendment addresses a concrete mixed-version interoperability regression where authoritative live pid records without attempt metadata can never resolve identity checks, leading to incorrect hard-stop errors instead of legacy-compatible handling.\n\n## Votes\n\n- `fr-17-69983bd8`: Accept\n  The failure mode is real and safety/operability-relevant: older orchestration writes authoritative pid markers without run attempt fields, so current logic can classify the process as running but unmatchable to any attempt and force users into the \"project run changed\" retry path, leaving an active run unmanageable. Adding an explicit legacy-authoritative compatibility branch in classification or match logic preserves correctness while avoiding false-negative handoff semantics and aligns behavior with existing intent for pre-attempt metadata versions.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 17
+}

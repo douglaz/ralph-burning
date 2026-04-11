@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T06:55:15.941757782Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll five amendments should be accepted. Each one addresses a real lifecycle correctness issue in run orchestration/recovery and improves determinism, safety, or cleanup in crash and shutdown paths.\n\n## Votes\n\n- `fr-2-85624bb1`: Accept\n  This patch addresses a concrete resume recovery gap where a crash window creates a durable `Running` snapshot without a corresponding `run_started` event. Requiring `run_started` unconditionally causes false resume failures for valid interrupted runs, so adding snapshot-derived fallback state or reordering durability is the correct fix.\n- `fr-2-a4b2ef72`: Accept\n  Deleting `run.pid` based solely on status mismatch introduces a race with startup that can erase a live orchestrator's liveness marker. Conditioning PID deletion on confirmed process death (or lease coordination) is necessary to prevent stale-state misclassification and split-brain behavior.\n- `fr-2-35bafcb9`: Accept\n  Ignoring post-SIGKILL liveness outcome before reclaiming locks can mis-handle D-killed-but-not-yet-terminated processes, especially with uninterruptible states. The amendment correctly requires a verified dead process before state rewrites and lock release to preserve isolation and correctness.\n- `fr-2-119ee7f5`: Accept\n  The early-return completion-blocked path writes terminal failure snapshot state but skips PID cleanup, leaving stale liveness state behind. This violates cleanup invariants for terminal outcomes and can confuse subsequent status/resume logic; removing the PID should be part of this path.\n- `fr-2-fa266dd6`: Accept\n  A partial commit where snapshot completion is written but `run_completed` append fails leaves inconsistent durable state and fails to remove PID. Handling this failure path is essential to keep recovery semantics coherent and avoid orphaned liveness files.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T07:35:16.726216742Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBoth amendments identify concrete correctness and safety defects in recovery/resume semantics that can produce real misclassification of live runs and wrong run targeting under concurrent or partially persisted states. I accept both.\n\n## Votes\n\n- `fr-3-7a1032e2`: Accept\n  The described race is real: deleting `run.pid` when rereading a non-`Running` snapshot can clobber a pid that another active resume/stop flow just wrote, because stale recovery runs before lease reacquisition. This is shared mutable state corruption and can make status/recovery treat a live orchestrator as stale, so the amendment should be accepted.\n- `fr-3-36a3f606`: Accept\n  Fallback logic that prefers any visible historical `run_started` event over `snapshot.interrupted_run` can bind resume to an older completed run and mis-handle a recoverable newer run. The reproduced `run-current` vs `run-old` sequence demonstrates deterministic wrong behavior, so the amendment correctly identifies a resume derivation bug with incorrect run/cursor selection.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

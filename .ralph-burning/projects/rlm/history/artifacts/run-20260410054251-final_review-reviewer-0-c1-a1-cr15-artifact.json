@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr15-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T17:46:02.784722129Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the lifecycle changes end-to-end and spot-checked the new CLI/engine/fs paths. I found two correctness gaps: `run stop` still refuses live daemon-owned runs, and the new pid-file liveness path is effectively Linux-only because non-Linux pid records are never treated as authoritative.\n\n## Amendments\n\n1. Teach `run stop` to handle daemon-owned pid records instead of unconditionally rejecting them. Right now `src/cli/run.rs:2478-2485` errors out for `RunningSnapshotLiveness::DaemonProcess` / `LegacyDaemonLease`, even though the engine now writes authoritative daemon pid files on both start and resume (`src/contexts/workflow_composition/engine.rs:1194-1199` and `src/contexts/workflow_composition/engine.rs:1952-1957`).\n   Rationale: The bead asks for a generic `run stop` that gracefully stops the running orchestrator. As implemented, live daemon-owned runs cannot be stopped through the new command at all, so the feature only works for CLI-owned runs and leaves daemon-owned runs outside the requested recovery path.\n2. Make pid-record liveness actually work on non-Linux Unix platforms by honoring the fallback start marker, or explicitly gate the feature to Linux. `src/adapters/fs.rs:337-357` only treats `proc_start_ticks` as authoritative and returns `false` whenever ticks are absent, while non-Linux builds only populate `proc_start_marker` (`src/adapters/fs.rs:701-704`). Because `src/cli/run.rs:1529-1568` falls back to legacy lease handling when the pid record is not authoritative, macOS/BSD runs cannot be identified or recovered immediately from `run.pid` and remain blocked until the writer lease expires.\n   Rationale: This breaks the stated stale-run recovery behavior off Linux: after a crash, `run resume`/`run stop` treat the run as a fresh legacy lease for up to the lease TTL instead of immediately detecting that the orchestrator PID is gone. The new `proc_start_marker` field is currently written but never used.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 15
+}

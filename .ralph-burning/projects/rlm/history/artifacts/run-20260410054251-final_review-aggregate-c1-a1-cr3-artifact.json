@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260410054251-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260410054251-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T07:38:09.182257473Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 3/25\n\n## Accepted\n\n- `fr-3-7a1032e2`\n- `fr-3-36a3f606`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-7a1032e2`\n\n`src/contexts/workflow_composition/engine.rs:749-752` still deletes `run.pid` whenever `mark_running_run_interrupted()` rereads a non-`Running` snapshot. That reintroduces the same startup-window bug this patch was trying to close: stale recovery is triggered before the writer lease is reacquired (`src/cli/run.rs:1769-1781`), while resume republishes `run.pid` before it writes the new `Running` snapshot (`src/contexts/workflow_composition/engine.rs:1820-1827`). Two concurrent `run resume`/`run stop` attempts against the same stale snapshot can therefore race so that the loser observes the winner's intermediate `Failed` snapshot and deletes the winner's freshly written pid file, after which `run status` and later recovery misclassify a live orchestrator as stale.\n\n### `fr-3-36a3f606`\n\n`src/contexts/workflow_composition/engine.rs:6470-6476` and `src/contexts/workflow_composition/engine.rs:6500-6593` only fall back to `snapshot.interrupted_run` when the journal has no `run_started` event at all. If the journal contains an older visible `run_started`/terminal pair, `run resume` binds to that old run id and cursor instead of the recovered snapshot metadata. A recovered stale-start snapshot can then fail with `all stages in the current flow are already complete` or resume the wrong run. I reproduced this by seeding `run.json` with `interrupted_run.run_id = run-current` and a journal containing an older `run_started`/`run_completed` for `run-old`; `ralph-burning run resume` exited with the bogus `already complete` error instead of resuming `run-current`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

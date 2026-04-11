@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr15-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T17:53:56.459809331Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe non-Linux pid-liveness defect is real and should be fixed, but daemon-owned pid files are not safe `run stop` targets, and the broader claim that non-Linux live runs are generally reclassified as stale is overstated.\n\n## Votes\n\n- `fr-15-7856d3cc`: Reject\n  `write_pid_file()` records `std::process::id()`, and daemon dispatch calls the engine in-process from the daemon loop rather than spawning a dedicated per-run worker. For daemon-owned runs, `run.pid` therefore identifies the daemon process itself. Extending `run stop` to act on that pid would risk killing the daemon and bypassing daemon task abort/lease cleanup bookkeeping, so the current rejection is a safety guard rather than a bug.\n- `fr-15-b033bfcb`: Accept\n  On non-Linux Unix, `proc_start_ticks()` always returns `None` while `write_pid_file()` still stores `proc_start_marker`. Because `pid_record_is_authoritative()` only accepts `proc_start_ticks` and `is_pid_alive()` returns `false` when ticks are absent, `run.pid` can never become authoritative on macOS/BSD. That forces liveness back to lease-only handling, which prevents immediate pid-based stop/recovery and leaves crashed runs unrecoverable until the writer lease expires. Either honoring the fallback marker safely or explicitly Linux-gating pid authority would correct the defect.\n- `fr-15-cc7b8a94`: Reject\n  The underlying Linux-only authoritativeness problem is real, but the amendment's stated consequences are too broad. When `run.pid` is non-authoritative, `classify_running_snapshot_liveness()` falls back to fresh writer leases and returns `LegacyCliLease` or `LegacyDaemonLease`, not `Stale`. So non-Linux `run stop` is indeed impaired, but live runs are not generally reclassified as stale and `status`/`resume` do not auto-fail them for that reason.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 15
+}

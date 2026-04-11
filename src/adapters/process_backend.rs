@@ -18,6 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+use crate::adapters::fs::FileSystem;
 use crate::contexts::agent_execution::model::{
     InvocationContract, InvocationEnvelope, InvocationMetadata, InvocationRequest,
     RawOutputReference, TokenCounts,
@@ -1150,13 +1151,28 @@ impl ProcessBackendAdapter {
                 format!("failed to spawn {binary_display}: {error}"),
             )
         })?;
+        let tracked_backend_pid = child.id();
 
         let stdin_handle = child.stdin.take();
         let mut stdout_handle = child.stdout.take();
         let mut stderr_handle = child.stderr.take();
         let active_child = Arc::new(ManagedChild::new(child));
+        // Register the child handle immediately so cancellation can find and
+        // signal it. The filesystem tracking below is best-effort metadata;
+        // the in-memory handle is what cancel() actually uses.
         self.register_child(&request.invocation_id, active_child.clone())
             .await;
+        if let Some(pid) = tracked_backend_pid {
+            if let Err(error) = FileSystem::register_backend_process(&request.project_root, pid) {
+                let _ = active_child.force_kill().await;
+                let _ = active_child.wait().await;
+                return Err(Self::invocation_failed(
+                    request,
+                    FailureClass::TransportFailure,
+                    format!("failed to persist backend process tracking for pid {pid}: {error}"),
+                ));
+            }
+        }
         let stdin_bytes = stdin_payload.as_bytes().to_vec();
 
         let stdin_future = async move {
@@ -1199,6 +1215,11 @@ impl ProcessBackendAdapter {
                         confirm_teardown(&active_child, TEARDOWN_GRACE_PERIOD).await;
                     self.remove_child_if_same(&request.invocation_id, &active_child)
                         .await;
+                    if teardown_confirmed {
+                        if let Some(pid) = tracked_backend_pid {
+                            let _ = FileSystem::remove_backend_process(&request.project_root, pid);
+                        }
+                    }
                     if !teardown_confirmed {
                         // Child may still be alive — keep reaping in the
                         // background so it doesn't outlive tracking, matching
@@ -1234,6 +1255,9 @@ impl ProcessBackendAdapter {
 
         self.remove_child_if_same(&request.invocation_id, &active_child)
             .await;
+        if let Some(pid) = tracked_backend_pid {
+            let _ = FileSystem::remove_backend_process(&request.project_root, pid);
+        }
 
         let stderr_text = stderr_result
             .as_ref()

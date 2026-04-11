@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr11-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:18:30.266646619Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real technical issues. One closes a genuine resume-path correctness gap caused by whole-run terminal reconciliation across reused run IDs, and the other correctly notes that the current changeset only edits metadata artifacts rather than implementing the requested lifecycle hardening behavior.\n\n## Votes\n\n- `fr-11-45e11d35`: Accept\n  `resume_run_with_retry_internal` still reconciles a `Running` snapshot with `journal::last_terminal_event_type(&running_run_events)`, which scans the whole `run_id` history. Because resumed attempts reuse the same `run_id`, an older `run_failed` or `run_completed` can be mistaken for the current attempt when `run.json` was written before `run_resumed` became durable. The new attempt-scoped helper in `project_run_record::queries` exists specifically to avoid that by using the latest durable resume/start boundary and the snapshot `started_at` fallback. The engine should use that same logic, and an engine-level regression test is warranted because the existing helper tests do not fully cover this public resume entrypoint.\n- `fr-11-bc8799ca`: Accept\n  The current worktree diff only changes `.ralph-burning/projects/rlm/run.json` and `.ralph-burning/projects/rlm/journal.ndjson`. There are no hunks in the runtime implementation paths named in the amendment, so this changeset cannot change pid handling, `run stop` behavior, stale-running detection, resume recovery logic, or SIGTERM cleanup semantics. If those lifecycle-hardening items are required acceptance criteria, this patch does not implement them.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

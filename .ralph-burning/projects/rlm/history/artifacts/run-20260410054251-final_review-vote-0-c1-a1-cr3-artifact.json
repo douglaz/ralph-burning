@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T07:38:09.168571516Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness defects in the resume/recovery path: one is a pid-file race during stale-snapshot reconciliation, and the other is incorrect resume-state derivation when snapshot metadata disagrees with older journal history.\n\n## Votes\n\n- `fr-3-7a1032e2`: Accept\n  `mark_running_run_interrupted()` still removes `run.pid` on the early-return path when its reread no longer sees `RunStatus::Running`. That is unsafe because `handle_resume()` and stale-stop recovery call it before reacquiring the writer lease, while resume later writes `run.pid` before publishing the new `Running` snapshot. A concurrent loser can therefore observe the winner's intermediate failed snapshot and delete the winner's freshly written pid file, leaving a live orchestrator with no pid record. The stale-status and later recovery paths then misclassify that live run as stale, so this is a real shared-state race.\n- `fr-3-36a3f606`: Accept\n  `stage_plan_for_resume()` and `derive_resume_state()` currently prefer the most recent visible `run_started` event whenever one exists, and only consult `snapshot.interrupted_run` when no `run_started` is present at all. That breaks resumed runs whose authoritative metadata lives in the snapshot, such as recovered stale-start snapshots or reopened completed runs that install a new interrupted run id before any new `run_started` is durably written. In that state the code binds resume to the older journaled run, can drive `next_stage_index` to the terminal position, and raises the bogus `all stages in the current flow are already complete` error or resumes under the wrong `run_id`. The described `run-current` versus `run-old` reproduction matches the current control flow.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

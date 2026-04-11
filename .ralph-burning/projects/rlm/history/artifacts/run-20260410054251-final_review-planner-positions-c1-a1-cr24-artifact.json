@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr24-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T21:26:51.185293817Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real safety regressions. The first weakens stale-run detection so a live mixed-version owner can be treated as recoverable, and the second introduces a lost-update race in shared backend PID tracking under concurrent reviewer launches.\n\n## Votes\n\n- `fr-24-0b2c9492`: Accept\n  Accept. In src/cli/run.rs:1559-1628, a non-authoritative pid record is only treated as live when a fresh matching lease also exists; otherwise it falls through to Stale even if the pid is still running. That bypasses the explicit LegacyCliProcess/LegacyDaemonProcess safety branches used by run resume and run stop, and run status will also report \"process not found\" for a still-live owner. Worse, stale recovery then goes through acquire_recovery_writer_guard, which treats a writer lock without a lease as reclaimable, so a mixed-version live orchestrator can have its snapshot rewritten underneath it. Missing lease state is not sufficient proof that the orchestrator is dead.\n- `fr-24-5968d876`: Accept\n  Accept. src/adapters/fs.rs:456-483 performs unsynchronized read-modify-write updates to active-processes.json, while final-review proposal reviewers are launched concurrently in src/contexts/workflow_composition/final_review.rs:320-348 and each backend spawn/exit calls register_backend_process/remove_backend_process. That makes lost updates reachable: two concurrent starts or exits can each read the same old file and then overwrite one another's changes. Since stale cleanup later relies on the persisted process set to find and kill matching backend process groups, dropping a pid record breaks the intended cleanup guarantee and can leave orphaned subprocesses behind.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 24
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr22-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T20:33:59.380571280Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nNo source implementation changes for the requested robustness goal are present in this patch; only review metadata files were updated, so the intended behavior is unchanged.\n\n## Amendments\n\n1. The submitted change set does not implement the requested lifecycle hardening in code. `git diff --name-only` only reports `.ralph-burning/projects/rlm/run.json` and `.ralph-burning/projects/rlm/journal.ndjson` (metadata/journal lines `run.json:12-29`, `journal.ndjson:402-408`), and there are no diffs under `src/adapters/fs.rs`, `src/cli/run.rs`, or `src/contexts/workflow_composition/engine.rs`. As a result, PID-file liveness, `run stop`, stale status detection, automatic stale resume recovery, and SIGTERM cleanup behavior are not introduced by this patch and acceptance criteria are not met by the current diff.\n   Rationale: A reviewer should gate this patch from progressing until required source changes land, because this diff appears to be only review bookkeeping (metadata/events) and cannot change run lifecycle correctness.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 22
+}

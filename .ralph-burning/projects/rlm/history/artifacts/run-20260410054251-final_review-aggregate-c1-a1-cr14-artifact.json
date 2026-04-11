@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260410054251-final_review-aggregate-c1-a1-cr14-artifact",
+  "payload_id": "run-20260410054251-final_review-aggregate-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T17:19:49.729543120Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 14/25\n\n## Accepted\n\n- `fr-14-668ce2b3`\n- `fr-14-a2d4eb47`\n\n## Rejected\n\n- `fr-14-32ff26fd`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-14-668ce2b3`\n\n`src/cli/run.rs:1579-1655` regresses post-run cleanup crash recovery. `acquire_recovery_writer_guard()` now refuses to reclaim the observed writer owner unless its lease has already gone stale, but `complete_run`/`pause_run`/`fail_run` remove `run.pid` before the writer lease is released in `src/contexts/workflow_composition/engine.rs:5796`, `src/contexts/workflow_composition/engine.rs:5819`, `src/contexts/workflow_composition/engine.rs:5841`, and `src/contexts/workflow_composition/engine.rs:5933`. If the CLI dies in that cleanup window, the snapshot is already terminal and there is no pid file left to prove the process is gone, so `run resume` stays blocked for the full lease TTL even though nothing is running. Recovery needs a fresh-death path for stranded CLI cleanup locks instead of forcing users to wait for lease expiry.\n\n### `fr-14-a2d4eb47`\n\n`src/adapters/fs.rs:333-361` plus `src/adapters/fs.rs:702-745` now treat `ps -o lstart` as an authoritative process identity on non-Linux Unix, and `src/cli/run.rs:1804-1853` uses that identity to send SIGTERM/SIGKILL during `run stop`. `lstart` is only second-granularity text, so a recycled PID started within the same second can satisfy the check and let `run stop` target an unrelated process. Until there is a stronger per-process identifier on these platforms, pid records backed only by `proc_start_marker` should not be considered authoritative for stop/resume decisions.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 14
+}

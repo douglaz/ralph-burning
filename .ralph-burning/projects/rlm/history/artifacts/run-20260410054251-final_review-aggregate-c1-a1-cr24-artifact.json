@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260410054251-final_review-aggregate-c1-a1-cr24-artifact",
+  "payload_id": "run-20260410054251-final_review-aggregate-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T21:29:47.654883128Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 24/25\n\n## Accepted\n\n- `fr-24-0b2c9492`\n- `fr-24-5968d876`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-24-0b2c9492`\n\n`src/cli/run.rs:1536-1599` now treats a live pid-only legacy run as `Stale` unless a fresh writer lease also exists. That flows into automatic stale recovery in `src/cli/run.rs:1874-1919` and `src/cli/run.rs:3042-3070`, so `run status` can report \"stale\" and `run resume`/`run stop` can rewrite the snapshot even while a mixed-version orchestrator is still alive. Recovery should only happen when the orchestrator PID is actually dead or missing; otherwise this change can leave two orchestrators acting on the same project.\n\n### `fr-24-5968d876`\n\n`active-processes.json` updates are not concurrency-safe. `ProcessBackendAdapter` now registers/removes child pids around each spawn (`src/adapters/process_backend.rs:1160-1169`, `src/adapters/process_backend.rs:1255-1256`), but the filesystem helpers do unsynchronized read-modify-write cycles (`src/adapters/fs.rs:456-483`). Final-review reviewers are launched concurrently (`src/contexts/workflow_composition/final_review.rs:320-348`), so two backend starts/exits can overwrite each other's file contents. Once one pid record is lost, stale-run recovery will miss orphaned backend process groups and the new cleanup guarantee stops being reliable.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 24
+}

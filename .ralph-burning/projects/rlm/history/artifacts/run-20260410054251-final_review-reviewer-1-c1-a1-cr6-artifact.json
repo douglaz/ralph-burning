@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T14:05:09.239907528Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI found a single high-confidence gap: this change set does not include any runtime implementation edits for the requested lifecycle robustness work, so those behaviors remain unaddressed by this patch.\n\n## Amendments\n\n1. The patch is metadata-only and does not implement the requested run-lifecycle hardening contract in runtime code. The only file-level changes are in `.ralph-burning/projects/rlm/journal.ndjson` (new `reviewer_started` entries at lines 113-114) and `.ralph-burning/projects/rlm/run.json` (added `stage_resolution_snapshot`/metadata under `active_run` at lines 16-37), while the behavior files required by the goal (`src/adapters/fs.rs`, `src/cli/run.rs`, `src/contexts/workflow_composition/engine.rs`) are untouched by this diff.\n   Rationale: This violates the change request’s acceptance criteria: process-liveness tracking, `run stop`, stale `run status`, automatic stale resume recovery, and SIGTERM handling are operational behaviors and require code updates, not only run-state journal/snapshot metadata edits.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 6
+}

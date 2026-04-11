@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr13-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:54:01.390907149Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept all three amendments. The first two identify real lifecycle/locking defects in the current code, and the third correctly notes that this revision contains only metadata updates rather than the required runtime implementation.\n\n## Votes\n\n- `fr-13-0041a5fc`: Accept\n  `write_pid_file` records `proc_start_ticks` via `/proc`, so on non-Linux Unix it becomes `None`. The current liveness code only treats pid records with `proc_start_ticks` as authoritative, which forces macOS/BSD runs onto the legacy lease path. That means stale CLI runs are reported as still running until lease expiry, `run resume` refuses recovery, and `run stop` rejects the run as legacy. This is a real portability and correctness gap.\n- `fr-13-b082909a`: Accept\n  For `Failed`/`Paused` snapshots, `observed_resume_recovery_owner` captures whatever writer-lock owner exists, and `acquire_recovery_writer_guard` reclaims that exact owner before attempting a normal acquire. That reclaim happens without proving staleness. A concurrent resume/daemon path that acquires the lock in the gap between snapshot read and owner observation can therefore have its live owner torn down, and the worktree branch of reclaim can mark an active daemon task failed. Reclaim needs stale-owner proof, or it should be deferred until a normal acquire fails and the existing owner is independently verified stale.\n- `fr-13-310064c8`: Accept\n  The current worktree diff changes only `.ralph-burning/projects/rlm/run.json` and `.ralph-burning/projects/rlm/journal.ndjson`; there are no source hunks under `src/`. So the requested lifecycle/runtime changes in `fs.rs`, `run.rs`, and `engine.rs` are not implemented by this revision. This amendment correctly identifies an implementation gap.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

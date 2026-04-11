@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260410054251-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-10T07:50:35.632023895Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining stale-run recovery defects. In `src/contexts/workflow_composition/engine.rs`, `mark_running_run_interrupted()` now leaves `run.pid` alone when a concurrent actor already moved the snapshot out of `Running`, which prevents a losing stale-recovery attempt from deleting a live orchestrator pid file. Resume reconciliation and state derivation now bind to the snapshot’s resumable run id and only inspect journal events for that run, so older completed runs in `journal.ndjson` can no longer hijack `run resume` or trigger bogus \"already completed\" failures. Added regressions for the pid-preservation race and for stale resume with older historical run_started/run_completed events still present.\n\n## Steps\n\n1. [Completed] Patched stale interruption handling so rereading a non-`Running` snapshot no longer removes `run.pid`, preserving live pid ownership across concurrent `run resume`/`run stop` recovery attempts.\n2. [Completed] Reworked resume reconciliation/state derivation to use the snapshot’s resumable run id and run-scoped journal events, including the early `Running`-snapshot journal cross-check, stage-plan seed selection, resume cursor derivation, and final-review restart counting.\n3. [Completed] Added regression coverage for pid preservation on already-reconciled snapshots and for stale resume when older completed run history remains in the journal, then reran targeted and broad validations.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test mark_running_run_interrupted_preserves_pid_file_when_snapshot_is_not_running -- --nocapture` passed.\n- `cargo test --features test-stub --test unit workflow_engine_test::resume_recovers_stale_running_snapshot_without_binding_to_old_run_history -- --nocapture` passed.\n- `cargo test --features test-stub --test unit workflow_engine_test::resume_recovers_stale_running_snapshot_without_run_started_event -- --nocapture` passed.\n- `cargo test --test cli run_stop_does_not_delete_pid_file_when_snapshot_is_not_running -- --nocapture` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` failed only on pre-existing repo-wide lint findings outside this lifecycle change.\n\n## Outstanding Risks\n\n- `cargo clippy -- -D warnings` is still not green because of pre-existing repository-wide lint debt outside this lifecycle change, including findings in `src/adapters/fs.rs`, `src/cli/project.rs`, `src/contexts/agent_execution/diagnostics.rs`, `src/contexts/milestone_record/service.rs`, `src/contexts/project_run_record/service.rs`, `src/contexts/project_run_record/task_prompt_contract.rs`, `src/contexts/requirements_drafting/service.rs`, and `src/contexts/workflow_composition/final_review.rs`.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

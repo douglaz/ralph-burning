@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr22-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T20:42:21.630784612Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept all three amendments. The first two identify concrete lifecycle-safety defects in the current `run` stop/resume handling, and the third correctly observes that the submitted diff does not contain the required code changes at all.\n\n## Votes\n\n- `fr-22-a8904cc1`: Accept\n  On Linux, a `run.pid` record without `proc_start_*` data is non-authoritative, so `classify_running_snapshot_liveness` falls through to lease-only checks and can return `Stale` even when a legacy orchestrator identified only by `pid`/`started_at` is still running. The stale recovery paths for `run resume` and `run stop` then reconcile `run.json` after claiming/reclaiming writer ownership, without signaling or waiting on that PID. That is an unsafe mixed-version upgrade behavior and should be blocked unless there is stronger proof that the legacy process is truly stale.\n- `fr-22-38d07054`: Accept\n  The descendant snapshot is captured before stop begins, but `kill_tracked_descendant_processes` is only used in the timeout-to-`SIGKILL` path. If the orchestrator is already gone before `open_stop_process_handle`, or exits promptly after `SIGTERM` while leaving backend children behind, the command reports success and reconciles state without cleaning those tracked descendants. That is a real resource-leak/orphan-process bug, and the tracked cleanup should run whenever parent death is observed, not only after a timeout.\n- `fr-22-2654893d`: Accept\n  The current diff contains only `.ralph-burning/projects/rlm/run.json` and `.ralph-burning/projects/rlm/journal.ndjson`; there are no changes under `src/adapters/fs.rs`, `src/cli/run.rs`, or `src/contexts/workflow_composition/engine.rs`. So the requested lifecycle hardening behavior is not implemented by this patch, and the acceptance criteria around PID liveness, stale detection/recovery, stop semantics, and cleanup are not met.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 22
+}

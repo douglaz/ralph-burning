@@ -57,6 +57,8 @@ pub enum AppError {
     RunStartFailed { reason: String },
     #[error("cannot resume run: {reason}")]
     ResumeFailed { reason: String },
+    #[error("cannot stop run: {reason}")]
+    RunStopFailed { reason: String },
     #[error(
         "cannot rollback project '{project_id}' while run status is '{status}'; rollback is only allowed from failed or paused snapshots"
     )]

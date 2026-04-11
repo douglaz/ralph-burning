@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
@@ -84,6 +85,8 @@ impl Default for DaemonLoopConfig {
         }
     }
 }
+
+const DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
 pub struct DaemonLoop<'a, A, R, S> {
     store: &'a dyn DaemonStorePort,
@@ -2553,6 +2556,7 @@ where
             run_snapshot.status,
             effective_config,
             &lease.worktree_path,
+            Some(lease.lease_id.as_str()),
             task_cancel.clone(),
         );
         tokio::pin!(dispatch_future);
@@ -2583,11 +2587,35 @@ where
                     let current = self.store.read_task(base_dir, &task.task_id)?;
                     if current.status == TaskStatus::Aborted {
                         task_cancel.cancel();
+                        break self.finish_cancelled_dispatch(
+                            base_dir,
+                            workspace_dir,
+                            task,
+                            lease,
+                            &project_id,
+                            &mut heartbeat,
+                            &mut dispatch_future,
+                            "failed (interrupted by daemon task cancellation)",
+                            "daemon task cancellation interrupted the orchestrator before graceful shutdown completed",
+                        )
+                        .await;
                     }
                 }
                 _ = shutdown.cancelled() => {
                     let _ = DaemonTaskService::mark_aborted(self.store, base_dir, &task.task_id);
                     task_cancel.cancel();
+                    break self.finish_cancelled_dispatch(
+                        base_dir,
+                        workspace_dir,
+                        task,
+                        lease,
+                        &project_id,
+                        &mut heartbeat,
+                        &mut dispatch_future,
+                        "failed (interrupted by daemon shutdown)",
+                        "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+                    )
+                    .await;
                 }
             }
         }
@@ -2623,6 +2651,7 @@ where
             run_snapshot.status,
             effective_config,
             &lease.worktree_path,
+            Some(lease.lease_id.as_str()),
             task_cancel.clone(),
         );
         tokio::pin!(dispatch_future);
@@ -2641,11 +2670,35 @@ where
                     let current = self.store.read_task(base_dir, &task.task_id)?;
                     if current.status == TaskStatus::Aborted {
                         task_cancel.cancel();
+                        break self.finish_cancelled_dispatch(
+                            base_dir,
+                            workspace_dir,
+                            task,
+                            lease,
+                            &project_id,
+                            &mut heartbeat,
+                            &mut dispatch_future,
+                            "failed (interrupted by daemon task cancellation)",
+                            "daemon task cancellation interrupted the orchestrator before graceful shutdown completed",
+                        )
+                        .await;
                     }
                 }
                 _ = shutdown.cancelled() => {
                     let _ = DaemonTaskService::mark_aborted(self.store, base_dir, &task.task_id);
                     task_cancel.cancel();
+                    break self.finish_cancelled_dispatch(
+                        base_dir,
+                        workspace_dir,
+                        task,
+                        lease,
+                        &project_id,
+                        &mut heartbeat,
+                        &mut dispatch_future,
+                        "failed (interrupted by daemon shutdown)",
+                        "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+                    )
+                    .await;
                 }
             }
         }
@@ -2660,6 +2713,7 @@ where
         run_status: RunStatus,
         effective_config: &EffectiveConfig,
         worktree_path: &Path,
+        writer_owner: Option<&str>,
         cancellation_token: CancellationToken,
     ) -> AppResult<()> {
         if let Some(builder) = self.configured_agent_service_builder {
@@ -2679,6 +2733,7 @@ where
                 run_status,
                 effective_config,
                 worktree_path,
+                writer_owner,
                 cancellation_token,
             )
             .await;
@@ -2699,6 +2754,7 @@ where
             run_status,
             effective_config,
             worktree_path,
+            writer_owner,
             cancellation_token,
         )
         .await
@@ -2757,6 +2813,91 @@ where
         };
         create_project(self.project_store, self.journal_store, base_dir, input)?;
         Ok(())
+    }
+
+    fn reconcile_cancelled_dispatch_run(
+        &self,
+        workspace_dir: &Path,
+        project_id: &ProjectId,
+        writer_owner: &str,
+        summary: &'static str,
+        log_message: &'static str,
+    ) -> AppResult<bool> {
+        engine::mark_current_process_running_run_interrupted(
+            engine::InterruptedRunContext {
+                run_snapshot_read: self.run_snapshot_read,
+                run_snapshot_write: self.run_snapshot_write,
+                journal_store: self.journal_store,
+                log_write: self.log_write,
+                base_dir: workspace_dir,
+                project_id,
+            },
+            Some(writer_owner),
+            engine::InterruptedRunUpdate {
+                summary,
+                log_message,
+                failure_class: Some("cancellation"),
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_cancelled_dispatch<F>(
+        &self,
+        base_dir: &Path,
+        workspace_dir: &Path,
+        task: &DaemonTask,
+        lease: &crate::contexts::automation_runtime::model::WorktreeLease,
+        project_id: &ProjectId,
+        heartbeat: &mut tokio::time::Interval,
+        dispatch_future: &mut std::pin::Pin<&mut F>,
+        summary: &'static str,
+        log_message: &'static str,
+    ) -> AppResult<()>
+    where
+        F: Future<Output = AppResult<()>>,
+    {
+        match tokio::time::timeout(DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD, async {
+            loop {
+                tokio::select! {
+                    result = dispatch_future.as_mut() => break result,
+                    _ = heartbeat.tick() => {
+                        let _ = LeaseService::heartbeat(self.store, base_dir, &lease.lease_id);
+                    }
+                }
+            }
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                let cleanup = self.reconcile_cancelled_dispatch_run(
+                    workspace_dir,
+                    project_id,
+                    &lease.lease_id,
+                    summary,
+                    log_message,
+                );
+                match cleanup {
+                    Ok(true) => eprintln!(
+                        "daemon: cancellation grace period expired for task '{}'; reconciled run state directly",
+                        task.task_id
+                    ),
+                    Ok(false) => eprintln!(
+                        "daemon: cancellation grace period expired for task '{}' but no matching running attempt was left to reconcile",
+                        task.task_id
+                    ),
+                    Err(error) => eprintln!(
+                        "daemon: cancellation grace period expired for task '{}' and interrupted-state cleanup failed: {}",
+                        task.task_id, error
+                    ),
+                }
+                Err(AppError::InvocationCancelled {
+                    backend: "daemon".to_owned(),
+                    contract_id: task.task_id.clone(),
+                })
+            }
+        }
     }
 
     fn cleanup_active_leases(&self, store_dir: &Path, repo_root: &Path) -> AppResult<()> {
@@ -3160,7 +3301,29 @@ where
         match release_result {
             Ok(ref r) if r.resources_released => {
                 // All sub-steps succeeded — safe to clear durable lease reference.
-                DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id).map(|_| ())
+                let cleared =
+                    DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id)
+                        .map(|_| ());
+                if cleared.is_ok() {
+                    if let Ok(project_id) = ProjectId::new(lease.project_id.clone()) {
+                        // Only remove the pid file if it still belongs to
+                        // this task's run.  A fresh run may have claimed the
+                        // project and written a new pid file after the writer
+                        // lock was released above.
+                        if let Ok(Some(pid_record)) =
+                            FileSystem::read_pid_file(base_dir, &project_id)
+                        {
+                            if pid_record.pid == std::process::id() {
+                                let _ = FileSystem::remove_pid_file_if_matches(
+                                    base_dir,
+                                    &project_id,
+                                    &pid_record,
+                                );
+                            }
+                        }
+                    }
+                }
+                cleared
             }
             Ok(_) => {
                 // Partial cleanup: some resources remain. Do NOT clear lease
@@ -3191,6 +3354,7 @@ async fn dispatch_in_worktree_with_service<A, R, S>(
     run_status: RunStatus,
     effective_config: &EffectiveConfig,
     worktree_path: &Path,
+    writer_owner: Option<&str>,
     cancellation_token: CancellationToken,
 ) -> AppResult<()>
 where
@@ -3211,6 +3375,7 @@ where
                 base_dir,
                 Some(worktree_path),
                 project_id,
+                writer_owner,
                 flow,
                 effective_config,
                 &RetryPolicy::default_policy().with_max_remediation_cycles(
@@ -3233,6 +3398,7 @@ where
                 base_dir,
                 Some(worktree_path),
                 project_id,
+                writer_owner,
                 flow,
                 effective_config,
                 &RetryPolicy::default_policy().with_max_remediation_cycles(
@@ -3462,17 +3628,21 @@ pub fn build_requirements_service_for_test(
 
 #[cfg(all(test, feature = "test-stub"))]
 mod tests {
+    use std::future::{poll_fn, Future};
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::Poll;
+    use std::time::Duration;
 
     use chrono::Utc;
     use tempfile::tempdir;
 
-    use super::DaemonLoop;
+    use super::{DaemonLoop, DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD};
     use crate::adapters::fs::{
-        FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
+        FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
         FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
         FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRequirementsStore,
         FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
+        RunPidOwner,
     };
     use crate::adapters::stub_backend::StubBackendAdapter;
     use crate::adapters::worktree::WorktreeAdapter;
@@ -3487,11 +3657,16 @@ mod tests {
     use crate::contexts::milestone_record::service::{
         create_milestone, update_status, CreateMilestoneInput, MilestoneSnapshotPort,
     };
+    use crate::contexts::project_run_record::model::{ActiveRun, RunSnapshot, RunStatus};
+    use crate::contexts::project_run_record::service::{
+        create_project, CreateProjectInput, RunSnapshotPort, RunSnapshotWritePort,
+    };
     use crate::contexts::requirements_drafting::service::{
         RequirementsService, RequirementsStorePort,
     };
+    use crate::contexts::workspace_governance::initialize_workspace;
     use crate::shared::domain::FlowPreset;
-    use crate::shared::domain::ProjectId;
+    use crate::shared::domain::{ProjectId, StageCursor, StageId};
     use crate::shared::error::{AppError, AppResult};
 
     fn sample_waiting_task(task_id: &str, run_id: &str) -> DaemonTask {
@@ -3525,6 +3700,28 @@ mod tests {
             last_seen_review_id: None,
             label_dirty: false,
         }
+    }
+
+    fn create_standard_project(base_dir: &std::path::Path, project_id: &str) -> ProjectId {
+        let project_id = ProjectId::new(project_id).expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base_dir,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: format!("Test {}", project_id.as_str()),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+        project_id
     }
 
     struct FailOnceWaitingTaskWriteStore {
@@ -3960,6 +4157,138 @@ mod tests {
         assert_eq!(failed.failure_class, None);
     }
 
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn finish_cancelled_dispatch_reconciles_running_snapshot_after_grace_timeout() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-cancel-timeout");
+        let started_at = Utc::now();
+        let run_id = "run-daemon-cancel-timeout".to_owned();
+
+        let snapshot = RunSnapshot {
+            active_run: Some(ActiveRun {
+                run_id: run_id.clone(),
+                stage_cursor: StageCursor::initial(StageId::Planning),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            interrupted_run: None,
+            status: RunStatus::Running,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "running: planning".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base, &project_id, &snapshot)
+            .expect("write running snapshot");
+
+        FileSystem::write_pid_file(
+            base,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some("lease-daemon-cancel-timeout"),
+            Some(run_id.as_str()),
+            Some(started_at),
+        )
+        .expect("write pid file");
+
+        let mut task = sample_waiting_task("daemon-cancel-timeout-task", "req-run");
+        task.project_id = project_id.as_str().to_owned();
+        task.status = TaskStatus::Active;
+        task.dispatch_mode = DispatchMode::Workflow;
+        task.requirements_run_id = None;
+
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-cancel-timeout".to_owned(),
+            task_id: task.task_id.clone(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.to_path_buf(),
+            branch_name: "rb/test".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: 300,
+            last_heartbeat: Utc::now(),
+        };
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+        let dispatch_future = std::future::pending::<AppResult<()>>();
+        tokio::pin!(dispatch_future);
+        let mut cleanup_future = std::pin::pin!(daemon.finish_cancelled_dispatch(
+            base,
+            base,
+            &task,
+            &lease,
+            &project_id,
+            &mut heartbeat,
+            &mut dispatch_future,
+            "failed (interrupted by daemon shutdown)",
+            "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+        ));
+
+        poll_fn(|cx| {
+            assert!(
+                cleanup_future.as_mut().poll(cx).is_pending(),
+                "cleanup future should remain pending until the grace period expires"
+            );
+            Poll::Ready(())
+        })
+        .await;
+        tokio::time::advance(DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD + Duration::from_millis(1))
+            .await;
+
+        let error = cleanup_future
+            .await
+            .expect_err("timeout cleanup should surface a cancellation error");
+        assert!(
+            matches!(error, AppError::InvocationCancelled { .. }),
+            "unexpected error after timeout cleanup: {error:?}"
+        );
+
+        let recovered = FsRunSnapshotStore
+            .read_run_snapshot(base, &project_id)
+            .expect("read recovered snapshot");
+        assert_eq!(recovered.status, RunStatus::Failed);
+        assert!(recovered.active_run.is_none());
+        assert!(
+            recovered.interrupted_run.is_some(),
+            "interrupted run metadata should be preserved for resume"
+        );
+        assert!(
+            FileSystem::read_pid_file(base, &project_id)
+                .expect("read pid file")
+                .is_none(),
+            "timeout cleanup should remove run.pid before returning"
+        );
+    }
+
     /// Regression test: dispatch_in_worktree_with_service must return Ok(())
     /// for RunStatus::Completed so that reconciliation-only retries fall
     /// through to try_reconcile_success. Before round 13, this returned
@@ -3999,6 +4328,7 @@ mod tests {
             RunStatus::Completed,
             &effective_config,
             base,
+            None,
             CancellationToken::new(),
         )
         .await;

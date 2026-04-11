@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr11-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:16:57.930826026Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the implementation diff against the prior final-review checkpoint, inspected the updated CLI/query logic and new tests, and found one remaining correctness gap: engine-level resume recovery still uses the old whole-run terminal-event check instead of the new attempt-scoped boundary logic.\n\n## Amendments\n\n1. Update `src/contexts/workflow_composition/engine.rs:1448-1478` to use the new attempt-scoped reconciliation logic instead of `journal::last_terminal_event_type(&running_run_events)`. The helper added in `src/contexts/project_run_record/queries.rs:33-85` fixes resumed runs that crash after writing `run.json` but before durably appending `run_resumed`, but the core engine resume path still inspects the last terminal event for the whole `run_id` and can therefore inherit the previous attempt's `run_failed`/`run_completed`. Direct callers of `engine::resume_run_with_retry` can still misclassify that stale `Running` snapshot and either reject resume or reconcile it to the wrong terminal state. Add an engine-level regression test for this unjournaled-resume case.\n   Rationale: The CLI path now reconciles this scenario before it calls the engine, but the engine's own Running-state recovery branch still contains the original bug. That leaves inconsistent semantics between callers and means the core resume routine is not actually fixed end-to-end.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

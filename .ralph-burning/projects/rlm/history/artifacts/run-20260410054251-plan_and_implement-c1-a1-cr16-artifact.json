@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-plan_and_implement-c1-a1-cr16-artifact",
+  "payload_id": "run-20260410054251-plan_and_implement-c1-a1-cr16",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-10T17:56:16.810401119Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the remaining non-Linux Unix pid-liveness amendment in `src/adapters/fs.rs`. PID records now treat the fallback `proc_start_marker` as authoritative on Unix platforms without `/proc` start ticks, and `is_pid_alive` now validates the live process against that marker before status/resume/stop logic trusts `run.pid`. Updated unit coverage so Linux/non-Linux authority expectations diverge correctly, with dedicated non-Linux marker-match and marker-mismatch liveness regressions alongside the existing Linux tick-based tests.\n\n## Steps\n\n1. [Completed] Audited the existing pid-record authority/liveness logic and confirmed the remaining gap was limited to non-Linux Unix builds treating `proc_start_marker` as non-authoritative, which blocked immediate stale-run detection from `run.pid`.\n2. [Completed] Patched `src/adapters/fs.rs` so `pid_record_is_authoritative` accepts non-empty `proc_start_marker` values on non-Linux Unix, and `is_pid_alive` now matches the current process start marker when start ticks are unavailable.\n3. [Completed] Updated adapter unit coverage to reflect platform-specific authority rules and added non-Linux-only regressions for matching and mismatched `proc_start_marker` liveness behavior.\n4. [Completed] Ran formatting plus focused and broad validation to confirm the amendment and capture the remaining unrelated lint debt.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test pid_record_with_only_start_marker_matches_platform_authority_rules` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` failed only on pre-existing repo-wide lint findings outside this amendment.\n- The new non-Linux marker-based liveness tests are cfg-gated and therefore were not executed in this Linux environment.\n\n## Outstanding Risks\n\n- `cargo clippy -- -D warnings` still fails on pre-existing repository-wide lint debt outside this patch, including findings in `src/adapters/fs.rs`, `src/cli/project.rs`, `src/contexts/agent_execution/diagnostics.rs`, `src/contexts/milestone_record/service.rs`, `src/contexts/project_run_record/task_prompt_contract.rs`, `src/contexts/requirements_drafting/service.rs`, `src/contexts/workflow_composition/final_review.rs`, and `src/contexts/project_run_record/service.rs`.\n- The new non-Linux `proc_start_marker` path is covered by cfg-gated unit tests, but those tests were not executed in this Linux validation environment.\n- The worktree already had unrelated live-state changes under `.ralph-burning/projects/rlm/`; those files were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 16
+}

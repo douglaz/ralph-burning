@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr14-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T17:19:49.715428834Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept fr-14-668ce2b3 and fr-14-a2d4eb47 because they identify real recovery and process-identity defects in the reviewed changes. Reject fr-14-32ff26fd because its factual premise is false: the implementation diff does modify the relevant source files.\n\n## Votes\n\n- `fr-14-668ce2b3`: Accept\n  The regression is real. `handle_resume()` passes `observed_owner_proven_stale = false` for failed/paused snapshots, and the new `acquire_recovery_writer_guard()` refuses to reclaim the observed writer owner unless that lease is already stale. But `complete_run()`, `pause_run()`, and `fail_run()` remove `run.pid` before the CLI releases its writer lease, so a crash in that cleanup window leaves a terminal snapshot with no pid file and a fresh CLI lease. In that state `run resume` cannot prove staleness and remains blocked until the lease TTL expires. The updated cleanup-crash test now backdates the stranded lease heartbeat to make recovery succeed, which confirms the fresh stranded-lock case is no longer handled.\n- `fr-14-a2d4eb47`: Accept\n  This is a real safety issue. On non-Linux Unix, `proc_start_marker()` falls back to `ps -o lstart`, and `pid_record_is_authoritative()` plus `is_pid_alive()` treat that marker as sufficient to identify the process. `run stop` then opens a legacy handle and sends SIGTERM/SIGKILL with plain `kill(2)` based on that check. Because `lstart` is only second-granularity text, a PID reused within the same second can satisfy the marker comparison and let `run stop` target an unrelated process. That fallback is not strong enough to be authoritative for stop or resume decisions.\n- `fr-14-32ff26fd`: Reject\n  Its premise is incorrect. The reviewed implementation diff is not limited to `.ralph-burning/...` bookkeeping files; it includes substantive changes in `src/adapters/fs.rs`, `src/cli/run.rs`, and `tests/cli.rs`. Since the amendment's core factual claim about what changed is false, it does not support rejecting the patch.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}

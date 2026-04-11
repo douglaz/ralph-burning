@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T13:02:49.089296660Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nOne correctness issue was found in the PID liveness implementation; otherwise no additional blocking findings in reviewed files.\n\n## Amendments\n\n1. Fix `FileSystem::proc_start_ticks` to read the correct `/proc/<pid>/stat` field for process start-time validation. It currently reads `fields.get(19)` (the obsolete `itrealvalue` field) instead of the `starttime` field (`fields.get(20)` after the `) ` split). This makes PID-reuse detection in `is_pid_alive` ineffective (often always comparing `0`), so stale-running snapshots can be treated as alive in `run status`, `run resume` reconciliation, and `run stop` prechecks, defeating the new lifecycle recovery guarantees.\n   Rationale: Robust stale-process detection depends on reliable PID identity. Reading the wrong stat field is a correctness gap that can prevent stale runs from being recovered and allows stop/resume logic to miss dead orchestrators.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr17-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T18:40:49.516421084Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the amendment. The cited code creates a real mixed-version compatibility failure for live pre-change pid files that are still authoritative for liveness but cannot satisfy the new attempt-identity checks.\n\n## Votes\n\n- `fr-17-69983bd8`: Accept\n  This is a real defect, not a hypothetical edge case. The immediately previous implementation of `write_pid_file` wrote `proc_start_ticks`/`proc_start_marker` but had no `run_id` or `run_started_at`, so an upgraded binary can encounter a live authoritative pid file with missing attempt metadata. In the current code, `classify_running_snapshot_liveness` treats any authoritative live pid record as `CliProcess` or `DaemonProcess`, while `pid_record_matches_attempt` can only return false when those fields are absent. That forces `run resume` and `run stop` down the hard \"project run changed... retry\" branches instead of the existing legacy-handling paths, leaving operators unable to stop or correctly diagnose an older live run. A compatibility path that treats authoritative pid records without attempt metadata as legacy state, plus CLI coverage for that upgrade scenario, is the correct fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

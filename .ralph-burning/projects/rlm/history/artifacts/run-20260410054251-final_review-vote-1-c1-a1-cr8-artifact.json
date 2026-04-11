@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T15:13:31.391475350Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll three amendments should be accepted. They each address concrete correctness/safety issues in run-state reconciliation and process lifecycle control that can misrepresent run status or leave orphaned/duplicated processes with potential side effects.\n\n## Votes\n\n- `fr-8-937b947b`: Accept\n  Run status reconciliation must be scoped to the active snapshot/run id. Using the journal’s global terminal event can cross-wire state between runs when a newer snapshot is stale/Running and older terminal events exist, producing incorrect user-visible status. This is a correctness and consistency bug.\n- `fr-8-d8cb5745`: Accept\n  Classifying legacy pre-upgrade leases as stale whenever authoritative pid metadata is missing can incorrectly treat a live orchestrator as stale. That allows resume/stop paths to reclaim locks and mutate state while the original process is still running, risking concurrent orchestration and unsafe state rewrites. Backward compatibility and liveness safety need explicit handling.\n- `fr-8-8663197c`: Accept\n  SIGKILLing only the orchestrator in escalation is insufficient when backends are launched into separate process groups. Backend processes can remain alive after the orchestrator is terminated, so the system may mark a run failed while work continues. Process-tree termination is required for reliable stop semantics and cleanup.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 8
+}

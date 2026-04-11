@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr11-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:20:29.010350548Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real technical issues: the engine resume path still has a whole-run reconciliation bug, and the current changeset does not implement the requested lifecycle hardening.\n\n## Votes\n\n- `fr-11-45e11d35`: Accept\n  `resume_run_with_retry_internal` still uses `journal::last_terminal_event_type(&running_run_events)`, which scans terminal events for the entire reused `run_id`. In the crash window where `run.json` reflects a resumed attempt but `run_resumed` is not yet durable, that can incorrectly inherit the previous attempt's `run_failed` or `run_completed` and either block resume or reconcile to the wrong state. The newer helper in `project_run_record::queries` is attempt-scoped and uses the snapshot `started_at` fallback for exactly this case, so the engine path should use it as well. Existing tests cover the helper logic, but not this engine resume branch.\n- `fr-11-bc8799ca`: Accept\n  The current worktree diff only changes `.ralph-burning/projects/rlm/run.json` and `.ralph-burning/projects/rlm/journal.ndjson` plus generated artifacts; there are no implementation hunks in `src/adapters/fs.rs`, `src/cli/run.rs`, or `src/contexts/workflow_composition/engine.rs`. As a result, the stated lifecycle-hardening items such as pid tracking helpers, `run stop` behavior, stale-running detection and resume recovery, and SIGTERM cleanup are not implemented by this patch.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

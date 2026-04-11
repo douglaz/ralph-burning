@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr7-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T14:53:15.003704334Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo amendments identify real correctness and safety defects: resumable terminal snapshots can still be wedged by orphaned writer locks, and PID records without start-time identity are trusted too broadly. The lease-only fallback for missing `run.pid` is a deliberate safety tradeoff; changing it to immediate recovery would risk stealing live legacy owners.\n\n## Votes\n\n- `fr-7-45babe55`: Accept\n  `handle_resume` only records an observed writer-lock owner when the snapshot is still `running`, but the CLI keeps its `CliWriterLeaseGuard` until after the engine finishes and post-run milestone sync completes. If the process dies in that window after the engine has already persisted a resumable `failed` or `paused` snapshot, the writer lock can remain orphaned while the snapshot is no longer `running`. The next `run resume` then skips owner-aware stale recovery and can fail in `CliWriterLeaseGuard::acquire` with `ProjectWriterLockHeld`, leaving a legitimately resumable run stuck. The stale-owner reclaim path should cover resumable terminal snapshots too.\n- `fr-7-cee54496`: Accept\n  A live PID without matching `proc_start_ticks` is not a reliable process identity check; it only shows that some process currently owns that PID. Today `classify_running_snapshot_liveness` treats that as authoritative, which can incorrectly keep a stale snapshot in `running`, and on non-Linux the stop path can signal that reused PID directly. On platforms where `proc_start_ticks` is unavailable, this becomes the default behavior. Missing start-time identity needs to be treated as unsafe or ambiguous unless there is an equivalent platform-specific validation.\n- `fr-7-81e934dc`: Reject\n  When `run.pid` is missing, a fresh writer lease is the only remaining positive liveness signal for mixed-version or legacy owners that never wrote pid files. Treating that case as immediately stale would allow `run resume` or stale recovery to reclaim the writer lock from a still-running CLI or daemon that is actively heartbeating. The 5-minute TTL is an availability penalty, but without a stronger liveness mechanism or an explicit force path it is the safer behavior. That tradeoff does not by itself establish a correctness defect in the current implementation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260410054251-final_review-aggregate-c1-a1-cr15-artifact",
+  "payload_id": "run-20260410054251-final_review-aggregate-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T17:53:56.473848977Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 15/25\n\n## Accepted\n\n- `fr-15-b033bfcb`\n\n## Rejected\n\n- `fr-15-7856d3cc`\n- `fr-15-cc7b8a94`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-15-b033bfcb`\n\nMake pid-record liveness actually work on non-Linux Unix platforms by honoring the fallback start marker, or explicitly gate the feature to Linux. `src/adapters/fs.rs:337-357` only treats `proc_start_ticks` as authoritative and returns `false` whenever ticks are absent, while non-Linux builds only populate `proc_start_marker` (`src/adapters/fs.rs:701-704`). Because `src/cli/run.rs:1529-1568` falls back to legacy lease handling when the pid record is not authoritative, macOS/BSD runs cannot be identified or recovered immediately from `run.pid` and remain blocked until the writer lease expires.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 15
+}

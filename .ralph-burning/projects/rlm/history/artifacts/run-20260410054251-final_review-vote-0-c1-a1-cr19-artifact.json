@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr19-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T19:27:41.266048946Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReject the daemon `run stop` amendment because `run.pid` names the shared daemon process, so PID-based stopping would break daemon/task isolation. Accept the shutdown-hardening and pid-cleanup amendments because daemon shutdown still lacks a bounded reconciliation path, and normal-completion pid cleanup is still caller-dependent instead of being guaranteed by the engine’s terminal-state transitions.\n\n## Votes\n\n- `fr-19-8cc86862`: Reject\n  In daemon mode `FileSystem::write_pid_file` records `std::process::id()` from the daemon loop and marks it `RunPidOwner::Daemon`, so `run.pid` points at the long-lived daemon process, not an isolated per-run orchestrator. Using that PID in `run stop` would target the daemon service itself and can interrupt unrelated daemon-managed work. A safe daemon-aware stop would need task or lease routing, not direct PID signaling.\n- `fr-19-425fac5b`: Accept\n  The daemon dispatch loops only call `task_cancel.cancel()` on shutdown and keep awaiting `dispatch_future`; they do not have a bounded wrapper like `run_with_termination_signal()` that forces interrupted-state reconciliation after a grace period. If the backend ignores cancellation and a supervisor later kills the daemon, the run can remain stuck in `Running` with `run.pid` still present. That is a real robustness gap.\n- `fr-19-2581c4ab`: Accept\n  The daemon-used `execute_run_with_retry` and `resume_run_with_retry` APIs do not themselves guarantee pid-file cleanup on successful completion, while CLI cleanup only runs after `close()` succeeds and daemon cleanup depends on lease release succeeding. A run can therefore finish successfully yet return a teardown error and leave stale `run.pid` state behind. That is a boundary/invariant bug, not just caller policy.\n- `fr-19-2517427d`: Accept\n  `complete_run` persists `RunStatus::Completed` without clearing `run.pid`, unlike the interruption and failure paths that remove it internally. That asymmetry leaves terminal-state cleanup split across outer callers, so any caller-side teardown failure can strand a completed run with stale pid metadata. The behavior is maintainability-hostile and correctness-relevant even though current tests codify it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 19
+}

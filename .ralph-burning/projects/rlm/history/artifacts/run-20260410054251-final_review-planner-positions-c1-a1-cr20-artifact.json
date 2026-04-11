@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr20-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T19:52:14.890699230Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments describe real correctness and safety defects. They each let the CLI report or assume a clean recovery state while live processes or contradictory durable ownership state may still exist, which is not robust enough for stop/resume semantics.\n\n## Votes\n\n- `fr-20-9af9a94d`: Accept\n  The cited stop path only SIGKILLs descendant process groups whose PGID differs from the orchestrator’s PGID, then SIGKILLs only the orchestrator PID itself. Ordinary children normally stay in the same process group, so they are skipped by `kill_descendant_process_groups` and survive the forced-stop path. That means `run stop` can rewrite the snapshot as interrupted/resumable while backend subprocesses are still running. The existing regression covers only a `setsid` child and does not cover the default same-PG case, so the amendment identifies a real gap.\n- `fr-20-036970e2`: Accept\n  `classify_running_snapshot_liveness` treats only authoritative pid records as live. A legacy `run.pid` without `proc_start_ticks` or start-marker falls through to lease heuristics, and if no fresh lease exists it is classified as `Stale` even when the recorded PID is still occupied by a live process. Both `run resume` and stale `run stop` then reclaim state and rewrite `run.json`, which can permit a second orchestrator to start while the first legacy process is still running. When process identity is ambiguous, reclaiming is not safe; the amendment correctly calls out that defect.\n- `fr-20-768d5ea2`: Accept\n  `reclaim_specific_project_writer_owner` uses its boolean return to distinguish full cleanup from partial or failed cleanup. In the worktree-owner path it can return `Ok(false)` after some side effects have already happened, including releasing the writer lock, while leaving the lease/task/worktree state only partially repaired. `acquire_recovery_writer_guard` currently ignores that boolean and immediately retries acquisition, so recovery can proceed on top of contradictory durable ownership state. That is a real robustness issue and should be surfaced as a failure instead of silently continuing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 20
+}

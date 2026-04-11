@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-1-c1-a1-cr24-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-1-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T21:26:54.426064844Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBoth proposed amendments describe concrete safety and correctness regressions with potential for unsafe concurrent orchestrator control and leaked child processes; both should be accepted.\n\n## Votes\n\n- `fr-24-0b2c9492`: Accept\n  The change can incorrectly classify a live legacy orchestrator as stale when its PID is present but lease state is absent, which can trigger recovery paths that rewrite snapshots while another orchestrator is still running. That creates split-brain behavior and violates process-ownership safety for status/resume/stop flows.\n- `fr-24-5968d876`: Accept\n  Concurrent reviewer launches can interleave unsynchronized read-modify-write updates to active-processes.json, causing lost updates of backend pid records. Dropped records break stale-run cleanup guarantees and can leave orphaned process groups, so this is a real robustness and lifecycle-management defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 24
+}

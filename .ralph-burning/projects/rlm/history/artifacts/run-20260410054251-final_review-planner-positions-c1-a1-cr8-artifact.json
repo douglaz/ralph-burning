@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr8-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T15:13:27.229134662Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments describe real correctness and safety bugs in run state reconciliation and stop/recovery behavior. They are worth accepting because they can misreport status, reclaim live ownership unsafely, or leave backend work running after a forced stop.\n\n## Votes\n\n- `fr-8-937b947b`: Accept\n  `reconcile_snapshot_status` currently looks at the journal's global last terminal event, not the active snapshot's `run_id`. Given the write order in start/resume (snapshot written before the new `run_started`/`run_resumed` journal entry), a newer stale `Running` snapshot can coexist with an older run's terminal event at the end of the journal. In that case `run status` can incorrectly rewrite the newer run to `Completed` or `Failed` instead of reporting the current run as stale/running. Reconciliation needs to be scoped to the active run id to remain correct.\n- `fr-8-d8cb5745`: Accept\n  This is a real compatibility and isolation bug. `FileSystem::is_pid_alive` intentionally rejects pid records without `proc_start_ticks`, and `classify_running_snapshot_liveness` also treats a fresh `CliWriter` lease without an authoritative pid marker as `Stale`. For a pre-upgrade live CLI run, that lets `run resume` or `run stop` reclaim the writer lock and mutate run state even though the original orchestrator is still active. That can produce two concurrent orchestrators or mark a live run failed, so stale-run recovery must not treat legacy CLI ownership as safely stale.\n- `fr-8-8663197c`: Accept\n  The forced-stop path only targets the orchestrator PID. Process-backend children are launched into their own process groups specifically so signals can kill their whole subtree, which also means killing the orchestrator does not kill the backend group. If `run stop` escalates to SIGKILL, the orchestrator cannot run its normal cancellation path, so the active backend subprocess tree can continue running after the snapshot is rewritten as failed and resumable. That is a real stop-semantics bug with process leakage and possible concurrent side effects, so forced stop needs to terminate the backend subtree as well.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

@@ -112,6 +112,118 @@ fn project_root(base_dir: &std::path::Path, project_id: &str) -> std::path::Path
         .join(project_id)
 }
 
+fn backend_processes_path(base_dir: &std::path::Path, project_id: &str) -> std::path::PathBuf {
+    project_root(base_dir, project_id)
+        .join("runtime")
+        .join("backend")
+        .join("active-processes.json")
+}
+
+fn spawn_isolated_backend_group(pid_file: &std::path::Path) -> std::process::Child {
+    let script = format!(
+        "exec setsid sh -c 'echo $$ > \"{}\"; exec sleep 60'",
+        pid_file.display()
+    );
+    Command::new("bash")
+        .args(["-lc", &script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn isolated backend group")
+}
+
+#[cfg(target_os = "linux")]
+fn proc_start_ticks(pid: u32) -> u64 {
+    let stat_path = std::path::PathBuf::from(format!("/proc/{pid}/stat"));
+    let raw = fs::read_to_string(&stat_path).expect("read /proc stat");
+    let (_, tail) = raw
+        .rsplit_once(") ")
+        .expect("process stat should contain comm terminator");
+    tail.split_whitespace()
+        .nth(19)
+        .expect("process stat should expose start ticks")
+        .parse::<u64>()
+        .expect("parse start ticks")
+}
+
+fn live_pid_record_json(
+    pid: u32,
+    owner: &str,
+    run_id: Option<&str>,
+    run_started_at: Option<&str>,
+    writer_owner: Option<&str>,
+) -> serde_json::Value {
+    let mut record = serde_json::json!({
+        "pid": pid,
+        "started_at": Utc::now(),
+        "owner": owner,
+    });
+    if let Some(run_id) = run_id {
+        record["run_id"] = serde_json::json!(run_id);
+    }
+    if let Some(run_started_at) = run_started_at {
+        record["run_started_at"] = serde_json::json!(run_started_at);
+    }
+    if let Some(writer_owner) = writer_owner {
+        record["writer_owner"] = serde_json::json!(writer_owner);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        record["proc_start_ticks"] = serde_json::json!(proc_start_ticks(pid));
+    }
+    record
+}
+
+fn live_backend_process_record_json(
+    pid: u32,
+    run_id: &str,
+    run_started_at: &str,
+) -> serde_json::Value {
+    let mut record = serde_json::json!({
+        "pid": pid,
+        "recorded_at": Utc::now(),
+        "run_id": run_id,
+        "run_started_at": run_started_at,
+    });
+    #[cfg(target_os = "linux")]
+    {
+        record["proc_start_ticks"] = serde_json::json!(proc_start_ticks(pid));
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        if let Some(marker) =
+            ralph_burning::adapters::fs::FileSystem::proc_start_marker_for_pid(pid)
+        {
+            record["proc_start_marker"] = serde_json::json!(marker);
+        }
+    }
+    record
+}
+
+fn wait_for_pid_file(path: &std::path::Path, what: &str) -> u32 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !path.exists() || fs::read_to_string(path).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what} pid file was never written"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    fs::read_to_string(path)
+        .expect("read pid file")
+        .trim()
+        .parse::<u32>()
+        .expect("parse pid")
+}
+
+fn pid_is_alive(pid: u32) -> bool {
+    kill(Pid::from_raw(pid as i32), None).is_ok()
+}
+
+fn pid_is_running(pid: u32) -> bool {
+    ralph_burning::adapters::fs::FileSystem::is_pid_running_unchecked(pid)
+}
+
 fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = project_root(base_dir, project_id);
     let long_artifact = format!("# Planning\n{}\n", "A".repeat(140));
@@ -684,7 +796,6 @@ fn milestone_plan_hash(base_dir: &std::path::Path, milestone_id: &str) -> String
     format!("{:x}", hasher.finalize())
 }
 
-#[cfg(feature = "test-stub")]
 fn write_daemon_task(base_dir: &std::path::Path, task: &DaemonTask) {
     let path = daemon_root(base_dir)
         .join("tasks")
@@ -5396,6 +5507,1905 @@ fn run_status_does_not_rewrite_legacy_run_snapshot() {
     assert_eq!(after, before, "run status must not mutate legacy run.json");
 }
 
+#[test]
+fn run_status_reports_stale_running_when_pid_file_is_missing() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stale",
+    "stage_cursor": { "stage": "planning", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Planning"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: stale (process not found)"));
+    assert!(stdout.contains("run `ralph-burning run resume` to recover"));
+}
+
+#[test]
+fn run_status_json_reports_stale_running_when_pid_file_is_missing() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stale-json",
+    "stage_cursor": { "stage": "planning", "cycle": 2, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Planning"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let output = Command::new(binary())
+        .args(["run", "status", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status --json");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status json should parse");
+    assert_eq!(value["status"], "stale");
+    assert_eq!(value["stage"], "planning");
+    assert_eq!(value["cycle"], 2);
+    assert_eq!(
+        value["summary"],
+        "stale running snapshot: process not found; run `ralph-burning run resume` to recover"
+    );
+}
+
+#[test]
+fn run_status_ignores_older_terminal_journal_events_for_different_run_id() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-current",
+    "stage_cursor": { "stage": "planning", "cycle": 2, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Planning"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-older","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_completed","details":{"run_id":"run-older","completion_rounds":0,"max_completion_rounds":20}}"#,
+    )
+    .expect("write journal");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: stale (process not found)"));
+    assert!(
+        !stdout.contains("Status: completed"),
+        "older terminal history must not reconcile a newer running snapshot: {stdout}"
+    );
+}
+
+#[test]
+fn run_status_ignores_terminal_journal_events_before_latest_resume_for_same_run_id() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-current",
+    "stage_cursor": { "stage": "implementation", "cycle": 2, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-current","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:15:00Z","event_type":"run_failed","details":{"run_id":"run-current","stage_id":"review","failure_class":"stage_failure","message":"older attempt failed","completion_rounds":1,"max_completion_rounds":20}}
+{"sequence":4,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_resumed","details":{"run_id":"run-current","resume_stage":"implementation","cycle":2,"completion_round":1,"max_completion_rounds":20}}
+{"sequence":5,"timestamp":"2026-04-01T10:21:00Z","event_type":"stage_entered","details":{"run_id":"run-current","stage_id":"implementation","cycle":2,"attempt":1}}"#,
+    )
+    .expect("write journal");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: stale (process not found)"));
+    assert!(
+        !stdout.contains("Status: failed"),
+        "an older failed attempt for the same run_id must not override the active resumed attempt: {stdout}"
+    );
+}
+
+#[test]
+fn run_status_ignores_terminal_journal_events_before_unjournaled_resume_snapshot_started_at() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-current",
+    "stage_cursor": { "stage": "implementation", "cycle": 2, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-01T10:20:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-current","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:15:00Z","event_type":"run_failed","details":{"run_id":"run-current","stage_id":"review","failure_class":"stage_failure","message":"older attempt failed","completion_rounds":1,"max_completion_rounds":20}}"#,
+    )
+    .expect("write journal");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: stale (process not found)"));
+    assert!(
+        !stdout.contains("Status: failed"),
+        "the stale resumed snapshot must not inherit a previous attempt's failure: {stdout}"
+    );
+}
+
+#[test]
+fn run_status_keeps_daemon_owned_running_snapshot_active_with_live_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-daemon",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let worktree_lease = WorktreeLease {
+        lease_id: "lease-daemon-alpha".to_owned(),
+        task_id: "task-daemon-alpha".to_owned(),
+        project_id: "alpha".to_owned(),
+        worktree_path: temp_dir.path().join("worktrees/task-daemon-alpha"),
+        branch_name: "task-daemon-alpha".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-daemon-alpha.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(worktree_lease))
+            .expect("serialize daemon lease"),
+    )
+    .expect("write daemon lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), "lease-daemon-alpha")
+        .expect("write daemon writer lock");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            std::process::id(),
+            "daemon",
+            Some("run-daemon"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("lease-daemon-alpha"),
+        ))
+        .expect("serialize daemon pid"),
+    )
+    .expect("write daemon pid");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: running"));
+    assert!(
+        !stdout.contains("stale"),
+        "daemon-owned running snapshot should not be reported as stale: {stdout}"
+    );
+}
+
+#[test]
+fn run_status_keeps_legacy_daemon_owned_running_snapshot_active_without_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-daemon-stale",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let worktree_lease = WorktreeLease {
+        lease_id: "lease-daemon-legacy".to_owned(),
+        task_id: "task-daemon-legacy".to_owned(),
+        project_id: "alpha".to_owned(),
+        worktree_path: temp_dir.path().join("worktrees/task-daemon-legacy"),
+        branch_name: "task-daemon-legacy".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-daemon-legacy.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(worktree_lease))
+            .expect("serialize daemon lease"),
+    )
+    .expect("write daemon lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), "lease-daemon-legacy")
+        .expect("write daemon writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: running"));
+    assert!(
+        !stdout.contains("stale"),
+        "fresh legacy daemon lease should keep the run active during mixed-version rollouts: {stdout}"
+    );
+}
+
+#[test]
+fn run_status_keeps_legacy_cli_owned_running_snapshot_active_without_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-cli-legacy-status",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let cli_lease = CliWriterLease {
+        lease_id: "lease-cli-legacy-status".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-cli-legacy-status.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(cli_lease))
+            .expect("serialize cli lease"),
+    )
+    .expect("write cli lease");
+    fs::write(
+        leases_dir.join("writer-alpha.lock"),
+        "lease-cli-legacy-status",
+    )
+    .expect("write cli writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: running"));
+    assert!(
+        !stdout.contains("stale"),
+        "fresh legacy CLI lease should keep the run active instead of reporting stale: {stdout}"
+    );
+}
+
+#[test]
+fn run_status_reports_stale_daemon_owned_running_when_legacy_lease_expires() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-daemon-stale",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let worktree_lease = WorktreeLease {
+        lease_id: "lease-daemon-stale".to_owned(),
+        task_id: "task-daemon-stale".to_owned(),
+        project_id: "alpha".to_owned(),
+        worktree_path: temp_dir.path().join("worktrees/task-daemon-stale"),
+        branch_name: "task-daemon-stale".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::seconds(301),
+    };
+    fs::write(
+        leases_dir.join("lease-daemon-stale.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(worktree_lease))
+            .expect("serialize daemon lease"),
+    )
+    .expect("write daemon lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), "lease-daemon-stale")
+        .expect("write daemon writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: stale (process not found)"));
+    assert!(stdout.contains("run `ralph-burning run resume` to recover"));
+}
+
+#[test]
+fn run_status_keeps_legacy_cli_owned_running_snapshot_active_with_live_pid_without_proc_start_ticks_when_no_lease_exists(
+) {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-legacy-pid-status",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "pid": std::process::id(),
+            "started_at": Utc::now(),
+            "owner": "cli",
+        }))
+        .expect("serialize legacy pid"),
+    )
+    .expect("write legacy pid");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Status: running"),
+        "live legacy pid-only records must stay running until the orchestrator pid is actually gone: {stdout}"
+    );
+    assert!(
+        !stdout.contains("stale"),
+        "live legacy pid-only records must not be auto-recovered while the orchestrator pid still exists: {stdout}"
+    );
+}
+
+#[test]
+fn run_stop_terminates_pid_and_marks_snapshot_failed() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    let pid = child.id();
+    let pid_file = serde_json::json!({
+        "pid": pid,
+        "started_at": Utc::now(),
+        "owner": "cli",
+        "writer_owner": "cli-stop-test",
+        "run_id": "run-stop",
+        "run_started_at": "2026-04-10T00:00:00Z",
+        "proc_start_ticks": proc_start_ticks(pid),
+    });
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&pid_file).expect("serialize pid file"),
+    )
+    .expect("write pid file");
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let stale_lease = CliWriterLease {
+        lease_id: "cli-stop-test".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("cli-stop-test.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(stale_lease.clone()))
+            .expect("serialize stale stop lease"),
+    )
+    .expect("write stale stop lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), &stale_lease.lease_id)
+        .expect("write stale stop writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Stopped run for project 'alpha'"));
+
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "failed");
+    assert!(
+        !run_json["interrupted_run"].is_null(),
+        "stop should preserve interrupted_run for resume"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "alpha")
+            .join("run.pid")
+            .exists(),
+        "run.pid should be removed after stop"
+    );
+    assert!(
+        !leases_dir.join("writer-alpha.lock").exists(),
+        "writer lock should be reclaimed after stop"
+    );
+    assert!(
+        !leases_dir.join("cli-stop-test.json").exists(),
+        "stale cli lease should be pruned after stop"
+    );
+    let journal = fs::read_to_string(project_root(temp_dir.path(), "alpha").join("journal.ndjson"))
+        .expect("read journal");
+    let last_line = journal.lines().last().expect("journal should not be empty");
+    assert!(
+        last_line.contains("\"run_failed\""),
+        "run stop should append a durable run_failed event, got: {last_line}"
+    );
+
+    let child_status = child.wait().expect("wait for stopped child");
+    assert!(
+        !child_status.success(),
+        "sleep child should not exit successfully after stop: {child_status:?}"
+    );
+}
+
+#[test]
+fn run_stop_refuses_pid_for_different_running_attempt() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-old",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    let pid = child.id();
+    let pid_file = serde_json::json!({
+        "pid": pid,
+        "started_at": Utc::now(),
+        "owner": "cli",
+        "writer_owner": "cli-stop-race",
+        "run_id": "run-stop-new",
+        "run_started_at": "2026-04-10T00:05:00Z",
+        "proc_start_ticks": proc_start_ticks(pid),
+    });
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&pid_file).expect("serialize pid file"),
+    )
+    .expect("write pid file");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("project run changed while preparing stop"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        pid_is_alive(pid),
+        "run stop must not signal a different attempt"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn run_stop_preserves_completed_journal_outcome_for_stale_running_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-completed",
+    "stage_cursor": { "stage": "review", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-01T10:01:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Review"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-stop-completed","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_completed","details":{"run_id":"run-stop-completed","completion_rounds":1,"max_completion_rounds":20}}"#,
+    )
+    .expect("write journal");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let stale_lease = CliWriterLease {
+        lease_id: "cli-stop-completed".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::seconds(301),
+    };
+    fs::write(
+        leases_dir.join("cli-stop-completed.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(stale_lease.clone()))
+            .expect("serialize stale stop lease"),
+    )
+    .expect("write stale stop lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), &stale_lease.lease_id)
+        .expect("write stale stop writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("already completed"),
+        "stop should report the durable completed outcome instead of rewriting to failed: {stdout}"
+    );
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "completed");
+    assert_eq!(
+        run_json["status_summary"],
+        "completed (reconciled from journal)"
+    );
+}
+
+#[test]
+fn run_stop_does_not_delete_pid_file_when_snapshot_is_not_running() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": null,
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "failed: startup interrupted"
+}"#,
+    )
+    .expect("write failed snapshot");
+
+    let pid_file = serde_json::json!({
+        "pid": std::process::id(),
+        "started_at": Utc::now(),
+    });
+    let pid_path = project_root(temp_dir.path(), "alpha").join("run.pid");
+    fs::write(
+        &pid_path,
+        serde_json::to_string_pretty(&pid_file).expect("serialize pid file"),
+    )
+    .expect("write pid file");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        pid_path.exists(),
+        "run stop should not delete a live pid file when the snapshot is not running"
+    );
+}
+
+#[test]
+fn run_stop_sigkill_terminates_backend_subprocess_group() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigkill-tree",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let backend_child_pid_path = temp_dir.path().join("backend-child.pid");
+    let orchestrator_script = format!(
+        "trap '' TERM; setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done; while :; do sleep 1; done",
+        backend_child_pid_path.display(),
+        backend_child_pid_path.display(),
+    );
+    let mut orchestrator = Command::new("bash")
+        .args(["-lc", &orchestrator_script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+    let orchestrator_pid = orchestrator.id();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !backend_child_pid_path.exists() || fs::read_to_string(&backend_child_pid_path).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "backend child pid file was never written"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let backend_child_pid = fs::read_to_string(&backend_child_pid_path)
+        .expect("read backend child pid")
+        .trim()
+        .parse::<u32>()
+        .expect("parse backend child pid");
+    assert!(
+        pid_is_alive(backend_child_pid),
+        "backend child must be alive before stop"
+    );
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator_pid,
+            "cli",
+            Some("run-stop-sigkill-tree"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-tree"),
+        ))
+        .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("required SIGKILL after timeout"),
+        "stop should escalate to SIGKILL for the TERM-ignoring orchestrator: {stdout}"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_child_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_child_pid),
+        "backend subprocess group should be gone after SIGKILL escalation"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        !orchestrator_status.success(),
+        "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
+    );
+}
+
+#[test]
+fn run_stop_sigkill_terminates_same_process_group_backend_descendant() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigkill-same-pg",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let backend_child_pid_path = temp_dir.path().join("backend-child-same-pg.pid");
+    let orchestrator_script = format!(
+        "trap '' TERM; sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done; while :; do sleep 1; done",
+        backend_child_pid_path.display(),
+        backend_child_pid_path.display(),
+    );
+    let mut orchestrator = Command::new("bash")
+        .args(["-lc", &orchestrator_script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+    let orchestrator_pid = orchestrator.id();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !backend_child_pid_path.exists() || fs::read_to_string(&backend_child_pid_path).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "same-process-group backend child pid file was never written"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let backend_child_pid = fs::read_to_string(&backend_child_pid_path)
+        .expect("read backend child pid")
+        .trim()
+        .parse::<u32>()
+        .expect("parse backend child pid");
+    assert!(
+        pid_is_alive(backend_child_pid),
+        "same-process-group backend child must be alive before stop"
+    );
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator_pid,
+            "cli",
+            Some("run-stop-sigkill-same-pg"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-same-pg"),
+        ))
+        .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("required SIGKILL after timeout"),
+        "stop should escalate to SIGKILL for the TERM-ignoring orchestrator: {stdout}"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_child_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_child_pid),
+        "same-process-group backend child should be gone after SIGKILL escalation"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        !orchestrator_status.success(),
+        "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
+    );
+}
+
+#[test]
+fn run_stop_refuses_live_legacy_pid_record_without_proc_start_ticks_when_no_lease_exists() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-legacy-pid",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "pid": child.id(),
+            "started_at": Utc::now(),
+        }))
+        .expect("serialize pid file"),
+    )
+    .expect("write legacy pid file");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("legacy CLI-owned run"),
+        "stop should refuse a live legacy pid-only run instead of recovering it as stale: {stderr}"
+    );
+    assert!(
+        pid_is_alive(child.id()),
+        "refused stop must not signal the live legacy orchestrator"
+    );
+    assert!(
+        project_root(temp_dir.path(), "alpha")
+            .join("run.pid")
+            .exists(),
+        "refused stop must leave the live legacy pid marker in place"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn run_stop_recovers_stale_running_and_kills_persisted_backend_process_group() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-stale-backend",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+
+    let backend_pid_file = temp_dir.path().join("stale-backend-stop.pid");
+    let mut backend_group = spawn_isolated_backend_group(&backend_pid_file);
+    let backend_pid = wait_for_pid_file(&backend_pid_file, "stale backend");
+    assert!(
+        pid_is_running(backend_pid),
+        "persisted stale backend process should be alive before recovery"
+    );
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "processes": [
+                live_backend_process_record_json(
+                    backend_pid,
+                    "run-stop-stale-backend",
+                    "2026-04-10T00:00:00Z"
+                )
+            ]
+        }))
+        .expect("serialize backend process record"),
+    )
+    .expect("write backend process record");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("already stale"),
+        "stale stop should recover instead of refusing: {stdout}"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_running(backend_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_running(backend_pid),
+        "stale stop recovery must kill persisted backend process groups before returning"
+    );
+    assert!(
+        !backend_processes_path(temp_dir.path(), "alpha").exists(),
+        "successful stale backend cleanup should remove the persisted backend process file"
+    );
+
+    let _ = backend_group.kill();
+    let _ = backend_group.wait();
+}
+
+#[test]
+fn run_stop_kills_backend_descendants_when_parent_exits_on_sigterm() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigterm-parent-exit",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let backend_child_pid_path = temp_dir.path().join("backend-child-parent-exit.pid");
+    let orchestrator_script = format!(
+        "trap 'exit 0' TERM; setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done; while :; do sleep 1; done",
+        backend_child_pid_path.display(),
+        backend_child_pid_path.display(),
+    );
+    let mut orchestrator = Command::new("bash")
+        .args(["-lc", &orchestrator_script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+    let orchestrator_pid = orchestrator.id();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !backend_child_pid_path.exists() || fs::read_to_string(&backend_child_pid_path).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "backend child pid file was never written"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let backend_child_pid = fs::read_to_string(&backend_child_pid_path)
+        .expect("read backend child pid")
+        .trim()
+        .parse::<u32>()
+        .expect("parse backend child pid");
+    assert!(
+        pid_is_alive(backend_child_pid),
+        "backend child must be alive before stop"
+    );
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator_pid,
+            "cli",
+            Some("run-stop-sigterm-parent-exit"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-parent-exit"),
+        ))
+        .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("terminated gracefully with SIGTERM and killed backend subprocesses"),
+        "stop should report descendant cleanup even when the orchestrator exits on SIGTERM: {stdout}"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_child_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_child_pid),
+        "backend child should be killed even when the orchestrator exits on SIGTERM"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        orchestrator_status.success(),
+        "orchestrator should exit cleanly on SIGTERM in this scenario: {orchestrator_status:?}"
+    );
+}
+
+#[test]
+fn run_stop_refuses_daemon_owned_running_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-daemon-stop",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let worktree_lease = WorktreeLease {
+        lease_id: "lease-daemon-stop".to_owned(),
+        task_id: "task-daemon-stop".to_owned(),
+        project_id: "alpha".to_owned(),
+        worktree_path: temp_dir.path().join("worktrees/task-daemon-stop"),
+        branch_name: "task-daemon-stop".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-daemon-stop.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(worktree_lease))
+            .expect("serialize daemon lease"),
+    )
+    .expect("write daemon lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), "lease-daemon-stop")
+        .expect("write daemon writer lock");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            std::process::id(),
+            "daemon",
+            Some("run-daemon-stop"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("lease-daemon-stop"),
+        ))
+        .expect("serialize daemon pid"),
+    )
+    .expect("write daemon pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("daemon task"),
+        "stop should explain why daemon-owned runs are refused: {stderr}"
+    );
+    let run_json = fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
+        .expect("read run.json");
+    assert!(
+        run_json.contains("\"status\": \"running\""),
+        "daemon-owned run should remain running after refused stop: {run_json}"
+    );
+    assert!(
+        leases_dir.join("writer-alpha.lock").exists(),
+        "daemon writer lock should remain intact after refused stop"
+    );
+}
+
+#[test]
+fn run_stop_refuses_legacy_cli_owned_running_without_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-cli-legacy-stop",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let cli_lease = CliWriterLease {
+        lease_id: "lease-cli-legacy-stop".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-cli-legacy-stop.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(cli_lease))
+            .expect("serialize cli lease"),
+    )
+    .expect("write cli lease");
+    fs::write(
+        leases_dir.join("writer-alpha.lock"),
+        "lease-cli-legacy-stop",
+    )
+    .expect("write cli writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("legacy CLI-owned run"),
+        "stop should refuse fresh legacy CLI runs instead of reclaiming them: {stderr}"
+    );
+    assert!(
+        leases_dir.join("writer-alpha.lock").exists(),
+        "legacy CLI writer lock must remain intact after refused stop"
+    );
+    assert!(
+        leases_dir.join("lease-cli-legacy-stop.json").exists(),
+        "legacy CLI lease must not be reclaimed while it is still fresh"
+    );
+}
+
+#[test]
+fn run_stop_refuses_legacy_cli_owned_running_with_authoritative_pid_without_attempt_metadata() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-cli-legacy-stop-live-pid",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            child.id(),
+            "cli",
+            None,
+            None,
+            Some("legacy-cli-live-pid"),
+        ))
+        .expect("serialize legacy cli pid"),
+    )
+    .expect("write legacy cli pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("legacy CLI-owned run"),
+        "stop should refuse a live legacy CLI pid without attempt metadata: {stderr}"
+    );
+    assert!(
+        !stderr.contains("project run changed"),
+        "legacy pid handling should not surface a handoff retry error: {stderr}"
+    );
+    assert!(
+        pid_is_alive(child.id()),
+        "run stop must not signal a legacy live process without attempt metadata"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn run_resume_refuses_legacy_daemon_owned_running_without_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-daemon-legacy-resume",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let worktree_lease = WorktreeLease {
+        lease_id: "lease-daemon-legacy-resume".to_owned(),
+        task_id: "task-daemon-legacy-resume".to_owned(),
+        project_id: "alpha".to_owned(),
+        worktree_path: temp_dir.path().join("worktrees/task-daemon-legacy-resume"),
+        branch_name: "task-daemon-legacy-resume".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-daemon-legacy-resume.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(worktree_lease))
+            .expect("serialize daemon lease"),
+    )
+    .expect("write daemon lease");
+    fs::write(
+        leases_dir.join("writer-alpha.lock"),
+        "lease-daemon-legacy-resume",
+    )
+    .expect("write daemon writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("daemon-owned running run"),
+        "resume should refuse mixed-version daemon runs until the lease goes stale: {stderr}"
+    );
+    assert!(
+        leases_dir.join("writer-alpha.lock").exists(),
+        "legacy daemon writer lock must remain intact after refused resume"
+    );
+    assert!(
+        leases_dir.join("lease-daemon-legacy-resume.json").exists(),
+        "legacy daemon lease must not be reclaimed while it is still fresh"
+    );
+}
+
+#[test]
+fn run_resume_refuses_legacy_daemon_owned_running_with_authoritative_pid_without_attempt_metadata()
+{
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-daemon-legacy-resume-live-pid",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            std::process::id(),
+            "daemon",
+            None,
+            None,
+            Some("legacy-daemon-live-pid"),
+        ))
+        .expect("serialize legacy daemon pid"),
+    )
+    .expect("write legacy daemon pid");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("daemon-owned running run"),
+        "resume should refuse a live legacy daemon pid without attempt metadata: {stderr}"
+    );
+    assert!(
+        !stderr.contains("project run changed"),
+        "legacy daemon pid handling should not surface a handoff retry error: {stderr}"
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn run_resume_preserves_completed_journal_outcome_for_stale_running_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-resume-completed",
+    "stage_cursor": { "stage": "review", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-01T10:01:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Review"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-resume-completed","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_completed","details":{"run_id":"run-resume-completed","completion_rounds":1,"max_completion_rounds":20}}"#,
+    )
+    .expect("write journal");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let stale_lease = CliWriterLease {
+        lease_id: "cli-resume-completed".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::seconds(301),
+    };
+    fs::write(
+        leases_dir.join("cli-resume-completed.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(stale_lease.clone()))
+            .expect("serialize stale resume lease"),
+    )
+    .expect("write stale resume lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), &stale_lease.lease_id)
+        .expect("write stale resume writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already completed"),
+        "resume should refuse when the journal already completed the run: {stderr}"
+    );
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "completed");
+    assert_eq!(
+        run_json["status_summary"],
+        "completed (reconciled from journal)"
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn run_resume_reconciles_completed_stale_running_snapshot_without_writer_lock_owner() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-resume-completed-no-owner",
+    "stage_cursor": { "stage": "review", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-01T10:01:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Review"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{"run_id":"run-resume-completed-no-owner","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_completed","details":{"run_id":"run-resume-completed-no-owner","completion_rounds":1,"max_completion_rounds":20}}"#,
+    )
+    .expect("write journal");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already completed"),
+        "resume should still reconcile a stale completed run without any writer lock owner: {stderr}"
+    );
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json")).unwrap(),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "completed");
+    assert_eq!(
+        run_json["status_summary"],
+        "completed (reconciled from journal)"
+    );
+}
+
+#[test]
+fn run_resume_refuses_legacy_cli_owned_running_without_pid_file() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-cli-legacy-resume",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let cli_lease = CliWriterLease {
+        lease_id: "lease-cli-legacy-resume".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("lease-cli-legacy-resume.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(cli_lease))
+            .expect("serialize cli lease"),
+    )
+    .expect("write cli lease");
+    fs::write(
+        leases_dir.join("writer-alpha.lock"),
+        "lease-cli-legacy-resume",
+    )
+    .expect("write cli writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("legacy CLI-owned running run"),
+        "resume should refuse fresh legacy CLI runs instead of reclaiming them: {stderr}"
+    );
+    assert!(
+        leases_dir.join("writer-alpha.lock").exists(),
+        "legacy CLI writer lock must remain intact after refused resume"
+    );
+    assert!(
+        leases_dir.join("lease-cli-legacy-resume.json").exists(),
+        "legacy CLI lease must not be reclaimed while it is still fresh"
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn run_resume_refuses_live_legacy_pid_record_without_proc_start_ticks_when_no_lease_exists() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "legacy-live-pid-resume");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("legacy-live-pid-resume".to_owned())
+            .expect("valid project id");
+    let prompt_hash = <ralph_burning::adapters::fs::FsProjectStore as ralph_burning::contexts::project_run_record::service::ProjectStorePort>::read_project_record(
+        &ralph_burning::adapters::fs::FsProjectStore,
+        temp_dir.path(),
+        &project_id,
+    )
+    .expect("read project record")
+    .prompt_hash;
+    let now = Utc::now();
+
+    fs::write(
+        project_root(temp_dir.path(), "legacy-live-pid-resume").join("run.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "active_run": {
+                "run_id": "run-cli-legacy-resume-live-pid-only",
+                "stage_cursor": {
+                    "stage": "planning",
+                    "cycle": 1,
+                    "attempt": 1,
+                    "completion_round": 1
+                },
+                "started_at": now,
+                "prompt_hash_at_cycle_start": prompt_hash,
+                "prompt_hash_at_stage_start": prompt_hash,
+                "qa_iterations_current_cycle": 0,
+                "review_iterations_current_cycle": 0,
+                "final_review_restart_count": 0
+            },
+            "interrupted_run": serde_json::Value::Null,
+            "status": "running",
+            "cycle_history": [],
+            "completion_rounds": 1,
+            "max_completion_rounds": 20,
+            "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+            "amendment_queue": { "pending": [], "processed_count": 0 },
+            "status_summary": "running: Planning"
+        }))
+        .expect("serialize stale run.json"),
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "legacy-live-pid-resume").join("journal.ndjson"),
+        format!(
+            "{{\"sequence\":1,\"timestamp\":\"2026-03-11T19:00:00Z\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"legacy-live-pid-resume\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{now}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-cli-legacy-resume-live-pid-only\",\"first_stage\":\"planning\",\"max_completion_rounds\":20}}}}"
+        ),
+    )
+    .expect("write stale resume journal");
+
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep");
+    fs::write(
+        project_root(temp_dir.path(), "legacy-live-pid-resume").join("run.pid"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "pid": child.id(),
+            "started_at": Utc::now(),
+        }))
+        .expect("serialize legacy pid file"),
+    )
+    .expect("write legacy pid file");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("legacy CLI-owned running run"),
+        "resume should refuse a live legacy pid-only run until the orchestrator pid is gone: {stderr}"
+    );
+    assert!(
+        pid_is_alive(child.id()),
+        "refused resume must not signal the live legacy orchestrator"
+    );
+    assert!(
+        project_root(temp_dir.path(), "legacy-live-pid-resume")
+            .join("run.pid")
+            .exists(),
+        "refused resume must leave the live legacy pid marker in place"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 // ── Run History ──
 
 #[test]
@@ -9485,6 +11495,584 @@ fn cli_run_resume_acquires_and_releases_writer_lock() {
 
 #[cfg(feature = "test-stub")]
 #[test]
+fn cli_run_resume_kills_persisted_stale_backend_process_group_before_restarting() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "stale-resume-backend");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("stale-resume-backend".to_owned())
+            .expect("valid project id");
+    let prompt_hash = <ralph_burning::adapters::fs::FsProjectStore as ralph_burning::contexts::project_run_record::service::ProjectStorePort>::read_project_record(
+        &ralph_burning::adapters::fs::FsProjectStore,
+        temp_dir.path(),
+        &project_id,
+    )
+    .expect("read project record")
+    .prompt_hash;
+    let now = Utc::now();
+    fs::write(
+        project_root(temp_dir.path(), "stale-resume-backend").join("run.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "active_run": {
+                "run_id": "run-stale-resume-backend",
+                "stage_cursor": {
+                    "stage": "planning",
+                    "cycle": 1,
+                    "attempt": 1,
+                    "completion_round": 1
+                },
+                "started_at": now,
+                "prompt_hash_at_cycle_start": prompt_hash,
+                "prompt_hash_at_stage_start": prompt_hash,
+                "qa_iterations_current_cycle": 0,
+                "review_iterations_current_cycle": 0,
+                "final_review_restart_count": 0
+            },
+            "interrupted_run": serde_json::Value::Null,
+            "status": "running",
+            "cycle_history": [],
+            "completion_rounds": 1,
+            "max_completion_rounds": 20,
+            "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+            "amendment_queue": { "pending": [], "processed_count": 0 },
+            "status_summary": "running: Planning"
+        }))
+        .expect("serialize stale run.json"),
+    )
+    .expect("write stale run.json");
+    fs::write(
+        project_root(temp_dir.path(), "stale-resume-backend").join("journal.ndjson"),
+        format!(
+            "{{\"sequence\":1,\"timestamp\":\"2026-03-11T19:00:00Z\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"stale-resume-backend\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{now}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-stale-resume-backend\",\"first_stage\":\"planning\",\"max_completion_rounds\":20}}}}"
+        ),
+    )
+    .expect("write stale resume journal");
+    fs::remove_file(project_root(temp_dir.path(), "stale-resume-backend").join("run.pid")).ok();
+
+    let backend_pid_file = temp_dir.path().join("stale-resume-backend.pid");
+    let mut backend_group = spawn_isolated_backend_group(&backend_pid_file);
+    let backend_pid = wait_for_pid_file(&backend_pid_file, "stale resume backend");
+    assert!(
+        pid_is_running(backend_pid),
+        "persisted stale backend process should be alive before resume recovery"
+    );
+    fs::write(
+        backend_processes_path(temp_dir.path(), "stale-resume-backend"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "processes": [
+                live_backend_process_record_json(
+                    backend_pid,
+                    "run-stale-resume-backend",
+                    &now.to_rfc3339()
+                )
+            ]
+        }))
+        .expect("serialize backend process record"),
+    )
+    .expect("write backend process record");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(
+        output.status.success(),
+        "stale resume should recover and succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_running(backend_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_running(backend_pid),
+        "stale resume must kill persisted backend process groups before restarting"
+    );
+    assert!(
+        !backend_processes_path(temp_dir.path(), "stale-resume-backend").exists(),
+        "successful stale backend cleanup should remove the persisted backend process file"
+    );
+
+    let _ = backend_group.kill();
+    let _ = backend_group.wait();
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn cli_run_resume_recovers_stale_running_and_reclaims_writer_lock() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "stale-resume-lock");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("stale-resume-lock".to_owned())
+        .expect("valid project id");
+    let prompt_hash = <ralph_burning::adapters::fs::FsProjectStore as ralph_burning::contexts::project_run_record::service::ProjectStorePort>::read_project_record(
+        &ralph_burning::adapters::fs::FsProjectStore,
+        temp_dir.path(),
+        &project_id,
+    )
+    .expect("read project record")
+    .prompt_hash;
+    let now = Utc::now();
+    let run_json_path = project_root(temp_dir.path(), "stale-resume-lock").join("run.json");
+    fs::write(
+        &run_json_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "active_run": {
+                "run_id": "run-stale-resume-lock",
+                "stage_cursor": {
+                    "stage": "planning",
+                    "cycle": 1,
+                    "attempt": 1,
+                    "completion_round": 1
+                },
+                "started_at": now,
+                "prompt_hash_at_cycle_start": prompt_hash,
+                "prompt_hash_at_stage_start": prompt_hash,
+                "qa_iterations_current_cycle": 0,
+                "review_iterations_current_cycle": 0,
+                "final_review_restart_count": 0
+            },
+            "interrupted_run": serde_json::Value::Null,
+            "status": "running",
+            "cycle_history": [],
+            "completion_rounds": 1,
+            "max_completion_rounds": 20,
+            "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+            "amendment_queue": { "pending": [], "processed_count": 0 },
+            "status_summary": "running: Planning"
+        }))
+        .expect("serialize stale run.json"),
+    )
+    .expect("write stale run.json");
+    fs::write(
+        project_root(temp_dir.path(), "stale-resume-lock").join("journal.ndjson"),
+        format!(
+            "{{\"sequence\":1,\"timestamp\":\"2026-03-11T19:00:00Z\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"stale-resume-lock\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{now}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-stale-resume-lock\",\"first_stage\":\"planning\",\"max_completion_rounds\":20}}}}"
+        ),
+    )
+    .expect("write stale resume journal");
+    fs::remove_file(project_root(temp_dir.path(), "stale-resume-lock").join("run.pid")).ok();
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let stale_lease = CliWriterLease {
+        lease_id: "cli-stale-resume".to_owned(),
+        project_id: "stale-resume-lock".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::seconds(301),
+    };
+    fs::write(
+        leases_dir.join("cli-stale-resume.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(stale_lease.clone()))
+            .expect("serialize stale resume lease"),
+    )
+    .expect("write stale resume lease");
+    fs::write(
+        leases_dir.join("writer-stale-resume-lock.lock"),
+        &stale_lease.lease_id,
+    )
+    .expect("write stale resume writer lock");
+
+    let resume = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+    assert!(
+        resume.status.success(),
+        "stale resume should recover and succeed: {}",
+        String::from_utf8_lossy(&resume.stderr)
+    );
+
+    let final_run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "stale-resume-lock").join("run.json"))
+            .expect("read final run.json");
+    assert!(
+        final_run_json.contains("\"completed\""),
+        "resume should finish after stale recovery, got: {final_run_json}"
+    );
+    assert!(
+        !leases_dir.join("writer-stale-resume-lock.lock").exists(),
+        "stale writer lock should be reclaimed before resume reacquires it"
+    );
+    assert!(
+        !leases_dir.join("cli-stale-resume.json").exists(),
+        "stale cli lease record should be pruned during resume recovery"
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn cli_run_resume_reclaims_writer_lock_for_failed_snapshot_cleanup_crash() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "failed-cleanup-lock");
+
+    let fail_output = Command::new(binary())
+        .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "review")
+        .output()
+        .expect("run start to fail");
+    assert!(!fail_output.status.success());
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create lease dir");
+    let stranded_lease = CliWriterLease {
+        lease_id: "cli-failed-cleanup-lock".to_owned(),
+        project_id: "failed-cleanup-lock".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("cli-failed-cleanup-lock.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(stranded_lease.clone()))
+            .expect("serialize stranded cleanup lease"),
+    )
+    .expect("write stranded cleanup lease");
+    fs::write(
+        leases_dir.join("writer-failed-cleanup-lock.lock"),
+        &stranded_lease.lease_id,
+    )
+    .expect("write stranded cleanup lock");
+    let mut child = Command::new("sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn helper process");
+    let child_pid = child.id();
+    let child_start_ticks = proc_start_ticks(child_pid);
+    child.kill().expect("kill helper process");
+    child.wait().expect("wait helper process");
+    fs::write(
+        project_root(temp_dir.path(), "failed-cleanup-lock").join("run.pid"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "pid": child_pid,
+            "started_at": Utc::now(),
+            "owner": "cli",
+            "writer_owner": stranded_lease.lease_id,
+            "proc_start_ticks": child_start_ticks,
+        }))
+        .expect("serialize dead pid record"),
+    )
+    .expect("write dead pid record");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+    assert!(
+        output.status.success(),
+        "resume should reclaim stranded cleanup lock: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "failed-cleanup-lock").join("run.json"))
+            .expect("read run.json");
+    assert!(
+        run_json.contains("\"completed\""),
+        "resume should finish after reclaiming stranded cleanup lock, got: {run_json}"
+    );
+    assert!(
+        !leases_dir.join("writer-failed-cleanup-lock.lock").exists(),
+        "stranded cleanup writer lock should be reclaimed before resume reacquires it"
+    );
+    assert!(
+        !leases_dir.join("cli-failed-cleanup-lock.json").exists(),
+        "stranded cleanup cli lease should be pruned during resume recovery"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "failed-cleanup-lock")
+            .join("run.pid")
+            .exists(),
+        "pid file should be removed after the recovered resume releases its writer lease"
+    );
+}
+
+#[test]
+fn run_resume_does_not_reclaim_live_worktree_owner_for_failed_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "failed-live-owner");
+    select_active_project_fixture(temp_dir.path(), "failed-live-owner");
+
+    fs::write(
+        project_root(temp_dir.path(), "failed-live-owner").join("run.json"),
+        r#"{
+  "active_run": null,
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "failed at implementation"
+}"#,
+    )
+    .expect("write failed snapshot");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let now = Utc::now();
+    let worktree_lease = WorktreeLease {
+        lease_id: "lease-live-failed-resume".to_owned(),
+        task_id: "task-live-failed-resume".to_owned(),
+        project_id: "failed-live-owner".to_owned(),
+        worktree_path: temp_dir.path().join("worktrees/task-live-failed-resume"),
+        branch_name: "task-live-failed-resume".to_owned(),
+        acquired_at: now,
+        ttl_seconds: 300,
+        last_heartbeat: now,
+    };
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: worktree_lease.task_id.clone(),
+            issue_ref: "repo#77".to_owned(),
+            project_id: "failed-live-owner".to_owned(),
+            project_name: Some("failed live owner".to_owned()),
+            prompt: Some("prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(ralph_burning::shared::domain::FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some(worktree_lease.lease_id.clone()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            workflow_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        },
+    );
+    fs::write(
+        leases_dir.join("lease-live-failed-resume.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(worktree_lease))
+            .expect("serialize live daemon lease"),
+    )
+    .expect("write live daemon lease");
+    fs::write(
+        leases_dir.join("writer-failed-live-owner.lock"),
+        "lease-live-failed-resume",
+    )
+    .expect("write live daemon writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to acquire writer lease for resume")
+            || stderr.contains("project writer lock is already held"),
+        "resume should fail on a live competing writer owner instead of reclaiming it: {stderr}"
+    );
+    assert!(
+        leases_dir.join("writer-failed-live-owner.lock").exists(),
+        "live daemon writer lock must remain intact after refused resume"
+    );
+    assert!(
+        leases_dir.join("lease-live-failed-resume.json").exists(),
+        "live daemon lease must not be reclaimed during terminal resume contention"
+    );
+    let daemon_task: DaemonTask = serde_json::from_str(
+        &fs::read_to_string(
+            daemon_root(temp_dir.path())
+                .join("tasks")
+                .join("task-live-failed-resume.json"),
+        )
+        .expect("read daemon task"),
+    )
+    .expect("parse daemon task");
+    assert_eq!(daemon_task.status, TaskStatus::Active);
+    assert_eq!(
+        daemon_task.lease_id.as_deref(),
+        Some("lease-live-failed-resume")
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+#[ignore = "requires real git worktree for lease cleanup; tracked as rlm.5"]
+fn cli_run_resume_recovers_stale_daemon_owned_running_and_reclaims_worktree_lock() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "stale-daemon-resume");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("stale-daemon-resume".to_owned())
+            .expect("valid project id");
+    let prompt_hash = <ralph_burning::adapters::fs::FsProjectStore as ralph_burning::contexts::project_run_record::service::ProjectStorePort>::read_project_record(
+        &ralph_burning::adapters::fs::FsProjectStore,
+        temp_dir.path(),
+        &project_id,
+    )
+    .expect("read project record")
+    .prompt_hash;
+    let now = Utc::now();
+    fs::write(
+        project_root(temp_dir.path(), "stale-daemon-resume").join("run.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "active_run": {
+                "run_id": "run-stale-daemon-resume",
+                "stage_cursor": {
+                    "stage": "planning",
+                    "cycle": 1,
+                    "attempt": 1,
+                    "completion_round": 1
+                },
+                "started_at": now,
+                "prompt_hash_at_cycle_start": prompt_hash,
+                "prompt_hash_at_stage_start": prompt_hash,
+                "qa_iterations_current_cycle": 0,
+                "review_iterations_current_cycle": 0,
+                "final_review_restart_count": 0
+            },
+            "interrupted_run": serde_json::Value::Null,
+            "status": "running",
+            "cycle_history": [],
+            "completion_rounds": 1,
+            "max_completion_rounds": 20,
+            "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+            "amendment_queue": { "pending": [], "processed_count": 0 },
+            "status_summary": "running: Planning"
+        }))
+        .expect("serialize stale daemon run.json"),
+    )
+    .expect("write stale daemon run.json");
+    fs::write(
+        project_root(temp_dir.path(), "stale-daemon-resume").join("journal.ndjson"),
+        format!(
+            "{{\"sequence\":1,\"timestamp\":\"2026-03-11T19:00:00Z\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"stale-daemon-resume\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{now}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-stale-daemon-resume\",\"first_stage\":\"planning\",\"max_completion_rounds\":20}}}}"
+        ),
+    )
+    .expect("write stale daemon resume journal");
+    fs::remove_file(project_root(temp_dir.path(), "stale-daemon-resume").join("run.pid")).ok();
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let stale_worktree_path = temp_dir.path().join("worktrees/task-stale-daemon-resume");
+    fs::create_dir_all(&stale_worktree_path).expect("create stale worktree dir");
+    let stale_worktree_lease = WorktreeLease {
+        lease_id: "lease-stale-daemon-resume".to_owned(),
+        task_id: "task-stale-daemon-resume".to_owned(),
+        project_id: "stale-daemon-resume".to_owned(),
+        worktree_path: stale_worktree_path,
+        branch_name: "task-stale-daemon-resume".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::seconds(301),
+    };
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: stale_worktree_lease.task_id.clone(),
+            issue_ref: "repo#42".to_owned(),
+            project_id: "stale-daemon-resume".to_owned(),
+            project_name: Some("stale daemon".to_owned()),
+            prompt: Some("prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(ralph_burning::shared::domain::FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some(stale_worktree_lease.lease_id.clone()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            workflow_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        },
+    );
+    fs::write(
+        leases_dir.join("lease-stale-daemon-resume.json"),
+        serde_json::to_string_pretty(&LeaseRecord::Worktree(stale_worktree_lease))
+            .expect("serialize stale daemon worktree lease"),
+    )
+    .expect("write stale daemon worktree lease");
+    fs::write(
+        leases_dir.join("writer-stale-daemon-resume.lock"),
+        "lease-stale-daemon-resume",
+    )
+    .expect("write stale daemon writer lock");
+
+    let resume = Command::new(binary())
+        .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+    assert!(
+        resume.status.success(),
+        "stale daemon resume should recover and succeed: {}",
+        String::from_utf8_lossy(&resume.stderr)
+    );
+
+    let final_run_json =
+        fs::read_to_string(project_root(temp_dir.path(), "stale-daemon-resume").join("run.json"))
+            .expect("read final run.json");
+    assert!(
+        final_run_json.contains("\"completed\""),
+        "resume should finish after stale daemon recovery, got: {final_run_json}"
+    );
+    assert!(
+        !leases_dir.join("writer-stale-daemon-resume.lock").exists(),
+        "stale daemon writer lock should be reclaimed before resume reacquires it"
+    );
+    assert!(
+        !leases_dir.join("lease-stale-daemon-resume.json").exists(),
+        "stale daemon worktree lease should be pruned during resume recovery"
+    );
+    let daemon_task: DaemonTask = serde_json::from_str(
+        &fs::read_to_string(
+            daemon_root(temp_dir.path())
+                .join("tasks")
+                .join("task-stale-daemon-resume.json"),
+        )
+        .expect("read daemon task"),
+    )
+    .expect("parse daemon task");
+    assert_eq!(daemon_task.status, TaskStatus::Failed);
+    assert!(
+        daemon_task.lease_id.is_none(),
+        "stale daemon recovery must clear the daemon task lease reference"
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
 fn cli_run_start_releases_lock_on_error() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "lock-err");
@@ -9559,6 +12147,12 @@ fn cli_run_start_close_failure_exits_nonzero() {
     assert!(
         stderr.contains("writer_lock_absent") || stderr.contains("guard close failed"),
         "should report the close failure reason, got: {stderr}"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "close-fail")
+            .join("run.pid")
+            .exists(),
+        "successful engine completion must remove run.pid even when writer-lease close fails"
     );
 
     // CLI lease record must remain durable (close did not delete it

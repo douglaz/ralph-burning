@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr24-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T21:18:07.245505770Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI found no code-level regressions attributable to this patch. The working diff for this run contains only `.ralph-burning/projects/rlm/run.json` and `.ralph-burning/projects/rlm/journal.ndjson` changes; there are no edits in the implementation files targeted by this contract (`src/adapters/fs.rs`, `src/cli/run.rs`, `src/contexts/workflow_composition/engine.rs`) to review. If intended lifecycle improvements were expected here, this appears to be a metadata-only commit and not a functional implementation change.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 24
+}

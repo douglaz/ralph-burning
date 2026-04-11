@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr23-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T20:59:06.145769387Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real stale-liveness defects: stale recovery can mark a run recoverable while orphaned backend subprocesses may still be active, and the legacy pid-only fallback can mistake an unrelated reused PID for the original run and block recovery indefinitely.\n\n## Votes\n\n- `fr-23-1d5a1b60`: Accept\n  The defect is real. Backend commands are launched in their own process group, and the stale-recovery paths for `run resume` and stale `run stop` only reconcile snapshot/journal state; they do not preserve or clean up backend descendant identity. The descendant-kill logic exists only in the live `run stop` branch after snapshotting descendants from the still-live orchestrator PID. After an unclean orchestrator death, those backend processes can survive independently, so recovery can mark the run failed/interrupted and allow a resumed attempt to overlap with still-running backend work on the same project.\n- `fr-23-07aa46ac`: Accept\n  The defect is real. For non-authoritative legacy `run.pid` records, liveness falls back to a bare `is_pid_running_unchecked(record.pid)` check and returns a legacy-running state before lease freshness is considered. `run status` only reports stale for the explicit `Stale` liveness case, while `run resume` and `run stop` both refuse legacy-running states. That means an unrelated process that later reuses the old PID can wedge the project behind a false running classification until that other process exits. Recovery blocking needs an additional identity check beyond raw PID existence.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 23
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T17:07:24.968363744Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound one issue: the review currently shows no source-level implementation work for this bead, only run metadata updates in the `.ralph-burning` project scratch files.\n\n## Amendments\n\n1. This diff does not modify any of the implementation files required by the bead’s acceptance criteria. The only touched files are `.ralph-burning/projects/rlm/journal.ndjson:256-262` and `.ralph-burning/projects/rlm/run.json:12-29`, which record run bookkeeping only; no changes are present in `src/adapters/fs.rs`, `src/cli/run.rs`, or `src/contexts/workflow_composition/engine.rs` for PID liveness helpers, `run stop`, stale `run status`, stale `run resume` recovery, or SIGTERM shutdown handling.\n   Rationale: The goal requires functional lifecycle code changes, but the current patch appears to only update metadata artifacts, so the requested behavior is not implemented in this revision.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 14
+}

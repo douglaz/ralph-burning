@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260410054251-final_review-aggregate-c1-a1-cr11-artifact",
+  "payload_id": "run-20260410054251-final_review-aggregate-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:20:29.025012907Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 11/25\n\n## Accepted\n\n- `fr-11-45e11d35`\n- `fr-11-bc8799ca`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-11-45e11d35`\n\nUpdate `src/contexts/workflow_composition/engine.rs:1448-1478` to use the new attempt-scoped reconciliation logic instead of `journal::last_terminal_event_type(&running_run_events)`. The helper added in `src/contexts/project_run_record/queries.rs:33-85` fixes resumed runs that crash after writing `run.json` but before durably appending `run_resumed`, but the core engine resume path still inspects the last terminal event for the whole `run_id` and can therefore inherit the previous attempt's `run_failed`/`run_completed`. Direct callers of `engine::resume_run_with_retry` can still misclassify that stale `Running` snapshot and either reject resume or reconcile it to the wrong terminal state. Add an engine-level regression test for this unjournaled-resume case.\n\n### `fr-11-bc8799ca`\n\nThe patch does not implement the requested lifecycle hardening at all: it only mutates metadata artifacts (`.ralph-burning/projects/rlm/run.json:1-74` and `.ralph-burning/projects/rlm/journal.ndjson:195-208`) and contains no hunks in the required implementation files (`src/adapters/fs.rs`, `src/cli/run.rs`, `src/contexts/workflow_composition/engine.rs`). Acceptance criteria items (pid tracking helpers, `run stop` command behavior, stale status detection, resume-side stale recovery, and SIGTERM-driven cleanup) are therefore not addressed in this change set.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 11
+}

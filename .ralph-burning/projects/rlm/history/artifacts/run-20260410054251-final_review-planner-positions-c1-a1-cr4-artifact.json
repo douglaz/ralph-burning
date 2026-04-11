@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr4-artifact",
+  "payload_id": "run-20260410054251-final_review-planner-positions-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T13:12:55.289150810Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the three amendments that identify real lifecycle, locking, and durability defects. Rejected the `/proc/<pid>/stat` amendment because the current index already resolves to `starttime` after stripping the `pid (comm)` prefix, so the proposed fix would misread the next field instead.\n\n## Votes\n\n- `fr-4-d6939a5e`: Accept\n  `FileSystem::write_pid_file()` always records `std::process::id()`, and the daemon calls the same engine entry points inline. For daemon-dispatched runs that makes `run.pid` point at the long-lived daemon process, not a per-run orchestrator. `run stop` then targets the daemon PID, and liveness checks report the daemon's health rather than the specific run task. That is a real correctness and isolation bug.\n- `fr-4-5c6b3a2b`: Accept\n  `handle_resume()` performs stale-run recovery before acquiring a fresh `CliWriterLeaseGuard`, and `reclaim_stale_project_writer_lease()` releases whatever writer-lock owner is currently on disk, then prunes CLI leases for the project. If another operator acquires a new lock in that window, the late reclaim can tear down that live lock and leave both callers proceeding without mutual exclusion. The recovery/reclaim sequence is not atomic and should be fixed.\n- `fr-4-76d9ab3e`: Accept\n  `mark_running_run_interrupted()` only updates `run.json` and runtime logs; it does not append a durable terminal journal event. `run history` is journal-backed, and other code already treats a failed snapshot without a durable `run_failed` event as corrupt. Stopping or stale-recovering a run currently creates an incomplete durable record of the attempt, so a journal event is required.\n- `fr-4-8748f56f`: Reject\n  The field mapping in the amendment is incorrect. After splitting `/proc/<pid>/stat` at `\") \"`, index 0 is field 3 (`state`), so index 19 is field 22 (`starttime`). The current `fields.get(19)` is therefore the correct `starttime` lookup; changing it to `fields.get(20)` would read the next field (`vsize`) and break PID reuse validation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T16:11:27.897216489Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBlocking: this revision is metadata-only and does not deliver the requested run lifecycle robustness changes.\n\n## Amendments\n\n1. The patch does not implement the requested lifecycle hardening at all: it only mutates metadata artifacts (`.ralph-burning/projects/rlm/run.json:1-74` and `.ralph-burning/projects/rlm/journal.ndjson:195-208`) and contains no hunks in the required implementation files (`src/adapters/fs.rs`, `src/cli/run.rs`, `src/contexts/workflow_composition/engine.rs`). Acceptance criteria items (pid tracking helpers, `run stop` command behavior, stale status detection, resume-side stale recovery, and SIGTERM-driven cleanup) are therefore not addressed in this change set.\n   Rationale: `rg`/`git diff` show the only changed tracked files are project state artifacts, so required user-visible behavior changes were not made and the implementation remains unchanged.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 11
+}

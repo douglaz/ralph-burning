@@ -56,6 +56,9 @@ const PROJECTS_DIR: &str = "projects";
 const PROJECT_CONFIG_FILE: &str = "project.toml";
 const PROJECT_POLICY_CONFIG_FILE: &str = "config.toml";
 const RUN_FILE: &str = "run.json";
+const PID_FILE: &str = "run.pid";
+const ACTIVE_BACKEND_PROCESSES_FILE: &str = "active-processes.json";
+const ACTIVE_BACKEND_PROCESSES_LOCK_FILE: &str = "active-processes.lock";
 const JOURNAL_FILE: &str = "journal.ndjson";
 const SESSIONS_FILE: &str = "sessions.json";
 const PROMPT_FILE: &str = "prompt.md";
@@ -142,9 +145,184 @@ fn parse_failpoint_config(raw: &str) -> Option<(Option<&str>, u32)> {
     Some((Some(project_id), threshold.parse().ok()?))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPidOwner {
+    #[default]
+    Cli,
+    Daemon,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunPidRecord {
+    pub pid: u32,
+    pub started_at: DateTime<Utc>,
+    #[serde(default)]
+    pub owner: RunPidOwner,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_start_ticks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_start_marker: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunBackendProcessRecord {
+    pub pid: u32,
+    pub recorded_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_start_ticks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_start_marker: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+struct RunBackendProcessSet {
+    #[serde(default)]
+    processes: Vec<RunBackendProcessRecord>,
+}
+
 pub struct FileSystem;
 
 impl FileSystem {
+    fn identity_is_authoritative(
+        proc_start_ticks: Option<u64>,
+        proc_start_marker: Option<&str>,
+    ) -> bool {
+        if proc_start_ticks.is_some() {
+            return true;
+        }
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            proc_start_marker.is_some_and(|marker| !marker.trim().is_empty())
+        }
+
+        #[cfg(any(target_os = "linux", not(unix)))]
+        {
+            let _ = proc_start_marker;
+            false
+        }
+    }
+
+    fn process_identity_is_alive(
+        pid: u32,
+        proc_start_ticks: Option<u64>,
+        proc_start_marker: Option<&str>,
+    ) -> bool {
+        if !Self::is_pid_running_unchecked(pid) {
+            return false;
+        }
+
+        if let Some(expected_ticks) = proc_start_ticks {
+            return matches!(Self::proc_start_ticks(pid), Some(actual_ticks) if actual_ticks == expected_ticks);
+        }
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            let Some(expected_marker) = proc_start_marker else {
+                return false;
+            };
+            return matches!(Self::proc_start_marker(pid), Some(actual_marker) if actual_marker == expected_marker);
+        }
+
+        #[cfg(any(target_os = "linux", not(unix)))]
+        {
+            let _ = proc_start_marker;
+            false
+        }
+    }
+
+    fn live_project_backend_processes_path(project_root: &Path) -> PathBuf {
+        project_root
+            .join("runtime")
+            .join("backend")
+            .join(ACTIVE_BACKEND_PROCESSES_FILE)
+    }
+
+    fn live_project_backend_processes_lock_path(project_root: &Path) -> PathBuf {
+        project_root
+            .join("runtime")
+            .join("backend")
+            .join(ACTIVE_BACKEND_PROCESSES_LOCK_FILE)
+    }
+
+    fn read_pid_file_from_project_root(project_root: &Path) -> AppResult<Option<RunPidRecord>> {
+        let path = project_root.join(PID_FILE);
+        match fs::read_to_string(&path) {
+            Ok(raw) => Ok(Some(serde_json::from_str(&raw).map_err(|error| {
+                AppError::CorruptRecord {
+                    file: format!("{PID_FILE} ({})", project_root.display()),
+                    details: error.to_string(),
+                }
+            })?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn read_backend_process_set_from_project_root(
+        project_root: &Path,
+    ) -> AppResult<RunBackendProcessSet> {
+        let path = Self::live_project_backend_processes_path(project_root);
+        match fs::read_to_string(&path) {
+            Ok(raw) => serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+                file: format!(
+                    "runtime/backend/{ACTIVE_BACKEND_PROCESSES_FILE} ({})",
+                    project_root.display()
+                ),
+                details: error.to_string(),
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(RunBackendProcessSet::default())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn write_backend_process_set_to_project_root(
+        project_root: &Path,
+        processes: &[RunBackendProcessRecord],
+    ) -> AppResult<()> {
+        let path = Self::live_project_backend_processes_path(project_root);
+        if processes.is_empty() {
+            match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        } else {
+            let mut set = RunBackendProcessSet {
+                processes: processes.to_vec(),
+            };
+            set.processes.sort_by_key(|left| left.pid);
+            Self::write_atomic(&path, &serde_json::to_string_pretty(&set)?)
+        }
+    }
+
+    fn mutate_backend_process_set_in_project_root<T>(
+        project_root: &Path,
+        mutator: impl FnOnce(&mut Vec<RunBackendProcessRecord>) -> AppResult<T>,
+    ) -> AppResult<T> {
+        let _lock = AdvisoryFileLock::acquire(&Self::live_project_backend_processes_lock_path(
+            project_root,
+        ))?;
+        let mut processes =
+            Self::read_backend_process_set_from_project_root(project_root)?.processes;
+        let result = mutator(&mut processes)?;
+        Self::write_backend_process_set_to_project_root(project_root, &processes)?;
+        Ok(result)
+    }
+
     pub fn create_workspace(
         workspace_root: &Path,
         workspace_config: &str,
@@ -260,6 +438,201 @@ impl FileSystem {
         let mut hasher = Sha256::new();
         hasher.update(contents.as_bytes());
         format!("{:x}", hasher.finalize())
+    }
+
+    pub fn write_pid_file(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        owner: RunPidOwner,
+        writer_owner: Option<&str>,
+        run_id: Option<&str>,
+        run_started_at: Option<DateTime<Utc>>,
+    ) -> AppResult<RunPidRecord> {
+        let project_root = Self::ensure_live_project_root(base_dir, project_id)?;
+        let pid = std::process::id();
+        let record = RunPidRecord {
+            pid,
+            started_at: Utc::now(),
+            owner,
+            writer_owner: writer_owner.map(str::to_owned),
+            run_id: run_id.map(str::to_owned),
+            run_started_at,
+            proc_start_ticks: Self::proc_start_ticks(pid),
+            proc_start_marker: Self::proc_start_marker(pid),
+        };
+        Self::write_atomic(
+            &project_root.join(PID_FILE),
+            &serde_json::to_string_pretty(&record)?,
+        )?;
+        Ok(record)
+    }
+
+    pub fn read_pid_file(
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<Option<RunPidRecord>> {
+        let project_root = Self::live_project_root(base_dir, project_id);
+        Self::read_pid_file_from_project_root(&project_root)
+    }
+
+    pub fn register_backend_process(
+        project_root: &Path,
+        pid: u32,
+    ) -> AppResult<RunBackendProcessRecord> {
+        let pid_record = Self::read_pid_file_from_project_root(project_root)?;
+        let record = RunBackendProcessRecord {
+            pid,
+            recorded_at: Utc::now(),
+            run_id: pid_record.as_ref().and_then(|record| record.run_id.clone()),
+            run_started_at: pid_record.as_ref().and_then(|record| record.run_started_at),
+            proc_start_ticks: Self::proc_start_ticks(pid),
+            proc_start_marker: Self::proc_start_marker(pid),
+        };
+        Self::mutate_backend_process_set_in_project_root(project_root, |processes| {
+            processes.retain(|existing| existing.pid != pid);
+            processes.push(record.clone());
+            Ok(())
+        })?;
+        Ok(record)
+    }
+
+    pub fn remove_backend_process(project_root: &Path, pid: u32) -> AppResult<()> {
+        Self::mutate_backend_process_set_in_project_root(project_root, |processes| {
+            processes.retain(|existing| existing.pid != pid);
+            Ok(())
+        })
+    }
+
+    pub fn read_backend_processes(
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<RunBackendProcessRecord>> {
+        let project_root = Self::live_project_root(base_dir, project_id);
+        Ok(Self::read_backend_process_set_from_project_root(&project_root)?.processes)
+    }
+
+    pub fn write_backend_processes(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        processes: &[RunBackendProcessRecord],
+    ) -> AppResult<()> {
+        let project_root = Self::live_project_root(base_dir, project_id);
+        let updated = processes.to_vec();
+        Self::mutate_backend_process_set_in_project_root(&project_root, |current| {
+            *current = updated;
+            Ok(())
+        })
+    }
+
+    pub fn remove_backend_processes_for_attempt(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        run_id: &str,
+        run_started_at: DateTime<Utc>,
+    ) -> AppResult<()> {
+        let project_root = Self::live_project_root(base_dir, project_id);
+        Self::mutate_backend_process_set_in_project_root(&project_root, |processes| {
+            processes.retain(|record| {
+                !Self::backend_process_matches_attempt(record, run_id, run_started_at)
+            });
+            Ok(())
+        })
+    }
+
+    pub fn remove_pid_file(base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+        let path = Self::live_project_root(base_dir, project_id).join(PID_FILE);
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn remove_pid_file_if_matches(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        expected_record: &RunPidRecord,
+    ) -> AppResult<bool> {
+        let Some(current_record) = Self::read_pid_file(base_dir, project_id)? else {
+            return Ok(false);
+        };
+        if &current_record != expected_record {
+            return Ok(false);
+        }
+        Self::remove_pid_file(base_dir, project_id)?;
+        Ok(true)
+    }
+
+    pub fn pid_record_matches_attempt(
+        record: &RunPidRecord,
+        run_id: &str,
+        run_started_at: DateTime<Utc>,
+    ) -> bool {
+        record.run_id.as_deref() == Some(run_id) && record.run_started_at == Some(run_started_at)
+    }
+
+    pub fn backend_process_matches_attempt(
+        record: &RunBackendProcessRecord,
+        run_id: &str,
+        run_started_at: DateTime<Utc>,
+    ) -> bool {
+        record.run_id.as_deref() == Some(run_id) && record.run_started_at == Some(run_started_at)
+    }
+
+    pub fn pid_record_is_authoritative(record: &RunPidRecord) -> bool {
+        Self::identity_is_authoritative(
+            record.proc_start_ticks,
+            record.proc_start_marker.as_deref(),
+        )
+    }
+
+    pub fn backend_process_is_authoritative(record: &RunBackendProcessRecord) -> bool {
+        Self::identity_is_authoritative(
+            record.proc_start_ticks,
+            record.proc_start_marker.as_deref(),
+        )
+    }
+
+    pub fn is_pid_running_unchecked(pid: u32) -> bool {
+        #[cfg(unix)]
+        {
+            let pid = nix::unistd::Pid::from_raw(pid as i32);
+            match nix::sys::signal::kill(pid, None) {
+                Ok(()) => !matches!(Self::proc_state(pid.as_raw() as u32), Some('Z')),
+                Err(nix::errno::Errno::ESRCH) => false,
+                Err(_) => false,
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = pid;
+            false
+        }
+    }
+
+    pub fn is_pid_alive(record: &RunPidRecord) -> bool {
+        Self::process_identity_is_alive(
+            record.pid,
+            record.proc_start_ticks,
+            record.proc_start_marker.as_deref(),
+        )
+    }
+
+    pub fn is_backend_process_alive(record: &RunBackendProcessRecord) -> bool {
+        Self::process_identity_is_alive(
+            record.pid,
+            record.proc_start_ticks,
+            record.proc_start_marker.as_deref(),
+        )
+    }
+
+    pub fn proc_start_ticks_for_pid(pid: u32) -> Option<u64> {
+        Self::proc_start_ticks(pid)
+    }
+
+    pub fn proc_start_marker_for_pid(pid: u32) -> Option<String> {
+        Self::proc_start_marker(pid)
     }
 
     /// Legacy 64-bit prompt hash retained only for resume compatibility with
@@ -492,7 +865,7 @@ impl FileSystem {
         }
         fs::create_dir_all(destination)?;
         let mut entries = fs::read_dir(source)?.collect::<Result<Vec<_>, std::io::Error>>()?;
-        entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+        entries.sort_by_key(|left| left.file_name());
         for entry in entries {
             let source_path = entry.path();
             let destination_path = destination.join(entry.file_name());
@@ -527,7 +900,7 @@ impl FileSystem {
             fs::create_dir_all(&live_root)?;
             let mut entries =
                 fs::read_dir(&audit_root)?.collect::<Result<Vec<_>, std::io::Error>>()?;
-            entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+            entries.sort_by_key(|left| left.file_name());
 
             let mut deferred_sentinel = None;
             for entry in entries {
@@ -573,6 +946,69 @@ impl FileSystem {
             Self::copy_tree(&audit_root, &live_root)?;
         }
         Ok(live_root)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn proc_start_ticks(pid: u32) -> Option<u64> {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, rest) = stat.rsplit_once(") ")?;
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        fields.get(19)?.parse().ok()
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn proc_start_ticks(_pid: u32) -> Option<u64> {
+        None
+    }
+
+    #[cfg(not(unix))]
+    fn proc_start_ticks(_pid: u32) -> Option<u64> {
+        None
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn proc_start_marker(pid: u32) -> Option<String> {
+        Self::ps_field(pid, "lstart")
+    }
+
+    #[cfg(any(target_os = "linux", not(unix)))]
+    fn proc_start_marker(_pid: u32) -> Option<String> {
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn proc_state(pid: u32) -> Option<char> {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, rest) = stat.rsplit_once(") ")?;
+        rest.chars().next()
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn proc_state(pid: u32) -> Option<char> {
+        Self::ps_field(pid, "stat").and_then(|value| value.chars().next())
+    }
+
+    #[cfg(not(unix))]
+    fn proc_state(_pid: u32) -> Option<char> {
+        None
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn ps_field(pid: u32, field: &str) -> Option<String> {
+        let output = Command::new("ps")
+            .args(["-o", &format!("{field}="), "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value = String::from_utf8(output.stdout).ok()?;
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
     }
 
     pub(crate) fn mirror_project_file(
@@ -5041,6 +5477,241 @@ mod tests {
     fn legacy_prompt_hash_matches_pre_sha256_digest() {
         let prompt = "# Prompt\n\nOriginal prompt.\n";
         assert_eq!(FileSystem::legacy_prompt_hash(prompt), "5b624debc08968f4");
+    }
+
+    #[test]
+    fn pid_file_round_trips_for_live_project() {
+        let temp = tempdir().expect("tempdir");
+        let project_id = ProjectId::new("pid-roundtrip".to_owned()).expect("project id");
+
+        let written = FileSystem::write_pid_file(
+            temp.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            Some("lease-1"),
+            Some("run-1"),
+            Some(Utc::now()),
+        )
+        .expect("write pid file");
+        let read_back = FileSystem::read_pid_file(temp.path(), &project_id)
+            .expect("read pid file")
+            .expect("pid file present");
+
+        assert_eq!(read_back.pid, written.pid);
+        assert_eq!(read_back.started_at, written.started_at);
+        assert_eq!(read_back.owner, RunPidOwner::Cli);
+        assert_eq!(read_back.writer_owner.as_deref(), Some("lease-1"));
+        assert_eq!(read_back.run_id.as_deref(), Some("run-1"));
+        assert_eq!(read_back.run_started_at, written.run_started_at);
+        assert_eq!(read_back.proc_start_marker, written.proc_start_marker);
+        assert!(FileSystem::is_pid_alive(&read_back));
+
+        FileSystem::remove_pid_file(temp.path(), &project_id).expect("remove pid file");
+        assert!(FileSystem::read_pid_file(temp.path(), &project_id)
+            .expect("read after remove")
+            .is_none());
+    }
+
+    #[test]
+    fn backend_process_tracking_round_trips_for_live_project() {
+        let temp = tempdir().expect("tempdir");
+        let project_id =
+            ProjectId::new("backend-process-roundtrip".to_owned()).expect("project id");
+        let project_root = FileSystem::ensure_live_project_root(temp.path(), &project_id)
+            .expect("ensure live project root");
+        let run_started_at = Utc::now();
+        FileSystem::write_pid_file(
+            temp.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            Some("lease-1"),
+            Some("run-1"),
+            Some(run_started_at),
+        )
+        .expect("write pid file");
+
+        let tracked = FileSystem::register_backend_process(&project_root, std::process::id())
+            .expect("register backend process");
+        let read_back = FileSystem::read_backend_processes(temp.path(), &project_id)
+            .expect("read backend processes");
+
+        assert_eq!(read_back, vec![tracked.clone()]);
+        assert!(FileSystem::backend_process_matches_attempt(
+            &tracked,
+            "run-1",
+            run_started_at
+        ));
+        assert!(FileSystem::backend_process_is_authoritative(&tracked));
+        assert!(FileSystem::is_backend_process_alive(&tracked));
+
+        FileSystem::remove_backend_process(&project_root, tracked.pid)
+            .expect("remove backend process");
+        assert!(FileSystem::read_backend_processes(temp.path(), &project_id)
+            .expect("read backend processes after remove")
+            .is_empty());
+    }
+
+    #[test]
+    fn backend_process_tracking_preserves_concurrent_registrations() {
+        use std::sync::{Arc, Barrier};
+
+        let temp = tempdir().expect("tempdir");
+        let project_id =
+            ProjectId::new("backend-process-concurrent".to_owned()).expect("project id");
+        let project_root = FileSystem::ensure_live_project_root(temp.path(), &project_id)
+            .expect("ensure live project root");
+        FileSystem::write_pid_file(
+            temp.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            Some("lease-1"),
+            Some("run-1"),
+            Some(Utc::now()),
+        )
+        .expect("write pid file");
+
+        let barrier = Arc::new(Barrier::new(9));
+        let mut threads = Vec::new();
+        for pid in 20_000..20_008u32 {
+            let barrier = Arc::clone(&barrier);
+            let project_root = project_root.clone();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                FileSystem::register_backend_process(&project_root, pid)
+                    .expect("register backend process");
+            }));
+        }
+
+        barrier.wait();
+        for thread in threads {
+            thread.join().expect("join concurrent register");
+        }
+
+        let tracked = FileSystem::read_backend_processes(temp.path(), &project_id)
+            .expect("read backend processes after concurrent register");
+        let tracked_pids: std::collections::BTreeSet<_> =
+            tracked.into_iter().map(|record| record.pid).collect();
+        let expected_pids: std::collections::BTreeSet<_> = (20_000..20_008u32).collect();
+        assert_eq!(tracked_pids, expected_pids);
+    }
+
+    #[test]
+    fn pid_liveness_rejects_missing_process() {
+        let record = RunPidRecord {
+            pid: 999_999,
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+
+        assert!(!FileSystem::is_pid_alive(&record));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_liveness_rejects_live_process_without_start_ticks() {
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+
+        assert!(
+            !FileSystem::is_pid_alive(&record),
+            "pid records without proc_start_ticks must not be treated as authoritative"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_liveness_rejects_mismatched_start_ticks() {
+        let temp = tempdir().expect("tempdir");
+        let project_id = ProjectId::new("pid-start-ticks".to_owned()).expect("project id");
+        let mut written = FileSystem::write_pid_file(
+            temp.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            None,
+            None,
+            None,
+        )
+        .expect("write pid file");
+        let expected_ticks = written
+            .proc_start_ticks
+            .expect("unix pid records should capture proc_start_ticks");
+        written.proc_start_ticks = Some(expected_ticks.saturating_add(1));
+
+        assert!(
+            !FileSystem::is_pid_alive(&written),
+            "mismatched proc_start_ticks should reject reused or stale pid records"
+        );
+    }
+
+    #[test]
+    fn pid_record_with_only_start_marker_matches_platform_authority_rules() {
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: Some("fallback-start-marker".to_owned()),
+        };
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        assert!(FileSystem::pid_record_is_authoritative(&record));
+
+        #[cfg(any(target_os = "linux", not(unix)))]
+        assert!(!FileSystem::pid_record_is_authoritative(&record));
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn pid_liveness_accepts_matching_start_marker_on_non_linux_unix() {
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: FileSystem::proc_start_marker(std::process::id()),
+        };
+
+        assert!(FileSystem::pid_record_is_authoritative(&record));
+        assert!(FileSystem::is_pid_alive(&record));
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn pid_liveness_rejects_mismatched_start_marker_on_non_linux_unix() {
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: Some("mismatched-start-marker".to_owned()),
+        };
+
+        assert!(
+            !FileSystem::is_pid_alive(&record),
+            "mismatched proc_start_marker should reject reused or stale pid records"
+        );
     }
 
     #[test]

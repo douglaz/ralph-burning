@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T14:21:02.836996607Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept all four amendments. The current run-lifecycle hardening still has real compatibility, cleanup, and signal-safety defects, and the diff under review is metadata-only rather than a runtime implementation.\n\n## Votes\n\n- `fr-6-3a1b8b12`: Accept\n  `classify_running_snapshot_liveness` returns `Stale` whenever `run.pid` is absent, even if the current writer owner is a `WorktreeLease`. `handle_resume` and `handle_stop` then reclaim that observed owner before recovering the snapshot. For daemon runs that predate pid-file support, a still-live task can therefore be misclassified as stale and lose its writer lock during a mixed-version rollout.\n- `fr-6-b96db5c4`: Accept\n  `reclaim_specific_project_writer_owner` releases the writer lock and deletes the observed `WorktreeLease` directly, but it does not update the daemon task that owns that lease. The normal reconcile/release flow is where the task is marked failed and its `lease_id` is cleared. Bypassing that path can leave a task with a dangling lease reference, and `DaemonTaskService::retry_task` explicitly rejects tasks that still retain `lease_id`, so stale CLI recovery can wedge the task.\n- `fr-6-69ce5084`: Accept\n  `send_signal_to_pid` only performs a userspace `is_pid_alive` check before calling `kill()` on the numeric PID. The `proc_start_ticks` comparison helps detect stale records during polling, but it does not bind the later signal delivery to the same process. If the original orchestrator exits and the PID is reused between the check and `kill()`, `run stop` can signal an unrelated process.\n- `fr-6-9734311a`: Accept\n  The current working-tree diff is metadata-only: `git diff --stat` shows changes in `.ralph-burning/projects/rlm/journal.ndjson` and `.ralph-burning/projects/rlm/run.json`, with no `src/` behavior changes. That means this patch does not implement the requested run-lifecycle hardening in runtime code.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}
