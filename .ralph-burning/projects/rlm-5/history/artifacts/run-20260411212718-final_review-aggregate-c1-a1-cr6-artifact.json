@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411212718-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260411212718-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T23:40:12.600358818Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 6/25\n\n## Accepted\n\n- `fr-6-d8d9e999`\n- `fr-6-839cec33`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-d8d9e999`\n\nPreserve detached stale-owner discoverability until the daemon task's `lease_id` is cleared. In `cleanup_detached_project_writer_owner`, the worktree and lease record are deleted before `DaemonTaskService::clear_lease_reference` runs ([src/contexts/automation_runtime/cli_writer_lease.rs:397-417]). Follow-up recovery only discovers detached owners from `list_lease_records` ([src/contexts/automation_runtime/cli_writer_lease.rs:291-320]) and only attempts detached cleanup when `observed_owner` is present ([src/cli/run.rs:1835-1846]). If the task-file write fails, the first `run resume`/`run stop` attempt returns `LeaseCleanupPartialFailure`, but the next attempt no longer sees any detached owner and proceeds while the daemon task still carries a stale `lease_id`. Keep the lease record until the task reference is cleared, or extend detached-owner discovery to fall back to task-side orphaned lease references.\n\n### `fr-6-839cec33`\n\nTreat post-release task-metadata write failures as partial lease cleanup failures before deciding whether the daemon can continue. `release_task_lease` returns the raw result of `DaemonTaskService::clear_lease_reference` after `LeaseService::release` has already removed the worktree, writer lock, and lease file ([src/contexts/automation_runtime/daemon_loop.rs:3611-3644]). The new callers only stop/quarantine on `LeaseCleanupPartialFailure` ([src/contexts/automation_runtime/daemon_loop.rs:611-618], [src/contexts/automation_runtime/daemon_loop.rs:1152-1159]). If clearing `task.lease_id` fails, single-repo mode just logs and keeps scanning, and multi-repo mode does not mark `label_dirty`, leaving a terminal task with a stale lease reference and no Phase 0 recovery path. Map this branch to `LeaseCleanupPartialFailure` or otherwise quarantine it as contradictory durable state.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}

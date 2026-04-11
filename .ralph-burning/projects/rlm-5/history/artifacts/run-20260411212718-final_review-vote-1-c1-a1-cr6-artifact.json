@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T23:37:57.303228518Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepting both amendments is warranted: each addresses a real partial-failure window where durable lease state is deleted or updated out of order, creating stale `task.lease_id` references with insufficient quarantine/recovery handling.\n\n## Votes\n\n- `fr-6-d8d9e999`: Accept\n  The current ordering can drop the only durable signal used by detached-owner recovery before task metadata is cleared; that can hide an orphaned lease reference indefinitely. Preserving the lease record until after `clear_lease_reference` (or extending owner discovery to task-side orphans) restores fail-closed behavior and prevents silent progression with stale `lease_id`. This is a correctness and resilience issue, not speculative.\n- `fr-6-839cec33`: Accept\n  `release_task_lease` can complete durable cleanup of external lease artifacts while returning a raw failure from task metadata update, so terminal tasks may retain a stale `lease_id` and continue in an inconsistent state. Mapping that branch to `LeaseCleanupPartialFailure`/quarantine aligns behavior with failure semantics and prevents unrecoverable or hidden orphaned references, especially in single-repo and multi-repo paths.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 6
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T23:24:05.631181135Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nNo implementation files were modified in this diff; only metadata in `.ralph-burning/projects/rlm-5/journal.ndjson` and `.ralph-burning/projects/rlm-5/run.json` changed. Since there are no source-code or behavioral changes to audit, there are no correctness, safety, or robustness defects to flag for this review pass. Residual risk: no functional logic was changed, so this review cannot validate runtime behavior deltas in this cycle.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 6
+}
