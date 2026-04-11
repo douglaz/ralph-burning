@@ -1533,9 +1533,10 @@ fn pid_record_has_attempt_metadata(record: &crate::adapters::fs::RunPidRecord) -
     record.run_id.is_some() && record.run_started_at.is_some()
 }
 
-fn classify_running_snapshot_liveness(
+fn classify_running_snapshot_liveness_with_ignored_cli_lease_owner(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
+    ignored_cli_lease_owner: Option<&str>,
 ) -> AppResult<RunningSnapshotLiveness> {
     let pid_record = FileSystem::read_pid_file(base_dir, project_id)?;
     if let Some(record) = pid_record.as_ref() {
@@ -1585,7 +1586,10 @@ fn classify_running_snapshot_liveness(
                     RunningSnapshotLiveness::LegacyDaemonLease
                 });
             }
-            LeaseRecord::CliWriter(lease) if lease.project_id == project_id.as_str() => {
+            LeaseRecord::CliWriter(lease)
+                if lease.project_id == project_id.as_str()
+                    && ignored_cli_lease_owner != Some(lease.lease_id.as_str()) =>
+            {
                 // Mixed-version CLI runs may still hold a fresh writer lease
                 // without an authoritative pid tuple. Treat them as running so
                 // resume/stop never reclaim the lock or rewrite state until the
@@ -1601,6 +1605,13 @@ fn classify_running_snapshot_liveness(
     }
 
     Ok(RunningSnapshotLiveness::Stale)
+}
+
+fn classify_running_snapshot_liveness(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+) -> AppResult<RunningSnapshotLiveness> {
+    classify_running_snapshot_liveness_with_ignored_cli_lease_owner(base_dir, project_id, None)
 }
 
 fn running_snapshot_attempt(snapshot: &RunSnapshot) -> AppResult<engine::RunningAttemptIdentity> {
@@ -2812,21 +2823,18 @@ fn reconcile_or_recover_claimed_running_snapshot_with_cleanup_policy(
         return Ok(ClaimedRunningSnapshotOutcome::AttemptChanged(snapshot));
     }
 
-    if cleanup_stale_backends {
-        let _ = cleanup_stale_backend_process_groups(base_dir, project_id, expected_attempt)?;
-    }
-
     let journal_events = FsJournalStore.read_journal(base_dir, project_id)?;
-    match crate::contexts::project_run_record::queries::terminal_status_for_running_attempt(
-        &snapshot,
-        &journal_events,
-    ) {
-        Some(RunStatus::Failed) => {
-            eprintln!(
-                "run lifecycle: snapshot shows Running but journal has run_failed — \
+    let outcome =
+        match crate::contexts::project_run_record::queries::terminal_status_for_running_attempt(
+            &snapshot,
+            &journal_events,
+        ) {
+            Some(RunStatus::Failed) => {
+                eprintln!(
+                    "run lifecycle: snapshot shows Running but journal has run_failed — \
                  reconciling snapshot to Failed"
-            );
-            engine::mark_running_run_interrupted(
+                );
+                engine::mark_running_run_interrupted(
                 engine::InterruptedRunContext {
                     run_snapshot_read: &FsRunSnapshotStore,
                     run_snapshot_write: &FsRunSnapshotWriteStore,
@@ -2843,28 +2851,28 @@ fn reconcile_or_recover_claimed_running_snapshot_with_cleanup_policy(
                     failure_class: None,
                 },
             )?;
-            let _ = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
-            Ok(ClaimedRunningSnapshotOutcome::JournalFailed)
-        }
-        Some(RunStatus::Completed) => {
-            eprintln!(
-                "run lifecycle: snapshot shows Running but journal has run_completed — \
-                 reconciling snapshot to Completed"
-            );
-            let mut reconciled = snapshot;
-            if let Some(resolution) = reconciled
-                .active_run
-                .as_ref()
-                .and_then(|active_run| active_run.stage_resolution_snapshot.clone())
-            {
-                reconciled.last_stage_resolution_snapshot = Some(resolution);
+                let _ = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
+                ClaimedRunningSnapshotOutcome::JournalFailed
             }
-            reconciled.status = RunStatus::Completed;
-            reconciled.active_run = None;
-            reconciled.status_summary = "completed (reconciled from journal)".to_owned();
-            FsRunSnapshotWriteStore.write_run_snapshot(base_dir, project_id, &reconciled)?;
-            let _ = FileSystem::remove_pid_file(base_dir, project_id);
-            let _ = FsRuntimeLogWriteStore.append_runtime_log(
+            Some(RunStatus::Completed) => {
+                eprintln!(
+                    "run lifecycle: snapshot shows Running but journal has run_completed — \
+                 reconciling snapshot to Completed"
+                );
+                let mut reconciled = snapshot;
+                if let Some(resolution) = reconciled
+                    .active_run
+                    .as_ref()
+                    .and_then(|active_run| active_run.stage_resolution_snapshot.clone())
+                {
+                    reconciled.last_stage_resolution_snapshot = Some(resolution);
+                }
+                reconciled.status = RunStatus::Completed;
+                reconciled.active_run = None;
+                reconciled.status_summary = "completed (reconciled from journal)".to_owned();
+                FsRunSnapshotWriteStore.write_run_snapshot(base_dir, project_id, &reconciled)?;
+                let _ = FileSystem::remove_pid_file(base_dir, project_id);
+                let _ = FsRuntimeLogWriteStore.append_runtime_log(
                 base_dir,
                 project_id,
                 &crate::contexts::project_run_record::model::RuntimeLogEntry {
@@ -2876,23 +2884,29 @@ fn reconcile_or_recover_claimed_running_snapshot_with_cleanup_policy(
                             .to_owned(),
                 },
             );
-            Ok(ClaimedRunningSnapshotOutcome::JournalCompleted(
-                FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?,
-            ))
-        }
-        _ => {
-            recover_stale_running_snapshot(
-                base_dir,
-                project_id,
-                expected_attempt,
-                stale_summary,
-                stale_log_message,
-                stale_failure_class,
-            )?;
-            let _ = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
-            Ok(ClaimedRunningSnapshotOutcome::RecoveredAsInterrupted)
-        }
+                ClaimedRunningSnapshotOutcome::JournalCompleted(
+                    FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?,
+                )
+            }
+            _ => {
+                recover_stale_running_snapshot(
+                    base_dir,
+                    project_id,
+                    expected_attempt,
+                    stale_summary,
+                    stale_log_message,
+                    stale_failure_class,
+                )?;
+                let _ = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
+                ClaimedRunningSnapshotOutcome::RecoveredAsInterrupted
+            }
+        };
+
+    if cleanup_stale_backends {
+        let _ = cleanup_stale_backend_process_groups(base_dir, project_id, expected_attempt)?;
     }
+
+    Ok(outcome)
 }
 
 fn reconcile_or_recover_claimed_running_snapshot(
@@ -3594,11 +3608,18 @@ async fn handle_stop() -> AppResult<()> {
                     && FileSystem::read_pid_file(&current_dir, &project_id)?
                         .as_ref()
                         .is_some_and(|current_record| current_record == &pid_record);
+                let stopped_liveness = if final_snapshot.status == RunStatus::Running {
+                    Some(classify_running_snapshot_liveness_with_ignored_cli_lease_owner(
+                        &current_dir,
+                        &project_id,
+                        Some(guard.lease_id()),
+                    )?)
+                } else {
+                    None
+                };
                 let status_message = if final_snapshot.status == RunStatus::Running
-                    && matches!(
-                        classify_running_snapshot_liveness(&current_dir, &project_id)?,
-                        RunningSnapshotLiveness::Stale
-                    ) {
+                    && matches!(stopped_liveness, Some(RunningSnapshotLiveness::Stale))
+                {
                     match reconcile_or_recover_claimed_running_snapshot_with_cleanup_policy(
                         &current_dir,
                         &project_id,

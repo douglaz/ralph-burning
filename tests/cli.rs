@@ -7100,6 +7100,114 @@ fn run_stop_recovers_stale_running_when_persisted_backend_leader_already_exited(
 }
 
 #[test]
+fn run_stop_reconciles_running_snapshot_after_sigterm_handoff_removes_pid() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigterm-handoff",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let pid_path = project_root(temp_dir.path(), "alpha").join("run.pid");
+    let mut orchestrator = Command::new("bash")
+        .args([
+            "-lc",
+            "trap 'rm -f \"$RALPH_PID_FILE\"; exit 0' TERM; while :; do sleep 1; done",
+        ])
+        .env("RALPH_PID_FILE", &pid_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+
+    fs::write(
+        &pid_path,
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator.id(),
+            "cli",
+            Some("run-stop-sigterm-handoff"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-sigterm-handoff"),
+        ))
+        .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-stop-sigterm-handoff".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    fs::write(
+        leases_dir.join("cli-stop-sigterm-handoff.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(cli_lease.clone()))
+            .expect("serialize cli lease"),
+    )
+    .expect("write cli lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), &cli_lease.lease_id)
+        .expect("write writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Stopped run for project 'alpha'"),
+        "stop should finalize the stale snapshot after SIGTERM handoff removed run.pid: {stdout}"
+    );
+    assert!(
+        !stdout.contains("status 'running'"),
+        "stop should not report the run as still running after the orchestrator exits: {stdout}"
+    );
+
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
+            .expect("read run.json"),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "failed");
+    assert!(
+        !run_json["interrupted_run"].is_null(),
+        "stop should preserve interrupted_run after reconciling the handoff"
+    );
+    assert!(!pid_path.exists(), "run.pid should stay removed after stop");
+    assert!(
+        !leases_dir.join("writer-alpha.lock").exists(),
+        "recovery lease cleanup should release the writer lock after stop"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        orchestrator_status.success(),
+        "SIGTERM handoff orchestrator should exit cleanly after removing run.pid: {orchestrator_status:?}"
+    );
+}
+
+#[test]
 fn run_stop_kills_backend_descendants_when_parent_exits_on_sigterm() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -7538,6 +7646,61 @@ fn run_resume_refuses_legacy_daemon_owned_running_with_authoritative_pid_without
     assert!(
         !stderr.contains("project run changed"),
         "legacy daemon pid handling should not surface a handoff retry error: {stderr}"
+    );
+}
+
+#[test]
+fn run_resume_persists_stale_recovery_before_backend_cleanup_error() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-resume-stale-backend-cleanup-error",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        "{not-json",
+    )
+    .expect("write corrupt backend process record");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("corrupt record in runtime/backend/active-processes.json"),
+        "resume should still surface the backend cleanup error after stale recovery: {stderr}"
+    );
+
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
+            .expect("read run.json"),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "failed");
+    assert!(
+        !run_json["interrupted_run"].is_null(),
+        "resume should durably mark the stale run interrupted before surfacing cleanup failure"
     );
 }
 

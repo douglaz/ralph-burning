@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260411170802-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-11T19:31:34.486162836Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated stale run reconciliation so `run stop`/`run resume` now durably rewrite `run.json` before stale backend cleanup errors are surfaced, preventing corrupt `runtime/backend/active-processes.json` data from leaving snapshots stuck at `status = \"running\"`. Also hardened post-stop stale detection by ignoring the recovery lease that `run stop` just acquired, so a SIGTERM handoff that removes `run.pid` before snapshot rewrite is still finalized as an interrupted run. Added CLI regressions for both cases.\n\n## Steps\n\n1. [Completed] Inspect the stale reconciliation and stop-finalization paths in `src/cli/run.rs` to confirm why backend cleanup errors could block durable snapshot repair and why a freshly acquired recovery lease could mask a stale post-stop run.\n2. [Completed] Patch stale recovery so snapshot/journal reconciliation completes before `cleanup_stale_backend_process_groups()` runs, and add a liveness helper that can ignore the stop command’s own recovery lease when rechecking for stale state after the orchestrator exits.\n3. [Completed] Add CLI regressions covering stale resume with corrupt backend metadata and stop finalization after a SIGTERM handoff removes `run.pid`, then rerun targeted regressions and the full acceptance suite.\n\n## Validation Evidence\n\n- New regression passed: `cargo test run_resume_persists_stale_recovery_before_backend_cleanup_error -- --nocapture`.\n- New regression passed: `cargo test run_stop_reconciles_running_snapshot_after_sigterm_handoff_removes_pid -- --nocapture`.\n- Adjacent regression passed: `cargo test run_stop_sigkill_finalizes_snapshot_even_when_backend_cleanup_fails -- --nocapture`.\n- Adjacent regression passed: `cargo test run_stop_recovers_stale_running_and_kills_persisted_backend_process_group -- --nocapture`.\n- Full suite passed: `cargo test`.\n- Lint suite passed with pre-existing warnings only: `cargo clippy`.\n- Formatting check passed: `cargo fmt --check`.\n- Bead status confirmed closed: `br show ralph-burning-rlm.4 --json`.\n- Backlog lint completed with unrelated pre-existing warnings only: `br lint --json`.\n- Backlog export check passed: `br sync --flush-only` reported `Nothing to export (no dirty issues)`.\n\n## Outstanding Risks\n\n- `cargo clippy` still reports pre-existing warnings outside this change set (for example `dead_code`, `ptr_arg`, `large_enum_variant`, `too_many_arguments`, and similar style warnings).\n- `br lint` still reports unrelated pre-existing template warnings on other beads (`ralph-burning-rlm.1`, `.2`, `.3`, `.5`, and several others).\n- The worktree still contains unrelated runtime artifact changes under `.ralph-burning/projects/rlm-4/`; they were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 7
+}
