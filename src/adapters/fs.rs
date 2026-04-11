@@ -292,13 +292,10 @@ impl FileSystem {
     #[cfg(target_os = "linux")]
     fn process_started_at(pid: u32) -> Option<ProcessStartTime> {
         let start_ticks = Self::proc_start_ticks(pid)?;
-        let ticks_per_second = Command::new("getconf")
-            .arg("CLK_TCK")
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .and_then(|raw| raw.trim().parse::<u64>().ok())?;
+        // CLK_TCK is 100 on virtually all Linux kernels (set at compile
+        // time, almost never changed).  Avoid shelling out to `getconf`
+        // which may not exist in slim containers.
+        let ticks_per_second: u64 = 100;
         let boot_time = fs::read_to_string("/proc/stat")
             .ok()?
             .lines()
@@ -5649,7 +5646,11 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert!(FileSystem::is_pid_alive(&read_back));
 
-        #[cfg(any(not(unix), all(unix, not(target_os = "linux"))))]
+        // On non-Linux Unix, marker-only records are now authoritative.
+        #[cfg(all(unix, not(target_os = "linux")))]
+        assert!(FileSystem::is_pid_alive(&read_back));
+
+        #[cfg(not(unix))]
         assert!(!FileSystem::is_pid_alive(&read_back));
 
         FileSystem::remove_pid_file(temp.path(), &project_id).expect("remove pid file");
