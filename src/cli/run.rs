@@ -1101,7 +1101,7 @@ fn sync_terminal_milestone_task_with_options(
     allow_missing_lineage_repair: bool,
 ) -> AppResult<bool> {
     let mut final_snapshot = final_snapshot.clone();
-    let _ = repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+    let _ = repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot(
         base_dir,
         project_id,
         &mut final_snapshot,
@@ -1969,17 +1969,37 @@ fn stale_status_summary() -> String {
         .to_owned()
 }
 
-fn repair_missing_signal_handoff_run_failed_event(
+fn interrupted_handoff_failure_details(
+    snapshot: &RunSnapshot,
+) -> Option<(&'static str, &'static str)> {
+    match snapshot.status_summary.as_str() {
+        "failed (interrupted by termination signal)" => Some((
+            "termination signal interrupted the orchestrator before graceful shutdown completed",
+            "cancellation",
+        )),
+        "failed (interrupted by daemon task cancellation)" => Some((
+            "daemon task cancellation interrupted the orchestrator before graceful shutdown completed",
+            "cancellation",
+        )),
+        "failed (interrupted by daemon shutdown)" => Some((
+            "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+            "cancellation",
+        )),
+        _ => None,
+    }
+}
+
+pub(crate) fn repair_missing_interrupted_handoff_run_failed_event(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
     snapshot: &RunSnapshot,
 ) -> AppResult<bool> {
-    if snapshot.status != RunStatus::Failed
-        || snapshot.active_run.is_some()
-        || snapshot.status_summary != "failed (interrupted by termination signal)"
-    {
+    if snapshot.status != RunStatus::Failed || snapshot.active_run.is_some() {
         return Ok(false);
     }
+    let Some((log_message, failure_class)) = interrupted_handoff_failure_details(snapshot) else {
+        return Ok(false);
+    };
 
     let Some(interrupted_run) = snapshot.interrupted_run.as_ref() else {
         return Ok(false);
@@ -2008,16 +2028,18 @@ fn repair_missing_signal_handoff_run_failed_event(
             run_id: interrupted_run.run_id.clone(),
             started_at: interrupted_run.started_at,
         },
-        "cancellation",
+        log_message,
+        failure_class,
     )
 }
 
-fn repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+pub(crate) fn repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
     snapshot: &mut RunSnapshot,
 ) -> AppResult<bool> {
-    let repaired = repair_missing_signal_handoff_run_failed_event(base_dir, project_id, snapshot)?;
+    let repaired =
+        repair_missing_interrupted_handoff_run_failed_event(base_dir, project_id, snapshot)?;
     if repaired {
         *snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
     }
@@ -2162,6 +2184,7 @@ fn finalize_signal_interruption_marker(
             project_id: context.project_id,
         },
         expected_attempt,
+        "termination signal interrupted the orchestrator before graceful shutdown completed",
         "cancellation",
     )
 }
@@ -3210,7 +3233,7 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
     let run_snapshot_read = FsRunSnapshotStore;
     let mut run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
-    let _ = repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+    let _ = repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot(
         &current_dir,
         &project_id,
         &mut run_snapshot,
@@ -6905,6 +6928,111 @@ mod tests {
     }
 
     #[test]
+    fn sync_terminal_milestone_task_repairs_daemon_handoff_failed_snapshot_without_run_failed_event(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/bead-run/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"bead-run","flow":"docs_change"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-1","first_stage":"planning","max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let milestone = create_milestone_with_plan(base_dir, started_at);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "bead-run",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )
+        .expect("record bead start");
+
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: started_at,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: "ms-alpha".to_owned(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+        let final_snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-1".to_owned(),
+                stage_cursor: StageCursor::new(StageId::Implementation, 1, 1, 1)
+                    .expect("stage cursor"),
+                started_at,
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed (interrupted by daemon shutdown)".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base_dir, &project_id, &final_snapshot)
+            .expect("write interrupted run snapshot");
+
+        let synced =
+            sync_terminal_milestone_task(base_dir, &project_id, &project_record, &final_snapshot)
+                .expect("sync should repair the missing daemon-handoff run_failed event");
+        assert!(synced);
+
+        let journal_events = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("read repaired project journal");
+        assert_eq!(
+            journal_events
+                .iter()
+                .filter(|event| event.event_type == JournalEventType::RunFailed)
+                .count(),
+            1,
+            "daemon-handoff repair should append exactly one missing run_failed event"
+        );
+
+        let task_runs = read_task_runs(&FsTaskRunLineageStore, base_dir, &milestone.id)
+            .expect("read task-runs after repaired sync");
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(
+            task_runs[0].outcome_detail.as_deref(),
+            Some("failed (interrupted by daemon shutdown)")
+        );
+    }
+
+    #[test]
     fn sync_terminal_milestone_task_does_not_trust_stale_failed_lineage_without_run_failed_event() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
@@ -7949,7 +8077,7 @@ async fn handle_status(as_json: bool) -> AppResult<()> {
             &events,
         );
     }
-    let _ = repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+    let _ = repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot(
         &current_dir,
         &project_id,
         &mut snapshot,

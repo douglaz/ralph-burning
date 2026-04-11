@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260411212718-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-11T23:05:40.067812036Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the remaining rlm.5 amendments by making the single-repo daemon loop fail closed on `LeaseCleanupPartialFailure` instead of logging and continuing, and by replacing the signal-only handoff repair helper with a shared interrupted-handoff repair path that recognizes both CLI SIGTERM and daemon cancellation/shutdown summaries. The shared repair path now preserves the correct durable `run_failed` message for each handoff type, is used by daemon dispatch snapshot loading and the CLI status/resume/sync flows, and is covered by new regression tests for daemon handoff repair and daemon-cycle partial-cleanup propagation.\n\n## Steps\n\n1. [Completed] Inspected the single-repo daemon cycle error handling and the CLI/daemon handoff-repair paths to confirm where partial lease cleanup was still being swallowed and where daemon interruption summaries were not recognized outside daemon dispatch.\n2. [Completed] Updated `src/contexts/automation_runtime/daemon_loop.rs` so `process_cycle()` propagates `LeaseCleanupPartialFailure`, switched daemon dispatch snapshot repair to the shared CLI helper, generalized the shared repair helper in `src/cli/run.rs` to cover daemon interruption summaries, and extended `engine::finalize_interrupted_run_failure_if_missing()` to accept the correct per-handoff log message.\n3. [Completed] Added regression coverage for daemon handoff repair in the shared CLI sync path and for single-repo daemon-cycle partial-cleanup propagation, then reran the required validation commands.\n\n## Validation Evidence\n\n- `cargo test` passed.\n- `cargo clippy` passed with only pre-existing unrelated warnings.\n- `cargo fmt --check` passed.\n- Targeted shared-repair regression passed: `cargo test sync_terminal_milestone_task_repairs_daemon_handoff_failed_snapshot_without_run_failed_event`.\n- Targeted single-repo daemon regression passed: `cargo test --features test-stub process_cycle_propagates_partial_cleanup_failure`.\n\n## Outstanding Risks\n\n- `cargo clippy` still reports pre-existing repository warnings unrelated to this amendment.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 5
+}

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 5
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-4-5a46212e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "Stop swallowing partial lease-cleanup failures in the single-repo daemon loop. `release_task_lease()` now reports `LeaseCleanupPartialFailure` when worktree/lease cleanup only partially succeeds (`src/contexts/automation_runtime/daemon_loop.rs:3640-3686`), but `process_cycle()` still catches every `process_task()` error, logs it, and continues (`src/contexts/automation_runtime/daemon_loop.rs:1127-1134`). In single-repo mode `run()` therefore keeps returning success and dispatching later tasks after a terminal cleanup left contradictory durable state (`src/contexts/automation_runtime/daemon_loop.rs:235-260`). Bubble this error out of `process_cycle()` or otherwise stop/quarantine the daemon when lease cleanup is partial.",
-        "created_at": "2026-04-11T22:58:40.393491621Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "c61c110ae6d408c84b42183e8d95c881f95d45da79d7f2347425b2523d154e6d"
-      },
-      {
-        "amendment_id": "fr-4-f664cc70",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "Wire the daemon cancellation-handoff journal repair into the shared status/resume path instead of keeping it daemon-internal. The new repair helper only runs via `load_dispatch_run_snapshot()`, and that loader is only called right before daemon dispatch (`src/contexts/automation_runtime/daemon_loop.rs:2554-2564`, `2647-2655`, `2908-2921`). `run status`/terminal sync and `run resume` still call the old signal-only repair helper (`src/cli/run.rs:1972-2024`, `1096-1108`, `3212-3217`), whose summary check does not recognize the daemon cancellation summaries. If the daemon dies in the handoff window, those user-facing recovery flows still leave the journal missing its terminal `run_failed` event.",
-        "created_at": "2026-04-11T22:58:40.393494306Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "ff085e1b0dd30f852b31213fc5d70ffdc60fd1072bc254af0a254b413490e044"
-      }
-    ],
-    "processed_count": 5
+    "pending": [],
+    "processed_count": 7
   },
-  "status_summary": "running: final review restart round 5 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-11T22:47:31.115838856Z",
