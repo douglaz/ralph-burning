@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411212718-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260411212718-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:58:40.393501720Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 4/25\n\n## Accepted\n\n- `fr-4-5a46212e`\n- `fr-4-f664cc70`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-5a46212e`\n\nStop swallowing partial lease-cleanup failures in the single-repo daemon loop. `release_task_lease()` now reports `LeaseCleanupPartialFailure` when worktree/lease cleanup only partially succeeds (`src/contexts/automation_runtime/daemon_loop.rs:3640-3686`), but `process_cycle()` still catches every `process_task()` error, logs it, and continues (`src/contexts/automation_runtime/daemon_loop.rs:1127-1134`). In single-repo mode `run()` therefore keeps returning success and dispatching later tasks after a terminal cleanup left contradictory durable state (`src/contexts/automation_runtime/daemon_loop.rs:235-260`). Bubble this error out of `process_cycle()` or otherwise stop/quarantine the daemon when lease cleanup is partial.\n\n### `fr-4-f664cc70`\n\nWire the daemon cancellation-handoff journal repair into the shared status/resume path instead of keeping it daemon-internal. The new repair helper only runs via `load_dispatch_run_snapshot()`, and that loader is only called right before daemon dispatch (`src/contexts/automation_runtime/daemon_loop.rs:2554-2564`, `2647-2655`, `2908-2921`). `run status`/terminal sync and `run resume` still call the old signal-only repair helper (`src/cli/run.rs:1972-2024`, `1096-1108`, `3212-3217`), whose summary check does not recognize the daemon cancellation summaries. If the daemon dies in the handoff window, those user-facing recovery flows still leave the journal missing its terminal `run_failed` event.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

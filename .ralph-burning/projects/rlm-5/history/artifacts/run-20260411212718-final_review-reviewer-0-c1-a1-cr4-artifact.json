@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:54:57.813655061Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the daemon cancellation and lease-cleanup changes in `src/contexts/automation_runtime/daemon_loop.rs`, `src/contexts/automation_runtime/cli_writer_lease.rs`, and `src/cli/run.rs`. `cargo test` and `cargo fmt --check` passed. I found two correctness gaps: single-repo mode still swallows partial cleanup failures, and the new daemon handoff journal repair is not reachable from the user-facing status/resume recovery paths.\n\n## Amendments\n\n1. Stop swallowing partial lease-cleanup failures in the single-repo daemon loop. `release_task_lease()` now reports `LeaseCleanupPartialFailure` when worktree/lease cleanup only partially succeeds (`src/contexts/automation_runtime/daemon_loop.rs:3640-3686`), but `process_cycle()` still catches every `process_task()` error, logs it, and continues (`src/contexts/automation_runtime/daemon_loop.rs:1127-1134`). In single-repo mode `run()` therefore keeps returning success and dispatching later tasks after a terminal cleanup left contradictory durable state (`src/contexts/automation_runtime/daemon_loop.rs:235-260`). Bubble this error out of `process_cycle()` or otherwise stop/quarantine the daemon when lease cleanup is partial.\n   Rationale: The new failure path is only surfaced inside `process_task`; the outer single-repo loop still hides it, so the daemon does not actually block on partial cleanup failures.\n2. Wire the daemon cancellation-handoff journal repair into the shared status/resume path instead of keeping it daemon-internal. The new repair helper only runs via `load_dispatch_run_snapshot()`, and that loader is only called right before daemon dispatch (`src/contexts/automation_runtime/daemon_loop.rs:2554-2564`, `2647-2655`, `2908-2921`). `run status`/terminal sync and `run resume` still call the old signal-only repair helper (`src/cli/run.rs:1972-2024`, `1096-1108`, `3212-3217`), whose summary check does not recognize the daemon cancellation summaries. If the daemon dies in the handoff window, those user-facing recovery flows still leave the journal missing its terminal `run_failed` event.\n   Rationale: The new repair logic does not cover the status/resume surfaces that are supposed to recover from a daemon handoff interrupted by SIGKILL, so the journal inconsistency can persist indefinitely unless another daemon dispatch happens to touch the project.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
