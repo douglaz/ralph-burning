@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T23:56:26.275417898Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll three proposed amendments address concrete correctness and safety regressions in stale daemon/task state handling; I recommend accepting them as-is.\n\n## Votes\n\n- `fr-7-19abe56a`: Accept\n  The cleanup path passes the per-repo daemon state directory as base_dir, but PID resolution is relative to base_dir/.git, so it can miss the actual checkout pid path in multi-repo mode. That leaves stale run.pid state behind and undermines shutdown cleanup, so the fix is warranted.\n- `fr-7-45f8456b`: Accept\n  Recovered-running flow currently uses only observed_running_attempt_owner, which can miss a dangling task.lease_id when run.pid/writer lock are gone. This can reopen a recovery lease despite contradictory detached-owner metadata, allowing unsafe continuation of partially cleaned state; parity with failed/paused recovery fallback is required.\n- `fr-7-dcb45071`: Accept\n  Collapsing all read_lease() failures into orphan-clearing is too permissive. read_lease can fail on corrupt or malformed lease records and I/O errors; clearing task.lease_id in those cases hides durable state corruption instead of quarantining/requiring explicit recovery.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 7
+}
