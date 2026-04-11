@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T21:49:32.853561281Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real shutdown and recovery defects. One closes an orphaned backend-process gap after daemon cancellation; the other restores error surfacing for partial lease cleanup so shutdown does not report success while durable recovery state is still inconsistent.\n\n## Votes\n\n- `fr-1-ab35c795`: Accept\n  finish_cancelled_dispatch() only reconciles run metadata and removes run.pid after the grace timeout; it never kills tracked backend groups or prunes active-processes.json. ProcessBackendAdapter::cancel() relies on an in-process background reap after timeout, so a supervisor SIGKILL can strand those children and their tracking records. Resume from Failed or Paused skips the stale-running reconciliation path that calls cleanup_stale_backend_process_groups(), so the orphaned backend tree can persist indefinitely. Forced daemon-side cleanup tied to the expected attempt is a correct robustness fix.\n- `fr-1-cbc33ab7`: Accept\n  release_task_lease() is explicitly designed to surface partial cleanup via LeaseCleanupPartialFailure when it cannot fully remove the lease, worktree, or task reference after releasing the writer lock. The aborted shutdown paths currently discard that result and cleanup_active_leases() only logs it, which lets the daemon exit as though cleanup succeeded while leaving reconcile-visible contradictory state that later blocks retry or recovery. These failures should be propagated or otherwise treated as shutdown failures, not silently swallowed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T21:49:37.684611794Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBoth proposed amendments are technically sound and address real robustness gaps in shutdown/recovery behavior. They reduce the risk of stale durable state and orphaned runtime artifacts after cancellation and daemon termination, which can otherwise break resume/retry workflows and create unsafe partial cleanup states.\n\n## Votes\n\n- `fr-1-ab35c795`: Accept\n  This amendment correctly targets a concrete orphaning window: cancellation may mark the snapshot as failed while leaving backend process groups and active-processes.json entries behind if the daemon is killed before out-of-process reap can run. Requiring daemon-side forced cleanup in that path is a valid resilience fix because resume skips stale-backend cleanup for Failed/Paused snapshots in the cited path, so without this, residual processes and tracking can persist indefinitely.\n- `fr-1-cbc33ab7`: Accept\n  The daemon currently discards release_task_lease() outcomes on aborted-shutdown paths, including LeaseCleanupPartialFailure, then proceeds as if cleanup succeeded. Given the function explicitly models partial durable cleanup failure, swallowing it weakens state consistency guarantees and can leave worktree/lease/task references stale. Propagating or failing shutdown on these errors is the correct behavior for correctness and recoverability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

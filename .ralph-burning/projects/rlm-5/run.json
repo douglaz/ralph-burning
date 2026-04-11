@@ -2,29 +2,74 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-11T21:27:18.356800744Z",
     "prompt_hash_at_cycle_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "prompt_hash_at_stage_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-ab35c795",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Add daemon-side forced backend cleanup before treating a cancelled daemon-owned run as resumable. `finish_cancelled_dispatch()` marks the snapshot failed and returns after the shutdown grace timeout without killing or pruning tracked backend process groups (`src/contexts/automation_runtime/daemon_loop.rs:3001-3073`), while the process backend only falls back to an in-process background reap after cancel timeout (`src/adapters/process_backend.rs:1670-1680`, `src/adapters/process_backend.rs:2138-2147`). If a supervisor SIGKILLs the daemon in that window, the background reap dies with it, leaving `active-processes.json` and orphaned backend groups behind; later `run resume` from a Failed/Paused snapshot never executes the stale-backend cleanup path (`src/cli/run.rs:1952-1958`, `src/cli/run.rs:3269-3282`).",
+        "created_at": "2026-04-11T21:52:12.690906874Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "71cbc3b272a2aab297a5e5f7f6ea5c916b866a361e6e535f3beab7ce3f065515"
+      },
+      {
+        "amendment_id": "fr-1-cbc33ab7",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Stop swallowing `release_task_lease()` failures on daemon-aborted shutdown paths. After cancelled dispatch, the daemon ignores the result of lease cleanup (`src/contexts/automation_runtime/daemon_loop.rs:1520-1522`, `src/contexts/automation_runtime/daemon_loop.rs:1556-1559`), and the final shutdown sweep only logs cleanup failures (`src/contexts/automation_runtime/daemon_loop.rs:3078-3094`). But `release_task_lease()` explicitly returns `LeaseCleanupPartialFailure` when it releases the writer lock yet cannot remove the worktree/lease or clear the task reference (`src/contexts/automation_runtime/daemon_loop.rs:3468-3510`). That reintroduces the contradictory durable state this bead is meant to block while the daemon exits as if cleanup succeeded.",
+        "created_at": "2026-04-11T21:52:12.690910461Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "6c879cff85f5f2e7a638194a49c29addc8c39d38aea486c46359ba27800af092"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-11T21:37:28.232862344Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    },
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
 }

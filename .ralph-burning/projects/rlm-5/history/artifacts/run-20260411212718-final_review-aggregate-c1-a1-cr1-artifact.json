@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411212718-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260411212718-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T21:52:12.690919508Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-ab35c795`\n- `fr-1-cbc33ab7`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-ab35c795`\n\nAdd daemon-side forced backend cleanup before treating a cancelled daemon-owned run as resumable. `finish_cancelled_dispatch()` marks the snapshot failed and returns after the shutdown grace timeout without killing or pruning tracked backend process groups (`src/contexts/automation_runtime/daemon_loop.rs:3001-3073`), while the process backend only falls back to an in-process background reap after cancel timeout (`src/adapters/process_backend.rs:1670-1680`, `src/adapters/process_backend.rs:2138-2147`). If a supervisor SIGKILLs the daemon in that window, the background reap dies with it, leaving `active-processes.json` and orphaned backend groups behind; later `run resume` from a Failed/Paused snapshot never executes the stale-backend cleanup path (`src/cli/run.rs:1952-1958`, `src/cli/run.rs:3269-3282`).\n\n### `fr-1-cbc33ab7`\n\nStop swallowing `release_task_lease()` failures on daemon-aborted shutdown paths. After cancelled dispatch, the daemon ignores the result of lease cleanup (`src/contexts/automation_runtime/daemon_loop.rs:1520-1522`, `src/contexts/automation_runtime/daemon_loop.rs:1556-1559`), and the final shutdown sweep only logs cleanup failures (`src/contexts/automation_runtime/daemon_loop.rs:3078-3094`). But `release_task_lease()` explicitly returns `LeaseCleanupPartialFailure` when it releases the writer lock yet cannot remove the worktree/lease or clear the task reference (`src/contexts/automation_runtime/daemon_loop.rs:3468-3510`). That reintroduces the contradictory durable state this bead is meant to block while the daemon exits as if cleanup succeeded.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}
