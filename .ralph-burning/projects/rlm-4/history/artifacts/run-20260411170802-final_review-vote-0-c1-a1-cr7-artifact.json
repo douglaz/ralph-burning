@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-0-c1-a1-cr7-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-0-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T19:44:18.384768972Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real correctness defects: two in crash-recovery durability around signal handoff, and one unsafe stale-backend cleanup path that can target the wrong process group under PID/PGID reuse.\n\n## Votes\n\n- `fr-7-faf087fd`: Accept\n  `prepare_signal_interruption_handoff()` persists the interrupted snapshot and `mark_running_run_interrupted()` removes `run.pid` immediately, but the `CliWriterLeaseGuard` is still holding the fresh CLI writer lease until later cleanup. If the orchestrator dies in that window, recovery sees a live writer-lock owner plus a fresh lease and no pid record. The reclaim fast path for failed/paused snapshots still depends on either lease staleness or a matching dead pid record, so `run resume` cannot reclaim the dead lease until the 300s TTL expires. That is a real crash-recovery regression.\n- `fr-7-63404c8a`: Accept\n  When `backend_process_is_authoritative(record)` is true but `is_backend_process_alive(record)` is false, the code still enumerates the current process group with numeric id `record.pid` and sends `kill(-pid, SIGKILL)`. An authoritative stale record only proves the old leader identity was once precise; it does not prove the current PGID with that number still belongs to the original backend. After PID/PGID reuse, this can kill an unrelated process group, so the cleanup is not reuse-safe.\n- `fr-7-b6626357`: Accept\n  The signal handoff deliberately writes only a failed snapshot first (`failure_class: None`) and defers the durable `run_failed` journal append to `finalize_signal_interruption_marker()`. If the process is SIGKILLed during the grace-period wait, the workspace is left with `run.json.status = failed` but no terminal `run_failed` event. The code later treats that state as corrupt, and there is no general repair path that runs after that abrupt death. The handoff is therefore not fully durable across forced termination.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

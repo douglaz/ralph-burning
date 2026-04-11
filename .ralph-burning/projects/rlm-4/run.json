@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260411170802",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 7
+      "completion_round": 8
     },
     "started_at": "2026-04-11T17:08:02.886858415Z",
     "prompt_hash_at_cycle_start": "211ff42622498c7ebf504d9d32c69b84b938cce5905291c1ac44ea666340646a",
     "prompt_hash_at_stage_start": "211ff42622498c7ebf504d9d32c69b84b938cce5905291c1ac44ea666340646a",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 6
+    "final_review_restart_count": 7
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 7,
+  "completion_rounds": 8,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-7-faf087fd",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "`src/cli/run.rs:2020-2033` now persists the SIGTERM handoff by calling `mark_running_run_interrupted(...)` before the grace-period wait, and `mark_running_run_interrupted` removes `run.pid` immediately at `src/contexts/workflow_composition/engine.rs:821-843`. If the orchestrator then dies before the outer `CliWriterLeaseGuard` closes, the fresh CLI writer lease is left behind with no pid file. `run resume`/failed-state recovery cannot reclaim that lease, because the only fast-path reclaim check still requires a matching dead pid record (`src/cli/run.rs:1718-1753`, `src/cli/run.rs:1790-1854`). The project stays blocked until the 300s CLI lease TTL expires. Persist enough owner/pid identity to reclaim the dead lease, or release/convert the lease as part of the signal handoff instead of deleting the only reclaim evidence.",
+        "created_at": "2026-04-11T19:44:18.397801513Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "34cfa845f7e759b29c8b5013f1e7c55ce0c6c9932f9884567be0359e74afd52f"
+      },
+      {
+        "amendment_id": "fr-7-63404c8a",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "`src/cli/run.rs:2643-2678` still makes stale backend cleanup unsafe under PID/PGID reuse. When `backend_process_is_authoritative(record)` is true but `is_backend_process_alive(record)` is false, the code enumerates the current process group `pgid = record.pid` and sends `kill(-pid, SIGKILL)` anyway. A reused PID that became a new process-group leader will satisfy that numeric lookup even though it is unrelated to the recorded backend, so `run stop`/stale recovery can SIGKILL an arbitrary process group. Refuse group cleanup once the recorded leader identity no longer matches, or add a reuse-safe proof that the live PGID still belongs to the original backend leader before signaling `-pid`.",
+        "created_at": "2026-04-11T19:44:18.397804358Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "658295e5e3dac1b3db505d4f8f5cd05b24ed7e8dd7c1fd20fddf6be257dae017"
+      },
+      {
+        "amendment_id": "fr-7-b6626357",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "`src/cli/run.rs:2020-2033` intentionally persists only a failed snapshot during the SIGTERM handoff (`failure_class: None`), and the durable `run_failed` append is deferred to `finalize_signal_interruption_marker()` at `src/cli/run.rs:2036-2067` / `src/cli/run.rs:2150-2224`. If the process is SIGKILLed during that grace-period wait, the workspace is left with `run.json.status = failed` but no terminal `run_failed` event. That state is still treated as corrupt by milestone sync (`src/cli/run.rs:1264-1273`), so the handoff is not fully durable after an abrupt exit. Persist a journal-level handoff/terminal marker before waiting, or add a later repair path for failed snapshots missing `run_failed`.",
+        "created_at": "2026-04-11T19:44:18.397806743Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "8587201f8182ff0dc26d7e2492645dcb4a47a3ee25170014dd8025b1e00558ff"
+      }
+    ],
     "processed_count": 12
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 8 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-11T19:06:02.220314264Z",
+    "resolved_at": "2026-04-11T19:31:37.015088633Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

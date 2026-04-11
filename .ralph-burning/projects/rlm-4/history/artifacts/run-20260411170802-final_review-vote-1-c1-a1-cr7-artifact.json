@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T19:42:08.525241566Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll three amendments should be accepted. They each identify concrete failure modes that can block recovery or accidentally terminate unrelated processes under process-id reuse, and they improve correctness and robustness in post-interruption recovery paths.\n\n## Votes\n\n- `fr-7-faf087fd`: Accept\n  Removing `run.pid` during SIGTERM handoff while leaving a fresh CLI writer lease active creates a state where reclaim requires evidence (dead pid) that no longer exists. A killed orchestrator before guard closure can therefore strand recovery behind a lease TTL instead of reclaiming deterministically. Persisting reclaimable ownership metadata or explicitly releasing/converting the lease at handoff is a necessary durability fix.\n- `fr-7-63404c8a`: Accept\n  Killing an entire process group by numeric PGID (`-record.pid`) after liveness false and authoritative true is unsafe under PID/PGID reuse. A different process can inherit the same id and be killed when `killpg` is attempted, causing collateral termination. Group cleanup must prove identity continuity for the recorded leader/group or avoid group-signal termination when proof is unavailable.\n- `fr-7-b6626357`: Accept\n  Persisting only a failed snapshot without writing the terminal `run_failed` event leaves a window where an abrupt SIGKILL leaves inconsistent state (`status=failed` without durable failure event) that milestone sync already treats as corrupt. This is a real partial-write/durability problem; writing a terminal handoff marker before waiting or adding post-failure repair is required for safe recovery.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 7
+}
