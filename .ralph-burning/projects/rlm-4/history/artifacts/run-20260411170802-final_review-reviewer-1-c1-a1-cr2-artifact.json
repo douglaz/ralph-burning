@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411170802-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T17:39:51.369427181Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nNo code-level correctness defects were found in the changed files themselves; however, the diff is limited to ralph-running metadata and does not cover the requested signal/kill-tree implementation change. This is effectively a missing-workgap rather than a defect in modified logic.\n\n## Amendments\n\n1. The working-tree diff contains no application code changes; only workflow metadata updates are present in `.ralph-burning/projects/rlm-4/journal.ndjson` (new entries at lines 23-26) and `.ralph-burning/projects/rlm-4/run.json` (new `stage_resolution_snapshot` block around lines 12-32). Since `src/cli/run.rs` is untouched, this patch does not implement the bead goal around durable SIGTERM/cleanup behavior, so the cleanup bugs remain unchanged.\n   Rationale: The scope of this bead is operational correctness under signal/interruption; without touching runtime signal and process-group termination logic, no correctness/safety behavior is changed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

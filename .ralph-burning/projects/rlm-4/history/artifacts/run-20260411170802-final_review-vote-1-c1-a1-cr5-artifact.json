@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T18:57:55.690276213Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted both amendments. Each fixes a real stale-cleanup correctness issue that can leave backend work alive or block cleanup in real-world failure modes, independent of spec scope.\n\n## Votes\n\n- `fr-5-4046f3b6`: Accept\n  `kill_stale_backend_process_group` returning an error when only backend group members remain is a correctness and safety regression: it prevents forced-stop/stale-recovery from terminating orphaned backend workers and can leave processes running after orchestrator kill paths, matching the cited regression behavior. Targeting the stored process group for cleanup is the correct behavior.\n- `fr-5-e636c5c4`: Accept\n  Rejecting records lacking optional `proc_start_*` fields before liveness probing is too strict and can make stale cleanup fail on legacy/partial entries that are already dead. This blocks cleanup and stop paths unnecessarily; liveness should be checked first and only authoritative survivors retained/acted on, while dead non-authoritative records should be pruned.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 5
+}

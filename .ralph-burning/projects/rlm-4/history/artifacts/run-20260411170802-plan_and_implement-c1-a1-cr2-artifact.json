@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411170802-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-11T17:39:30.308386599Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `run` signal handling to persist a durable handoff as soon as SIGTERM/CTRL-C is observed by removing the owned `run.pid` before the grace-period wait, then reconciling the interrupted snapshot against the captured run attempt if shutdown still does not clean itself up. Tightened stale backend process-group cleanup so `run stop` no longer sends `kill(-pid, ...)` after the recorded backend leader identity is gone; instead it now refuses unverifiable leaderless groups rather than risking PID/PGID-reuse collateral damage. Added regression coverage for the early SIGTERM handoff and for the unsafe orphaned-group refusal path.\n\n## Steps\n\n1. [Completed] Inspect the existing SIGTERM wrapper and stale backend cleanup paths to confirm where durable handoff and PID/PGID validation were still missing.\n2. [Completed] Refactor the signal wrapper to drop `run.pid` immediately on a verified self-owned termination signal, capture the active attempt for later reconciliation, and extend the regression to assert the handoff happens before the run future settles.\n3. [Completed] Harden stale backend process-group cleanup so leaderless groups are rejected unless the recorded leader identity is still live and authoritative, and replace the prior orphaned-group regression with a refusal-path regression.\n4. [Completed] Run targeted regressions plus the full acceptance-command suite after formatting the final patch.\n\n## Validation Evidence\n\n- Targeted regression passed: `cargo test termination_signal_wrapper_reconciles_interrupted_snapshot_when_future_returns_without_cleanup -- --nocapture`.\n- Targeted regression passed: `cargo test run_stop_refuses_unsafe_orphaned_backend_process_group_cleanup_after_leader_exit -- --nocapture`.\n- Full test suite passed: `cargo test`.\n- Lint suite passed with pre-existing warnings only: `cargo clippy`.\n- Formatting check passed: `cargo fmt --check`.\n\n## Outstanding Risks\n\n- Leaderless backend process groups whose original leader identity can no longer be proven are now refused instead of force-killed; those orphaned processes still require manual cleanup.\n- `cargo clippy` still reports pre-existing warnings outside this change set.\n- The Unix process-group refusal path uses shared `ps`-based inspection and was validated on this Linux host, but not exercised end-to-end on non-Linux Unix in this pass.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

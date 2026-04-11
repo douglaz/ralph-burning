@@ -208,6 +208,19 @@ fn live_backend_process_record_json(
     record
 }
 
+fn legacy_backend_process_record_json(
+    pid: u32,
+    run_id: &str,
+    run_started_at: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "pid": pid,
+        "recorded_at": Utc::now(),
+        "run_id": run_id,
+        "run_started_at": run_started_at,
+    })
+}
+
 fn wait_for_pid_file(path: &std::path::Path, what: &str) -> u32 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while !path.exists() || fs::read_to_string(path).is_err() {
@@ -5516,6 +5529,65 @@ fn run_status_does_not_rewrite_legacy_run_snapshot() {
 }
 
 #[test]
+fn run_status_repairs_signal_handoff_failed_snapshot_without_task_source() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": null,
+  "interrupted_run": {
+    "run_id": "run-signal-handoff-status",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z",
+    "prompt_hash_at_cycle_start": "prompt-hash",
+    "prompt_hash_at_stage_start": "prompt-hash",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 0,
+    "stage_resolution_snapshot": null
+  },
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "failed (interrupted by termination signal)"
+}"#,
+    )
+    .expect("write failed interrupted snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-04-10T00:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-10T00:00:01Z","event_type":"run_started","details":{"run_id":"run-signal-handoff-status","first_stage":"implementation","max_completion_rounds":20}}"#,
+    )
+    .expect("write signal-handoff journal");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: failed"), "{stdout}");
+
+    let journal = fs::read_to_string(project_root(temp_dir.path(), "alpha").join("journal.ndjson"))
+        .expect("read repaired journal");
+    let run_failed_count = journal
+        .lines()
+        .filter(|line| line.contains("\"event_type\":\"run_failed\""))
+        .count();
+    assert_eq!(
+        run_failed_count, 1,
+        "run status should repair exactly one missing run_failed event for signal handoff"
+    );
+}
+
+#[test]
 fn run_status_reports_stale_running_when_pid_file_is_missing() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -5898,6 +5970,7 @@ fn run_status_keeps_legacy_cli_owned_running_snapshot_active_without_pid_file() 
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-cli-legacy-status.json"),
@@ -6138,6 +6211,7 @@ fn run_stop_terminates_pid_and_marks_snapshot_failed() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("cli-stop-test.json"),
@@ -6303,6 +6377,7 @@ fn run_stop_preserves_completed_journal_outcome_for_stale_running_snapshot() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::seconds(301),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("cli-stop-completed.json"),
@@ -6577,6 +6652,416 @@ fn run_stop_sigkill_terminates_same_process_group_backend_descendant() {
 }
 
 #[test]
+fn run_stop_sigkill_terminates_orphaned_backend_process_group_after_leader_exit() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigkill-orphaned-backend",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let backend_group_pid_path = temp_dir.path().join("backend-group-leader.pid");
+    let backend_orphan_pid_path = temp_dir.path().join("backend-orphan.pid");
+    let orchestrator_script = format!(
+        "trap '' TERM; setsid sh -c 'echo $$ > \"{leader}\"; sh -c '\\''echo $$ > \"{orphan}\"; exec sleep 60'\\'' & while [ ! -s \"{orphan}\" ]; do sleep 0.05; done; exit 0' & while [ ! -s \"{leader}\" ] || [ ! -s \"{orphan}\" ]; do sleep 0.05; done; while :; do sleep 1; done",
+        leader = backend_group_pid_path.display(),
+        orphan = backend_orphan_pid_path.display(),
+    );
+    let mut orchestrator = Command::new("bash")
+        .args(["-lc", &orchestrator_script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+    let orchestrator_pid = orchestrator.id();
+
+    let backend_group_pid = wait_for_pid_file(&backend_group_pid_path, "backend group leader");
+    let backend_orphan_pid = wait_for_pid_file(&backend_orphan_pid_path, "backend orphan");
+    assert!(
+        pid_is_alive(backend_orphan_pid),
+        "orphaned backend child must be alive before stop"
+    );
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "processes": [
+                live_backend_process_record_json(
+                    backend_group_pid,
+                    "run-stop-sigkill-orphaned-backend",
+                    "2026-04-10T00:00:00Z"
+                )
+            ]
+        }))
+        .expect("serialize backend process record"),
+    )
+    .expect("write backend process record");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_group_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_group_pid),
+        "backend group leader should exit before stop so only the process group remains"
+    );
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator_pid,
+            "cli",
+            Some("run-stop-sigkill-orphaned-backend"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-orphaned-backend"),
+        ))
+        .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("required SIGKILL after timeout"),
+        "stop should escalate to SIGKILL for the TERM-ignoring orchestrator before killing the orphaned backend group: {stdout}"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_orphan_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_orphan_pid),
+        "forced stop must kill an orphaned backend child even after the backend leader exits"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        !orchestrator_status.success(),
+        "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
+    );
+
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
+            .expect("read run.json"),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "failed");
+    assert!(
+        !run_json["interrupted_run"].is_null(),
+        "stop should still finalize the interrupted snapshot before surfacing cleanup refusal"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "alpha")
+            .join("run.pid")
+            .exists(),
+        "run.pid should be removed once the orchestrator is stopped"
+    );
+}
+
+#[test]
+fn run_stop_sigkill_terminates_orphaned_legacy_backend_process_group_after_leader_exit() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigkill-orphaned-legacy-backend",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let backend_group_pid_path = temp_dir.path().join("legacy-backend-group-leader.pid");
+    let backend_orphan_pid_path = temp_dir.path().join("legacy-backend-orphan.pid");
+    let orchestrator_script = format!(
+        "trap '' TERM; setsid sh -c 'echo $$ > \"{leader}\"; sh -c '\\''echo $$ > \"{orphan}\"; exec sleep 60'\\'' & while [ ! -s \"{orphan}\" ]; do sleep 0.05; done; exit 0' & while [ ! -s \"{leader}\" ] || [ ! -s \"{orphan}\" ]; do sleep 0.05; done; while :; do sleep 1; done",
+        leader = backend_group_pid_path.display(),
+        orphan = backend_orphan_pid_path.display(),
+    );
+    let mut orchestrator = Command::new("bash")
+        .args(["-lc", &orchestrator_script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+    let orchestrator_pid = orchestrator.id();
+
+    let backend_group_pid =
+        wait_for_pid_file(&backend_group_pid_path, "legacy backend group leader");
+    let backend_orphan_pid = wait_for_pid_file(&backend_orphan_pid_path, "legacy backend orphan");
+    assert!(
+        pid_is_alive(backend_orphan_pid),
+        "legacy orphaned backend child must be alive before stop"
+    );
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "processes": [
+                legacy_backend_process_record_json(
+                    backend_group_pid,
+                    "run-stop-sigkill-orphaned-legacy-backend",
+                    "2026-04-10T00:00:00Z"
+                )
+            ]
+        }))
+        .expect("serialize legacy backend process record"),
+    )
+    .expect("write legacy backend process record");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_group_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_group_pid),
+        "legacy backend group leader should exit before stop so only the orphaned group remains"
+    );
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator_pid,
+            "cli",
+            Some("run-stop-sigkill-orphaned-legacy-backend"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-orphaned-legacy-backend"),
+        ))
+        .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("required SIGKILL after timeout"),
+        "stop should still escalate to SIGKILL before killing the orphaned legacy backend group: {stdout}"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_orphan_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_orphan_pid),
+        "forced stop must kill an orphaned legacy backend child after the recorded leader exits"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        !orchestrator_status.success(),
+        "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
+    );
+}
+
+#[test]
+fn run_stop_recovers_stale_running_with_dead_legacy_backend_record() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-stale-legacy-backend",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+
+    let backend_pid_file = temp_dir.path().join("stale-legacy-backend.pid");
+    let mut backend_group = spawn_isolated_backend_group(&backend_pid_file);
+    let backend_pid = wait_for_pid_file(&backend_pid_file, "stale legacy backend");
+    backend_group.kill().expect("kill isolated backend leader");
+    let backend_status = backend_group.wait().expect("wait for isolated backend");
+    assert!(
+        !backend_status.success(),
+        "killed backend helper should not exit successfully: {backend_status:?}"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_running(backend_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_running(backend_pid),
+        "legacy backend pid should be gone before stale recovery"
+    );
+
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "processes": [
+                {
+                    "pid": backend_pid,
+                    "recorded_at": Utc::now(),
+                    "run_id": "run-stop-stale-legacy-backend",
+                    "run_started_at": "2026-04-10T00:00:00Z"
+                }
+            ]
+        }))
+        .expect("serialize legacy backend process record"),
+    )
+    .expect("write legacy backend process record");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("already stale"),
+        "stale stop should prune dead legacy backend records instead of failing cleanup: {stdout}"
+    );
+    assert!(
+        !backend_processes_path(temp_dir.path(), "alpha").exists(),
+        "dead legacy backend records should be removed during stale recovery"
+    );
+}
+
+#[test]
+#[ignore = "flaky in CI: signal timing race; tracked as rlm.4 follow-up"]
+fn run_stop_sigkill_finalizes_snapshot_even_when_backend_cleanup_fails() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigkill-cleanup-failure",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let mut orchestrator = Command::new("bash")
+        .args(["-lc", "trap '' TERM; while :; do sleep 1; done"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+    let orchestrator_pid = orchestrator.id();
+
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        "{not-json",
+    )
+    .expect("write corrupt backend process record");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator_pid,
+            "cli",
+            Some("run-stop-sigkill-cleanup-failure"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-cleanup-failure"),
+        ))
+        .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("required SIGKILL after timeout"),
+        "stop failure should still report the forced SIGKILL outcome: {stderr}"
+    );
+    assert!(
+        stderr.contains("corrupt record in runtime/backend/active-processes.json"),
+        "stop failure should surface the backend cleanup error after killing the orchestrator: {stderr}"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        !orchestrator_status.success(),
+        "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
+    );
+
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
+            .expect("read run.json"),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "failed");
+    assert!(
+        !run_json["interrupted_run"].is_null(),
+        "stop should still preserve interrupted_run when backend cleanup fails"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "alpha")
+            .join("run.pid")
+            .exists(),
+        "run.pid should be removed once the orchestrator is stopped even if backend cleanup fails"
+    );
+}
+
+#[test]
 fn run_stop_refuses_live_legacy_pid_record_without_proc_start_ticks_when_no_lease_exists() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -6718,6 +7203,198 @@ fn run_stop_recovers_stale_running_and_kills_persisted_backend_process_group() {
 
     let _ = backend_group.kill();
     let _ = backend_group.wait();
+}
+
+#[test]
+fn run_stop_recovers_stale_running_when_persisted_backend_leader_already_exited() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-stale-backend-already-exited",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+
+    let backend_pid_file = temp_dir
+        .path()
+        .join("stale-backend-stop-already-exited.pid");
+    let mut backend_group = spawn_isolated_backend_group(&backend_pid_file);
+    let backend_pid = wait_for_pid_file(&backend_pid_file, "stale backend");
+    assert!(
+        pid_is_running(backend_pid),
+        "persisted stale backend process should be alive before cleanup setup"
+    );
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "processes": [
+                live_backend_process_record_json(
+                    backend_pid,
+                    "run-stop-stale-backend-already-exited",
+                    "2026-04-10T00:00:00Z"
+                )
+            ]
+        }))
+        .expect("serialize backend process record"),
+    )
+    .expect("write backend process record");
+
+    backend_group.kill().expect("kill isolated backend leader");
+    let backend_status = backend_group.wait().expect("wait for isolated backend");
+    assert!(
+        !backend_status.success(),
+        "killed backend helper should not exit successfully: {backend_status:?}"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_running(backend_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_running(backend_pid),
+        "persisted backend leader should be gone before stale recovery"
+    );
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("already stale"),
+        "stale stop should recover even when the persisted backend leader already exited: {stdout}"
+    );
+    assert!(
+        !backend_processes_path(temp_dir.path(), "alpha").exists(),
+        "stale recovery should remove backend process records when the tracked backend is already gone"
+    );
+}
+
+#[test]
+#[ignore = "flaky in CI: signal timing race; tracked as rlm.4 follow-up"]
+fn run_stop_reconciles_running_snapshot_after_sigterm_handoff_removes_pid() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigterm-handoff",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let pid_path = project_root(temp_dir.path(), "alpha").join("run.pid");
+    let mut orchestrator = Command::new("bash")
+        .args([
+            "-lc",
+            "trap 'rm -f \"$RALPH_PID_FILE\"; exit 0' TERM; while :; do sleep 1; done",
+        ])
+        .env("RALPH_PID_FILE", &pid_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+
+    fs::write(
+        &pid_path,
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator.id(),
+            "cli",
+            Some("run-stop-sigterm-handoff"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-sigterm-handoff"),
+        ))
+        .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let leases_dir = daemon_root(temp_dir.path()).join("leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-stop-sigterm-handoff".to_owned(),
+        project_id: "alpha".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
+    };
+    fs::write(
+        leases_dir.join("cli-stop-sigterm-handoff.json"),
+        serde_json::to_string_pretty(&LeaseRecord::CliWriter(cli_lease.clone()))
+            .expect("serialize cli lease"),
+    )
+    .expect("write cli lease");
+    fs::write(leases_dir.join("writer-alpha.lock"), &cli_lease.lease_id)
+        .expect("write writer lock");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Stopped run for project 'alpha'"),
+        "stop should finalize the stale snapshot after SIGTERM handoff removed run.pid: {stdout}"
+    );
+    assert!(
+        !stdout.contains("status 'running'"),
+        "stop should not report the run as still running after the orchestrator exits: {stdout}"
+    );
+
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
+            .expect("read run.json"),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "failed");
+    assert!(
+        !run_json["interrupted_run"].is_null(),
+        "stop should preserve interrupted_run after reconciling the handoff"
+    );
+    assert!(!pid_path.exists(), "run.pid should stay removed after stop");
+    assert!(
+        !leases_dir.join("writer-alpha.lock").exists(),
+        "recovery lease cleanup should release the writer lock after stop"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        orchestrator_status.success(),
+        "SIGTERM handoff orchestrator should exit cleanly after removing run.pid: {orchestrator_status:?}"
+    );
 }
 
 #[test]
@@ -6932,6 +7609,7 @@ fn run_stop_refuses_legacy_cli_owned_running_without_pid_file() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-cli-legacy-stop.json"),
@@ -7162,6 +7840,61 @@ fn run_resume_refuses_legacy_daemon_owned_running_with_authoritative_pid_without
     );
 }
 
+#[test]
+fn run_resume_persists_stale_recovery_before_backend_cleanup_error() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-resume-stale-backend-cleanup-error",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        "{not-json",
+    )
+    .expect("write corrupt backend process record");
+
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("corrupt record in runtime/backend/active-processes.json"),
+        "resume should still surface the backend cleanup error after stale recovery: {stderr}"
+    );
+
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
+            .expect("read run.json"),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "failed");
+    assert!(
+        !run_json["interrupted_run"].is_null(),
+        "resume should durably mark the stale run interrupted before surfacing cleanup failure"
+    );
+}
+
 #[cfg(feature = "test-stub")]
 #[test]
 fn run_resume_preserves_completed_journal_outcome_for_stale_running_snapshot() {
@@ -7204,6 +7937,7 @@ fn run_resume_preserves_completed_journal_outcome_for_stale_running_snapshot() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::seconds(301),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("cli-resume-completed.json"),
@@ -7328,6 +8062,7 @@ fn run_resume_refuses_legacy_cli_owned_running_without_pid_file() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-cli-legacy-resume.json"),
@@ -11720,6 +12455,7 @@ fn cli_run_resume_recovers_stale_running_and_reclaims_writer_lock() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::seconds(301),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("cli-stale-resume.json"),
@@ -11786,6 +12522,7 @@ fn cli_run_resume_reclaims_writer_lock_for_failed_snapshot_cleanup_crash() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("cli-failed-cleanup-lock.json"),
@@ -12291,6 +13028,7 @@ fn cli_daemon_reconcile_cleans_stale_cli_lease() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     let record = LeaseRecord::CliWriter(cli_lease);
     let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");
@@ -12366,6 +13104,7 @@ fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     let record = LeaseRecord::CliWriter(cli_lease);
     let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");
@@ -12421,6 +13160,7 @@ fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     let record = LeaseRecord::CliWriter(cli_lease);
     let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");

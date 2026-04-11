@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-plan_and_implement-c1-a1-cr9-artifact",
+  "payload_id": "run-20260411170802-plan_and_implement-c1-a1-cr9",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-11T20:17:41.023769488Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nSerialized CLI lease cleanup-handoff persistence against heartbeat lease writes so SIGTERM handoff metadata cannot be lost before `run.pid` removal, added a project-wide signal-handoff failed-run repair path that reloads snapshots and now runs for non-bead projects during status/resume and before milestone sync, and relaxed stale backend PGID cleanup so dead-leader legacy backend records still SIGKILL surviving orphaned process-group members while continuing to refuse live non-authoritative PID reuse.\n\n## Steps\n\n1. [Completed] Inspect the current CLI writer lease heartbeat/handoff flow, signal-handoff run-failed repair path, and stale backend PGID cleanup to confirm the three pending amendment gaps.\n2. [Completed] Patch CLI lease mutation handling so cleanup-handoff persistence and heartbeat updates are serialized in-process, and add a regression proving heartbeat updates preserve an existing handoff.\n3. [Completed] Promote signal-handoff failed-run repair into a reusable snapshot-reload helper used by terminal milestone sync plus non-bead recovery/status paths, and update stale backend cleanup to keep killing orphaned legacy PGIDs after leader exit when PID reuse is no longer live.\n4. [Completed] Add CLI regressions for non-bead signal-handoff repair and orphaned legacy backend-group cleanup, then run targeted tests and the full acceptance suite.\n\n## Validation Evidence\n\n- Targeted unit regression passed: `cargo test heartbeat_tick_preserves_cleanup_handoff -- --nocapture`.\n- Targeted CLI regression passed: `cargo test run_status_repairs_signal_handoff_failed_snapshot_without_task_source --test cli -- --nocapture`.\n- Targeted CLI regression passed: `cargo test run_stop_sigkill_terminates_orphaned_legacy_backend_process_group_after_leader_exit --test cli -- --nocapture`.\n- Full test suite passed: `cargo test`.\n- Lint suite passed with pre-existing warnings only: `cargo clippy`.\n- Formatting check passed: `cargo fmt --check`.\n\n## Outstanding Risks\n\n- `cargo clippy` still reports pre-existing warnings outside this change set (for example `dead_code`, `ptr_arg`, `large_enum_variant`, `too_many_arguments`, and related style warnings).\n- The Unix stale-backend process-group path was validated on this Linux host; the shared non-Linux Unix implementation was not exercised end-to-end in this pass.\n- The worktree still contains unrelated runtime artifact changes under `.ralph-burning/projects/rlm-4/`; they were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 9
+}

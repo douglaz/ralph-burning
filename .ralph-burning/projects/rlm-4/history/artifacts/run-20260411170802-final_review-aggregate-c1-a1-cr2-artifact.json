@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411170802-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411170802-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T17:58:39.125974045Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 2/25\n\n## Accepted\n\n- `fr-2-9fd6daf4`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-2-8bcb87eb`\n- `fr-2-220443c4`\n\n## Final Accepted Amendments\n\n### `fr-2-8bcb87eb`\n\n`src/cli/run.rs:2524-2549` still leaves orphaned backend groups running in the exact case this bead is meant to fix. The new branch refuses cleanup whenever the recorded backend leader is gone, but Unix process groups remain signalable by PGID after the leader exits. That means a backend whose leader dies while descendants stay in the same process group is no longer killed by `run stop`; the new test in `tests/cli.rs:6667-6679` even locks in that the orphan stays alive. `kill_stale_backend_process_group` should still send `SIGKILL` to `-pgid` in this dead-leader case and only use direct-PID fallback when a live authoritative leader still exists.\n\n### `fr-2-9fd6daf4`\n\n`src/cli/run.rs:3357-3373` orders forced-stop cleanup incorrectly: `cleanup_backend_processes()?` runs before the orchestrator receives `SIGKILL`. Any backend cleanup error now aborts `run stop` before the SIGKILL branch executes, so a TERM-ignoring orchestrator can keep running after a failed stop attempt. The new refusal path at `src/cli/run.rs:2536-2549` makes this easy to trigger, and `tests/cli.rs:6678-6684` has to kill the orchestrator manually afterward. The command needs to guarantee the main orchestrator is killed first, then surface backend-cleanup failures separately or aggregate them after the main PID is definitely dead.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

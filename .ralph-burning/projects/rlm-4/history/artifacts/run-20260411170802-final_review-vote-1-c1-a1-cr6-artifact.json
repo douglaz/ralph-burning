@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T19:20:14.127707843Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted the two concrete state-reconciliation defects in stale recovery and stop-path liveness, as both can leave persisted run state incorrect after a stale orchestrator death and are independently actionable. Rejected the third amendment because it is primarily a framing/categorization claim rather than a valid defect in the reviewed implementation.\n\n## Votes\n\n- `fr-6-18624587`: Accept\n  The ordering in recovery is incorrect: if stale backend cleanup fails after the run is already determined stale, propagating that error before persisting the interrupted snapshot can strand `run.json` at `running`. This is a real correctness bug, not a false positive, and separate persistence/reconciliation from backend cleanup error reporting improves recoverability.\n- `fr-6-c9beaa21`: Accept\n  Acquiring a new CLI recovery lease before rechecking liveness can mask staleness by making classify_liveness see the fresh lease and avoid stale handling. In the TERM path described (orchestrator removed pid), this yields a false-success stop while state stays `running`; ordering of stale-vs-running decision is materially wrong.\n- `fr-6-a621368a`: Reject\n  This amendment argues the round is metadata-only/no-op, but available context indicates concrete implementation/test updates in `src/cli/run.rs` and `tests/cli.rs` exist. As written, it does not add a sound technical fix for the stale-stopping runtime behavior; it is a mismatch of premise rather than a defect claim.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 6
+}

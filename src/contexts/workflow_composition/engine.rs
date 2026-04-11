@@ -784,6 +784,21 @@ fn snapshot_matches_running_attempt(
         })
 }
 
+fn snapshot_matches_interrupted_attempt(
+    snapshot: &RunSnapshot,
+    expected_attempt: &RunningAttemptIdentity,
+) -> bool {
+    snapshot.status == RunStatus::Failed
+        && snapshot.active_run.is_none()
+        && snapshot
+            .interrupted_run
+            .as_ref()
+            .is_some_and(|interrupted_run| {
+                interrupted_run.run_id == expected_attempt.run_id
+                    && interrupted_run.started_at == expected_attempt.started_at
+            })
+}
+
 pub fn mark_running_run_interrupted(
     context: InterruptedRunContext<'_>,
     expected_attempt: &RunningAttemptIdentity,
@@ -871,6 +886,41 @@ pub fn mark_current_process_running_run_interrupted(
     }
 
     mark_running_run_interrupted(context, &expected_attempt, update)
+}
+
+pub fn finalize_interrupted_run_failure_if_missing(
+    context: InterruptedRunContext<'_>,
+    expected_attempt: &RunningAttemptIdentity,
+    failure_class: &str,
+) -> AppResult<bool> {
+    let snapshot = context
+        .run_snapshot_read
+        .read_run_snapshot(context.base_dir, context.project_id)?;
+    if !snapshot_matches_interrupted_attempt(&snapshot, expected_attempt) {
+        return Ok(false);
+    }
+
+    let events = context
+        .journal_store
+        .read_journal(context.base_dir, context.project_id)?;
+    if crate::contexts::project_run_record::queries::terminal_status_for_attempt(
+        &expected_attempt.run_id,
+        expected_attempt.started_at,
+        &events,
+    )
+    .is_none()
+    {
+        append_interrupted_run_failed_event(
+            context.journal_store,
+            context.base_dir,
+            context.project_id,
+            &snapshot,
+            "termination signal interrupted the orchestrator before graceful shutdown completed",
+            failure_class,
+        )?;
+    }
+
+    Ok(true)
 }
 
 fn append_interrupted_run_failed_event(

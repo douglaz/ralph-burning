@@ -211,6 +211,7 @@ fn cli_writer_lease_serde_round_trip() {
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
+        cleanup_handoff: None,
     };
 
     let json = serde_json::to_string(&lease).expect("serialize cli lease");
@@ -277,6 +278,7 @@ fn cli_writer_lease_staleness_matches_worktree_lease() {
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
+        cleanup_handoff: None,
     };
 
     assert_eq!(worktree.heartbeat_deadline(), cli.heartbeat_deadline());
@@ -312,6 +314,7 @@ fn fs_daemon_store_lists_worktree_and_cli_lease_records_from_same_directory() {
         acquired_at: now + Duration::seconds(1),
         ttl_seconds: 300,
         last_heartbeat: now + Duration::seconds(1),
+        cleanup_handoff: None,
     };
 
     store
@@ -3978,6 +3981,7 @@ fn reconcile_stale_cli_lease_cleans_lease_and_writer_lock() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store
         .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
@@ -4047,6 +4051,7 @@ fn reconcile_stale_cli_lease_missing_writer_lock_reports_cleanup_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store
         .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
@@ -4105,6 +4110,7 @@ fn reconcile_stale_cli_lease_missing_lease_file_reports_cleanup_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store
         .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
@@ -4160,6 +4166,7 @@ fn reconcile_non_stale_cli_lease_is_not_cleaned() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     store
         .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
@@ -4224,6 +4231,7 @@ fn reconcile_prunes_stale_cli_lease_after_close_released_writer_lock() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store
         .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
@@ -4299,6 +4307,7 @@ fn reconcile_writer_lock_absent_then_lease_delete_failure_records_both() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store
         .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
@@ -4734,6 +4743,7 @@ fn reconcile_stale_cli_lease_owner_mismatch_reports_cleanup_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store
         .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
@@ -4820,6 +4830,7 @@ fn reconcile_stale_cli_cleanup_allows_subsequent_run_start() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store
         .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
@@ -6081,6 +6092,7 @@ fn reconcile_oversized_ttl_override_does_not_reclaim_fresh_worktree_or_cli_lease
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
+        cleanup_handoff: None,
     };
     store
         .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))

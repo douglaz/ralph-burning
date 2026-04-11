@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260411170802-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T17:22:50.470982551Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the changed lifecycle/stop implementation in `src/cli/run.rs` plus the new regression coverage in `tests/cli.rs`, and ran the two new targeted tests. I found two remaining issues: SIGTERM cleanup is still not durable if the process dies during the grace wait, and the new orphaned-backend-group kill path is unsafe under PID/PGID reuse.\n\n## Amendments\n\n1. `src/cli/run.rs:2035-2059` still leaves a stale-state window after SIGTERM. The wrapper now calls `reconcile_signal_interruption()` only after the backend future finishes or after `RUN_STOP_GRACE_PERIOD` expires, but it does not persist the interrupted snapshot or remove `run.pid` when the signal is first observed. If a supervisor or a second signal kills the orchestrator during that wait, the project is still left in `Running` with a live `run.pid`, which is the durability gap this bead is meant to close. Persist the interrupted state (or an equivalent durable handoff marker) before entering the grace-period wait, then let later completion reconcile forward if the run actually finishes cleanly.\n   Rationale: This remains a real recovery bug under external process managers that escalate SIGTERM to SIGKILL on their own timeout; the current test only covers a future that returns promptly, not death during the grace window.\n2. `src/cli/run.rs:2414-2434` makes stale backend cleanup unsafe under PID/PGID reuse. The old `is_backend_process_alive()` guard was removed so orphaned same-process-group children can be killed after the leader exits, but the replacement code now sends `kill(-pid, SIGKILL)` as long as the record contains authoritative identity fields, without first proving that numeric PID/PGID still belongs to the original backend leader. If that leader exited and the PID/PGID was reused, `run stop`/stale recovery can kill an unrelated process group or process. Add a reuse-safe validation strategy before signaling `-pid` (or refuse cleanup when that guarantee cannot be established).\n   Rationale: This is a safety issue, not just a missed cleanup: a stale backend record can now target arbitrary unrelated workloads if the group id has been recycled.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

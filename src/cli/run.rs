@@ -41,10 +41,11 @@ use crate::composition::agent_execution_builder;
 use crate::contexts::agent_execution::model::CancellationToken;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     cleanup_detached_project_writer_owner, find_detached_project_writer_owner,
-    read_project_writer_lease_record, read_project_writer_lock_owner,
-    reclaim_specific_project_writer_owner, CliWriterLeaseGuard,
+    persist_cli_writer_cleanup_handoff, read_project_writer_lease_record,
+    read_project_writer_lock_owner, reclaim_specific_project_writer_owner, CliWriterLeaseGuard,
     CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
+use crate::contexts::automation_runtime::model::CliWriterCleanupHandoff;
 use crate::contexts::automation_runtime::LeaseRecord;
 use crate::contexts::milestone_record::bundle::{planned_bead_membership_refs, MilestoneBundle};
 use crate::contexts::milestone_record::controller::{
@@ -1099,6 +1100,12 @@ fn sync_terminal_milestone_task_with_options(
     final_snapshot: &RunSnapshot,
     allow_missing_lineage_repair: bool,
 ) -> AppResult<bool> {
+    let mut final_snapshot = final_snapshot.clone();
+    let _ = repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+        base_dir,
+        project_id,
+        &mut final_snapshot,
+    )?;
     let Some(task_source) = project_record.task_source.as_ref() else {
         return Ok(false);
     };
@@ -1533,9 +1540,10 @@ fn pid_record_has_attempt_metadata(record: &crate::adapters::fs::RunPidRecord) -
     record.run_id.is_some() && record.run_started_at.is_some()
 }
 
-fn classify_running_snapshot_liveness(
+fn classify_running_snapshot_liveness_with_ignored_cli_lease_owner(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
+    ignored_cli_lease_owner: Option<&str>,
 ) -> AppResult<RunningSnapshotLiveness> {
     let pid_record = FileSystem::read_pid_file(base_dir, project_id)?;
     if let Some(record) = pid_record.as_ref() {
@@ -1585,7 +1593,10 @@ fn classify_running_snapshot_liveness(
                     RunningSnapshotLiveness::LegacyDaemonLease
                 });
             }
-            LeaseRecord::CliWriter(lease) if lease.project_id == project_id.as_str() => {
+            LeaseRecord::CliWriter(lease)
+                if lease.project_id == project_id.as_str()
+                    && ignored_cli_lease_owner != Some(lease.lease_id.as_str()) =>
+            {
                 // Mixed-version CLI runs may still hold a fresh writer lease
                 // without an authoritative pid tuple. Treat them as running so
                 // resume/stop never reclaim the lock or rewrite state until the
@@ -1601,6 +1612,13 @@ fn classify_running_snapshot_liveness(
     }
 
     Ok(RunningSnapshotLiveness::Stale)
+}
+
+fn classify_running_snapshot_liveness(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+) -> AppResult<RunningSnapshotLiveness> {
+    classify_running_snapshot_liveness_with_ignored_cli_lease_owner(base_dir, project_id, None)
 }
 
 fn running_snapshot_attempt(snapshot: &RunSnapshot) -> AppResult<engine::RunningAttemptIdentity> {
@@ -1725,20 +1743,35 @@ fn observed_cli_cleanup_owner_has_dead_pid(
         return Ok(false);
     }
 
-    let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? else {
+    if let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? {
+        if pid_record.owner != crate::adapters::fs::RunPidOwner::Cli {
+            return Ok(false);
+        }
+        if pid_record.writer_owner.as_deref() != Some(expected_owner) {
+            return Ok(false);
+        }
+        if !FileSystem::pid_record_is_authoritative(&pid_record) {
+            return Ok(false);
+        }
+
+        return Ok(!FileSystem::is_pid_alive(&pid_record));
+    }
+
+    let Some(handoff) = lease.cleanup_handoff.as_ref() else {
         return Ok(false);
     };
-    if pid_record.owner != crate::adapters::fs::RunPidOwner::Cli {
-        return Ok(false);
-    }
-    if pid_record.writer_owner.as_deref() != Some(expected_owner) {
-        return Ok(false);
-    }
-    if !FileSystem::pid_record_is_authoritative(&pid_record) {
+    if !FileSystem::process_identity_is_authoritative(
+        handoff.proc_start_ticks,
+        handoff.proc_start_marker.as_deref(),
+    ) {
         return Ok(false);
     }
 
-    Ok(!FileSystem::is_pid_alive(&pid_record))
+    Ok(!FileSystem::process_identity_matches_live_process(
+        handoff.pid,
+        handoff.proc_start_ticks,
+        handoff.proc_start_marker.as_deref(),
+    ))
 }
 
 fn observed_stale_running_owner_still_matches_attempt(
@@ -1936,6 +1969,61 @@ fn stale_status_summary() -> String {
         .to_owned()
 }
 
+fn repair_missing_signal_handoff_run_failed_event(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    snapshot: &RunSnapshot,
+) -> AppResult<bool> {
+    if snapshot.status != RunStatus::Failed
+        || snapshot.active_run.is_some()
+        || snapshot.status_summary != "failed (interrupted by termination signal)"
+    {
+        return Ok(false);
+    }
+
+    let Some(interrupted_run) = snapshot.interrupted_run.as_ref() else {
+        return Ok(false);
+    };
+
+    // Only repair if the orchestrator process is definitively gone.
+    // During the SIGTERM grace period the snapshot is already marked
+    // interrupted but the engine future is still settling — repairing
+    // now would race with the orchestrator's own terminal event.
+    if let Ok(Some(pid_record)) = FileSystem::read_pid_file(base_dir, project_id) {
+        if FileSystem::is_pid_alive(&pid_record) {
+            return Ok(false);
+        }
+    }
+
+    engine::finalize_interrupted_run_failure_if_missing(
+        engine::InterruptedRunContext {
+            run_snapshot_read: &FsRunSnapshotStore,
+            run_snapshot_write: &FsRunSnapshotWriteStore,
+            journal_store: &FsJournalStore,
+            log_write: &FsRuntimeLogWriteStore,
+            base_dir,
+            project_id,
+        },
+        &engine::RunningAttemptIdentity {
+            run_id: interrupted_run.run_id.clone(),
+            started_at: interrupted_run.started_at,
+        },
+        "cancellation",
+    )
+}
+
+fn repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    snapshot: &mut RunSnapshot,
+) -> AppResult<bool> {
+    let repaired = repair_missing_signal_handoff_run_failed_event(base_dir, project_id, snapshot)?;
+    if repaired {
+        *snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
+    }
+    Ok(repaired)
+}
+
 fn stale_status_view(project_id: &ProjectId, snapshot: &RunSnapshot) -> RunStatusView {
     let mut status = RunStatusView::from_snapshot(project_id.as_str(), snapshot);
     status.status = "stale (process not found)".to_owned();
@@ -1980,8 +2068,91 @@ struct RunSignalCleanupContext<'a> {
     writer_owner: Option<&'a str>,
 }
 
-fn reconcile_signal_interruption(context: &RunSignalCleanupContext<'_>) -> AppResult<bool> {
-    engine::mark_current_process_running_run_interrupted(
+fn reconcile_signal_interruption_for_attempt(
+    context: &RunSignalCleanupContext<'_>,
+    expected_attempt: Option<&engine::RunningAttemptIdentity>,
+    update: engine::InterruptedRunUpdate<'_>,
+) -> AppResult<bool> {
+    let interrupted_context = engine::InterruptedRunContext {
+        run_snapshot_read: context.run_snapshot_read,
+        run_snapshot_write: context.run_snapshot_write,
+        journal_store: context.journal_store,
+        log_write: context.log_write,
+        base_dir: context.base_dir,
+        project_id: context.project_id,
+    };
+
+    match expected_attempt {
+        Some(expected_attempt) => {
+            engine::mark_running_run_interrupted(interrupted_context, expected_attempt, update)
+        }
+        None => engine::mark_current_process_running_run_interrupted(
+            interrupted_context,
+            context.writer_owner,
+            update,
+        ),
+    }
+}
+
+fn persist_signal_interruption_marker(
+    context: &RunSignalCleanupContext<'_>,
+    expected_attempt: Option<&engine::RunningAttemptIdentity>,
+) -> AppResult<bool> {
+    reconcile_signal_interruption_for_attempt(
+        context,
+        expected_attempt,
+        engine::InterruptedRunUpdate {
+            summary: "failed (interrupted by termination signal)",
+            log_message:
+                "termination signal interrupted the orchestrator before graceful shutdown completed",
+            failure_class: None,
+        },
+    )
+}
+
+fn persist_signal_cleanup_handoff(
+    context: &RunSignalCleanupContext<'_>,
+    pid_record: &crate::adapters::fs::RunPidRecord,
+) -> AppResult<bool> {
+    let Some(writer_owner) = context.writer_owner else {
+        return Ok(false);
+    };
+
+    persist_cli_writer_cleanup_handoff(
+        &FsDaemonStore,
+        context.base_dir,
+        context.project_id,
+        writer_owner,
+        CliWriterCleanupHandoff {
+            pid: pid_record.pid,
+            run_id: pid_record.run_id.clone(),
+            run_started_at: pid_record.run_started_at,
+            proc_start_ticks: pid_record.proc_start_ticks,
+            proc_start_marker: pid_record.proc_start_marker.clone(),
+        },
+    )
+}
+
+fn finalize_signal_interruption_marker(
+    context: &RunSignalCleanupContext<'_>,
+    expected_attempt: Option<&engine::RunningAttemptIdentity>,
+) -> AppResult<bool> {
+    let Some(expected_attempt) = expected_attempt else {
+        return Ok(false);
+    };
+    let snapshot = context
+        .run_snapshot_read
+        .read_run_snapshot(context.base_dir, context.project_id)?;
+    if !(snapshot.status == RunStatus::Failed
+        && snapshot.active_run.is_none()
+        && snapshot.interrupted_run.as_ref().is_some_and(|run| {
+            run.run_id == expected_attempt.run_id && run.started_at == expected_attempt.started_at
+        }))
+    {
+        return Ok(false);
+    }
+
+    engine::finalize_interrupted_run_failure_if_missing(
         engine::InterruptedRunContext {
             run_snapshot_read: context.run_snapshot_read,
             run_snapshot_write: context.run_snapshot_write,
@@ -1990,14 +2161,75 @@ fn reconcile_signal_interruption(context: &RunSignalCleanupContext<'_>) -> AppRe
             base_dir: context.base_dir,
             project_id: context.project_id,
         },
-        context.writer_owner,
-        engine::InterruptedRunUpdate {
-            summary: "failed (interrupted by termination signal)",
-            log_message:
-                "termination signal interrupted the orchestrator before graceful shutdown completed",
-            failure_class: Some("cancellation"),
-        },
+        expected_attempt,
+        "cancellation",
     )
+}
+
+struct PreparedSignalInterruptionHandoff {
+    expected_attempt: Option<engine::RunningAttemptIdentity>,
+    interrupted_marker_persisted: bool,
+}
+
+fn prepare_signal_interruption_handoff(
+    context: &RunSignalCleanupContext<'_>,
+) -> AppResult<PreparedSignalInterruptionHandoff> {
+    let snapshot = context
+        .run_snapshot_read
+        .read_run_snapshot(context.base_dir, context.project_id)?;
+    if snapshot.status != RunStatus::Running {
+        return Ok(PreparedSignalInterruptionHandoff {
+            expected_attempt: None,
+            interrupted_marker_persisted: false,
+        });
+    }
+
+    let Some(active_run) = snapshot.active_run.as_ref() else {
+        return Ok(PreparedSignalInterruptionHandoff {
+            expected_attempt: None,
+            interrupted_marker_persisted: false,
+        });
+    };
+    let expected_attempt = engine::RunningAttemptIdentity::from_active_run(active_run);
+    let Some(pid_record) = FileSystem::read_pid_file(context.base_dir, context.project_id)? else {
+        return Ok(PreparedSignalInterruptionHandoff {
+            expected_attempt: Some(expected_attempt),
+            interrupted_marker_persisted: false,
+        });
+    };
+    if pid_record.pid != std::process::id() {
+        return Ok(PreparedSignalInterruptionHandoff {
+            expected_attempt: Some(expected_attempt),
+            interrupted_marker_persisted: false,
+        });
+    }
+    if let Some(writer_owner) = context.writer_owner {
+        if pid_record.writer_owner.as_deref() != Some(writer_owner) {
+            return Ok(PreparedSignalInterruptionHandoff {
+                expected_attempt: Some(expected_attempt),
+                interrupted_marker_persisted: false,
+            });
+        }
+    }
+    if !FileSystem::pid_record_matches_attempt(
+        &pid_record,
+        &expected_attempt.run_id,
+        expected_attempt.started_at,
+    ) {
+        return Ok(PreparedSignalInterruptionHandoff {
+            expected_attempt: Some(expected_attempt),
+            interrupted_marker_persisted: false,
+        });
+    }
+
+    let _ = persist_signal_cleanup_handoff(context, &pid_record)?;
+
+    let interrupted_marker_persisted =
+        persist_signal_interruption_marker(context, Some(&expected_attempt))?;
+    Ok(PreparedSignalInterruptionHandoff {
+        expected_attempt: Some(expected_attempt),
+        interrupted_marker_persisted,
+    })
 }
 
 async fn run_with_termination_signal<F>(
@@ -2008,30 +2240,147 @@ async fn run_with_termination_signal<F>(
 where
     F: Future<Output = AppResult<()>>,
 {
+    run_with_termination_signal_waiter(
+        cancellation_token,
+        cleanup_context,
+        wait_for_run_termination_signal(),
+        future,
+    )
+    .await
+}
+
+async fn run_with_termination_signal_waiter<F, S>(
+    cancellation_token: CancellationToken,
+    cleanup_context: RunSignalCleanupContext<'_>,
+    signal_waiter: S,
+    future: F,
+) -> AppResult<()>
+where
+    F: Future<Output = AppResult<()>>,
+    S: Future<Output = AppResult<()>>,
+{
     tokio::pin!(future);
+    tokio::pin!(signal_waiter);
 
     tokio::select! {
         result = &mut future => result,
-        signal = wait_for_run_termination_signal() => {
+        signal = &mut signal_waiter => {
             signal?;
             eprintln!("termination signal received; stopping run gracefully...");
             cancellation_token.cancel();
+            let interrupted_handoff = prepare_signal_interruption_handoff(&cleanup_context)
+                .map_err(|error| cleanup_context.origin.error(format!(
+                    "termination signal received; failed to persist signal-cleanup handoff before graceful shutdown: {error}"
+                )))?;
             match tokio::time::timeout(RUN_STOP_GRACE_PERIOD, &mut future).await {
-                Ok(result) => result,
+                Ok(result) => {
+                    if interrupted_handoff.interrupted_marker_persisted {
+                        match finalize_signal_interruption_marker(
+                            &cleanup_context,
+                            interrupted_handoff.expected_attempt.as_ref(),
+                        ) {
+                            Ok(true) => Err(cleanup_context.origin.error(
+                                "run interrupted by termination signal",
+                            )),
+                            Ok(false) => result,
+                            Err(error) => Err(cleanup_context.origin.error(format!(
+                                "termination signal received; interrupted-state cleanup failed: {error}"
+                            ))),
+                        }
+                    } else {
+                        match reconcile_signal_interruption_for_attempt(
+                            &cleanup_context,
+                            interrupted_handoff.expected_attempt.as_ref(),
+                            engine::InterruptedRunUpdate {
+                                summary: "failed (interrupted by termination signal)",
+                                log_message:
+                                    "termination signal interrupted the orchestrator before graceful shutdown completed",
+                                failure_class: Some("cancellation"),
+                            },
+                        ) {
+                            Ok(true) => Err(cleanup_context.origin.error(
+                                "run interrupted by termination signal",
+                            )),
+                            Ok(false) => result,
+                            Err(error) => Err(cleanup_context.origin.error(format!(
+                                "termination signal received; interrupted-state cleanup failed: {error}"
+                            ))),
+                        }
+                    }
+                }
                 Err(_) => {
-                    let cleanup_result = reconcile_signal_interruption(&cleanup_context);
-                    let reason = match cleanup_result {
-                        Ok(true) => "run interrupted by termination signal after graceful shutdown timed out".to_owned(),
-                        Ok(false) => "termination signal received and graceful shutdown timed out before interrupted state could be confirmed".to_owned(),
-                        Err(error) => format!(
-                            "termination signal received and graceful shutdown timed out; interrupted-state cleanup also failed: {error}"
-                        ),
-                    };
-                    Err(cleanup_context.origin.error(reason))
+                    if interrupted_handoff.interrupted_marker_persisted {
+                        match finalize_signal_interruption_marker(
+                            &cleanup_context,
+                            interrupted_handoff.expected_attempt.as_ref(),
+                        ) {
+                            Ok(true) => Err(cleanup_context.origin.error(
+                                "run interrupted by termination signal after graceful shutdown timed out",
+                            )),
+                            Ok(false) => Err(cleanup_context.origin.error(
+                                "termination signal received and graceful shutdown timed out before interrupted state could be confirmed",
+                            )),
+                            Err(error) => Err(cleanup_context.origin.error(format!(
+                                "termination signal received and graceful shutdown timed out; interrupted-state cleanup also failed: {error}"
+                            ))),
+                        }
+                    } else {
+                        let cleanup_result = reconcile_signal_interruption_for_attempt(
+                            &cleanup_context,
+                            interrupted_handoff.expected_attempt.as_ref(),
+                            engine::InterruptedRunUpdate {
+                                summary: "failed (interrupted by termination signal)",
+                                log_message:
+                                    "termination signal interrupted the orchestrator before graceful shutdown completed",
+                                failure_class: Some("cancellation"),
+                            },
+                        );
+                        let reason = match cleanup_result {
+                            Ok(true) => "run interrupted by termination signal after graceful shutdown timed out".to_owned(),
+                            Ok(false) => "termination signal received and graceful shutdown timed out before interrupted state could be confirmed".to_owned(),
+                            Err(error) => format!(
+                                "termination signal received and graceful shutdown timed out; interrupted-state cleanup also failed: {error}"
+                            ),
+                        };
+                        Err(cleanup_context.origin.error(reason))
+                    }
                 }
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn unix_process_group_members(pgid: u32) -> AppResult<Vec<u32>> {
+    let output = Command::new("ps")
+        .args(["-ax", "-o", "pid=", "-o", "pgid="])
+        .output()
+        .map_err(|error| {
+            AppError::Io(std::io::Error::other(format!(
+                "failed to enumerate process groups via ps: {error}"
+            )))
+        })?;
+    if !output.status.success() {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "failed to enumerate process groups via ps: exit status {}",
+            output.status
+        ))));
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+        AppError::Io(std::io::Error::other(format!(
+            "ps returned non-UTF-8 output while enumerating process groups: {error}"
+        )))
+    })?;
+    Ok(stdout
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse::<u32>().ok()?;
+            let member_pgid = fields.next()?.parse::<u32>().ok()?;
+            (member_pgid == pgid).then_some(pid)
+        })
+        .collect())
 }
 
 async fn wait_for_run_termination_signal() -> AppResult<()> {
@@ -2291,14 +2640,14 @@ fn unix_descendant_pids(root_pid: u32) -> AppResult<Vec<u32>> {
 
 #[cfg(unix)]
 #[derive(Clone)]
-struct TrackedDescendantProcess {
+struct TrackedProcess {
     pid: u32,
     proc_start_ticks: Option<u64>,
     proc_start_marker: Option<String>,
 }
 
 #[cfg(unix)]
-impl TrackedDescendantProcess {
+impl TrackedProcess {
     fn from_pid(pid: u32) -> Self {
         Self {
             pid,
@@ -2322,7 +2671,7 @@ impl TrackedDescendantProcess {
 }
 
 #[cfg(unix)]
-fn snapshot_descendant_processes(root_pid: u32) -> AppResult<Vec<TrackedDescendantProcess>> {
+fn snapshot_descendant_processes(root_pid: u32) -> AppResult<Vec<TrackedProcess>> {
     #[cfg(target_os = "linux")]
     let descendant_pids = linux_descendant_pids(root_pid);
     #[cfg(all(unix, not(target_os = "linux")))]
@@ -2330,12 +2679,12 @@ fn snapshot_descendant_processes(root_pid: u32) -> AppResult<Vec<TrackedDescenda
 
     Ok(descendant_pids
         .into_iter()
-        .map(TrackedDescendantProcess::from_pid)
+        .map(TrackedProcess::from_pid)
         .collect())
 }
 
 #[cfg(unix)]
-fn kill_tracked_descendant_processes(processes: &[TrackedDescendantProcess]) -> AppResult<usize> {
+fn kill_tracked_descendant_processes(processes: &[TrackedProcess]) -> AppResult<usize> {
     let mut signaled = 0usize;
     for process in processes {
         if !process.matches_live_process() {
@@ -2356,6 +2705,18 @@ fn kill_tracked_descendant_processes(processes: &[TrackedDescendantProcess]) -> 
     }
 
     Ok(signaled)
+}
+
+#[cfg(unix)]
+fn tracked_processes_still_alive(processes: &[TrackedProcess]) -> Vec<u32> {
+    let mut live_pids = processes
+        .iter()
+        .filter(|process| process.matches_live_process())
+        .map(|process| process.pid)
+        .collect::<Vec<_>>();
+    live_pids.sort_unstable();
+    live_pids.dedup();
+    live_pids
 }
 
 fn stale_backend_processes_for_attempt(
@@ -2380,15 +2741,39 @@ fn stale_backend_processes_for_attempt(
 #[cfg(unix)]
 fn kill_stale_backend_process_group(
     record: &crate::adapters::fs::RunBackendProcessRecord,
-) -> AppResult<bool> {
-    if !FileSystem::is_backend_process_alive(record) {
-        return Ok(false);
+) -> AppResult<(bool, Vec<TrackedProcess>)> {
+    let leader_is_authoritative = FileSystem::backend_process_is_authoritative(record);
+    let leader_matches_record = FileSystem::is_backend_process_alive(record);
+    let raw_pid_running = FileSystem::is_pid_running_unchecked(record.pid);
+
+    let mut tracked_group_members = unix_process_group_members(record.pid)?
+        .into_iter()
+        .filter(|pid| FileSystem::is_pid_running_unchecked(*pid))
+        .map(TrackedProcess::from_pid)
+        .collect::<Vec<_>>();
+
+    if leader_matches_record
+        && tracked_group_members
+            .iter()
+            .all(|process| process.pid != record.pid)
+    {
+        tracked_group_members.push(TrackedProcess::from_pid(record.pid));
     }
-    if !FileSystem::backend_process_is_authoritative(record) {
+
+    if !leader_is_authoritative && raw_pid_running {
         return Err(AppError::Io(std::io::Error::other(format!(
-            "refusing stale recovery because backend pid {} is still alive but lacks authoritative process identity",
+            "refusing stale backend cleanup for pid {} because the recorded process identity is not authoritative and the pid is still live",
             record.pid
         ))));
+    }
+    if !leader_matches_record && raw_pid_running {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing stale backend cleanup for pid {} because the recorded backend pid now belongs to a different live process",
+            record.pid
+        ))));
+    }
+    if !leader_matches_record && tracked_group_members.is_empty() {
+        return Ok((false, tracked_group_members));
     }
 
     let pid = i32::try_from(record.pid).map_err(|_| {
@@ -2398,19 +2783,28 @@ fn kill_stale_backend_process_group(
         )))
     })?;
     match kill(Pid::from_raw(-pid), Signal::SIGKILL) {
-        Ok(()) => Ok(true),
-        Err(nix::errno::Errno::ESRCH) => match kill(Pid::from_raw(pid), Signal::SIGKILL) {
-            Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(true),
-            Err(error) => Err(AppError::Io(std::io::Error::other(format!(
-                "failed to SIGKILL stale backend pid {}: {error}",
-                record.pid
-            )))),
-        },
+        Ok(()) => Ok((true, tracked_group_members)),
+        Err(nix::errno::Errno::ESRCH) if leader_matches_record => {
+            match kill(Pid::from_raw(pid), Signal::SIGKILL) {
+                Ok(()) => Ok((true, tracked_group_members)),
+                Err(nix::errno::Errno::ESRCH) => Ok((false, tracked_group_members)),
+                Err(error) => Err(AppError::Io(std::io::Error::other(format!(
+                    "failed to SIGKILL stale backend pid {}: {error}",
+                    record.pid
+                )))),
+            }
+        }
+        Err(nix::errno::Errno::ESRCH) => Ok((false, tracked_group_members)),
         Err(error) => Err(AppError::Io(std::io::Error::other(format!(
             "failed to SIGKILL stale backend process group {}: {error}",
             record.pid
         )))),
     }
+}
+
+#[cfg(unix)]
+fn stale_backend_processes_still_alive(processes: &[TrackedProcess]) -> Vec<u32> {
+    tracked_processes_still_alive(processes)
 }
 
 fn cleanup_stale_backend_process_groups(
@@ -2427,19 +2821,25 @@ fn cleanup_stale_backend_process_groups(
     #[cfg(unix)]
     {
         let mut signaled = 0usize;
+        let mut tracked_group_members = Vec::new();
         for record in &matching {
-            if kill_stale_backend_process_group(record)? {
+            let (killed, tracked_members) = kill_stale_backend_process_group(record)?;
+            tracked_group_members.extend(tracked_members);
+            if killed {
                 signaled += 1;
             }
         }
 
         let deadline = Instant::now() + Duration::from_secs(1);
-        while matching.iter().any(FileSystem::is_backend_process_alive) {
+        loop {
+            let live_pids = stale_backend_processes_still_alive(&tracked_group_members);
+            if live_pids.is_empty() {
+                break;
+            }
             if Instant::now() >= deadline {
-                let live_pids = matching
-                    .iter()
-                    .filter(|record| FileSystem::is_backend_process_alive(record))
-                    .map(|record| record.pid.to_string())
+                let live_pids = live_pids
+                    .into_iter()
+                    .map(|pid| pid.to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
                 return Err(AppError::Io(std::io::Error::other(format!(
@@ -2511,13 +2911,14 @@ enum ClaimedRunningSnapshotOutcome {
     RecoveredAsInterrupted,
 }
 
-fn reconcile_or_recover_claimed_running_snapshot(
+fn reconcile_or_recover_claimed_running_snapshot_with_cleanup_policy(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
     expected_attempt: &engine::RunningAttemptIdentity,
     stale_summary: impl Into<String>,
     stale_log_message: impl Into<String>,
     stale_failure_class: &str,
+    cleanup_stale_backends: bool,
 ) -> AppResult<ClaimedRunningSnapshotOutcome> {
     let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
     if snapshot.status != RunStatus::Running {
@@ -2530,19 +2931,18 @@ fn reconcile_or_recover_claimed_running_snapshot(
         return Ok(ClaimedRunningSnapshotOutcome::AttemptChanged(snapshot));
     }
 
-    let _ = cleanup_stale_backend_process_groups(base_dir, project_id, expected_attempt)?;
-
     let journal_events = FsJournalStore.read_journal(base_dir, project_id)?;
-    match crate::contexts::project_run_record::queries::terminal_status_for_running_attempt(
-        &snapshot,
-        &journal_events,
-    ) {
-        Some(RunStatus::Failed) => {
-            eprintln!(
-                "run lifecycle: snapshot shows Running but journal has run_failed — \
+    let outcome =
+        match crate::contexts::project_run_record::queries::terminal_status_for_running_attempt(
+            &snapshot,
+            &journal_events,
+        ) {
+            Some(RunStatus::Failed) => {
+                eprintln!(
+                    "run lifecycle: snapshot shows Running but journal has run_failed — \
                  reconciling snapshot to Failed"
-            );
-            engine::mark_running_run_interrupted(
+                );
+                engine::mark_running_run_interrupted(
                 engine::InterruptedRunContext {
                     run_snapshot_read: &FsRunSnapshotStore,
                     run_snapshot_write: &FsRunSnapshotWriteStore,
@@ -2559,28 +2959,28 @@ fn reconcile_or_recover_claimed_running_snapshot(
                     failure_class: None,
                 },
             )?;
-            let _ = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
-            Ok(ClaimedRunningSnapshotOutcome::JournalFailed)
-        }
-        Some(RunStatus::Completed) => {
-            eprintln!(
-                "run lifecycle: snapshot shows Running but journal has run_completed — \
-                 reconciling snapshot to Completed"
-            );
-            let mut reconciled = snapshot;
-            if let Some(resolution) = reconciled
-                .active_run
-                .as_ref()
-                .and_then(|active_run| active_run.stage_resolution_snapshot.clone())
-            {
-                reconciled.last_stage_resolution_snapshot = Some(resolution);
+                let _ = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
+                ClaimedRunningSnapshotOutcome::JournalFailed
             }
-            reconciled.status = RunStatus::Completed;
-            reconciled.active_run = None;
-            reconciled.status_summary = "completed (reconciled from journal)".to_owned();
-            FsRunSnapshotWriteStore.write_run_snapshot(base_dir, project_id, &reconciled)?;
-            let _ = FileSystem::remove_pid_file(base_dir, project_id);
-            let _ = FsRuntimeLogWriteStore.append_runtime_log(
+            Some(RunStatus::Completed) => {
+                eprintln!(
+                    "run lifecycle: snapshot shows Running but journal has run_completed — \
+                 reconciling snapshot to Completed"
+                );
+                let mut reconciled = snapshot;
+                if let Some(resolution) = reconciled
+                    .active_run
+                    .as_ref()
+                    .and_then(|active_run| active_run.stage_resolution_snapshot.clone())
+                {
+                    reconciled.last_stage_resolution_snapshot = Some(resolution);
+                }
+                reconciled.status = RunStatus::Completed;
+                reconciled.active_run = None;
+                reconciled.status_summary = "completed (reconciled from journal)".to_owned();
+                FsRunSnapshotWriteStore.write_run_snapshot(base_dir, project_id, &reconciled)?;
+                let _ = FileSystem::remove_pid_file(base_dir, project_id);
+                let _ = FsRuntimeLogWriteStore.append_runtime_log(
                 base_dir,
                 project_id,
                 &crate::contexts::project_run_record::model::RuntimeLogEntry {
@@ -2592,23 +2992,48 @@ fn reconcile_or_recover_claimed_running_snapshot(
                             .to_owned(),
                 },
             );
-            Ok(ClaimedRunningSnapshotOutcome::JournalCompleted(
-                FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?,
-            ))
-        }
-        _ => {
-            recover_stale_running_snapshot(
-                base_dir,
-                project_id,
-                expected_attempt,
-                stale_summary,
-                stale_log_message,
-                stale_failure_class,
-            )?;
-            let _ = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
-            Ok(ClaimedRunningSnapshotOutcome::RecoveredAsInterrupted)
-        }
+                ClaimedRunningSnapshotOutcome::JournalCompleted(
+                    FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?,
+                )
+            }
+            _ => {
+                recover_stale_running_snapshot(
+                    base_dir,
+                    project_id,
+                    expected_attempt,
+                    stale_summary,
+                    stale_log_message,
+                    stale_failure_class,
+                )?;
+                let _ = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
+                ClaimedRunningSnapshotOutcome::RecoveredAsInterrupted
+            }
+        };
+
+    if cleanup_stale_backends {
+        let _ = cleanup_stale_backend_process_groups(base_dir, project_id, expected_attempt)?;
     }
+
+    Ok(outcome)
+}
+
+fn reconcile_or_recover_claimed_running_snapshot(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    expected_attempt: &engine::RunningAttemptIdentity,
+    stale_summary: impl Into<String>,
+    stale_log_message: impl Into<String>,
+    stale_failure_class: &str,
+) -> AppResult<ClaimedRunningSnapshotOutcome> {
+    reconcile_or_recover_claimed_running_snapshot_with_cleanup_policy(
+        base_dir,
+        project_id,
+        expected_attempt,
+        stale_summary,
+        stale_log_message,
+        stale_failure_class,
+        true,
+    )
 }
 
 async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
@@ -2784,7 +3209,12 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let project_store = FsProjectStore;
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
     let run_snapshot_read = FsRunSnapshotStore;
-    let run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+    let mut run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+    let _ = repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+        &current_dir,
+        &project_id,
+        &mut run_snapshot,
+    )?;
     match run_snapshot.status {
         RunStatus::Failed | RunStatus::Paused | RunStatus::Running => {}
         RunStatus::NotStarted => {
@@ -3144,8 +3574,11 @@ async fn handle_stop() -> AppResult<()> {
                     .or(read_project_writer_lock_owner(&current_dir, &project_id)?);
                 let tracked_descendants = snapshot_descendant_processes(pid_record.pid)?;
                 let describe_stopped_process =
-                    |base: &'static str, killed_descendants: usize| -> &'static str {
-                        if killed_descendants == 0 {
+                    |base: &'static str,
+                     killed_backend_groups: usize,
+                     killed_descendants: usize|
+                     -> &'static str {
+                        if killed_backend_groups == 0 && killed_descendants == 0 {
                             base
                         } else {
                             match base {
@@ -3165,30 +3598,79 @@ async fn handle_stop() -> AppResult<()> {
                             }
                         }
                     };
-                let stop_outcome = match open_stop_process_handle(&pid_record)? {
-                    None => describe_stopped_process(
-                        "process already exited before SIGTERM",
-                        kill_tracked_descendant_processes(&tracked_descendants)?,
-                    ),
-                    Some(handle) => match send_signal_to_handle(&handle, Signal::SIGTERM)? {
-                        SignalSendOutcome::AlreadyExited => describe_stopped_process(
+                let finalize_cleanup = || {
+                    let mut killed_backend_groups = 0usize;
+                    let mut killed_descendants = 0usize;
+                    let mut cleanup_errors = Vec::new();
+
+                    match cleanup_stale_backend_process_groups(
+                        &current_dir,
+                        &project_id,
+                        &observed_attempt,
+                    ) {
+                        Ok(count) => killed_backend_groups = count,
+                        Err(error) => {
+                            cleanup_errors.push(format!("backend cleanup failed: {error}"))
+                        }
+                    }
+
+                    match kill_tracked_descendant_processes(&tracked_descendants) {
+                        Ok(count) => killed_descendants = count,
+                        Err(error) => {
+                            cleanup_errors.push(format!("descendant cleanup failed: {error}"))
+                        }
+                    }
+
+                    (killed_backend_groups, killed_descendants, cleanup_errors)
+                };
+                let cleanup_backend_processes = || {
+                    let (killed_backend_groups, killed_descendants, cleanup_errors) =
+                        finalize_cleanup();
+                    (
+                        describe_stopped_process(
                             "process already exited before SIGTERM",
-                            kill_tracked_descendant_processes(&tracked_descendants)?,
+                            killed_backend_groups,
+                            killed_descendants,
                         ),
+                        cleanup_errors,
+                    )
+                };
+                let (stop_outcome, cleanup_errors) = match open_stop_process_handle(&pid_record)? {
+                    None => cleanup_backend_processes(),
+                    Some(handle) => match send_signal_to_handle(&handle, Signal::SIGTERM)? {
+                        SignalSendOutcome::AlreadyExited => cleanup_backend_processes(),
                         SignalSendOutcome::Delivered => {
                             if wait_for_handle_exit(&handle, RUN_STOP_GRACE_PERIOD).await? {
-                                describe_stopped_process(
-                                    "terminated gracefully with SIGTERM",
-                                    kill_tracked_descendant_processes(&tracked_descendants)?,
-                                )
-                            } else {
-                                let killed_descendants =
-                                    kill_tracked_descendant_processes(&tracked_descendants)?;
-                                match send_signal_to_handle(&handle, Signal::SIGKILL)? {
-                                    SignalSendOutcome::AlreadyExited => describe_stopped_process(
-                                        "process exited before SIGKILL",
+                                let (
+                                    killed_backend_groups,
+                                    killed_descendants,
+                                    cleanup_errors,
+                                ) = finalize_cleanup();
+                                (
+                                    describe_stopped_process(
+                                        "terminated gracefully with SIGTERM",
+                                        killed_backend_groups,
                                         killed_descendants,
                                     ),
+                                    cleanup_errors,
+                                )
+                            } else {
+                                match send_signal_to_handle(&handle, Signal::SIGKILL)? {
+                                    SignalSendOutcome::AlreadyExited => {
+                                        let (
+                                            killed_backend_groups,
+                                            killed_descendants,
+                                            cleanup_errors,
+                                        ) = finalize_cleanup();
+                                        (
+                                            describe_stopped_process(
+                                                "process exited before SIGKILL",
+                                                killed_backend_groups,
+                                                killed_descendants,
+                                            ),
+                                            cleanup_errors,
+                                        )
+                                    }
                                     SignalSendOutcome::Delivered => {
                                         if !wait_for_handle_exit(&handle, Duration::from_secs(1))
                                             .await?
@@ -3200,9 +3682,18 @@ async fn handle_stop() -> AppResult<()> {
                                                 ),
                                             });
                                         }
-                                        describe_stopped_process(
-                                            "required SIGKILL after timeout",
+                                        let (
+                                            killed_backend_groups,
                                             killed_descendants,
+                                            cleanup_errors,
+                                        ) = finalize_cleanup();
+                                        (
+                                            describe_stopped_process(
+                                                "required SIGKILL after timeout",
+                                                killed_backend_groups,
+                                                killed_descendants,
+                                            ),
+                                            cleanup_errors,
                                         )
                                     }
                                 }
@@ -3230,18 +3721,26 @@ async fn handle_stop() -> AppResult<()> {
                     && FileSystem::read_pid_file(&current_dir, &project_id)?
                         .as_ref()
                         .is_some_and(|current_record| current_record == &pid_record);
+                let stopped_liveness = if final_snapshot.status == RunStatus::Running {
+                    Some(classify_running_snapshot_liveness_with_ignored_cli_lease_owner(
+                        &current_dir,
+                        &project_id,
+                        Some(guard.lease_id()),
+                    )?)
+                } else {
+                    None
+                };
                 let status_message = if final_snapshot.status == RunStatus::Running
-                    && matches!(
-                        classify_running_snapshot_liveness(&current_dir, &project_id)?,
-                        RunningSnapshotLiveness::Stale
-                    ) {
-                    match reconcile_or_recover_claimed_running_snapshot(
+                    && matches!(stopped_liveness, Some(RunningSnapshotLiveness::Stale))
+                {
+                    match reconcile_or_recover_claimed_running_snapshot_with_cleanup_policy(
                         &current_dir,
                         &project_id,
                         &observed_attempt,
                         "failed (stopped by user; run `ralph-burning run resume` to continue)",
                         format!("run stop interrupted the orchestrator; outcome={stop_outcome}"),
                         "cancellation",
+                        false,
                     )
                     .map_err(|error| AppError::RunStopFailed {
                         reason: format!("failed to finalize stopped run state: {error}"),
@@ -3301,6 +3800,14 @@ async fn handle_stop() -> AppResult<()> {
                 close_result.map_err(|error| AppError::RunStopFailed {
                     reason: format!("failed to release recovery writer lease after stop: {error}"),
                 })?;
+                if !cleanup_errors.is_empty() {
+                    return Err(AppError::RunStopFailed {
+                        reason: format!(
+                            "{status_message} Cleanup after stop failed: {}",
+                            cleanup_errors.join("; ")
+                        ),
+                    });
+                }
                 println!("{status_message}");
                 Ok(())
             }
@@ -3351,11 +3858,11 @@ async fn handle_sync_milestone() -> AppResult<()> {
 mod tests {
     use super::{
         persist_next_step_recommendation, prepare_milestone_controller_for_execution,
-        resume_attempt_has_exact_lineage, select_next_milestone_bead,
-        select_next_milestone_bead_from_recommendation, sync_terminal_milestone_task,
-        sync_terminal_milestone_task_and_continue_selection,
+        resume_attempt_has_exact_lineage, run_with_termination_signal_waiter,
+        select_next_milestone_bead, select_next_milestone_bead_from_recommendation,
+        sync_terminal_milestone_task, sync_terminal_milestone_task_and_continue_selection,
         sync_terminal_milestone_task_with_options, MilestoneControllerExecutionOrigin,
-        ProjectMilestoneControllerRuntime,
+        ProjectMilestoneControllerRuntime, RunSignalCleanupContext, RunSignalCleanupOrigin,
     };
     use chrono::Utc;
     #[cfg(unix)]
@@ -3363,11 +3870,15 @@ mod tests {
 
     use crate::adapters::bv_process::NextBeadResponse;
     use crate::adapters::fs::{
-        FileSystem, FsDaemonStore, FsMilestoneControllerStore, FsMilestoneJournalStore,
-        FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore, FsTaskRunLineageStore,
+        FileSystem, FsDaemonStore, FsJournalStore, FsMilestoneControllerStore,
+        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
+        FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsTaskRunLineageStore,
+        RunPidOwner,
     };
+    use crate::contexts::agent_execution::model::CancellationToken;
     use crate::contexts::automation_runtime::model::{
-        DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
+        CliWriterCleanupHandoff, CliWriterLease, DaemonTask, DispatchMode, RoutingSource,
+        TaskStatus, WorktreeLease,
     };
     use crate::contexts::automation_runtime::{DaemonStorePort, LeaseRecord};
     use crate::contexts::milestone_record::bundle::{
@@ -3384,14 +3895,18 @@ mod tests {
         record_bead_completion, record_bead_start, CreateMilestoneInput,
     };
     use crate::contexts::project_run_record::model::{
-        ActiveRun, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin,
-        TaskSource,
+        ActiveRun, JournalEventType, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus,
+        TaskOrigin, TaskSource,
+    };
+    use crate::contexts::project_run_record::service::{
+        JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
     };
     use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
     use crate::shared::error::AppError;
     use crate::test_support::br::{MockBrAdapter, MockBrResponse};
     use crate::test_support::bv::{MockBvAdapter, MockBvResponse};
     use crate::test_support::env::{lock_path_mutex, PathGuard};
+    use tokio::sync::oneshot;
 
     fn sample_bundle(id: &str, name: &str) -> MilestoneBundle {
         MilestoneBundle {
@@ -6285,6 +6800,111 @@ mod tests {
     }
 
     #[test]
+    fn sync_terminal_milestone_task_repairs_signal_handoff_failed_snapshot_without_run_failed_event(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/bead-run/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"bead-run","flow":"docs_change"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-1","first_stage":"planning","max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let milestone = create_milestone_with_plan(base_dir, started_at);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "bead-run",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )
+        .expect("record bead start");
+
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: started_at,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: "ms-alpha".to_owned(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+        let final_snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-1".to_owned(),
+                stage_cursor: StageCursor::new(StageId::Implementation, 1, 1, 1)
+                    .expect("stage cursor"),
+                started_at,
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed (interrupted by termination signal)".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base_dir, &project_id, &final_snapshot)
+            .expect("write interrupted run snapshot");
+
+        let synced =
+            sync_terminal_milestone_task(base_dir, &project_id, &project_record, &final_snapshot)
+                .expect("sync should repair the missing signal-handoff run_failed event");
+        assert!(synced);
+
+        let journal_events = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("read repaired project journal");
+        assert_eq!(
+            journal_events
+                .iter()
+                .filter(|event| event.event_type == JournalEventType::RunFailed)
+                .count(),
+            1,
+            "signal-handoff repair should append exactly one missing run_failed event"
+        );
+
+        let task_runs = read_task_runs(&FsTaskRunLineageStore, base_dir, &milestone.id)
+            .expect("read task-runs after repaired sync");
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(
+            task_runs[0].outcome_detail.as_deref(),
+            Some("failed (interrupted by termination signal)")
+        );
+    }
+
+    #[test]
     fn sync_terminal_milestone_task_does_not_trust_stale_failed_lineage_without_run_failed_event() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
@@ -6808,6 +7428,118 @@ mod tests {
         );
     }
 
+    #[test]
+    fn observed_cli_cleanup_owner_has_dead_pid_uses_persisted_cleanup_handoff_without_run_pid() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("signal-handoff-lease-reclaim").expect("project id");
+        let pid_record = FileSystem::write_pid_file(
+            base_dir,
+            &project_id,
+            RunPidOwner::Cli,
+            Some("cli-signal-handoff"),
+            Some("run-signal-handoff"),
+            Some(Utc::now()),
+        )
+        .expect("write pid file");
+        FileSystem::remove_pid_file(base_dir, &project_id).expect("remove run.pid");
+
+        let live_handoff = CliWriterCleanupHandoff {
+            pid: pid_record.pid,
+            run_id: pid_record.run_id.clone(),
+            run_started_at: pid_record.run_started_at,
+            proc_start_ticks: pid_record.proc_start_ticks,
+            proc_start_marker: pid_record.proc_start_marker.clone(),
+        };
+        let lease = CliWriterLease {
+            lease_id: "cli-signal-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            owner: "cli".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: super::CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: Utc::now(),
+            cleanup_handoff: Some(live_handoff.clone()),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::CliWriter(lease),
+        )
+        .expect("write cli lease");
+        <FsDaemonStore as DaemonStorePort>::acquire_writer_lock(
+            &FsDaemonStore,
+            base_dir,
+            &project_id,
+            "cli-signal-handoff",
+        )
+        .expect("acquire writer lock");
+
+        assert!(
+            !super::observed_cli_cleanup_owner_has_dead_pid(
+                base_dir,
+                &project_id,
+                "cli-signal-handoff",
+            )
+            .expect("live cleanup handoff should not reclaim"),
+            "live cleanup handoff must not be treated as dead while the process still matches"
+        );
+
+        let reused_identity_handoff = CliWriterCleanupHandoff {
+            proc_start_ticks: Some(u64::MAX),
+            ..live_handoff
+        };
+        let replaced_lease = CliWriterLease {
+            lease_id: "cli-signal-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            owner: "cli".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: super::CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: Utc::now(),
+            cleanup_handoff: Some(reused_identity_handoff),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::CliWriter(replaced_lease),
+        )
+        .expect("rewrite cli lease with dead handoff identity");
+
+        assert!(
+            super::observed_cli_cleanup_owner_has_dead_pid(
+                base_dir,
+                &project_id,
+                "cli-signal-handoff",
+            )
+            .expect("dead cleanup handoff should be reclaimable"),
+            "cleanup handoff must let recovery reclaim the lock after run.pid is removed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_stale_backend_process_group_refuses_exited_authoritative_leader_without_safe_proof() {
+        let record = crate::adapters::fs::RunBackendProcessRecord {
+            pid: std::process::id(),
+            recorded_at: Utc::now(),
+            run_id: Some("run-backend".to_owned()),
+            run_started_at: Some(Utc::now()),
+            proc_start_ticks: Some(u64::MAX),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+
+        let error = match super::kill_stale_backend_process_group(&record) {
+            Ok(_) => panic!("authoritative leader reuse without a live identity must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("different live process")
+                || error
+                    .to_string()
+                    .contains("PID/PGID reuse cannot be ruled out"),
+            "unexpected refusal error: {error}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn kill_tracked_descendant_processes_survives_parent_exit() {
@@ -6875,17 +7607,178 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn termination_signal_wrapper_reconciles_interrupted_snapshot_when_future_returns_without_cleanup(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        crate::contexts::workspace_governance::initialize_workspace(temp_dir.path(), Utc::now())
+            .expect("initialize workspace");
+        let project_id = ProjectId::new("signal-wrapper-reconcile".to_owned()).expect("project id");
+        let run_started_at = Utc::now();
+        let mut snapshot = RunSnapshot::initial(20);
+        snapshot.status = RunStatus::Running;
+        snapshot.completion_rounds = 1;
+        snapshot.status_summary = "running: Implementation".to_owned();
+        snapshot.active_run = Some(ActiveRun {
+            run_id: "run-signal-wrapper".to_owned(),
+            stage_cursor: StageCursor::initial(StageId::Implementation),
+            started_at: run_started_at,
+            prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+            prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+            qa_iterations_current_cycle: 0,
+            review_iterations_current_cycle: 0,
+            final_review_restart_count: 0,
+            stage_resolution_snapshot: None,
+        });
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(temp_dir.path(), &project_id, &snapshot)
+            .expect("write running snapshot");
+        FsJournalStore
+            .append_event(
+                temp_dir.path(),
+                &project_id,
+                &format!(
+                    "{{\"sequence\":1,\"timestamp\":\"{}\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"{}\",\"flow\":\"standard\"}}}}",
+                    Utc::now().to_rfc3339(),
+                    project_id
+                ),
+            )
+            .expect("append project_created event");
+        FileSystem::write_pid_file(
+            temp_dir.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            Some("writer-signal-wrapper"),
+            Some("run-signal-wrapper"),
+            Some(run_started_at),
+        )
+        .expect("write pid file");
+
+        let cancellation_token = CancellationToken::new();
+        let cancellation_for_future = cancellation_token.clone();
+        let future_base_dir = temp_dir.path().to_path_buf();
+        let future_project_id = project_id.clone();
+        let (signal_tx, signal_rx) = oneshot::channel::<()>();
+        let cleanup_context = RunSignalCleanupContext {
+            origin: RunSignalCleanupOrigin::Start,
+            run_snapshot_read: &FsRunSnapshotStore,
+            run_snapshot_write: &FsRunSnapshotWriteStore,
+            journal_store: &FsJournalStore,
+            log_write: &FsRuntimeLogWriteStore,
+            base_dir: temp_dir.path(),
+            project_id: &project_id,
+            writer_owner: Some("writer-signal-wrapper"),
+        };
+        let future = async move {
+            cancellation_for_future.cancelled().await;
+            let running_snapshot = FsRunSnapshotStore
+                .read_run_snapshot(&future_base_dir, &future_project_id)
+                .expect("read snapshot during signal handoff");
+            assert_eq!(
+                running_snapshot.status,
+                RunStatus::Failed,
+                "signal handoff should persist an interrupted snapshot before the run future settles"
+            );
+            assert!(
+                running_snapshot.interrupted_run.is_some(),
+                "signal handoff should preserve interrupted_run before graceful shutdown waits"
+            );
+            assert!(
+                FileSystem::read_pid_file(&future_base_dir, &future_project_id)
+                    .expect("read pid file during signal handoff")
+                    .is_none(),
+                "signal handoff should remove run.pid before the run future settles"
+            );
+            let journal_events = FsJournalStore
+                .read_journal(&future_base_dir, &future_project_id)
+                .expect("read journal during signal handoff");
+            assert_eq!(
+                journal_events.len(),
+                1,
+                "signal handoff must not append run_failed before the engine future settles"
+            );
+            assert!(
+                !journal_events
+                    .iter()
+                    .any(|event| event.event_type == JournalEventType::RunFailed),
+                "signal handoff should not durably publish run_failed before the engine future settles"
+            );
+            FsJournalStore
+                .append_event(
+                    &future_base_dir,
+                    &future_project_id,
+                    &format!(
+                        "{{\"sequence\":2,\"timestamp\":\"{}\",\"event_type\":\"run_failed\",\"details\":{{\"run_id\":\"run-signal-wrapper\",\"stage_id\":\"implementation\",\"failure_class\":\"stage_failure\",\"message\":\"future failed after signal\",\"completion_rounds\":1,\"max_completion_rounds\":20}}}}",
+                        Utc::now().to_rfc3339(),
+                    ),
+                )
+                .expect("append engine-style run_failed event");
+            Err(AppError::RunStartFailed {
+                reason: "future observed cancellation after publishing run_failed".to_owned(),
+            })
+        };
+
+        signal_tx.send(()).expect("deliver synthetic signal");
+        let error = run_with_termination_signal_waiter(
+            cancellation_token,
+            cleanup_context,
+            async move {
+                signal_rx.await.expect("receive synthetic signal");
+                Ok(())
+            },
+            future,
+        )
+        .await
+        .expect_err("signal wrapper should surface interruption");
+
+        assert!(
+            error.to_string().contains("termination signal"),
+            "signal wrapper should surface interruption-specific context: {error}"
+        );
+        let updated = FsRunSnapshotStore
+            .read_run_snapshot(temp_dir.path(), &project_id)
+            .expect("read updated snapshot");
+        assert_eq!(updated.status, RunStatus::Failed);
+        assert!(updated.active_run.is_none());
+        assert!(
+            updated.interrupted_run.is_some(),
+            "interrupted run metadata should be preserved after signal reconciliation"
+        );
+        assert!(
+            FileSystem::read_pid_file(temp_dir.path(), &project_id)
+                .expect("read pid file")
+                .is_none(),
+            "signal reconciliation should remove run.pid even when the engine future skipped cleanup"
+        );
+        let journal_events = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read journal after signal reconciliation");
+        assert_eq!(
+            journal_events
+                .iter()
+                .filter(|event| event.event_type == JournalEventType::RunFailed)
+                .count(),
+            1,
+            "signal reconciliation should not append a duplicate run_failed event after the future writes one"
+        );
+        assert_eq!(
+            journal_events.last().expect("last journal event").sequence,
+            2,
+            "signal reconciliation should preserve journal sequencing when the future publishes its own terminal event"
+        );
+    }
+
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn tracked_descendant_process_matches_live_marker_only_identity() {
-        let tracked = super::TrackedDescendantProcess {
+        let tracked = super::TrackedProcess {
             pid: std::process::id(),
             proc_start_ticks: None,
             proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
         };
         assert!(tracked.matches_live_process());
 
-        let mismatched = super::TrackedDescendantProcess {
+        let mismatched = super::TrackedProcess {
             proc_start_marker: Some("mismatched-start-marker".to_owned()),
             ..tracked
         };
@@ -6958,6 +7851,11 @@ async fn handle_status(as_json: bool) -> AppResult<()> {
             &events,
         );
     }
+    let _ = repair_missing_signal_handoff_run_failed_event_and_reload_snapshot(
+        &current_dir,
+        &project_id,
+        &mut snapshot,
+    )?;
 
     let running_liveness = if snapshot.status == RunStatus::Running {
         let expected_attempt = running_snapshot_attempt(&snapshot)?;

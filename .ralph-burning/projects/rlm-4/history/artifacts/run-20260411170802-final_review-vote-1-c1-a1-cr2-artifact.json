@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T17:51:56.872649001Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI accepted the forced-stop ordering fix because it prevents a TERM-ignoring orchestrator from surviving on backend-cleanup errors, and I rejected the leaderless-PGID cleanup change because it weakens process-identity safety. I also accepted the metadata-only amendment because the current diff touches only workflow metadata, not the CLI/runtime code paths for SIGTERM/SIGKILL cleanup.\n\n## Votes\n\n- `fr-2-8bcb87eb`: Reject\n  `kill_stale_backend_process_group` currently refuses cleanup when the authoritative leader can no longer be verified and only a PGID remains. That avoids unsafe group-kill broadening: PGID targeting can affect unrelated joiners/reused groups, and this code path lacks reliable postconditions for which members were actually backend-owned. Reintroducing unconditional `kill(-pgid)` in that state is a correctness/safety regression.\n- `fr-2-9fd6daf4`: Accept\n  The current `run stop` forced-stop branch can return early from `cleanup_backend_processes()?` before SIGKILL is sent to the orchestrator handle, so an uncooperative orchestrator can stay alive after a failed stop attempt. This is a real liveliness bug shown by the manual SIGKILL cleanup path in tests and must be fixed by terminating the orchestrator first, then surfacing backend cleanup failures afterward.\n- `fr-2-220443c4`: Accept\n  The tracked diff in this workspace shows only `.ralph-burning/projects/rlm-4/journal.ndjson` and `.ralph-burning/projects/rlm-4/run.json` changes; `src/cli/run.rs` and `tests/cli.rs` are unchanged. As a result, the durable SIGTERM/cleanup behavior around `run stop` remains unmodified, so the stated bug remediation is not actually implemented.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

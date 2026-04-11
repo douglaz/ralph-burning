@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr8-artifact",
+  "payload_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T20:07:09.407747572Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real recovery/cleanup defects: the CLI lease handoff can be lost to a concurrent heartbeat write, the signal-handoff `run_failed` repair is not guaranteed for non-bead projects after a hard kill mid-grace-period, and stale backend cleanup can silently discard legacy records while leaving descendant processes alive.\n\n## Votes\n\n- `fr-8-89eb302c`: Accept\n  `persist_cli_writer_cleanup_handoff()` and `heartbeat_tick()` both do unsynchronized whole-record read/modify/write cycles against the same lease file via `write_lease_record()`. During signal handoff the heartbeat task is still running, so a heartbeat that reads the old lease before the handoff write can write that stale copy back afterward and clear `cleanup_handoff`. That would remove the durable reclaim marker the new recovery path depends on.\n- `fr-8-b81848e4`: Accept\n  The immediate signal path only persists the interrupted snapshot when `failure_class` is `None`; the durable `run_failed` append is deferred to `finalize_signal_interruption_marker()`. If the process is killed before that finalization runs, the only later repair I found is `repair_missing_signal_handoff_run_failed_event()`, and that sits inside `sync_terminal_milestone_task_with_options()` after an early return when `project_record.task_source` is absent. That leaves non-bead projects able to retain a failed snapshot forever without any durable `run_failed` event.\n- `fr-8-8f0d01cd`: Accept\n  `kill_stale_backend_process_group()` now returns `Ok((false, Vec::new()))` for non-authoritative records once the recorded PID is no longer live, and `cleanup_stale_backend_process_groups()` still removes all matching records afterward. For legacy or partially populated backend records, that means surviving process-group members can be left running while the bookkeeping needed to target them is deleted. Even if cleanup must stay conservative, silently dropping the record in that state is not robust.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

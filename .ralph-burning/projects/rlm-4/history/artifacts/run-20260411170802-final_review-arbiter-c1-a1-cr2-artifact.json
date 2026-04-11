@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-arbiter-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411170802-final_review-arbiter-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T17:58:39.113281886Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the orphaned-backend cleanup amendment because the new branch intentionally preserves the exact forced-stop orphan case the bead was supposed to eliminate, even though the eventual fix must preserve process-identity safety by avoiding unsafe direct-PID fallback and by verifying group-member teardown. Rejected the metadata-only amendment because it inspects only later review bookkeeping in the working tree, while the actual stage diff being reviewed materially changes `src/cli/run.rs` and `tests/cli.rs`.\n\n## Rulings\n\n- `fr-2-8bcb87eb`: Accept\n  `tests/cli.rs:6667-6679` now explicitly asserts that `run stop` fails and leaves the orphaned backend member alive after the recorded group leader exits. That is the same leak the bead prompt calls out at `.ralph-burning/projects/rlm-4/prompt.md:5-9` ('kill backend subprocess trees on forced stop' because orphan backend processes keep running). The planner is right that the current implementation lacks a safe direct-PID fallback and lacks a proper postcondition for surviving group members, but those points cut toward a narrower fix, not toward accepting the leak. `src/adapters/process_backend.rs:1123-1127` shows these backends are launched in dedicated process groups, and `src/cli/run.rs:2537-2549` already proves the group can still be enumerated after leader exit. In that dead-leader/live-members case, refusing cleanup is a real behavioral regression; the fix should target the extant PGID while avoiding unsafe direct-PID fallback and adding member-drain verification before removing persisted state.\n- `fr-2-220443c4`: Reject\n  This amendment is aimed at the transient working-tree bookkeeping, not the implementation diff under review. The authoritative stage diff is `a1542110..187e1514`, and `git diff --stat a1542110 187e1514` shows substantive code changes in `src/cli/run.rs` and `tests/cli.rs`, not just `.ralph-burning` metadata. The disputed runtime behavior is therefore being evaluated against a real code patch, so the claim that `src/cli/run.rs` is untouched is false in the review context.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

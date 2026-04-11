@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T19:24:47.295232645Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the two stale-reconciliation defects in `run stop`/`run resume`. Reject the metadata-only amendment because the reviewed round does include implementation and test changes; the remaining problems are the two concrete bugs above, not a total lack of implementation.\n\n## Votes\n\n- `fr-6-18624587`: Accept\n  `reconcile_or_recover_claimed_running_snapshot_with_cleanup_policy()` calls `cleanup_stale_backend_process_groups()` before reading the journal or marking the run interrupted, and both stale-recovery callers treat any error as fatal. That makes malformed or partially failing backend cleanup abort recovery and leave `run.json` at `status = \"running\"` even though the run was already classified stale and recovery had claimed the writer lease. I verified this on `run stop` with a stale snapshot plus corrupt `runtime/backend/active-processes.json`; the command failed and `run.json` stayed `running`. The durable state transition needs to happen before surfacing cleanup failures.\n- `fr-6-c9beaa21`: Accept\n  In the live `run stop` path, the code acquires a new recovery writer lease and only then re-runs `classify_running_snapshot_liveness()`. If the orchestrator deletes `run.pid` during SIGTERM handling and exits before rewriting `run.json`, that second liveness check no longer sees an authoritative pid and instead observes the just-acquired CLI lease, which is classified as `LegacyCliLease` rather than `Stale`. The stale-recovery branch is skipped, `run stop` returns success, and the snapshot remains `running`. I reproduced this: the command printed `exited during stop with status 'running'` and left `run.json` unchanged. The stale/running decision must be made before taking the new lease, or the recheck must ignore the lease it just created.\n- `fr-6-a621368a`: Reject\n  The amendment's premise is incorrect for the reviewed round. The implementation under review is not metadata-only: the checkpoint diff for this round includes substantive changes in `src/cli/run.rs` plus new/updated coverage in `tests/cli.rs`. There are still real defects in stale-stop/recovery handling, but they are the specific bugs captured by the other two amendments, not evidence that no implementation was made at all.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411170802-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260411170802-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T19:00:19.001091805Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 5/25\n\n## Accepted\n\n- `fr-5-4046f3b6`\n- `fr-5-e636c5c4`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-4046f3b6`\n\n`src/cli/run.rs:2629-2650` still refuses to kill an orphaned backend process group after its leader exits. `kill_stale_backend_process_group()` enumerates surviving members, but if any remain it returns an error instead of signaling `-pgid`, and that refusal bubbles through cleanup into `run stop`/stale recovery (`src/cli/run.rs:2700-2724`, `src/cli/run.rs:2811-2813`, `src/cli/run.rs:3475-3483`). The new regression test at `tests/cli.rs:6580-6684` even asserts that the orphan stays alive. This leaves the forced-stop case from the bead unresolved: a TERM-ignoring orchestrator can be SIGKILLed while its backend orphan keeps running. The stop/recovery path still needs a safe way to target the recorded backend group, rather than codifying the leak.\n\n### `fr-5-e636c5c4`\n\n`src/cli/run.rs:2632-2637` now rejects every tracked backend record whose `proc_start_*` fields are missing before it even checks whether that process is already gone. Because `RunBackendProcessRecord` deserializes those identity fields as optional (`src/adapters/fs.rs:177-187`) and `backend_process_is_authoritative()` only tests for their presence (`src/adapters/fs.rs:673-677`), a legacy or partially written `active-processes.json` entry with a dead PID now makes stale reconciliation and stop cleanup fail (`src/cli/run.rs:2811-2813`, `src/cli/run.rs:3475-3483`) even though there is nothing left to kill. The cleanup path should prune dead non-authoritative records and only refuse when such a record is still alive.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

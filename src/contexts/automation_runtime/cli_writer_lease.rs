@@ -14,7 +14,9 @@ use tokio::task::JoinHandle;
 use crate::contexts::automation_runtime::lease_service::{
     try_preserve_failed_branch, LeaseService, ReleaseMode,
 };
-use crate::contexts::automation_runtime::model::{CliWriterLease, LeaseRecord};
+use crate::contexts::automation_runtime::model::{
+    CliWriterCleanupHandoff, CliWriterLease, LeaseRecord,
+};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::{
     DaemonStorePort, ResourceCleanupOutcome, WriterLockReleaseOutcome,
@@ -27,6 +29,10 @@ pub const CLI_LEASE_TTL_SECONDS: u64 = 300;
 
 /// Default heartbeat cadence (seconds).
 pub const CLI_LEASE_HEARTBEAT_CADENCE_SECONDS: u64 = 30;
+
+/// Serializes in-process CLI lease record mutations so the signal-cleanup
+/// handoff cannot be lost to a concurrent heartbeat read-modify-write cycle.
+static CLI_LEASE_RECORD_UPDATE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// RAII guard that owns a project writer lock, a matching CLI lease record,
 /// and a background heartbeat task. On drop, the heartbeat is stopped
@@ -117,6 +123,38 @@ pub fn reclaim_specific_cli_writer_lease(
         WriterLockReleaseOutcome::OwnerMismatch { .. } => return Ok(false),
     }
     let _ = store.remove_lease(base_dir, expected_owner)?;
+    Ok(true)
+}
+
+pub fn persist_cli_writer_cleanup_handoff(
+    store: &dyn DaemonStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    expected_owner: &str,
+    cleanup_handoff: CliWriterCleanupHandoff,
+) -> AppResult<bool> {
+    let _record_update_guard = CLI_LEASE_RECORD_UPDATE_MUTEX
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(current_owner) = read_project_writer_lock_owner(base_dir, project_id)? else {
+        return Ok(false);
+    };
+    if current_owner != expected_owner {
+        return Ok(false);
+    }
+
+    let Some(record) = read_lease_record_if_present(store, base_dir, expected_owner)? else {
+        return Ok(false);
+    };
+    let LeaseRecord::CliWriter(mut lease) = record else {
+        return Ok(false);
+    };
+    if lease.project_id != project_id.as_str() {
+        return Ok(false);
+    }
+
+    lease.cleanup_handoff = Some(cleanup_handoff);
+    store.write_lease_record(base_dir, &LeaseRecord::CliWriter(lease))?;
     Ok(true)
 }
 
@@ -503,6 +541,7 @@ impl CliWriterLeaseGuard {
             acquired_at: now,
             ttl_seconds,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         store.write_lease_record(base_dir, &LeaseRecord::CliWriter(lease))?;
 
@@ -586,6 +625,9 @@ impl CliWriterLeaseGuard {
 
 /// Update `last_heartbeat` on an existing CLI lease record.
 fn heartbeat_tick(store: &dyn DaemonStorePort, base_dir: &Path, lease_id: &str) -> AppResult<()> {
+    let _record_update_guard = CLI_LEASE_RECORD_UPDATE_MUTEX
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let record = store.read_lease_record(base_dir, lease_id)?;
     match record {
         LeaseRecord::CliWriter(mut cli) => {
@@ -759,6 +801,52 @@ mod tests {
         drop(guard);
     }
 
+    #[test]
+    fn heartbeat_tick_preserves_cleanup_handoff() {
+        let temp = tempdir().expect("tempdir");
+        let project_id = ProjectId::new("hb-handoff-test".to_owned()).expect("valid id");
+        let acquired_at = Utc::now() - Duration::seconds(5);
+        let initial_heartbeat = Utc::now() - Duration::seconds(2);
+        let cleanup_handoff = CliWriterCleanupHandoff {
+            pid: 4242,
+            run_id: Some("run-handoff".to_owned()),
+            run_started_at: Some(Utc::now() - Duration::minutes(1)),
+            proc_start_ticks: Some(99),
+            proc_start_marker: Some("marker-99".to_owned()),
+        };
+        let lease = CliWriterLease {
+            lease_id: "cli-heartbeat-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            owner: "cli".to_owned(),
+            acquired_at,
+            ttl_seconds: CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: initial_heartbeat,
+            cleanup_handoff: Some(cleanup_handoff.clone()),
+        };
+        FsDaemonStore
+            .write_lease_record(temp.path(), &LeaseRecord::CliWriter(lease))
+            .expect("write cli lease");
+
+        heartbeat_tick(&FsDaemonStore, temp.path(), "cli-heartbeat-handoff")
+            .expect("heartbeat tick should succeed");
+
+        let record = FsDaemonStore
+            .read_lease_record(temp.path(), "cli-heartbeat-handoff")
+            .expect("read updated lease");
+        let LeaseRecord::CliWriter(cli) = record else {
+            panic!("expected cli lease record");
+        };
+        assert!(
+            cli.last_heartbeat > initial_heartbeat,
+            "heartbeat should still advance last_heartbeat"
+        );
+        assert_eq!(
+            cli.cleanup_handoff,
+            Some(cleanup_handoff),
+            "heartbeat updates must preserve a persisted cleanup handoff"
+        );
+    }
+
     #[tokio::test]
     async fn drop_cleans_up_on_simulated_error() {
         let temp = tempdir().expect("tempdir");
@@ -867,6 +955,7 @@ mod tests {
             acquired_at: Utc::now(),
             ttl_seconds: CLI_LEASE_TTL_SECONDS,
             last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
         };
         FsDaemonStore
             .write_lease_record(temp.path(), &LeaseRecord::CliWriter(lease.clone()))
@@ -904,6 +993,7 @@ mod tests {
             acquired_at: Utc::now(),
             ttl_seconds: CLI_LEASE_TTL_SECONDS,
             last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
         };
         let fresh_lease = CliWriterLease {
             lease_id: "cli-fresh-race".to_owned(),
@@ -912,6 +1002,7 @@ mod tests {
             acquired_at: Utc::now(),
             ttl_seconds: CLI_LEASE_TTL_SECONDS,
             last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
         };
         FsDaemonStore
             .write_lease_record(temp.path(), &LeaseRecord::CliWriter(stale_lease.clone()))

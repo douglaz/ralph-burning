@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr7-artifact",
+  "payload_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T19:42:03.444072795Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real correctness defects in crash recovery or stale-process cleanup. Each one leaves the system in a state that is either unsafe to recover automatically or can target the wrong process set under PID reuse.\n\n## Votes\n\n- `fr-7-faf087fd`: Accept\n  `prepare_signal_interruption_handoff()` persists the interrupted snapshot via `mark_running_run_interrupted()`, and that helper removes `run.pid` immediately even when the outer `CliWriterLeaseGuard` is still holding a fresh CLI writer lease. If the orchestrator is then killed before `close()`, recovery sees a live lock owner plus a fresh lease but no pid record. The only fast reclaim path for failed/paused snapshots with `allow_dead_cli_cleanup_reclaim` still depends on `observed_cli_cleanup_owner_has_dead_pid()`, which returns false without `run.pid`, while `observed_writer_owner_is_stale()` will not succeed until the 300s TTL expires. That is a real recovery regression, not just a theoretical race.\n- `fr-7-63404c8a`: Accept\n  The cleanup path is unsafe once `backend_process_is_authoritative(record)` is true but `is_backend_process_alive(record)` is false. In that state the stored identity proves only that the old record was precise, not that the current process group with numeric id `record.pid` is still the original backend group. Enumerating members by `pgid == record.pid` and then sending `kill(-pid, SIGKILL)` can therefore hit an unrelated reused process group if PID/PGID reuse occurred. Group-wide kill should be refused unless the recorded leader identity still matches or some other reuse-safe proof exists.\n- `fr-7-b6626357`: Accept\n  The signal handoff currently persists only a failed snapshot (`failure_class: None`) and defers the durable `run_failed` journal append to `finalize_signal_interruption_marker()`. If the process is SIGKILLed during the grace-period wait, the workspace is left with `run.json.status = failed` but without the terminal journal event. The codebase itself treats that combination as corrupt in milestone sync (`run snapshot is failed but missing durable run_failed event`), and I did not find a later repair path that runs after that abrupt death. That means the handoff is not actually durable across forced termination.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

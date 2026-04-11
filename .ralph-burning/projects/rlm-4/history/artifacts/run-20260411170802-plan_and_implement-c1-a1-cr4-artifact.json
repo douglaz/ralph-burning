@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260411170802-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-11T18:26:32.186999197Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `run` signal handling so a verified termination signal now writes a durable interrupted snapshot before the grace-period wait, then only returns the original future result if later cleanup overwrote that marker. Hardened forced stale-backend cleanup on Unix by requiring an authoritative live backend group leader before targeting a PGID, snapshotting tracked group members before SIGKILL, and refusing leaderless PGID cleanup once PID/PGID reuse can no longer be ruled out. Updated regressions to assert the early durable handoff and the new safe-refusal behavior for orphaned backend groups.\n\n## Steps\n\n1. [Completed] Inspect the signal-wrapper and stale backend cleanup paths, plus the existing regressions, to confirm where interrupted-state persistence and PGID reuse safety were still missing.\n2. [Completed] Refactor the termination-signal wrapper so a verified signal persists the interrupted marker before the graceful-shutdown wait and only treats the run as recovered if later state no longer matches that interrupted attempt.\n3. [Completed] Refactor Unix stale backend cleanup to snapshot tracked process-group members while the authoritative leader is still live, verify shutdown against those tracked identities, and refuse cleanup once the leader has already exited.\n4. [Completed] Update the affected regressions for the early interrupted snapshot and the leaderless-group refusal path, then run the targeted tests and full acceptance-command suite.\n\n## Validation Evidence\n\n- Targeted regression passed: `cargo test termination_signal_wrapper_reconciles_interrupted_snapshot_when_future_returns_without_cleanup -- --nocapture`.\n- Targeted regression passed: `cargo test run_stop_refuses_unsafe_orphaned_backend_process_group_cleanup_after_leader_exit -- --nocapture`.\n- Full suite passed: `cargo test`.\n- Lint suite passed with pre-existing warnings only: `cargo clippy`.\n- Formatting check passed: `cargo fmt --check`.\n\n## Outstanding Risks\n\n- Leaderless persisted backend process groups are now refused instead of force-killed; those orphaned processes require manual cleanup once the recorded leader identity is gone.\n- `cargo clippy` still reports pre-existing warnings outside this change set (for example `dead_code`, `ptr_arg`, `large_enum_variant`, `too_many_arguments`, and related style warnings).\n- The shared Unix implementation was validated on this Linux host; the non-Linux Unix path was not exercised end-to-end in this pass.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

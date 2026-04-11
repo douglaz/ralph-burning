@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr5-artifact",
+  "payload_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T18:57:52.287738921Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real cleanup defects in stale backend handling: one leaves orphaned backend processes running after forced-stop, and the other lets dead legacy or partially written records block cleanup unnecessarily.\n\n## Votes\n\n- `fr-5-4046f3b6`: Accept\n  The code path is real: when the recorded backend leader has exited, kill_stale_backend_process_group() returns an error whenever surviving members are still found in that PGID, and that error propagates into stop and stale-recovery. The added test explicitly asserts that the orphan remains alive. Even if killing the PGID directly needs care, leaving those backend members running after a forced stop is a correctness and cleanup bug; the implementation still needs a safe way to terminate the surviving group members instead of codifying the leak.\n- `fr-5-e636c5c4`: Accept\n  The ordering is incorrect for legacy or partially written backend records. RunBackendProcessRecord accepts missing proc_start_* fields on deserialize, but kill_stale_backend_process_group() rejects non-authoritative records before checking whether the PID is already gone. That makes stale reconciliation and stop cleanup fail on dead processes that require no signal at all. Cleanup should prune dead non-authoritative records and only refuse the still-live case, using a liveness check that does not rely on authoritative identity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

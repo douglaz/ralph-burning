@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T17:54:41.031467399Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the two runtime cleanup defects: leaderless backend process groups are now left alive, and forced-stop can return before SIGKILLing the orchestrator. Rejected the metadata-only amendment because it evaluates the transient final-review working-tree metadata instead of the committed implementation diff that actually changed `src/cli/run.rs` and `tests/cli.rs`.\n\n## Votes\n\n- `fr-2-8bcb87eb`: Accept\n  `src/cli/run.rs:2536-2549` turns a live leaderless backend process group into a hard failure even though the group still exists and remains signalable by PGID. The new test at `tests/cli.rs:6667-6679` proves the result: `run stop` now preserves an orphaned backend member instead of cleaning it up. That is a real regression in stop/recovery behavior. The authoritative leader record is gone, but the extant process group is still the relevant kernel object; cleanup should still target `-pgid` here and then verify group membership drains before removing persisted state.\n- `fr-2-9fd6daf4`: Accept\n  The forced-stop timeout path is ordered incorrectly. At `src/cli/run.rs:3357-3373`, `cleanup_backend_processes()?` can fail before `send_signal_to_handle(&handle, Signal::SIGKILL)` runs, so a TERM-ignoring orchestrator can survive a failed `run stop`. The manual kill in `tests/cli.rs:6678-6684` is direct evidence that this is not just an error-reporting issue. The orchestrator kill must be guaranteed first, with backend-cleanup failures reported afterward or aggregated separately.\n- `fr-2-220443c4`: Reject\n  This amendment is aimed at the wrong diff. The current working tree only contains final-review bookkeeping in `.ralph-burning/...`, but the implementation under review was already checkpointed in the committed stage diff `a1542110..187e1514`, which includes substantive edits to `src/cli/run.rs` and `tests/cli.rs`. In that review context, the claim that the patch contains no application-code changes is factually incorrect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
