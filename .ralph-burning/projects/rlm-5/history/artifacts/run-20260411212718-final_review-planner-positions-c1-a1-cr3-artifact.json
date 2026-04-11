@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr3-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:33:10.797927021Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments address real durability gaps: one leaves interrupted daemon runs without a durable terminal journal event, and the other can silently declare terminal task states after partial lease/worktree cleanup failures.\n\n## Votes\n\n- `fr-3-928bcfa7`: Accept\n  `prepare_cancelled_dispatch_handoff` persists the interrupted snapshot and removes `run.pid` before the grace wait, but it passes `failure_class: None`, so no `run_failed` event is appended there. The only daemon code that backfills that terminal event is `finalize_cancelled_dispatch_handoff`, which runs only if the same process survives to complete the handoff. A daemon crash or SIGKILL in that window therefore leaves `run.json` in `Failed` with `interrupted_run` but no durable terminal journal entry. The CLI already carries an explicit dead-process repair hook for this exact shape; the daemon does not. Adding a later repair path, ideally via the shared `engine::finalize_interrupted_run_failure_if_missing` helper, is technically correct and improves crash consistency.\n- `fr-3-19c9e48a`: Accept\n  `release_task_lease` now deliberately returns `LeaseCleanupPartialFailure` when cleanup is incomplete and preserves the task's durable lease reference to keep the inconsistency visible. The cited daemon terminal paths still discard that result and continue reporting the task as completed, failed, or aborted successfully. That creates contradictory durable state: a terminal task can still retain its lease/worktree, retries are explicitly blocked when `lease_id` remains set, and Phase 0 repair is not guaranteed because these paths already synced labels and do not mark the task dirty. Those cleanup failures need to be propagated or quarantined consistently with the already-fixed aborted/shutdown paths.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

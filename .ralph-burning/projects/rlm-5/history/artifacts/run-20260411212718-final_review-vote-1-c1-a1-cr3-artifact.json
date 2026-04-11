@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:33:14.353552836Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccept both amendments. They each close a concrete correctness gap in terminal-state durability: one repairs missing terminal journalization after interrupted handoff paths, and the other prevents silent terminal completion when lease/worktree cleanup is only partially successful.\n\n## Votes\n\n- `fr-3-928bcfa7`: Accept\n  The proposed daemon-side repair for runs that die between handoff persistence and finalize addresses a real partial-failure window. Persisting `run.json` as Failed and removing `run.pid` without emitting a durable terminal journal leaves recovery and reconciliation with a non-self-consistent history. Reusing an existing finalize/interrupted-run repair hook is the correct pattern and should materially reduce stuck/ambiguous run visibility.\n- `fr-3-19c9e48a`: Accept\n  Ignoring `LeaseCleanupPartialFailure` on terminal transitions is a correctness bug because it can advance task state to Done/Failed/Aborted while durable lease/worktree references remain inconsistent. This can block retries and violate repair invariants. Propagating or quarantining these errors consistently with existing abort/shutdown handling is necessary for reliable cleanup semantics and operational safety.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

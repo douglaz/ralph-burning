@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:35:53.290791199Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real durability defects: one can leave a daemon-interrupted run without a terminal journal event, and the other can silently leave terminal tasks with unreleased lease/worktree state.\n\n## Votes\n\n- `fr-3-928bcfa7`: Accept\n  `prepare_cancelled_dispatch_handoff` persists the interrupted snapshot through `mark_running_run_interrupted(... failure_class: None)`, which flips `run.json` to `Failed`, preserves `interrupted_run`, and removes `run.pid`, but it does not append a `run_failed` event. In daemon code, the only backfill is `finalize_cancelled_dispatch_handoff`, and that runs only from the same in-flight `finish_cancelled_dispatch` call after the grace wait. If the daemon is killed in that window, the persisted state is left inconsistent indefinitely because the later repair hook using `finalize_interrupted_run_failure_if_missing` exists in CLI code, not in daemon recovery paths. Adding a daemon-side repair path is technically correct and improves crash consistency.\n- `fr-3-19c9e48a`: Accept\n  `release_task_lease` now intentionally returns `LeaseCleanupPartialFailure` when cleanup did not fully succeed and leaves the task's lease reference durable so the inconsistency stays visible. The cited terminal branches still discard that result after marking and often label-syncing the task as aborted, failed, or completed, then return success. That can leave a terminal task with `lease_id` still set and leftover lease/worktree state, while `retry_task` rejects such tasks and Phase 0 repair only revisits tasks that were marked `label_dirty`. Even if a later manual reconcile can sometimes recover stale leases, swallowing the error here still reports success over contradictory durable state. These paths should propagate or quarantine the cleanup failure instead of ignoring it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
