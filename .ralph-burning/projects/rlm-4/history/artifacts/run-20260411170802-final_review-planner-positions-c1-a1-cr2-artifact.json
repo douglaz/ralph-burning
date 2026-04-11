@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T17:51:32.568661452Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the forced-stop ordering defect. Rejected the leaderless-PGID cleanup amendment because it would discard the patch's authoritative-identity safety guard and still lacks a reliable postcondition check. Rejected the metadata-only amendment because the implementation under review is the committed stage diff, which does include substantive `src/cli/run.rs` and `tests/cli.rs` changes.\n\n## Votes\n\n- `fr-2-8bcb87eb`: Reject\n  Once `FileSystem::is_backend_process_alive(record)` is false, this code no longer has an authoritative identity for the backend process it recorded; it only has a bare numeric PGID. Reverting to `kill(-pgid, SIGKILL)` in that state would bypass the PID/PGID-reuse safety model the patch intentionally adds, and `cleanup_stale_backend_process_groups` cannot reliably verify success afterward because it only rechecks the dead leader record, not surviving group members. Treating leaderless groups as unsafe and refusing automatic cleanup is the safer behavior.\n- `fr-2-9fd6daf4`: Accept\n  The timeout path is ordered incorrectly. At `src/cli/run.rs:3357`, `cleanup_backend_processes()?` can return an error before `send_signal_to_handle(&handle, Signal::SIGKILL)` runs, which means a TERM-ignoring orchestrator can survive a forced-stop attempt. The manual cleanup in `tests/cli.rs:6678-6684` demonstrates that this is not just reporting noise; the main process really can remain alive. `run stop` should guarantee the orchestrator kill first and then report backend-cleanup failures separately.\n- `fr-2-220443c4`: Reject\n  This review is about the implementation checkpoint for the stage, not the later final-review bookkeeping currently sitting in the working tree. The actual stage diff (`a1542110..187e1514`) includes substantial changes in `src/cli/run.rs` and `tests/cli.rs`, so the claim that the patch contains only `.ralph-burning` metadata is incorrect in context.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

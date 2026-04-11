@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411170802-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T17:46:38.048314717Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the rlm.4 changes in `src/cli/run.rs` and `tests/cli.rs` plus related engine/fs helpers. Found two blocking correctness issues in the forced-stop backend cleanup path; the signal-handoff snapshot persistence changes otherwise looked consistent with the existing engine cleanup model.\n\n## Amendments\n\n1. `src/cli/run.rs:2524-2549` still leaves orphaned backend groups running in the exact case this bead is meant to fix. The new branch refuses cleanup whenever the recorded backend leader is gone, but Unix process groups remain signalable by PGID after the leader exits. That means a backend whose leader dies while descendants stay in the same process group is no longer killed by `run stop`; the new test in `tests/cli.rs:6667-6679` even locks in that the orphan stays alive. `kill_stale_backend_process_group` should still send `SIGKILL` to `-pgid` in this dead-leader case and only use direct-PID fallback when a live authoritative leader still exists.\n   Rationale: As written, the forced-stop path does not actually solve the orphan-backend leak when the process group survives without its leader, which is one of the bead's stated goals.\n2. `src/cli/run.rs:3357-3373` orders forced-stop cleanup incorrectly: `cleanup_backend_processes()?` runs before the orchestrator receives `SIGKILL`. Any backend cleanup error now aborts `run stop` before the SIGKILL branch executes, so a TERM-ignoring orchestrator can keep running after a failed stop attempt. The new refusal path at `src/cli/run.rs:2536-2549` makes this easy to trigger, and `tests/cli.rs:6678-6684` has to kill the orchestrator manually afterward. The command needs to guarantee the main orchestrator is killed first, then surface backend-cleanup failures separately or aggregate them after the main PID is definitely dead.\n   Rationale: Forced stop's primary safety guarantee is that the orchestrator actually stops. The current ordering can leave the main run alive because backend cleanup failed first.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
