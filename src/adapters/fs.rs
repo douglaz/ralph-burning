@@ -267,10 +267,19 @@ impl FileSystem {
 
         #[cfg(all(unix, not(target_os = "linux")))]
         {
-            return matches!(
-                (proc_start_marker, Self::proc_start_marker(pid)),
-                (Some(expected_marker), Some(actual_marker)) if actual_marker == expected_marker
-            );
+            if let (Some(expected), Some(actual)) = (proc_start_marker, Self::proc_start_marker(pid))
+            {
+                if actual == expected {
+                    return true;
+                }
+                // Backward compat: old records may have been written under a
+                // different locale/TZ.  Fall back to a raw `ps` call without
+                // locale normalization and accept either format.
+                if let Some(raw_actual) = Self::proc_start_marker_raw(pid) {
+                    return raw_actual == expected;
+                }
+            }
+            return false;
         }
 
         #[cfg(not(all(unix, not(target_os = "linux"))))]
@@ -1073,8 +1082,31 @@ impl FileSystem {
         Self::ps_field(pid, "lstart")
     }
 
+    /// Raw marker without `LC_ALL=C TZ=UTC` normalization — used as a
+    /// backward-compatibility fallback when comparing against records
+    /// written by older binaries under a different locale/timezone.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn proc_start_marker_raw(pid: u32) -> Option<String> {
+        let output = Command::new("ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        let value = String::from_utf8_lossy(&output.stdout);
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    }
+
     #[cfg(any(target_os = "linux", not(unix)))]
     fn proc_start_marker(_pid: u32) -> Option<String> {
+        None
+    }
+
+    #[cfg(any(target_os = "linux", not(unix)))]
+    fn proc_start_marker_raw(_pid: u32) -> Option<String> {
         None
     }
 

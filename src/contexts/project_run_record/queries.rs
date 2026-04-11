@@ -54,7 +54,17 @@ fn running_attempt_boundary_sequence(
             .max()
     });
 
-    durable_boundary.into_iter().chain(snapshot_boundary).max()
+    // If we found a start/resume event or a snapshot-based boundary, use it.
+    // Otherwise fall back to 0 so terminal events are still visible — this
+    // covers the case where run_started was never durably appended but a
+    // terminal event (run_failed/run_completed) was.
+    Some(
+        durable_boundary
+            .into_iter()
+            .chain(snapshot_boundary)
+            .max()
+            .unwrap_or(0),
+    )
 }
 
 /// Returns the durable terminal status for the current running attempt, if any.
