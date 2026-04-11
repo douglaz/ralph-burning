@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr3-artifact",
+  "payload_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T18:14:15.224432880Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real robustness and safety defects. The signal-handling path still has a durability gap between removing `run.pid` and recording terminal interrupted state, and the stale backend cleanup path relies on bare numeric process-group ids after its authoritative process identity is gone.\n\n## Votes\n\n- `fr-3-24b397e7`: Accept\n  `prepare_signal_interruption_handoff` only removes `run.pid` and appends a log entry. The durable snapshot and `run_failed` journal event are not written until after the engine future returns or the grace timeout expires. If the wrapper is terminated again during that window, the project is left with `run.json` still showing `Running` and no durable interrupted/failure record. Resume/stop can later repair this as a stale snapshot, but that is a recovery path, not durable signal cleanup. Persisting an interrupted marker before waiting, then reconciling forward if the run actually finishes cleanly, is the correct robustness fix.\n- `fr-3-73994b81`: Accept\n  The stale-backend cleanup code uses `record.pid` as a raw process-group identifier even when `FileSystem::is_backend_process_alive(record)` is already false. Once that authoritative identity check fails, `kill(-pid)` and later `ps` matching on `pgid == record.pid` are acting on a bare numeric id with no proof it still names the recorded backend group. Because `run stop` and stale recovery can execute well after the original leader exited, this creates a real risk of targeting unrelated processes after id reuse. Cleanup should require a live identity-verified leader, or refuse group-wide cleanup once that guarantee is lost.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

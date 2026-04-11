@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T18:16:43.420450207Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real robustness defects. The signal path still has a durability gap before interrupted state is persisted, and the stale backend cleanup path relies on bare numeric process-group ids after the authoritative leader identity is gone.\n\n## Votes\n\n- `fr-3-24b397e7`: Accept\n  `prepare_signal_interruption_handoff` only removes `run.pid` and appends a runtime log entry; `run.json` and the durable `run_failed` journal event are not updated until `reconcile_signal_interruption_for_attempt` runs after the engine future returns or the grace timeout expires. If the wrapper is then terminated by escalation during that wait, the project is left with a `Running` snapshot and no durable interrupted marker. That is not just cosmetic: resume/stop rely on durable state, and a fresh writer lease can keep the run from being treated as safely stale. A pre-wait durable interrupted marker, with later reconciliation if the run actually finishes cleanly, is a valid robustness fix.\n- `fr-3-73994b81`: Accept\n  The Unix cleanup code still targets `kill(-record.pid, SIGKILL)` and later matches `pgid == record.pid` even when `FileSystem::is_backend_process_alive(record)` is already false. At that point the only authoritative process identity is gone, so the code is operating on a bare numeric pgid. If the original group has disappeared and that id is later reused by an unrelated process group, `run stop` or stale recovery can kill or wait on the wrong processes. Group-wide cleanup needs a live identity-verified leader, or it should refuse reuse-unsafe cleanup once that guarantee is lost.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

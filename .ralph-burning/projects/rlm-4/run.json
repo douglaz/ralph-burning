@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260411170802",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-11T17:08:02.886858415Z",
     "prompt_hash_at_cycle_start": "211ff42622498c7ebf504d9d32c69b84b938cce5905291c1ac44ea666340646a",
     "prompt_hash_at_stage_start": "211ff42622498c7ebf504d9d32c69b84b938cce5905291c1ac44ea666340646a",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-24b397e7",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "`src/cli/run.rs:2047-2069` and `src/cli/run.rs:2109-2140` still do not make SIGTERM cleanup durable. On signal, the wrapper now removes `run.pid`, but it only rewrites `run.json` as interrupted after the engine future returns or the grace timeout expires. If the process is killed by a second signal or supervisor escalation during that wait, the command never reaches `reconcile_signal_interruption_for_attempt`, so the project is left with `run.json` still at `Running` and no durable failed snapshot or `run_failed` journal event. Persist the interrupted snapshot (or an equivalent durable interrupted marker that resume/stop can trust) before entering the grace-period wait, then reconcile forward if the run actually finishes cleanly.",
+        "created_at": "2026-04-11T18:16:43.433638081Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "ca00b139a6a094288a2815550121c42f19ca1fe74c74e27e256bda07277d18fd"
+      },
+      {
+        "amendment_id": "fr-3-73994b81",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "`src/cli/run.rs:2527-2557` and `src/cli/run.rs:2570-2580` make forced backend-group cleanup unsafe after the recorded leader exits. The new code sends `kill(-pid, SIGKILL)` and later enumerates `ps` by numeric `pgid == record.pid` even when `FileSystem::is_backend_process_alive(record)` is already false. Once the original group leader is gone, those numeric PID/PGID values can be reused by unrelated processes, so `run stop` / stale recovery can kill or wait on the wrong process group. Add a reuse-safe identity check for the live group leader (or refuse group cleanup once that guarantee is lost) before targeting `-pid` or matching `pgid == record.pid`.",
+        "created_at": "2026-04-11T18:16:43.433641418Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "08de3665f35822285c3fd5ba68a78329cb07b83f630cb67731406ee710ecda84"
+      }
+    ],
     "processed_count": 4
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-11T17:39:30.430432704Z",
+    "resolved_at": "2026-04-11T18:06:11.255022701Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
