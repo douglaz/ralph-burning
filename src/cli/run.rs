@@ -1985,6 +1985,16 @@ fn repair_missing_signal_handoff_run_failed_event(
         return Ok(false);
     };
 
+    // Only repair if the orchestrator process is definitively gone.
+    // During the SIGTERM grace period the snapshot is already marked
+    // interrupted but the engine future is still settling — repairing
+    // now would race with the orchestrator's own terminal event.
+    if let Ok(Some(pid_record)) = FileSystem::read_pid_file(base_dir, project_id) {
+        if FileSystem::is_pid_alive(&pid_record) {
+            return Ok(false);
+        }
+    }
+
     engine::finalize_interrupted_run_failure_if_missing(
         engine::InterruptedRunContext {
             run_snapshot_read: &FsRunSnapshotStore,
