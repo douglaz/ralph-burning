@@ -36,7 +36,7 @@ use crate::contexts::automation_runtime::{
     RebaseConflictResolver, WorktreePort,
 };
 use crate::contexts::milestone_record::service as milestone_service;
-use crate::contexts::project_run_record::model::RunStatus;
+use crate::contexts::project_run_record::model::{RunSnapshot, RunStatus};
 use crate::contexts::project_run_record::service::{
     create_project, AmendmentQueuePort, ArtifactStorePort, JournalStorePort,
     PayloadArtifactWritePort, ProjectStorePort, RunSnapshotPort, RunSnapshotWritePort,
@@ -76,6 +76,14 @@ fn allow_aborted_dispatch_fast_path(outcome: AppResult<()>) -> AppResult<()> {
         Err(error) => Err(error),
     }
 }
+
+const DAEMON_TASK_CANCELLATION_STATUS_SUMMARY: &str =
+    "failed (interrupted by daemon task cancellation)";
+const DAEMON_TASK_CANCELLATION_LOG_MESSAGE: &str =
+    "daemon task cancellation interrupted the orchestrator before graceful shutdown completed";
+const DAEMON_SHUTDOWN_STATUS_SUMMARY: &str = "failed (interrupted by daemon shutdown)";
+const DAEMON_SHUTDOWN_LOG_MESSAGE: &str =
+    "daemon shutdown interrupted the orchestrator before graceful shutdown completed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonLoopConfig {
@@ -938,12 +946,12 @@ where
                             );
                                 return Err(e);
                             }
-                            let _ = self.release_task_lease(
+                            self.release_task_lease(
                                 store_dir,
                                 repo_root,
                                 &active_task.task_id,
                                 &lease,
-                            );
+                            )?;
                             return Ok(());
                         }
                         Err(error) => {
@@ -969,12 +977,12 @@ where
                                 return Err(e);
                             }
                             self.try_push_failed_task_branch(repo_root, &lease);
-                            let _ = self.release_task_lease(
+                            self.release_task_lease(
                                 store_dir,
                                 repo_root,
                                 &active_task.task_id,
                                 &lease,
-                            );
+                            )?;
                             println!("failed task {}: {}", active_task.task_id, error);
                             return Ok(());
                         }
@@ -1030,8 +1038,7 @@ where
                         }
                     }
                     self.try_push_failed_task_branch(repo_root, &lease);
-                    let _ =
-                        self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                    self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease)?;
                     println!("failed task {}: {failure_class}", active_task.task_id);
                     return Ok(());
                 }
@@ -1053,7 +1060,7 @@ where
                     );
                     return Err(e);
                 }
-                let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease)?;
                 println!("completed task {}", active_task.task_id);
             }
             Err(error) => {
@@ -1085,7 +1092,7 @@ where
                     return Err(e);
                 }
                 self.try_push_failed_task_branch(repo_root, &lease);
-                let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease)?;
                 println!("failed task {}: {}", active_task.task_id, error);
             }
         }
@@ -1592,12 +1599,7 @@ where
                         .await?
                         .is_none()
                     {
-                        let _ = self.release_task_lease(
-                            base_dir,
-                            repo_root,
-                            &active_task.task_id,
-                            &lease,
-                        );
+                        self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
                         return Ok(());
                     }
                 }
@@ -1625,14 +1627,12 @@ where
                         return Ok(());
                     }
                     self.try_push_failed_task_branch(repo_root, &lease);
-                    let _ =
-                        self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
+                    self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
                     println!("failed task {}: {failure_class}", active_task.task_id);
                     return Ok(());
                 }
-                let _ =
-                    DaemonTaskService::mark_completed(self.store, base_dir, &active_task.task_id)?;
-                let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
+                DaemonTaskService::mark_completed(self.store, base_dir, &active_task.task_id)?;
+                self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
                 println!("completed task {}", active_task.task_id);
             }
             Err(error) => {
@@ -1640,7 +1640,7 @@ where
                     .failure_class()
                     .map(|class| class.as_str().to_owned())
                     .unwrap_or_else(|| "daemon_dispatch_failed".to_owned());
-                let _ = DaemonTaskService::mark_failed(
+                DaemonTaskService::mark_failed(
                     self.store,
                     base_dir,
                     &active_task.task_id,
@@ -1648,7 +1648,7 @@ where
                     &error.to_string(),
                 )?;
                 self.try_push_failed_task_branch(repo_root, &lease);
-                let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
+                self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
                 println!("failed task {}: {}", active_task.task_id, error);
             }
         }
@@ -2551,9 +2551,7 @@ where
                 details: "task has no resolved flow".to_owned(),
             })?;
 
-        let run_snapshot = self
-            .run_snapshot_read
-            .read_run_snapshot(workspace_dir, &project_id)?;
+        let run_snapshot = self.load_dispatch_run_snapshot(workspace_dir, &project_id)?;
         let dispatch_future = self.dispatch_in_worktree(
             workspace_dir,
             &project_id,
@@ -2600,8 +2598,8 @@ where
                             &project_id,
                             &mut heartbeat,
                             &mut dispatch_future,
-                            "failed (interrupted by daemon task cancellation)",
-                            "daemon task cancellation interrupted the orchestrator before graceful shutdown completed",
+                            DAEMON_TASK_CANCELLATION_STATUS_SUMMARY,
+                            DAEMON_TASK_CANCELLATION_LOG_MESSAGE,
                         )
                         .await;
                     }
@@ -2617,8 +2615,8 @@ where
                         &project_id,
                         &mut heartbeat,
                         &mut dispatch_future,
-                        "failed (interrupted by daemon shutdown)",
-                        "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+                        DAEMON_SHUTDOWN_STATUS_SUMMARY,
+                        DAEMON_SHUTDOWN_LOG_MESSAGE,
                     )
                     .await;
                 }
@@ -2646,9 +2644,7 @@ where
                 details: "task has no resolved flow".to_owned(),
             })?;
 
-        let run_snapshot = self
-            .run_snapshot_read
-            .read_run_snapshot(workspace_dir, &project_id)?;
+        let run_snapshot = self.load_dispatch_run_snapshot(workspace_dir, &project_id)?;
         let dispatch_future = self.dispatch_in_worktree(
             workspace_dir,
             &project_id,
@@ -2683,8 +2679,8 @@ where
                             &project_id,
                             &mut heartbeat,
                             &mut dispatch_future,
-                            "failed (interrupted by daemon task cancellation)",
-                            "daemon task cancellation interrupted the orchestrator before graceful shutdown completed",
+                            DAEMON_TASK_CANCELLATION_STATUS_SUMMARY,
+                            DAEMON_TASK_CANCELLATION_LOG_MESSAGE,
                         )
                         .await;
                     }
@@ -2700,8 +2696,8 @@ where
                         &project_id,
                         &mut heartbeat,
                         &mut dispatch_future,
-                        "failed (interrupted by daemon shutdown)",
-                        "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+                        DAEMON_SHUTDOWN_STATUS_SUMMARY,
+                        DAEMON_SHUTDOWN_LOG_MESSAGE,
                     )
                     .await;
                 }
@@ -2844,6 +2840,85 @@ where
                 failure_class: Some("cancellation"),
             },
         )
+    }
+
+    fn cancelled_dispatch_handoff_log_message(snapshot: &RunSnapshot) -> Option<&'static str> {
+        match snapshot.status_summary.as_str() {
+            DAEMON_TASK_CANCELLATION_STATUS_SUMMARY => Some(DAEMON_TASK_CANCELLATION_LOG_MESSAGE),
+            DAEMON_SHUTDOWN_STATUS_SUMMARY => Some(DAEMON_SHUTDOWN_LOG_MESSAGE),
+            _ => None,
+        }
+    }
+
+    fn repair_missing_cancelled_dispatch_run_failed_event(
+        &self,
+        workspace_dir: &Path,
+        project_id: &ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<bool> {
+        if snapshot.status != RunStatus::Failed || snapshot.active_run.is_some() {
+            return Ok(false);
+        }
+
+        let Some(log_message) = Self::cancelled_dispatch_handoff_log_message(snapshot) else {
+            return Ok(false);
+        };
+        let Some(interrupted_run) = snapshot.interrupted_run.as_ref() else {
+            return Ok(false);
+        };
+
+        // A later owner may already be finalizing this handoff. Only repair
+        // when there is no durable evidence of a still-live orchestrator.
+        if let Ok(Some(pid_record)) = FileSystem::read_pid_file(workspace_dir, project_id) {
+            if FileSystem::is_pid_alive(&pid_record) {
+                return Ok(false);
+            }
+        }
+
+        self.finalize_cancelled_dispatch_handoff(
+            workspace_dir,
+            project_id,
+            Some(&engine::RunningAttemptIdentity {
+                run_id: interrupted_run.run_id.clone(),
+                started_at: interrupted_run.started_at,
+            }),
+            log_message,
+        )
+    }
+
+    fn repair_missing_cancelled_dispatch_run_failed_event_and_reload_snapshot(
+        &self,
+        workspace_dir: &Path,
+        project_id: &ProjectId,
+        snapshot: &mut RunSnapshot,
+    ) -> AppResult<bool> {
+        let repaired = self.repair_missing_cancelled_dispatch_run_failed_event(
+            workspace_dir,
+            project_id,
+            snapshot,
+        )?;
+        if repaired {
+            *snapshot = self
+                .run_snapshot_read
+                .read_run_snapshot(workspace_dir, project_id)?;
+        }
+        Ok(repaired)
+    }
+
+    fn load_dispatch_run_snapshot(
+        &self,
+        workspace_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        let mut snapshot = self
+            .run_snapshot_read
+            .read_run_snapshot(workspace_dir, project_id)?;
+        let _ = self.repair_missing_cancelled_dispatch_run_failed_event_and_reload_snapshot(
+            workspace_dir,
+            project_id,
+            &mut snapshot,
+        )?;
+        Ok(snapshot)
     }
 
     fn prepare_cancelled_dispatch_handoff(
@@ -3915,7 +3990,10 @@ mod tests {
     use chrono::Utc;
     use tempfile::tempdir;
 
-    use super::{DaemonLoop, DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD};
+    use super::{
+        DaemonLoop, DaemonLoopConfig, DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD,
+        DAEMON_SHUTDOWN_STATUS_SUMMARY,
+    };
     use crate::adapters::fs::{
         FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
         FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
@@ -3925,20 +4003,21 @@ mod tests {
     };
     use crate::adapters::stub_backend::StubBackendAdapter;
     use crate::adapters::worktree::WorktreeAdapter;
+    use crate::contexts::agent_execution::model::CancellationToken;
     use crate::contexts::agent_execution::AgentExecutionService;
     use crate::contexts::automation_runtime::model::{
         DaemonJournalEvent, DaemonTask, DispatchMode, TaskStatus,
     };
     use crate::contexts::automation_runtime::{
-        DaemonStorePort, LeaseRecord, ResourceCleanupOutcome, WorktreeLease,
-        WriterLockReleaseOutcome,
+        DaemonStorePort, LeaseRecord, ResourceCleanupOutcome, WorktreeCleanupOutcome,
+        WorktreeLease, WorktreePort, WriterLockReleaseOutcome,
     };
     use crate::contexts::milestone_record::service::{
         create_milestone, update_status, CreateMilestoneInput, MilestoneSnapshotPort,
     };
     use crate::contexts::project_run_record::model::{ActiveRun, RunSnapshot, RunStatus};
     use crate::contexts::project_run_record::service::{
-        create_project, CreateProjectInput, RunSnapshotPort, RunSnapshotWritePort,
+        create_project, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
     };
     use crate::contexts::requirements_drafting::service::{
         RequirementsService, RequirementsStorePort,
@@ -3978,6 +4057,96 @@ mod tests {
             last_seen_comment_id: None,
             last_seen_review_id: None,
             label_dirty: false,
+        }
+    }
+
+    fn sample_pending_task(task_id: &str, project_id: &ProjectId) -> DaemonTask {
+        let now = Utc::now();
+        DaemonTask {
+            task_id: task_id.to_owned(),
+            issue_ref: format!("acme/widgets#{}", task_id),
+            project_id: project_id.as_str().to_owned(),
+            project_name: Some("Demo".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: None,
+            routing_warnings: vec![],
+            status: TaskStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            workflow_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        }
+    }
+
+    struct TestWorktreeAdapter {
+        remove_outcome: WorktreeCleanupOutcome,
+    }
+
+    impl TestWorktreeAdapter {
+        fn removing_as(remove_outcome: WorktreeCleanupOutcome) -> Self {
+            Self { remove_outcome }
+        }
+    }
+
+    impl WorktreePort for TestWorktreeAdapter {
+        fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
+            base_dir.join(".test-worktrees").join(task_id)
+        }
+
+        fn branch_name(&self, task_id: &str) -> String {
+            format!("rb/{task_id}")
+        }
+
+        fn create_worktree(
+            &self,
+            _repo_root: &std::path::Path,
+            worktree_path: &std::path::Path,
+            _branch_name: &str,
+            _task_id: &str,
+        ) -> AppResult<()> {
+            std::fs::create_dir_all(worktree_path)?;
+            Ok(())
+        }
+
+        fn remove_worktree(
+            &self,
+            _repo_root: &std::path::Path,
+            worktree_path: &std::path::Path,
+            _task_id: &str,
+        ) -> AppResult<WorktreeCleanupOutcome> {
+            match self.remove_outcome {
+                WorktreeCleanupOutcome::Removed => {
+                    if worktree_path.exists() {
+                        std::fs::remove_dir_all(worktree_path)?;
+                    }
+                    Ok(WorktreeCleanupOutcome::Removed)
+                }
+                WorktreeCleanupOutcome::AlreadyAbsent => Ok(WorktreeCleanupOutcome::AlreadyAbsent),
+            }
+        }
+
+        fn rebase_onto_default_branch(
+            &self,
+            _repo_root: &std::path::Path,
+            _worktree_path: &std::path::Path,
+            _branch_name: &str,
+        ) -> AppResult<()> {
+            Ok(())
         }
     }
 
@@ -4585,6 +4754,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_dispatch_run_snapshot_repairs_missing_run_failed_event_from_daemon_handoff() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-handoff-repair");
+        let started_at = Utc::now();
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-daemon-handoff-repair".to_owned(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: DAEMON_SHUTDOWN_STATUS_SUMMARY.to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base, &project_id, &snapshot)
+            .expect("write interrupted snapshot");
+
+        std::fs::write(
+            base.join(format!(
+                ".ralph-burning/projects/{}/journal.ndjson",
+                project_id.as_str()
+            )),
+            format!(
+                "{{\"sequence\":1,\"timestamp\":\"{}\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"{}\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-daemon-handoff-repair\",\"first_stage\":\"implementation\",\"max_completion_rounds\":20}}}}",
+                (started_at - chrono::Duration::seconds(1)).to_rfc3339(),
+                project_id.as_str(),
+                started_at.to_rfc3339(),
+            ),
+        )
+        .expect("write journal without run_failed");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let repaired = daemon
+            .load_dispatch_run_snapshot(base, &project_id)
+            .expect("load repaired snapshot");
+        assert_eq!(repaired.status, RunStatus::Failed);
+        assert!(repaired.interrupted_run.is_some());
+
+        let journal = FsJournalStore
+            .read_journal(base, &project_id)
+            .expect("read repaired journal");
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|event| {
+                    event.event_type
+                        == crate::contexts::project_run_record::model::JournalEventType::RunFailed
+                })
+                .count(),
+            1,
+            "dispatch snapshot load should append the missing daemon run_failed event"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn finish_cancelled_dispatch_cleans_tracked_backend_processes_before_returning() {
@@ -4866,6 +5124,139 @@ mod tests {
                 .expect("writer lock state after partial cleanup"),
             WriterLockReleaseOutcome::AlreadyAbsent
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_task_surfaces_partial_cleanup_failure_after_completion() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = ProjectId::new("daemon-complete-partial").expect("project id");
+        let task = sample_pending_task("task-daemon-complete-partial", &project_id);
+        FsDaemonStore.create_task(base, &task).expect("create task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::AlreadyAbsent);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .process_task(
+                base,
+                &task,
+                &DaemonLoopConfig::default(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("completed-task cleanup should surface partial lease cleanup");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected completion cleanup error: {error:?}"
+        );
+
+        let lease_id = format!("lease-{}", task.task_id);
+        let completed = FsDaemonStore
+            .read_task(base, &task.task_id)
+            .expect("read completed task");
+        assert_eq!(completed.status, TaskStatus::Completed);
+        assert_eq!(completed.lease_id.as_deref(), Some(lease_id.as_str()));
+        assert!(FsDaemonStore.read_lease(base, &lease_id).is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_task_surfaces_partial_cleanup_failure_after_dispatch_failure() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-fail-partial");
+        let started_at = Utc::now();
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(
+                base,
+                &project_id,
+                &RunSnapshot {
+                    active_run: Some(ActiveRun {
+                        run_id: "run-daemon-fail-partial".to_owned(),
+                        stage_cursor: StageCursor::initial(StageId::Planning),
+                        started_at,
+                        prompt_hash_at_cycle_start: "hash".to_owned(),
+                        prompt_hash_at_stage_start: "hash".to_owned(),
+                        qa_iterations_current_cycle: 0,
+                        review_iterations_current_cycle: 0,
+                        final_review_restart_count: 0,
+                        stage_resolution_snapshot: None,
+                    }),
+                    interrupted_run: None,
+                    status: RunStatus::Running,
+                    cycle_history: Vec::new(),
+                    completion_rounds: 1,
+                    max_completion_rounds: Some(20),
+                    rollback_point_meta: Default::default(),
+                    amendment_queue: Default::default(),
+                    status_summary: "running: planning".to_owned(),
+                    last_stage_resolution_snapshot: None,
+                },
+            )
+            .expect("write running snapshot");
+        let task = sample_pending_task("task-daemon-fail-partial", &project_id);
+        FsDaemonStore.create_task(base, &task).expect("create task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::AlreadyAbsent);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .process_task(
+                base,
+                &task,
+                &DaemonLoopConfig::default(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("failed-task cleanup should surface partial lease cleanup");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected failed-task cleanup error: {error:?}"
+        );
+
+        let lease_id = format!("lease-{}", task.task_id);
+        let failed = FsDaemonStore
+            .read_task(base, &task.task_id)
+            .expect("read failed task");
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert_eq!(failed.lease_id.as_deref(), Some(lease_id.as_str()));
+        assert!(FsDaemonStore.read_lease(base, &lease_id).is_ok());
     }
 
     #[test]
