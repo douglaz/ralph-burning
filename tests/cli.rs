@@ -6951,6 +6951,88 @@ fn run_stop_recovers_stale_running_and_kills_persisted_backend_process_group() {
 }
 
 #[test]
+fn run_stop_recovers_stale_running_when_persisted_backend_leader_already_exited() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-stale-backend-already-exited",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::remove_file(project_root(temp_dir.path(), "alpha").join("run.pid")).ok();
+
+    let backend_pid_file = temp_dir
+        .path()
+        .join("stale-backend-stop-already-exited.pid");
+    let mut backend_group = spawn_isolated_backend_group(&backend_pid_file);
+    let backend_pid = wait_for_pid_file(&backend_pid_file, "stale backend");
+    assert!(
+        pid_is_running(backend_pid),
+        "persisted stale backend process should be alive before cleanup setup"
+    );
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "processes": [
+                live_backend_process_record_json(
+                    backend_pid,
+                    "run-stop-stale-backend-already-exited",
+                    "2026-04-10T00:00:00Z"
+                )
+            ]
+        }))
+        .expect("serialize backend process record"),
+    )
+    .expect("write backend process record");
+
+    backend_group.kill().expect("kill isolated backend leader");
+    let backend_status = backend_group.wait().expect("wait for isolated backend");
+    assert!(
+        !backend_status.success(),
+        "killed backend helper should not exit successfully: {backend_status:?}"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_running(backend_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_running(backend_pid),
+        "persisted backend leader should be gone before stale recovery"
+    );
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("already stale"),
+        "stale stop should recover even when the persisted backend leader already exited: {stdout}"
+    );
+    assert!(
+        !backend_processes_path(temp_dir.path(), "alpha").exists(),
+        "stale recovery should remove backend process records when the tracked backend is already gone"
+    );
+}
+
+#[test]
 fn run_stop_kills_backend_descendants_when_parent_exits_on_sigterm() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");

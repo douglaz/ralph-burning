@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260411170802",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 5
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-4-368d80ff",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "Fix the SIGTERM handoff so it does not append a durable `run_failed` journal event before the engine future finishes. In `src/cli/run.rs:2098-2103` and `src/cli/run.rs:2146-2175`, the wrapper persists interruption state via `mark_running_run_interrupted()` and then still allows the engine future to continue. If the engine later reaches its normal failure path, it appends another terminal event using its stale in-memory `seq` counter at `src/contexts/workflow_composition/engine.rs:5987-6000`, which can write a duplicate or out-of-order journal sequence and corrupt `journal.ndjson`.",
-        "created_at": "2026-04-11T18:39:35.025668081Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "6a548ec6722da13ce60e12dce56c9340750749e44a74f6cfe8cd1652c8332b4d"
-      },
-      {
-        "amendment_id": "fr-4-0cad23f0",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "Do not treat every dead tracked backend leader as a hard cleanup failure. `kill_stale_backend_process_group()` now errors immediately when `is_backend_process_alive(record)` is false (`src/cli/run.rs:2622-2626`), and stale recovery invokes that path before it can repair the snapshot (`src/cli/run.rs:2793-2795`). If a backend already exited cleanly but its `active-processes.json` entry survived a crash or forced stop, `run resume` on a stale Running snapshot fails even though there is nothing left to kill.",
-        "created_at": "2026-04-11T18:39:35.025670145Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "a27d5d8a9e981adc5adabcc6a775301d762f49ce5cdacf263a1cc85a2bd6bf54"
-      }
-    ],
-    "processed_count": 6
+    "pending": [],
+    "processed_count": 8
   },
-  "status_summary": "running: final review restart round 5 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-11T18:26:32.307038182Z",

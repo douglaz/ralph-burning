@@ -30,11 +30,11 @@ fn active_run_started_at(snapshot: &RunSnapshot) -> Option<DateTime<Utc>> {
         .map(|active_run| active_run.started_at)
 }
 
-fn running_attempt_boundary_sequence(
-    snapshot: &RunSnapshot,
+fn run_attempt_boundary_sequence(
+    run_id: &str,
+    started_at: DateTime<Utc>,
     events: &[JournalEvent],
 ) -> Option<u64> {
-    let run_id = snapshot_run_id(snapshot)?;
     let durable_boundary = events
         .iter()
         .rev()
@@ -46,13 +46,11 @@ fn running_attempt_boundary_sequence(
                 )
         })
         .map(|event| event.sequence);
-    let snapshot_boundary = active_run_started_at(snapshot).and_then(|started_at| {
-        events
-            .iter()
-            .filter(|event| event_run_id(event) == Some(run_id) && event.timestamp < started_at)
-            .map(|event| event.sequence)
-            .max()
-    });
+    let snapshot_boundary = events
+        .iter()
+        .filter(|event| event_run_id(event) == Some(run_id) && event.timestamp < started_at)
+        .map(|event| event.sequence)
+        .max();
 
     // If we found a start/resume event or a snapshot-based boundary, use it.
     // Otherwise fall back to 0 so terminal events are still visible — this
@@ -65,6 +63,24 @@ fn running_attempt_boundary_sequence(
             .max()
             .unwrap_or(0),
     )
+}
+
+pub fn terminal_status_for_attempt(
+    run_id: &str,
+    started_at: DateTime<Utc>,
+    events: &[JournalEvent],
+) -> Option<RunStatus> {
+    let boundary_sequence = run_attempt_boundary_sequence(run_id, started_at, events)?;
+
+    events.iter().rev().find_map(|event| {
+        (event.sequence > boundary_sequence && event_run_id(event) == Some(run_id)).then_some(
+            match event.event_type {
+                JournalEventType::RunFailed => Some(RunStatus::Failed),
+                JournalEventType::RunCompleted => Some(RunStatus::Completed),
+                _ => None,
+            },
+        )?
+    })
 }
 
 /// Returns the durable terminal status for the current running attempt, if any.
@@ -81,18 +97,11 @@ pub fn terminal_status_for_running_attempt(
     if snapshot.status != RunStatus::Running {
         return None;
     }
-    let run_id = snapshot_run_id(snapshot)?;
-    let boundary_sequence = running_attempt_boundary_sequence(snapshot, events)?;
-
-    events.iter().rev().find_map(|event| {
-        (event.sequence > boundary_sequence && event_run_id(event) == Some(run_id)).then_some(
-            match event.event_type {
-                JournalEventType::RunFailed => Some(RunStatus::Failed),
-                JournalEventType::RunCompleted => Some(RunStatus::Completed),
-                _ => None,
-            },
-        )?
-    })
+    terminal_status_for_attempt(
+        snapshot_run_id(snapshot)?,
+        active_run_started_at(snapshot)?,
+        events,
+    )
 }
 
 /// Reconcile a snapshot's status against the journal's last terminal event.

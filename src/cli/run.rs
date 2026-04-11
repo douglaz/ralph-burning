@@ -2017,12 +2017,12 @@ fn persist_signal_interruption_marker(
             summary: "failed (interrupted by termination signal)",
             log_message:
                 "termination signal interrupted the orchestrator before graceful shutdown completed",
-            failure_class: Some("cancellation"),
+            failure_class: None,
         },
     )
 }
 
-fn signal_interruption_marker_still_matches_attempt(
+fn finalize_signal_interruption_marker(
     context: &RunSignalCleanupContext<'_>,
     expected_attempt: Option<&engine::RunningAttemptIdentity>,
 ) -> AppResult<bool> {
@@ -2032,11 +2032,27 @@ fn signal_interruption_marker_still_matches_attempt(
     let snapshot = context
         .run_snapshot_read
         .read_run_snapshot(context.base_dir, context.project_id)?;
-    Ok(snapshot.status == RunStatus::Failed
+    if !(snapshot.status == RunStatus::Failed
         && snapshot.active_run.is_none()
         && snapshot.interrupted_run.as_ref().is_some_and(|run| {
             run.run_id == expected_attempt.run_id && run.started_at == expected_attempt.started_at
         }))
+    {
+        return Ok(false);
+    }
+
+    engine::finalize_interrupted_run_failure_if_missing(
+        engine::InterruptedRunContext {
+            run_snapshot_read: context.run_snapshot_read,
+            run_snapshot_write: context.run_snapshot_write,
+            journal_store: context.journal_store,
+            log_write: context.log_write,
+            base_dir: context.base_dir,
+            project_id: context.project_id,
+        },
+        expected_attempt,
+        "cancellation",
+    )
 }
 
 struct PreparedSignalInterruptionHandoff {
@@ -2146,7 +2162,7 @@ where
             match tokio::time::timeout(RUN_STOP_GRACE_PERIOD, &mut future).await {
                 Ok(result) => {
                     if interrupted_handoff.interrupted_marker_persisted {
-                        match signal_interruption_marker_still_matches_attempt(
+                        match finalize_signal_interruption_marker(
                             &cleanup_context,
                             interrupted_handoff.expected_attempt.as_ref(),
                         ) {
@@ -2181,7 +2197,7 @@ where
                 }
                 Err(_) => {
                     if interrupted_handoff.interrupted_marker_persisted {
-                        match signal_interruption_marker_still_matches_attempt(
+                        match finalize_signal_interruption_marker(
                             &cleanup_context,
                             interrupted_handoff.expected_attempt.as_ref(),
                         ) {
@@ -2619,18 +2635,20 @@ fn kill_stale_backend_process_group(
             record.pid
         ))));
     }
-    if !FileSystem::is_backend_process_alive(record) {
-        return Err(AppError::Io(std::io::Error::other(format!(
-            "refusing stale backend cleanup for pid {} after the recorded process-group leader exited because PGID reuse cannot be ruled out",
-            record.pid
-        ))));
-    }
-
     let mut tracked_group_members = unix_process_group_members(record.pid)?
         .into_iter()
         .filter(|pid| FileSystem::is_pid_running_unchecked(*pid))
         .map(TrackedProcess::from_pid)
         .collect::<Vec<_>>();
+    if !FileSystem::is_backend_process_alive(record) {
+        if tracked_group_members.is_empty() {
+            return Ok((false, tracked_group_members));
+        }
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing stale backend cleanup for pid {} after the recorded process-group leader exited because PGID reuse cannot be ruled out",
+            record.pid
+        ))));
+    }
     if tracked_group_members
         .iter()
         .all(|process| process.pid != record.pid)
@@ -3738,10 +3756,12 @@ mod tests {
         record_bead_completion, record_bead_start, CreateMilestoneInput,
     };
     use crate::contexts::project_run_record::model::{
-        ActiveRun, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin,
-        TaskSource,
+        ActiveRun, JournalEventType, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus,
+        TaskOrigin, TaskSource,
     };
-    use crate::contexts::project_run_record::service::{RunSnapshotPort, RunSnapshotWritePort};
+    use crate::contexts::project_run_record::service::{
+        JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
+    };
     use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
     use crate::shared::error::AppError;
     use crate::test_support::br::{MockBrAdapter, MockBrResponse};
@@ -7257,6 +7277,17 @@ mod tests {
         FsRunSnapshotWriteStore
             .write_run_snapshot(temp_dir.path(), &project_id, &snapshot)
             .expect("write running snapshot");
+        FsJournalStore
+            .append_event(
+                temp_dir.path(),
+                &project_id,
+                &format!(
+                    "{{\"sequence\":1,\"timestamp\":\"{}\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"{}\",\"flow\":\"standard\"}}}}",
+                    Utc::now().to_rfc3339(),
+                    project_id
+                ),
+            )
+            .expect("append project_created event");
         FileSystem::write_pid_file(
             temp_dir.path(),
             &project_id,
@@ -7302,8 +7333,32 @@ mod tests {
                     .is_none(),
                 "signal handoff should remove run.pid before the run future settles"
             );
+            let journal_events = FsJournalStore
+                .read_journal(&future_base_dir, &future_project_id)
+                .expect("read journal during signal handoff");
+            assert_eq!(
+                journal_events.len(),
+                1,
+                "signal handoff must not append run_failed before the engine future settles"
+            );
+            assert!(
+                !journal_events
+                    .iter()
+                    .any(|event| event.event_type == JournalEventType::RunFailed),
+                "signal handoff should not durably publish run_failed before the engine future settles"
+            );
+            FsJournalStore
+                .append_event(
+                    &future_base_dir,
+                    &future_project_id,
+                    &format!(
+                        "{{\"sequence\":2,\"timestamp\":\"{}\",\"event_type\":\"run_failed\",\"details\":{{\"run_id\":\"run-signal-wrapper\",\"stage_id\":\"implementation\",\"failure_class\":\"stage_failure\",\"message\":\"future failed after signal\",\"completion_rounds\":1,\"max_completion_rounds\":20}}}}",
+                        Utc::now().to_rfc3339(),
+                    ),
+                )
+                .expect("append engine-style run_failed event");
             Err(AppError::RunStartFailed {
-                reason: "simulated cancellation result without durable cleanup".to_owned(),
+                reason: "future observed cancellation after publishing run_failed".to_owned(),
             })
         };
 
@@ -7338,6 +7393,22 @@ mod tests {
                 .expect("read pid file")
                 .is_none(),
             "signal reconciliation should remove run.pid even when the engine future skipped cleanup"
+        );
+        let journal_events = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read journal after signal reconciliation");
+        assert_eq!(
+            journal_events
+                .iter()
+                .filter(|event| event.event_type == JournalEventType::RunFailed)
+                .count(),
+            1,
+            "signal reconciliation should not append a duplicate run_failed event after the future writes one"
+        );
+        assert_eq!(
+            journal_events.last().expect("last journal event").sequence,
+            2,
+            "signal reconciliation should preserve journal sequencing when the future publishes its own terminal event"
         );
     }
 
