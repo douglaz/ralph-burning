@@ -379,6 +379,8 @@ where
             // Phase 0: Attempt to repair label_dirty tasks from prior cycles.
             // A GitHub label failure during repair quarantines this repo for the
             // rest of the cycle, consistent with multi-repo failure isolation.
+            // Partial lease cleanup failures also quarantine the repo until a
+            // later Phase 0 pass can repair the contradictory durable state.
             //
             // After successful label repair AND successful cleanup/revert,
             // clear `label_dirty`. If label sync succeeds but cleanup fails,
@@ -418,11 +420,14 @@ where
                                             }
                                             Err(e) => {
                                                 // Partial cleanup: keep label_dirty so Phase 0
-                                                // retries cleanup on the next cycle.
+                                                // retries cleanup on the next cycle and block
+                                                // the repo until it succeeds.
                                                 eprintln!(
                                                     "daemon: deferred lease release failed for terminal task '{}' in {}: {e}",
                                                     dirty_task.task_id, reg.repo_slug
                                                 );
+                                                phase0_quarantined = true;
+                                                break;
                                             }
                                         }
                                     } else {
@@ -463,12 +468,16 @@ where
                                         );
                                     }
                                     Err(e) => {
-                                        // Revert failed (lease cleanup partial): keep
-                                        // label_dirty for the next Phase 0 cycle.
+                                        // Revert failed (typically lease cleanup
+                                        // partial): keep label_dirty for the next
+                                        // Phase 0 cycle and block this repo until
+                                        // recovery succeeds.
                                         eprintln!(
                                             "daemon: revert failed for task '{}' in {}: {e}",
                                             dirty_task.task_id, reg.repo_slug
                                         );
+                                        phase0_quarantined = true;
+                                        break;
                                     }
                                 }
                             }
@@ -599,6 +608,14 @@ where
                     )
                     .await
                 {
+                    if let AppError::LeaseCleanupPartialFailure { task_id } = &error {
+                        let _ =
+                            DaemonTaskService::mark_label_dirty(self.store, &daemon_dir, task_id);
+                        eprintln!(
+                            "daemon: task {} hit partial lease cleanup failure in {} and remains quarantined until Phase 0 cleanup succeeds",
+                            task_id, reg.repo_slug
+                        );
+                    }
                     eprintln!(
                         "daemon: task {} failed for {}: {}",
                         task.task_id, reg.repo_slug, error
@@ -3948,6 +3965,7 @@ mod tests {
         FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
         RunPidOwner,
     };
+    use crate::adapters::github::InMemoryGithubClient;
     use crate::adapters::stub_backend::StubBackendAdapter;
     use crate::adapters::worktree::WorktreeAdapter;
     use crate::contexts::agent_execution::model::CancellationToken;
@@ -3955,6 +3973,7 @@ mod tests {
     use crate::contexts::automation_runtime::model::{
         DaemonJournalEvent, DaemonTask, DispatchMode, TaskStatus,
     };
+    use crate::contexts::automation_runtime::repo_registry::{DataDirLayout, RepoRegistration};
     use crate::contexts::automation_runtime::{
         DaemonStorePort, LeaseRecord, ResourceCleanupOutcome, WorktreeCleanupOutcome,
         WorktreeLease, WorktreePort, WriterLockReleaseOutcome,
@@ -5242,6 +5261,107 @@ mod tests {
         assert!(
             matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
             "unexpected cycle error: {error:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_quarantines_repo_after_partial_cleanup_failure() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let first_project_id = create_standard_project(&repo_root, "multi-repo-partial-a");
+        let second_project_id = create_standard_project(&repo_root, "multi-repo-partial-b");
+
+        let mut first_task = sample_pending_task("task-multi-repo-partial-a", &first_project_id);
+        first_task.issue_ref = format!("{repo_slug}#1");
+        first_task.repo_slug = Some(repo_slug.to_owned());
+        first_task.issue_number = Some(1);
+        FsDaemonStore
+            .create_task(&daemon_dir, &first_task)
+            .expect("create first multi-repo task");
+
+        let mut second_task = sample_pending_task("task-multi-repo-partial-b", &second_project_id);
+        second_task.issue_ref = format!("{repo_slug}#2");
+        second_task.repo_slug = Some(repo_slug.to_owned());
+        second_task.issue_number = Some(2);
+        FsDaemonStore
+            .create_task(&daemon_dir, &second_task)
+            .expect("create second multi-repo task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::AlreadyAbsent);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration.clone()],
+            )
+            .await
+            .expect("first multi-repo cycle");
+
+        let after_first = FsDaemonStore
+            .read_task(&daemon_dir, &first_task.task_id)
+            .expect("read first task after partial cleanup");
+        assert_eq!(after_first.status, TaskStatus::Completed);
+        assert!(after_first.label_dirty);
+        assert!(after_first.lease_id.is_some());
+
+        let second_after_first = FsDaemonStore
+            .read_task(&daemon_dir, &second_task.task_id)
+            .expect("read second task after first cycle");
+        assert_eq!(second_after_first.status, TaskStatus::Pending);
+        assert!(!second_after_first.label_dirty);
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("second multi-repo cycle");
+
+        let second_after_second = FsDaemonStore
+            .read_task(&daemon_dir, &second_task.task_id)
+            .expect("read second task after quarantine cycle");
+        assert_eq!(
+            second_after_second.status,
+            TaskStatus::Pending,
+            "repo should remain quarantined until the dirty task cleanup succeeds"
         );
     }
 
