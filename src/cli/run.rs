@@ -1539,8 +1539,8 @@ fn classify_running_snapshot_liveness(
 ) -> AppResult<RunningSnapshotLiveness> {
     let pid_record = FileSystem::read_pid_file(base_dir, project_id)?;
     if let Some(record) = pid_record.as_ref() {
-        if FileSystem::pid_record_is_authoritative(record) {
-            if FileSystem::is_pid_alive(record) {
+        if FileSystem::pid_record_matches_live_process(record) {
+            if FileSystem::pid_record_is_authoritative(record) {
                 return Ok(
                     match (
                         record.owner.clone(),
@@ -1561,16 +1561,16 @@ fn classify_running_snapshot_liveness(
                     },
                 );
             }
-            return Ok(RunningSnapshotLiveness::Stale);
-        }
-
-        if FileSystem::is_pid_running_unchecked(record.pid) {
             return Ok(match record.owner {
                 crate::adapters::fs::RunPidOwner::Cli => RunningSnapshotLiveness::LegacyCliProcess,
                 crate::adapters::fs::RunPidOwner::Daemon => {
                     RunningSnapshotLiveness::LegacyDaemonProcess
                 }
             });
+        }
+
+        if FileSystem::pid_record_is_authoritative(record) {
+            return Ok(RunningSnapshotLiveness::Stale);
         }
     }
 
@@ -2286,10 +2286,6 @@ impl TrackedDescendantProcess {
     }
 
     fn matches_live_process(&self) -> bool {
-        if self.proc_start_ticks.is_none() && self.proc_start_marker.is_none() {
-            return FileSystem::is_pid_running_unchecked(self.pid);
-        }
-
         FileSystem::is_pid_alive(&crate::adapters::fs::RunPidRecord {
             pid: self.pid,
             started_at: Utc::now(),
@@ -6786,6 +6782,52 @@ mod tests {
             !FileSystem::is_pid_running_unchecked(child_pid),
             "tracked cleanup should remove the orphaned child process"
         );
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn tracked_descendant_process_matches_live_marker_only_identity() {
+        let tracked = super::TrackedDescendantProcess {
+            pid: std::process::id(),
+            proc_start_ticks: None,
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+        assert!(tracked.matches_live_process());
+
+        let mismatched = super::TrackedDescendantProcess {
+            proc_start_marker: Some("mismatched-start-marker".to_owned()),
+            ..tracked
+        };
+        assert!(!mismatched.matches_live_process());
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn classify_running_snapshot_liveness_treats_marker_only_current_pid_file_as_cli_process() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let project_id = ProjectId::new("marker-only-current-run".to_owned()).expect("project id");
+        let run_started_at = Utc::now();
+        let pid_record = FileSystem::write_pid_file(
+            temp_dir.path(),
+            &project_id,
+            crate::adapters::fs::RunPidOwner::Cli,
+            Some("writer-alpha"),
+            Some("run-1"),
+            Some(run_started_at),
+        )
+        .expect("write pid file");
+
+        assert!(pid_record.proc_start_ticks.is_none());
+        assert!(pid_record.proc_start_marker.is_some());
+
+        match super::classify_running_snapshot_liveness(temp_dir.path(), &project_id)
+            .expect("classify liveness")
+        {
+            super::RunningSnapshotLiveness::CliProcess(record) => {
+                assert_eq!(record.run_id.as_deref(), Some("run-1"));
+            }
+            _ => panic!("expected marker-only pid file to be treated as the live CLI process"),
+        }
     }
 }
 

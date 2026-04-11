@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Utc};
+#[cfg(all(unix, not(target_os = "linux")))]
+use chrono::NaiveDateTime;
+use chrono::{DateTime, TimeZone, Utc};
 use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -193,6 +195,42 @@ struct RunBackendProcessSet {
 
 pub struct FileSystem;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessStartPrecision {
+    Precise,
+    #[cfg(any(test, all(unix, not(target_os = "linux"))))]
+    WholeSeconds,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessStartTime {
+    started_at: DateTime<Utc>,
+    precision: ProcessStartPrecision,
+}
+
+impl ProcessStartTime {
+    fn precise(started_at: DateTime<Utc>) -> Self {
+        Self {
+            started_at,
+            precision: ProcessStartPrecision::Precise,
+        }
+    }
+
+    #[cfg(any(test, all(unix, not(target_os = "linux"))))]
+    #[allow(dead_code)]
+    fn whole_seconds(started_at: DateTime<Utc>) -> Self {
+        Self {
+            started_at,
+            precision: ProcessStartPrecision::WholeSeconds,
+        }
+    }
+
+    fn matches_legacy_pid_record(self, record_started_at: DateTime<Utc>) -> bool {
+        let _ = self.precision;
+        self.started_at <= record_started_at
+    }
+}
+
 impl FileSystem {
     fn identity_is_authoritative(
         proc_start_ticks: Option<u64>,
@@ -204,10 +242,10 @@ impl FileSystem {
 
         #[cfg(all(unix, not(target_os = "linux")))]
         {
-            proc_start_marker.is_some_and(|marker| !marker.trim().is_empty())
+            return proc_start_marker.is_some();
         }
 
-        #[cfg(any(target_os = "linux", not(unix)))]
+        #[cfg(not(all(unix, not(target_os = "linux"))))]
         {
             let _ = proc_start_marker;
             false
@@ -229,17 +267,56 @@ impl FileSystem {
 
         #[cfg(all(unix, not(target_os = "linux")))]
         {
-            let Some(expected_marker) = proc_start_marker else {
-                return false;
-            };
-            return matches!(Self::proc_start_marker(pid), Some(actual_marker) if actual_marker == expected_marker);
+            return matches!(
+                (proc_start_marker, Self::proc_start_marker(pid)),
+                (Some(expected_marker), Some(actual_marker)) if actual_marker == expected_marker
+            );
         }
 
-        #[cfg(any(target_os = "linux", not(unix)))]
+        #[cfg(not(all(unix, not(target_os = "linux"))))]
         {
             let _ = proc_start_marker;
             false
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_started_at(pid: u32) -> Option<ProcessStartTime> {
+        let start_ticks = Self::proc_start_ticks(pid)?;
+        let ticks_per_second = Command::new("getconf")
+            .arg("CLK_TCK")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|raw| raw.trim().parse::<u64>().ok())?;
+        let boot_time = fs::read_to_string("/proc/stat")
+            .ok()?
+            .lines()
+            .find_map(|line| line.strip_prefix("btime "))?
+            .trim()
+            .parse::<i64>()
+            .ok()?;
+        let started_at_seconds = boot_time.checked_add((start_ticks / ticks_per_second) as i64)?;
+        let started_at_nanos =
+            ((start_ticks % ticks_per_second) * 1_000_000_000 / ticks_per_second) as u32;
+        Utc.timestamp_opt(started_at_seconds, started_at_nanos)
+            .single()
+            .map(ProcessStartTime::precise)
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn process_started_at(pid: u32) -> Option<ProcessStartTime> {
+        let marker = Self::proc_start_marker(pid)?;
+        let naive = NaiveDateTime::parse_from_str(&marker, "%a %b %e %H:%M:%S %Y").ok()?;
+        Some(ProcessStartTime::whole_seconds(
+            Utc.from_utc_datetime(&naive),
+        ))
+    }
+
+    #[cfg(not(unix))]
+    fn process_started_at(_pid: u32) -> Option<ProcessStartTime> {
+        None
     }
 
     fn live_project_backend_processes_path(project_root: &Path) -> PathBuf {
@@ -619,6 +696,31 @@ impl FileSystem {
         )
     }
 
+    pub fn pid_record_matches_live_process(record: &RunPidRecord) -> bool {
+        if Self::pid_record_is_authoritative(record) {
+            return Self::is_pid_alive(record);
+        }
+
+        Self::legacy_pid_record_matches_live_process(record)
+    }
+
+    pub fn legacy_pid_record_matches_live_process(record: &RunPidRecord) -> bool {
+        if Self::pid_record_is_authoritative(record) {
+            return Self::is_pid_alive(record);
+        }
+        if !Self::is_pid_running_unchecked(record.pid) {
+            return false;
+        }
+        let Some(live_started_at) = Self::process_started_at(record.pid) else {
+            return false;
+        };
+
+        // Legacy pid files without any recorded process identity can only be
+        // matched by comparing the live process start against the pid-file
+        // write timestamp. A newer live start implies PID reuse.
+        live_started_at.matches_legacy_pid_record(record.started_at)
+    }
+
     pub fn is_backend_process_alive(record: &RunBackendProcessRecord) -> bool {
         Self::process_identity_is_alive(
             record.pid,
@@ -995,10 +1097,7 @@ impl FileSystem {
 
     #[cfg(all(unix, not(target_os = "linux")))]
     fn ps_field(pid: u32, field: &str) -> Option<String> {
-        let output = Command::new("ps")
-            .args(["-o", &format!("{field}="), "-p", &pid.to_string()])
-            .output()
-            .ok()?;
+        let output = Self::ps_command(pid, field).output().ok()?;
         if !output.status.success() {
             return None;
         }
@@ -1009,6 +1108,17 @@ impl FileSystem {
         } else {
             Some(trimmed.to_owned())
         }
+    }
+
+    #[cfg(any(test, all(unix, not(target_os = "linux"))))]
+    fn ps_command(pid: u32, field: &str) -> Command {
+        let mut command = Command::new("ps");
+        command
+            .env("LC_ALL", "C")
+            .env("LANG", "C")
+            .env("TZ", "UTC")
+            .args(["-o", &format!("{field}="), "-p", &pid.to_string()]);
+        command
     }
 
     pub(crate) fn mirror_project_file(
@@ -5504,7 +5614,11 @@ mod tests {
         assert_eq!(read_back.run_id.as_deref(), Some("run-1"));
         assert_eq!(read_back.run_started_at, written.run_started_at);
         assert_eq!(read_back.proc_start_marker, written.proc_start_marker);
+        #[cfg(target_os = "linux")]
         assert!(FileSystem::is_pid_alive(&read_back));
+
+        #[cfg(any(not(unix), all(unix, not(target_os = "linux"))))]
+        assert!(!FileSystem::is_pid_alive(&read_back));
 
         FileSystem::remove_pid_file(temp.path(), &project_id).expect("remove pid file");
         assert!(FileSystem::read_pid_file(temp.path(), &project_id)
@@ -5541,8 +5655,25 @@ mod tests {
             "run-1",
             run_started_at
         ));
-        assert!(FileSystem::backend_process_is_authoritative(&tracked));
-        assert!(FileSystem::is_backend_process_alive(&tracked));
+        #[cfg(target_os = "linux")]
+        {
+            assert!(FileSystem::backend_process_is_authoritative(&tracked));
+            assert!(FileSystem::is_backend_process_alive(&tracked));
+        }
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            assert!(tracked.proc_start_ticks.is_none());
+            assert!(tracked.proc_start_marker.is_some());
+            assert!(FileSystem::backend_process_is_authoritative(&tracked));
+            assert!(FileSystem::is_backend_process_alive(&tracked));
+        }
+
+        #[cfg(not(unix))]
+        {
+            assert!(!FileSystem::backend_process_is_authoritative(&tracked));
+            assert!(!FileSystem::is_backend_process_alive(&tracked));
+        }
 
         FileSystem::remove_backend_process(&project_root, tracked.pid)
             .expect("remove backend process");
@@ -5631,6 +5762,43 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn legacy_pid_liveness_accepts_same_live_process_when_recorded_after_start() {
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+
+        assert!(FileSystem::legacy_pid_record_matches_live_process(&record));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn legacy_pid_liveness_rejects_live_process_started_after_record_timestamp() {
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now() - chrono::Duration::days(365),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+
+        assert!(
+            !FileSystem::legacy_pid_record_matches_live_process(&record),
+            "legacy pid records must not treat a newer process as the original owner after pid reuse"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn pid_liveness_rejects_mismatched_start_ticks() {
@@ -5672,13 +5840,13 @@ mod tests {
         #[cfg(all(unix, not(target_os = "linux")))]
         assert!(FileSystem::pid_record_is_authoritative(&record));
 
-        #[cfg(any(target_os = "linux", not(unix)))]
+        #[cfg(not(all(unix, not(target_os = "linux"))))]
         assert!(!FileSystem::pid_record_is_authoritative(&record));
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
-    fn pid_liveness_accepts_matching_start_marker_on_non_linux_unix() {
+    fn marker_only_pid_records_match_live_marker_on_non_linux_unix() {
         let record = RunPidRecord {
             pid: std::process::id(),
             started_at: Utc::now(),
@@ -5687,31 +5855,84 @@ mod tests {
             run_id: None,
             run_started_at: None,
             proc_start_ticks: None,
-            proc_start_marker: FileSystem::proc_start_marker(std::process::id()),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
         };
 
         assert!(FileSystem::pid_record_is_authoritative(&record));
         assert!(FileSystem::is_pid_alive(&record));
+        assert!(FileSystem::pid_record_matches_live_process(&record));
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
-    fn pid_liveness_rejects_mismatched_start_marker_on_non_linux_unix() {
+    fn legacy_pid_liveness_accepts_same_second_live_process_on_non_linux_unix() {
+        let live_started_at =
+            FileSystem::process_started_at(std::process::id()).expect("process start time");
         let record = RunPidRecord {
             pid: std::process::id(),
-            started_at: Utc::now(),
+            started_at: live_started_at.started_at + chrono::Duration::milliseconds(900),
             owner: RunPidOwner::Cli,
             writer_owner: None,
             run_id: None,
             run_started_at: None,
             proc_start_ticks: None,
-            proc_start_marker: Some("mismatched-start-marker".to_owned()),
+            proc_start_marker: None,
         };
 
         assert!(
             !FileSystem::is_pid_alive(&record),
-            "mismatched proc_start_marker should reject reused or stale pid records"
+            "legacy pid records without identity fields must not be treated as authoritative"
         );
+        assert!(FileSystem::legacy_pid_record_matches_live_process(&record));
+    }
+
+    #[test]
+    fn coarse_process_start_precision_accepts_same_second_legacy_recovery() {
+        let live_started_at = Utc
+            .with_ymd_and_hms(2026, 4, 11, 12, 0, 0)
+            .single()
+            .expect("timestamp");
+        let recorded_at = live_started_at + chrono::Duration::milliseconds(900);
+
+        assert!(
+            ProcessStartTime::whole_seconds(live_started_at).matches_legacy_pid_record(recorded_at)
+        );
+    }
+
+    #[test]
+    fn precise_process_start_precision_accepts_legacy_recorded_after_start() {
+        let live_started_at = Utc
+            .with_ymd_and_hms(2026, 4, 11, 12, 0, 0)
+            .single()
+            .expect("timestamp")
+            + chrono::Duration::milliseconds(100);
+        let recorded_at = live_started_at + chrono::Duration::milliseconds(800);
+
+        assert!(ProcessStartTime::precise(live_started_at).matches_legacy_pid_record(recorded_at));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ps_command_forces_c_locale_and_utc() {
+        let command = FileSystem::ps_command(42, "lstart");
+        let args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let envs = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(args, vec!["-o", "lstart=", "-p", "42"]);
+        assert_eq!(envs.get("LC_ALL"), Some(&Some("C".to_owned())));
+        assert_eq!(envs.get("LANG"), Some(&Some("C".to_owned())));
+        assert_eq!(envs.get("TZ"), Some(&Some("UTC".to_owned())));
     }
 
     #[test]
