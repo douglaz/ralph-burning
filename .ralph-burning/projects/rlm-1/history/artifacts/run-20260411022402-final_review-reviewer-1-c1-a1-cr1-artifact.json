@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411022402-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260411022402-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T02:28:54.094750517Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed the working-tree diff plus key reconciliation/query implementation paths. The change set only appends events in `journal.ndjson` and adds `active_run.stage_resolution_snapshot` data in `run.json`; runtime logic files were unchanged. I found no concrete correctness or safety regression introduced by this patch.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

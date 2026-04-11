@@ -3,7 +3,7 @@ use std::path::Path;
 use chrono::{TimeZone, Utc};
 
 use ralph_burning::contexts::project_run_record::model::{
-    AmendmentQueueState, ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord,
+    ActiveRun, AmendmentQueueState, ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord,
     RollbackPointMeta, RunSnapshot, RunStatus, RuntimeLogEntry,
 };
 use ralph_burning::contexts::project_run_record::queries::{
@@ -436,4 +436,53 @@ fn run_query_views_round_trip_through_json() {
     assert_eq!(decoded_history, history_view);
     assert_eq!(decoded_tail, tail_view);
     assert_eq!(decoded_rollback, rollback_view);
+}
+
+#[test]
+fn reconcile_snapshot_status_repairs_terminal_run_without_run_started_event() {
+    let started_at = test_timestamp();
+    let mut snapshot = RunSnapshot {
+        active_run: Some(ActiveRun {
+            run_id: "run-1".to_owned(),
+            stage_cursor: ralph_burning::shared::domain::StageCursor::initial(StageId::Planning),
+            started_at,
+            prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+            prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+            qa_iterations_current_cycle: 0,
+            review_iterations_current_cycle: 0,
+            final_review_restart_count: 0,
+            stage_resolution_snapshot: None,
+        }),
+        interrupted_run: None,
+        status: RunStatus::Running,
+        cycle_history: Vec::new(),
+        completion_rounds: 1,
+        max_completion_rounds: Some(20),
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "running: planning".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+    let events = vec![JournalEvent {
+        sequence: 1,
+        timestamp: started_at,
+        event_type: JournalEventType::RunFailed,
+        details: serde_json::json!({
+            "run_id": "run-1",
+            "stage_id": "planning",
+            "failure_class": "stage_failure",
+            "message": "failed before run_started persisted",
+            "completion_rounds": 1,
+            "max_completion_rounds": 20
+        }),
+    }];
+
+    let patched = queries::reconcile_snapshot_status(&mut snapshot, &events);
+
+    assert!(
+        patched,
+        "stale running snapshot should reconcile from durable terminal event"
+    );
+    assert_eq!(snapshot.status, RunStatus::Failed);
+    assert!(snapshot.active_run.is_none());
 }

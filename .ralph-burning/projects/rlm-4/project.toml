@@ -1,0 +1,7 @@
+id = "rlm-4"
+name = "rlm-4"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "211ff42622498c7ebf504d9d32c69b84b938cce5905291c1ac44ea666340646a"
+created_at = "2026-04-11T02:23:32.042598975Z"
+status_summary = "created"

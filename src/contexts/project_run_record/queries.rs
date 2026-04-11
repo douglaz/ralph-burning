@@ -46,14 +46,13 @@ fn running_attempt_boundary_sequence(
                 )
         })
         .map(|event| event.sequence);
-    let snapshot_boundary = active_run_started_at(snapshot).and_then(|started_at| {
+    let snapshot_boundary = active_run_started_at(snapshot).map(|started_at| {
         events
             .iter()
-            .filter(|event| {
-                event_run_id(event) == Some(run_id) && event.timestamp < started_at
-            })
+            .filter(|event| event_run_id(event) == Some(run_id) && event.timestamp < started_at)
             .map(|event| event.sequence)
             .max()
+            .unwrap_or(0)
     });
 
     durable_boundary.into_iter().chain(snapshot_boundary).max()
