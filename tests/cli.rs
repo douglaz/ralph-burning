@@ -6577,7 +6577,7 @@ fn run_stop_sigkill_terminates_same_process_group_backend_descendant() {
 }
 
 #[test]
-fn run_stop_refuses_unsafe_orphaned_backend_process_group_cleanup_after_leader_exit() {
+fn run_stop_sigkill_terminates_orphaned_backend_process_group_child() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -6664,24 +6664,118 @@ fn run_stop_refuses_unsafe_orphaned_backend_process_group_cleanup_after_leader_e
         .output()
         .expect("run stop");
 
-    assert!(!output.status.success(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("refusing unsafe stale backend process-group cleanup"),
-        "stop should refuse backend group cleanup once the recorded leader identity is gone: {stderr}"
-    );
-    assert!(
-        pid_is_alive(backend_orphan_pid),
-        "unsafe cleanup refusal must not kill an unverified orphaned group member"
+        stdout.contains("required SIGKILL after timeout"),
+        "stop should escalate to SIGKILL for the TERM-ignoring orchestrator: {stdout}"
     );
 
-    let _ = kill(Pid::from_raw(orchestrator_pid as i32), Signal::SIGKILL);
-    let _ = kill(Pid::from_raw(backend_orphan_pid as i32), Signal::SIGKILL);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_orphan_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_orphan_pid),
+        "orphaned backend group member should be gone after SIGKILL escalation"
+    );
 
     let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
     assert!(
         !orchestrator_status.success(),
-        "orchestrator should not exit successfully after cleanup refusal: {orchestrator_status:?}"
+        "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
+    );
+}
+
+#[test]
+fn run_stop_sigkill_finalizes_snapshot_even_when_backend_cleanup_fails() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigkill-cleanup-failure",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let mut orchestrator = Command::new("bash")
+        .args(["-lc", "trap '' TERM; while :; do sleep 1; done"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+    let orchestrator_pid = orchestrator.id();
+
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        "{not-json",
+    )
+    .expect("write corrupt backend process record");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator_pid,
+            "cli",
+            Some("run-stop-sigkill-cleanup-failure"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-cleanup-failure"),
+        ))
+        .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("required SIGKILL after timeout"),
+        "stop failure should still report the forced SIGKILL outcome: {stderr}"
+    );
+    assert!(
+        stderr.contains("corrupt record in runtime/backend/active-processes.json"),
+        "stop failure should surface the backend cleanup error after killing the orchestrator: {stderr}"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        !orchestrator_status.success(),
+        "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
+    );
+
+    let run_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project_root(temp_dir.path(), "alpha").join("run.json"))
+            .expect("read run.json"),
+    )
+    .expect("parse run.json");
+    assert_eq!(run_json["status"], "failed");
+    assert!(
+        !run_json["interrupted_run"].is_null(),
+        "stop should still preserve interrupted_run when backend cleanup fails"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "alpha")
+            .join("run.pid")
+            .exists(),
+        "run.pid should be removed once the orchestrator is stopped even if backend cleanup fails"
     );
 }
 

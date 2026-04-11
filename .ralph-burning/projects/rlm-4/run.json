@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260411170802",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 3
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-2-8bcb87eb",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 2,
-        "body": "`src/cli/run.rs:2524-2549` still leaves orphaned backend groups running in the exact case this bead is meant to fix. The new branch refuses cleanup whenever the recorded backend leader is gone, but Unix process groups remain signalable by PGID after the leader exits. That means a backend whose leader dies while descendants stay in the same process group is no longer killed by `run stop`; the new test in `tests/cli.rs:6667-6679` even locks in that the orphan stays alive. `kill_stale_backend_process_group` should still send `SIGKILL` to `-pgid` in this dead-leader case and only use direct-PID fallback when a live authoritative leader still exists.",
-        "created_at": "2026-04-11T17:58:39.125964207Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "8ae8f539d3939dab9e99af2e8f2c948a21abf0920658a849f74faac27bd88b86"
-      },
-      {
-        "amendment_id": "fr-2-9fd6daf4",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 2,
-        "body": "`src/cli/run.rs:3357-3373` orders forced-stop cleanup incorrectly: `cleanup_backend_processes()?` runs before the orchestrator receives `SIGKILL`. Any backend cleanup error now aborts `run stop` before the SIGKILL branch executes, so a TERM-ignoring orchestrator can keep running after a failed stop attempt. The new refusal path at `src/cli/run.rs:2536-2549` makes this easy to trigger, and `tests/cli.rs:6678-6684` has to kill the orchestrator manually afterward. The command needs to guarantee the main orchestrator is killed first, then surface backend-cleanup failures separately or aggregate them after the main PID is definitely dead.",
-        "created_at": "2026-04-11T17:58:39.125967563Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "0fefd1cfdce499767839295fe16e5ae4b37eb394c363b691b1cad3070633fa9e"
-      }
-    ],
-    "processed_count": 2
+    "pending": [],
+    "processed_count": 4
   },
-  "status_summary": "running: final review restart round 3 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-11T17:39:30.430432704Z",

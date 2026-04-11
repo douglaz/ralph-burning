@@ -2524,27 +2524,13 @@ fn stale_backend_processes_for_attempt(
 fn kill_stale_backend_process_group(
     record: &crate::adapters::fs::RunBackendProcessRecord,
 ) -> AppResult<bool> {
+    let authoritative_leader_is_alive = FileSystem::is_backend_process_alive(record);
     if !FileSystem::backend_process_is_authoritative(record) {
-        if !FileSystem::is_backend_process_alive(record) {
+        if !authoritative_leader_is_alive {
             return Ok(false);
         }
         return Err(AppError::Io(std::io::Error::other(format!(
             "refusing stale recovery because backend pid {} is still alive but lacks authoritative process identity",
-            record.pid
-        ))));
-    }
-    if !FileSystem::is_backend_process_alive(record) {
-        let live_members = unix_process_group_members(record.pid)?;
-        if live_members.is_empty() {
-            return Ok(false);
-        }
-        let live_members = live_members
-            .into_iter()
-            .map(|pid| pid.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(AppError::Io(std::io::Error::other(format!(
-            "refusing unsafe stale backend process-group cleanup for pgid {} because the recorded leader identity can no longer be verified and live group members remain: {live_members}",
             record.pid
         ))));
     }
@@ -2557,19 +2543,46 @@ fn kill_stale_backend_process_group(
     })?;
     match kill(Pid::from_raw(-pid), Signal::SIGKILL) {
         Ok(()) => Ok(true),
-        Err(nix::errno::Errno::ESRCH) => match kill(Pid::from_raw(pid), Signal::SIGKILL) {
-            Ok(()) => Ok(true),
-            Err(nix::errno::Errno::ESRCH) => Ok(false),
-            Err(error) => Err(AppError::Io(std::io::Error::other(format!(
-                "failed to SIGKILL stale backend pid {}: {error}",
-                record.pid
-            )))),
-        },
+        Err(nix::errno::Errno::ESRCH) if authoritative_leader_is_alive => {
+            match kill(Pid::from_raw(pid), Signal::SIGKILL) {
+                Ok(()) => Ok(true),
+                Err(nix::errno::Errno::ESRCH) => Ok(false),
+                Err(error) => Err(AppError::Io(std::io::Error::other(format!(
+                    "failed to SIGKILL stale backend pid {}: {error}",
+                    record.pid
+                )))),
+            }
+        }
+        Err(nix::errno::Errno::ESRCH) => Ok(false),
         Err(error) => Err(AppError::Io(std::io::Error::other(format!(
             "failed to SIGKILL stale backend process group {}: {error}",
             record.pid
         )))),
     }
+}
+
+#[cfg(unix)]
+fn stale_backend_processes_still_alive(
+    records: &[crate::adapters::fs::RunBackendProcessRecord],
+) -> AppResult<Vec<u32>> {
+    let mut live_pids = Vec::new();
+
+    for record in records {
+        if FileSystem::is_backend_process_alive(record) {
+            live_pids.push(record.pid);
+            continue;
+        }
+
+        live_pids.extend(
+            unix_process_group_members(record.pid)?
+                .into_iter()
+                .filter(|pid| FileSystem::is_pid_running_unchecked(*pid)),
+        );
+    }
+
+    live_pids.sort_unstable();
+    live_pids.dedup();
+    Ok(live_pids)
 }
 
 fn cleanup_stale_backend_process_groups(
@@ -2593,12 +2606,15 @@ fn cleanup_stale_backend_process_groups(
         }
 
         let deadline = Instant::now() + Duration::from_secs(1);
-        while matching.iter().any(FileSystem::is_backend_process_alive) {
+        loop {
+            let live_pids = stale_backend_processes_still_alive(&matching)?;
+            if live_pids.is_empty() {
+                break;
+            }
             if Instant::now() >= deadline {
-                let live_pids = matching
-                    .iter()
-                    .filter(|record| FileSystem::is_backend_process_alive(record))
-                    .map(|record| record.pid.to_string())
+                let live_pids = live_pids
+                    .into_iter()
+                    .map(|pid| pid.to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
                 return Err(AppError::Io(std::io::Error::other(format!(
@@ -2670,13 +2686,14 @@ enum ClaimedRunningSnapshotOutcome {
     RecoveredAsInterrupted,
 }
 
-fn reconcile_or_recover_claimed_running_snapshot(
+fn reconcile_or_recover_claimed_running_snapshot_with_cleanup_policy(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
     expected_attempt: &engine::RunningAttemptIdentity,
     stale_summary: impl Into<String>,
     stale_log_message: impl Into<String>,
     stale_failure_class: &str,
+    cleanup_stale_backends: bool,
 ) -> AppResult<ClaimedRunningSnapshotOutcome> {
     let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
     if snapshot.status != RunStatus::Running {
@@ -2689,7 +2706,9 @@ fn reconcile_or_recover_claimed_running_snapshot(
         return Ok(ClaimedRunningSnapshotOutcome::AttemptChanged(snapshot));
     }
 
-    let _ = cleanup_stale_backend_process_groups(base_dir, project_id, expected_attempt)?;
+    if cleanup_stale_backends {
+        let _ = cleanup_stale_backend_process_groups(base_dir, project_id, expected_attempt)?;
+    }
 
     let journal_events = FsJournalStore.read_journal(base_dir, project_id)?;
     match crate::contexts::project_run_record::queries::terminal_status_for_running_attempt(
@@ -2768,6 +2787,25 @@ fn reconcile_or_recover_claimed_running_snapshot(
             Ok(ClaimedRunningSnapshotOutcome::RecoveredAsInterrupted)
         }
     }
+}
+
+fn reconcile_or_recover_claimed_running_snapshot(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    expected_attempt: &engine::RunningAttemptIdentity,
+    stale_summary: impl Into<String>,
+    stale_log_message: impl Into<String>,
+    stale_failure_class: &str,
+) -> AppResult<ClaimedRunningSnapshotOutcome> {
+    reconcile_or_recover_claimed_running_snapshot_with_cleanup_policy(
+        base_dir,
+        project_id,
+        expected_attempt,
+        stale_summary,
+        stale_log_message,
+        stale_failure_class,
+        true,
+    )
 }
 
 async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
@@ -3327,40 +3365,79 @@ async fn handle_stop() -> AppResult<()> {
                             }
                         }
                     };
-                let cleanup_backend_processes = || {
-                    cleanup_stale_backend_process_groups(
+                let finalize_cleanup = || {
+                    let mut killed_backend_groups = 0usize;
+                    let mut killed_descendants = 0usize;
+                    let mut cleanup_errors = Vec::new();
+
+                    match cleanup_stale_backend_process_groups(
                         &current_dir,
                         &project_id,
                         &observed_attempt,
+                    ) {
+                        Ok(count) => killed_backend_groups = count,
+                        Err(error) => {
+                            cleanup_errors.push(format!("backend cleanup failed: {error}"))
+                        }
+                    }
+
+                    match kill_tracked_descendant_processes(&tracked_descendants) {
+                        Ok(count) => killed_descendants = count,
+                        Err(error) => {
+                            cleanup_errors.push(format!("descendant cleanup failed: {error}"))
+                        }
+                    }
+
+                    (killed_backend_groups, killed_descendants, cleanup_errors)
+                };
+                let cleanup_backend_processes = || {
+                    let (killed_backend_groups, killed_descendants, cleanup_errors) =
+                        finalize_cleanup();
+                    (
+                        describe_stopped_process(
+                            "process already exited before SIGTERM",
+                            killed_backend_groups,
+                            killed_descendants,
+                        ),
+                        cleanup_errors,
                     )
                 };
-                let stop_outcome = match open_stop_process_handle(&pid_record)? {
-                    None => describe_stopped_process(
-                        "process already exited before SIGTERM",
-                        cleanup_backend_processes()?,
-                        kill_tracked_descendant_processes(&tracked_descendants)?,
-                    ),
+                let (stop_outcome, cleanup_errors) = match open_stop_process_handle(&pid_record)? {
+                    None => cleanup_backend_processes(),
                     Some(handle) => match send_signal_to_handle(&handle, Signal::SIGTERM)? {
-                        SignalSendOutcome::AlreadyExited => describe_stopped_process(
-                            "process already exited before SIGTERM",
-                            cleanup_backend_processes()?,
-                            kill_tracked_descendant_processes(&tracked_descendants)?,
-                        ),
+                        SignalSendOutcome::AlreadyExited => cleanup_backend_processes(),
                         SignalSendOutcome::Delivered => {
                             if wait_for_handle_exit(&handle, RUN_STOP_GRACE_PERIOD).await? {
-                                describe_stopped_process(
-                                    "terminated gracefully with SIGTERM",
-                                    cleanup_backend_processes()?,
-                                    kill_tracked_descendant_processes(&tracked_descendants)?,
+                                let (
+                                    killed_backend_groups,
+                                    killed_descendants,
+                                    cleanup_errors,
+                                ) = finalize_cleanup();
+                                (
+                                    describe_stopped_process(
+                                        "terminated gracefully with SIGTERM",
+                                        killed_backend_groups,
+                                        killed_descendants,
+                                    ),
+                                    cleanup_errors,
                                 )
                             } else {
-                                let killed_backend_groups = cleanup_backend_processes()?;
                                 match send_signal_to_handle(&handle, Signal::SIGKILL)? {
-                                    SignalSendOutcome::AlreadyExited => describe_stopped_process(
-                                        "process exited before SIGKILL",
-                                        killed_backend_groups,
-                                        kill_tracked_descendant_processes(&tracked_descendants)?,
-                                    ),
+                                    SignalSendOutcome::AlreadyExited => {
+                                        let (
+                                            killed_backend_groups,
+                                            killed_descendants,
+                                            cleanup_errors,
+                                        ) = finalize_cleanup();
+                                        (
+                                            describe_stopped_process(
+                                                "process exited before SIGKILL",
+                                                killed_backend_groups,
+                                                killed_descendants,
+                                            ),
+                                            cleanup_errors,
+                                        )
+                                    }
                                     SignalSendOutcome::Delivered => {
                                         if !wait_for_handle_exit(&handle, Duration::from_secs(1))
                                             .await?
@@ -3372,12 +3449,18 @@ async fn handle_stop() -> AppResult<()> {
                                                 ),
                                             });
                                         }
-                                        let killed_descendants =
-                                            kill_tracked_descendant_processes(&tracked_descendants)?;
-                                        describe_stopped_process(
-                                            "required SIGKILL after timeout",
+                                        let (
                                             killed_backend_groups,
                                             killed_descendants,
+                                            cleanup_errors,
+                                        ) = finalize_cleanup();
+                                        (
+                                            describe_stopped_process(
+                                                "required SIGKILL after timeout",
+                                                killed_backend_groups,
+                                                killed_descendants,
+                                            ),
+                                            cleanup_errors,
                                         )
                                     }
                                 }
@@ -3410,13 +3493,14 @@ async fn handle_stop() -> AppResult<()> {
                         classify_running_snapshot_liveness(&current_dir, &project_id)?,
                         RunningSnapshotLiveness::Stale
                     ) {
-                    match reconcile_or_recover_claimed_running_snapshot(
+                    match reconcile_or_recover_claimed_running_snapshot_with_cleanup_policy(
                         &current_dir,
                         &project_id,
                         &observed_attempt,
                         "failed (stopped by user; run `ralph-burning run resume` to continue)",
                         format!("run stop interrupted the orchestrator; outcome={stop_outcome}"),
                         "cancellation",
+                        false,
                     )
                     .map_err(|error| AppError::RunStopFailed {
                         reason: format!("failed to finalize stopped run state: {error}"),
@@ -3476,6 +3560,14 @@ async fn handle_stop() -> AppResult<()> {
                 close_result.map_err(|error| AppError::RunStopFailed {
                     reason: format!("failed to release recovery writer lease after stop: {error}"),
                 })?;
+                if !cleanup_errors.is_empty() {
+                    return Err(AppError::RunStopFailed {
+                        reason: format!(
+                            "{status_message} Cleanup after stop failed: {}",
+                            cleanup_errors.join("; ")
+                        ),
+                    });
+                }
                 println!("{status_message}");
                 Ok(())
             }
