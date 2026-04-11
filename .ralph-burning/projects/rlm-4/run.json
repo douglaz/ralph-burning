@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260411170802",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-f99b994c",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "`src/cli/run.rs:2035-2059` still leaves a stale-state window after SIGTERM. The wrapper now calls `reconcile_signal_interruption()` only after the backend future finishes or after `RUN_STOP_GRACE_PERIOD` expires, but it does not persist the interrupted snapshot or remove `run.pid` when the signal is first observed. If a supervisor or a second signal kills the orchestrator during that wait, the project is still left in `Running` with a live `run.pid`, which is the durability gap this bead is meant to close. Persist the interrupted state (or an equivalent durable handoff marker) before entering the grace-period wait, then let later completion reconcile forward if the run actually finishes cleanly.",
-        "created_at": "2026-04-11T17:27:43.928002382Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "123b84d43267e02bffa51a227fec32d79d131e206aff091d7aeb3c20d05dffc6"
-      },
-      {
-        "amendment_id": "fr-1-f208e741",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "`src/cli/run.rs:2414-2434` makes stale backend cleanup unsafe under PID/PGID reuse. The old `is_backend_process_alive()` guard was removed so orphaned same-process-group children can be killed after the leader exits, but the replacement code now sends `kill(-pid, SIGKILL)` as long as the record contains authoritative identity fields, without first proving that numeric PID/PGID still belongs to the original backend leader. If that leader exited and the PID/PGID was reused, `run stop`/stale recovery can kill an unrelated process group or process. Add a reuse-safe validation strategy before signaling `-pid` (or refuse cleanup when that guarantee cannot be established).",
-        "created_at": "2026-04-11T17:27:43.928004947Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "271ba5375979026cd5c900379eee9a50b442a408a6a6298e9d8988b64e83e4d3"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 2
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-11T17:17:13.655099869Z",

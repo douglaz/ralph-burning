@@ -6577,7 +6577,7 @@ fn run_stop_sigkill_terminates_same_process_group_backend_descendant() {
 }
 
 #[test]
-fn run_stop_sigkill_terminates_orphaned_backend_process_group_child() {
+fn run_stop_refuses_unsafe_orphaned_backend_process_group_cleanup_after_leader_exit() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
@@ -6664,30 +6664,24 @@ fn run_stop_sigkill_terminates_orphaned_backend_process_group_child() {
         .output()
         .expect("run stop");
 
-    assert!(output.status.success(), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("required SIGKILL after timeout"),
-        "stop should escalate to SIGKILL for the TERM-ignoring orchestrator: {stdout}"
+        stderr.contains("refusing unsafe stale backend process-group cleanup"),
+        "stop should refuse backend group cleanup once the recorded leader identity is gone: {stderr}"
+    );
+    assert!(
+        pid_is_alive(backend_orphan_pid),
+        "unsafe cleanup refusal must not kill an unverified orphaned group member"
     );
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while pid_is_alive(backend_orphan_pid) && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    assert!(
-        !pid_is_alive(backend_orphan_pid),
-        "forced stop should kill the orphaned backend process group child"
-    );
-    assert!(
-        !backend_processes_path(temp_dir.path(), "alpha").exists(),
-        "successful backend group cleanup should remove the persisted backend process file"
-    );
+    let _ = kill(Pid::from_raw(orchestrator_pid as i32), Signal::SIGKILL);
+    let _ = kill(Pid::from_raw(backend_orphan_pid as i32), Signal::SIGKILL);
 
     let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
     assert!(
         !orchestrator_status.success(),
-        "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
+        "orchestrator should not exit successfully after cleanup refusal: {orchestrator_status:?}"
     );
 }
 

@@ -1980,24 +1980,94 @@ struct RunSignalCleanupContext<'a> {
     writer_owner: Option<&'a str>,
 }
 
-fn reconcile_signal_interruption(context: &RunSignalCleanupContext<'_>) -> AppResult<bool> {
-    engine::mark_current_process_running_run_interrupted(
-        engine::InterruptedRunContext {
-            run_snapshot_read: context.run_snapshot_read,
-            run_snapshot_write: context.run_snapshot_write,
-            journal_store: context.journal_store,
-            log_write: context.log_write,
-            base_dir: context.base_dir,
-            project_id: context.project_id,
+fn reconcile_signal_interruption_for_attempt(
+    context: &RunSignalCleanupContext<'_>,
+    expected_attempt: Option<&engine::RunningAttemptIdentity>,
+) -> AppResult<bool> {
+    let interrupted_context = engine::InterruptedRunContext {
+        run_snapshot_read: context.run_snapshot_read,
+        run_snapshot_write: context.run_snapshot_write,
+        journal_store: context.journal_store,
+        log_write: context.log_write,
+        base_dir: context.base_dir,
+        project_id: context.project_id,
+    };
+    let update = engine::InterruptedRunUpdate {
+        summary: "failed (interrupted by termination signal)",
+        log_message:
+            "termination signal interrupted the orchestrator before graceful shutdown completed",
+        failure_class: Some("cancellation"),
+    };
+
+    match expected_attempt {
+        Some(expected_attempt) => {
+            engine::mark_running_run_interrupted(interrupted_context, expected_attempt, update)
+        }
+        None => engine::mark_current_process_running_run_interrupted(
+            interrupted_context,
+            context.writer_owner,
+            update,
+        ),
+    }
+}
+
+fn prepare_signal_interruption_handoff(
+    context: &RunSignalCleanupContext<'_>,
+) -> AppResult<Option<engine::RunningAttemptIdentity>> {
+    let snapshot = context
+        .run_snapshot_read
+        .read_run_snapshot(context.base_dir, context.project_id)?;
+    if snapshot.status != RunStatus::Running {
+        return Ok(None);
+    }
+
+    let Some(active_run) = snapshot.active_run.as_ref() else {
+        return Ok(None);
+    };
+    let expected_attempt = engine::RunningAttemptIdentity::from_active_run(active_run);
+    let Some(pid_record) = FileSystem::read_pid_file(context.base_dir, context.project_id)? else {
+        return Ok(None);
+    };
+    if pid_record.pid != std::process::id() {
+        return Ok(None);
+    }
+    if let Some(writer_owner) = context.writer_owner {
+        if pid_record.writer_owner.as_deref() != Some(writer_owner) {
+            return Ok(None);
+        }
+    }
+    if !FileSystem::pid_record_matches_attempt(
+        &pid_record,
+        &expected_attempt.run_id,
+        expected_attempt.started_at,
+    ) {
+        return Ok(None);
+    }
+
+    if !FileSystem::remove_pid_file_if_matches(context.base_dir, context.project_id, &pid_record)? {
+        if let Some(current_record) =
+            FileSystem::read_pid_file(context.base_dir, context.project_id)?
+        {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "run.pid changed during signal cleanup handoff; refusing to continue waiting on stale ownership (observed pid {})",
+                current_record.pid
+            ))));
+        }
+    }
+
+    let _ = context.log_write.append_runtime_log(
+        context.base_dir,
+        context.project_id,
+        &crate::contexts::project_run_record::model::RuntimeLogEntry {
+            timestamp: Utc::now(),
+            level: crate::contexts::project_run_record::model::LogLevel::Warn,
+            source: "engine".to_owned(),
+            message: "termination signal received; removed run.pid before graceful-shutdown wait"
+                .to_owned(),
         },
-        context.writer_owner,
-        engine::InterruptedRunUpdate {
-            summary: "failed (interrupted by termination signal)",
-            log_message:
-                "termination signal interrupted the orchestrator before graceful shutdown completed",
-            failure_class: Some("cancellation"),
-        },
-    )
+    );
+
+    Ok(Some(expected_attempt))
 }
 
 async fn run_with_termination_signal<F>(
@@ -2036,9 +2106,16 @@ where
             signal?;
             eprintln!("termination signal received; stopping run gracefully...");
             cancellation_token.cancel();
+            let interrupted_attempt = prepare_signal_interruption_handoff(&cleanup_context)
+                .map_err(|error| cleanup_context.origin.error(format!(
+                    "termination signal received; failed to persist signal-cleanup handoff before graceful shutdown: {error}"
+                )))?;
             match tokio::time::timeout(RUN_STOP_GRACE_PERIOD, &mut future).await {
                 Ok(result) => {
-                    match reconcile_signal_interruption(&cleanup_context) {
+                    match reconcile_signal_interruption_for_attempt(
+                        &cleanup_context,
+                        interrupted_attempt.as_ref(),
+                    ) {
                         Ok(true) => Err(cleanup_context.origin.error(
                             "run interrupted by termination signal",
                         )),
@@ -2049,7 +2126,10 @@ where
                     }
                 }
                 Err(_) => {
-                    let cleanup_result = reconcile_signal_interruption(&cleanup_context);
+                    let cleanup_result = reconcile_signal_interruption_for_attempt(
+                        &cleanup_context,
+                        interrupted_attempt.as_ref(),
+                    );
                     let reason = match cleanup_result {
                         Ok(true) => "run interrupted by termination signal after graceful shutdown timed out".to_owned(),
                         Ok(false) => "termination signal received and graceful shutdown timed out before interrupted state could be confirmed".to_owned(),
@@ -2062,6 +2142,39 @@ where
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn unix_process_group_members(pgid: u32) -> AppResult<Vec<u32>> {
+    let output = Command::new("ps")
+        .args(["-ax", "-o", "pid=", "-o", "pgid="])
+        .output()
+        .map_err(|error| {
+            AppError::Io(std::io::Error::other(format!(
+                "failed to enumerate process groups via ps: {error}"
+            )))
+        })?;
+    if !output.status.success() {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "failed to enumerate process groups via ps: exit status {}",
+            output.status
+        ))));
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+        AppError::Io(std::io::Error::other(format!(
+            "ps returned non-UTF-8 output while enumerating process groups: {error}"
+        )))
+    })?;
+    Ok(stdout
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse::<u32>().ok()?;
+            let member_pgid = fields.next()?.parse::<u32>().ok()?;
+            (member_pgid == pgid).then_some(pid)
+        })
+        .collect())
 }
 
 async fn wait_for_run_termination_signal() -> AppResult<()> {
@@ -2417,6 +2530,21 @@ fn kill_stale_backend_process_group(
         }
         return Err(AppError::Io(std::io::Error::other(format!(
             "refusing stale recovery because backend pid {} is still alive but lacks authoritative process identity",
+            record.pid
+        ))));
+    }
+    if !FileSystem::is_backend_process_alive(record) {
+        let live_members = unix_process_group_members(record.pid)?;
+        if live_members.is_empty() {
+            return Ok(false);
+        }
+        let live_members = live_members
+            .into_iter()
+            .map(|pid| pid.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing unsafe stale backend process-group cleanup for pgid {} because the recorded leader identity can no longer be verified and live group members remain: {live_members}",
             record.pid
         ))));
     }
@@ -6965,6 +7093,8 @@ mod tests {
 
         let cancellation_token = CancellationToken::new();
         let cancellation_for_future = cancellation_token.clone();
+        let future_base_dir = temp_dir.path().to_path_buf();
+        let future_project_id = project_id.clone();
         let (signal_tx, signal_rx) = oneshot::channel::<()>();
         let cleanup_context = RunSignalCleanupContext {
             origin: RunSignalCleanupOrigin::Start,
@@ -6978,6 +7108,20 @@ mod tests {
         };
         let future = async move {
             cancellation_for_future.cancelled().await;
+            let running_snapshot = FsRunSnapshotStore
+                .read_run_snapshot(&future_base_dir, &future_project_id)
+                .expect("read snapshot during signal handoff");
+            assert_eq!(
+                running_snapshot.status,
+                RunStatus::Running,
+                "signal handoff should remove run.pid before rewriting the snapshot"
+            );
+            assert!(
+                FileSystem::read_pid_file(&future_base_dir, &future_project_id)
+                    .expect("read pid file during signal handoff")
+                    .is_none(),
+                "signal handoff should remove run.pid before the run future settles"
+            );
             Err(AppError::RunStartFailed {
                 reason: "simulated cancellation result without durable cleanup".to_owned(),
             })
