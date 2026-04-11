@@ -5898,6 +5898,7 @@ fn run_status_keeps_legacy_cli_owned_running_snapshot_active_without_pid_file() 
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-cli-legacy-status.json"),
@@ -6138,6 +6139,7 @@ fn run_stop_terminates_pid_and_marks_snapshot_failed() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("cli-stop-test.json"),
@@ -6303,6 +6305,7 @@ fn run_stop_preserves_completed_journal_outcome_for_stale_running_snapshot() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::seconds(301),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("cli-stop-completed.json"),
@@ -7157,6 +7160,7 @@ fn run_stop_reconciles_running_snapshot_after_sigterm_handoff_removes_pid() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("cli-stop-sigterm-handoff.json"),
@@ -7419,6 +7423,7 @@ fn run_stop_refuses_legacy_cli_owned_running_without_pid_file() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-cli-legacy-stop.json"),
@@ -7746,6 +7751,7 @@ fn run_resume_preserves_completed_journal_outcome_for_stale_running_snapshot() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::seconds(301),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("cli-resume-completed.json"),
@@ -7870,6 +7876,7 @@ fn run_resume_refuses_legacy_cli_owned_running_without_pid_file() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-cli-legacy-resume.json"),
@@ -12262,6 +12269,7 @@ fn cli_run_resume_recovers_stale_running_and_reclaims_writer_lock() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::seconds(301),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("cli-stale-resume.json"),
@@ -12328,6 +12336,7 @@ fn cli_run_resume_reclaims_writer_lock_for_failed_snapshot_cleanup_crash() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("cli-failed-cleanup-lock.json"),
@@ -12833,6 +12842,7 @@ fn cli_daemon_reconcile_cleans_stale_cli_lease() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     let record = LeaseRecord::CliWriter(cli_lease);
     let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");
@@ -12908,6 +12918,7 @@ fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     let record = LeaseRecord::CliWriter(cli_lease);
     let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");
@@ -12963,6 +12974,7 @@ fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     let record = LeaseRecord::CliWriter(cli_lease);
     let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");

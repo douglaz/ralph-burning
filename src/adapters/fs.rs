@@ -677,6 +677,13 @@ impl FileSystem {
         )
     }
 
+    pub fn process_identity_is_authoritative(
+        proc_start_ticks: Option<u64>,
+        proc_start_marker: Option<&str>,
+    ) -> bool {
+        Self::identity_is_authoritative(proc_start_ticks, proc_start_marker)
+    }
+
     pub fn is_pid_running_unchecked(pid: u32) -> bool {
         #[cfg(unix)]
         {
@@ -701,6 +708,14 @@ impl FileSystem {
             record.proc_start_ticks,
             record.proc_start_marker.as_deref(),
         )
+    }
+
+    pub fn process_identity_matches_live_process(
+        pid: u32,
+        proc_start_ticks: Option<u64>,
+        proc_start_marker: Option<&str>,
+    ) -> bool {
+        Self::process_identity_is_alive(pid, proc_start_ticks, proc_start_marker)
     }
 
     pub fn pid_record_matches_live_process(record: &RunPidRecord) -> bool {

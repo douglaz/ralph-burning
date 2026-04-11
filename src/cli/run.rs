@@ -41,10 +41,11 @@ use crate::composition::agent_execution_builder;
 use crate::contexts::agent_execution::model::CancellationToken;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     cleanup_detached_project_writer_owner, find_detached_project_writer_owner,
-    read_project_writer_lease_record, read_project_writer_lock_owner,
-    reclaim_specific_project_writer_owner, CliWriterLeaseGuard,
+    persist_cli_writer_cleanup_handoff, read_project_writer_lease_record,
+    read_project_writer_lock_owner, reclaim_specific_project_writer_owner, CliWriterLeaseGuard,
     CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
+use crate::contexts::automation_runtime::model::CliWriterCleanupHandoff;
 use crate::contexts::automation_runtime::LeaseRecord;
 use crate::contexts::milestone_record::bundle::{planned_bead_membership_refs, MilestoneBundle};
 use crate::contexts::milestone_record::controller::{
@@ -1134,6 +1135,7 @@ fn sync_terminal_milestone_task_with_options(
         }
         RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => return Ok(false),
     };
+    let _ = repair_missing_signal_handoff_run_failed_event(base_dir, project_id, final_snapshot)?;
     let journal_events = FsJournalStore.read_journal(base_dir, project_id)?;
     let matching_lineage_run = milestone_service::find_runs_for_bead(
         &FsTaskRunLineageStore,
@@ -1736,20 +1738,35 @@ fn observed_cli_cleanup_owner_has_dead_pid(
         return Ok(false);
     }
 
-    let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? else {
+    if let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? {
+        if pid_record.owner != crate::adapters::fs::RunPidOwner::Cli {
+            return Ok(false);
+        }
+        if pid_record.writer_owner.as_deref() != Some(expected_owner) {
+            return Ok(false);
+        }
+        if !FileSystem::pid_record_is_authoritative(&pid_record) {
+            return Ok(false);
+        }
+
+        return Ok(!FileSystem::is_pid_alive(&pid_record));
+    }
+
+    let Some(handoff) = lease.cleanup_handoff.as_ref() else {
         return Ok(false);
     };
-    if pid_record.owner != crate::adapters::fs::RunPidOwner::Cli {
-        return Ok(false);
-    }
-    if pid_record.writer_owner.as_deref() != Some(expected_owner) {
-        return Ok(false);
-    }
-    if !FileSystem::pid_record_is_authoritative(&pid_record) {
+    if !FileSystem::process_identity_is_authoritative(
+        handoff.proc_start_ticks,
+        handoff.proc_start_marker.as_deref(),
+    ) {
         return Ok(false);
     }
 
-    Ok(!FileSystem::is_pid_alive(&pid_record))
+    Ok(!FileSystem::process_identity_matches_live_process(
+        handoff.pid,
+        handoff.proc_start_ticks,
+        handoff.proc_start_marker.as_deref(),
+    ))
 }
 
 fn observed_stale_running_owner_still_matches_attempt(
@@ -1947,6 +1964,39 @@ fn stale_status_summary() -> String {
         .to_owned()
 }
 
+fn repair_missing_signal_handoff_run_failed_event(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    snapshot: &RunSnapshot,
+) -> AppResult<bool> {
+    if snapshot.status != RunStatus::Failed
+        || snapshot.active_run.is_some()
+        || snapshot.status_summary != "failed (interrupted by termination signal)"
+    {
+        return Ok(false);
+    }
+
+    let Some(interrupted_run) = snapshot.interrupted_run.as_ref() else {
+        return Ok(false);
+    };
+
+    engine::finalize_interrupted_run_failure_if_missing(
+        engine::InterruptedRunContext {
+            run_snapshot_read: &FsRunSnapshotStore,
+            run_snapshot_write: &FsRunSnapshotWriteStore,
+            journal_store: &FsJournalStore,
+            log_write: &FsRuntimeLogWriteStore,
+            base_dir,
+            project_id,
+        },
+        &engine::RunningAttemptIdentity {
+            run_id: interrupted_run.run_id.clone(),
+            started_at: interrupted_run.started_at,
+        },
+        "cancellation",
+    )
+}
+
 fn stale_status_view(project_id: &ProjectId, snapshot: &RunSnapshot) -> RunStatusView {
     let mut status = RunStatusView::from_snapshot(project_id.as_str(), snapshot);
     status.status = "stale (process not found)".to_owned();
@@ -2029,6 +2079,29 @@ fn persist_signal_interruption_marker(
             log_message:
                 "termination signal interrupted the orchestrator before graceful shutdown completed",
             failure_class: None,
+        },
+    )
+}
+
+fn persist_signal_cleanup_handoff(
+    context: &RunSignalCleanupContext<'_>,
+    pid_record: &crate::adapters::fs::RunPidRecord,
+) -> AppResult<bool> {
+    let Some(writer_owner) = context.writer_owner else {
+        return Ok(false);
+    };
+
+    persist_cli_writer_cleanup_handoff(
+        &FsDaemonStore,
+        context.base_dir,
+        context.project_id,
+        writer_owner,
+        CliWriterCleanupHandoff {
+            pid: pid_record.pid,
+            run_id: pid_record.run_id.clone(),
+            run_started_at: pid_record.run_started_at,
+            proc_start_ticks: pid_record.proc_start_ticks,
+            proc_start_marker: pid_record.proc_start_marker.clone(),
         },
     )
 }
@@ -2121,6 +2194,8 @@ fn prepare_signal_interruption_handoff(
             interrupted_marker_persisted: false,
         });
     }
+
+    let _ = persist_signal_cleanup_handoff(context, &pid_record)?;
 
     let interrupted_marker_persisted =
         persist_signal_interruption_marker(context, Some(&expected_attempt))?;
@@ -2650,6 +2725,16 @@ fn kill_stale_backend_process_group(
             record.pid
         ))));
     }
+    if !leader_is_authoritative {
+        return Ok((false, Vec::new()));
+    }
+    if !leader_matches_record && raw_pid_running {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing stale backend cleanup for pid {} because the recorded backend pid now belongs to a different live process",
+            record.pid
+        ))));
+    }
+
     let mut tracked_group_members = unix_process_group_members(record.pid)?
         .into_iter()
         .filter(|pid| FileSystem::is_pid_running_unchecked(*pid))
@@ -3764,7 +3849,8 @@ mod tests {
     };
     use crate::contexts::agent_execution::model::CancellationToken;
     use crate::contexts::automation_runtime::model::{
-        DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
+        CliWriterCleanupHandoff, CliWriterLease, DaemonTask, DispatchMode, RoutingSource,
+        TaskStatus, WorktreeLease,
     };
     use crate::contexts::automation_runtime::{DaemonStorePort, LeaseRecord};
     use crate::contexts::milestone_record::bundle::{
@@ -6686,6 +6772,111 @@ mod tests {
     }
 
     #[test]
+    fn sync_terminal_milestone_task_repairs_signal_handoff_failed_snapshot_without_run_failed_event(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/bead-run/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"bead-run","flow":"docs_change"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-1","first_stage":"planning","max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let milestone = create_milestone_with_plan(base_dir, started_at);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "bead-run",
+            "run-1",
+            "plan-v1",
+            started_at,
+        )
+        .expect("record bead start");
+
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: started_at,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: "ms-alpha".to_owned(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+        let final_snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-1".to_owned(),
+                stage_cursor: StageCursor::new(StageId::Implementation, 1, 1, 1)
+                    .expect("stage cursor"),
+                started_at,
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed (interrupted by termination signal)".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base_dir, &project_id, &final_snapshot)
+            .expect("write interrupted run snapshot");
+
+        let synced =
+            sync_terminal_milestone_task(base_dir, &project_id, &project_record, &final_snapshot)
+                .expect("sync should repair the missing signal-handoff run_failed event");
+        assert!(synced);
+
+        let journal_events = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("read repaired project journal");
+        assert_eq!(
+            journal_events
+                .iter()
+                .filter(|event| event.event_type == JournalEventType::RunFailed)
+                .count(),
+            1,
+            "signal-handoff repair should append exactly one missing run_failed event"
+        );
+
+        let task_runs = read_task_runs(&FsTaskRunLineageStore, base_dir, &milestone.id)
+            .expect("read task-runs after repaired sync");
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(
+            task_runs[0].outcome_detail.as_deref(),
+            Some("failed (interrupted by termination signal)")
+        );
+    }
+
+    #[test]
     fn sync_terminal_milestone_task_does_not_trust_stale_failed_lineage_without_run_failed_event() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
@@ -7206,6 +7397,118 @@ mod tests {
             )
             .expect("handoff should be detected"),
             "stop must refuse to signal after run.pid moves to a different attempt"
+        );
+    }
+
+    #[test]
+    fn observed_cli_cleanup_owner_has_dead_pid_uses_persisted_cleanup_handoff_without_run_pid() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("signal-handoff-lease-reclaim").expect("project id");
+        let pid_record = FileSystem::write_pid_file(
+            base_dir,
+            &project_id,
+            RunPidOwner::Cli,
+            Some("cli-signal-handoff"),
+            Some("run-signal-handoff"),
+            Some(Utc::now()),
+        )
+        .expect("write pid file");
+        FileSystem::remove_pid_file(base_dir, &project_id).expect("remove run.pid");
+
+        let live_handoff = CliWriterCleanupHandoff {
+            pid: pid_record.pid,
+            run_id: pid_record.run_id.clone(),
+            run_started_at: pid_record.run_started_at,
+            proc_start_ticks: pid_record.proc_start_ticks,
+            proc_start_marker: pid_record.proc_start_marker.clone(),
+        };
+        let lease = CliWriterLease {
+            lease_id: "cli-signal-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            owner: "cli".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: super::CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: Utc::now(),
+            cleanup_handoff: Some(live_handoff.clone()),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::CliWriter(lease),
+        )
+        .expect("write cli lease");
+        <FsDaemonStore as DaemonStorePort>::acquire_writer_lock(
+            &FsDaemonStore,
+            base_dir,
+            &project_id,
+            "cli-signal-handoff",
+        )
+        .expect("acquire writer lock");
+
+        assert!(
+            !super::observed_cli_cleanup_owner_has_dead_pid(
+                base_dir,
+                &project_id,
+                "cli-signal-handoff",
+            )
+            .expect("live cleanup handoff should not reclaim"),
+            "live cleanup handoff must not be treated as dead while the process still matches"
+        );
+
+        let reused_identity_handoff = CliWriterCleanupHandoff {
+            proc_start_ticks: Some(u64::MAX),
+            ..live_handoff
+        };
+        let replaced_lease = CliWriterLease {
+            lease_id: "cli-signal-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            owner: "cli".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: super::CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: Utc::now(),
+            cleanup_handoff: Some(reused_identity_handoff),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::CliWriter(replaced_lease),
+        )
+        .expect("rewrite cli lease with dead handoff identity");
+
+        assert!(
+            super::observed_cli_cleanup_owner_has_dead_pid(
+                base_dir,
+                &project_id,
+                "cli-signal-handoff",
+            )
+            .expect("dead cleanup handoff should be reclaimable"),
+            "cleanup handoff must let recovery reclaim the lock after run.pid is removed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_stale_backend_process_group_refuses_exited_authoritative_leader_without_safe_proof() {
+        let record = crate::adapters::fs::RunBackendProcessRecord {
+            pid: std::process::id(),
+            recorded_at: Utc::now(),
+            run_id: Some("run-backend".to_owned()),
+            run_started_at: Some(Utc::now()),
+            proc_start_ticks: Some(u64::MAX),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+
+        let error = match super::kill_stale_backend_process_group(&record) {
+            Ok(_) => panic!("authoritative leader reuse without a live identity must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("different live process")
+                || error
+                    .to_string()
+                    .contains("PID/PGID reuse cannot be ruled out"),
+            "unexpected refusal error: {error}"
         );
     }
 

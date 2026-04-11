@@ -323,6 +323,19 @@ impl WorktreeLease {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliWriterCleanupHandoff {
+    pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_start_ticks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_start_marker: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliWriterLease {
     pub lease_id: String,
     pub project_id: String,
@@ -330,6 +343,8 @@ pub struct CliWriterLease {
     pub acquired_at: DateTime<Utc>,
     pub ttl_seconds: u64,
     pub last_heartbeat: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_handoff: Option<CliWriterCleanupHandoff>,
 }
 
 impl CliWriterLease {

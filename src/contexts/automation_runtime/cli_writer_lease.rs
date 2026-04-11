@@ -14,7 +14,9 @@ use tokio::task::JoinHandle;
 use crate::contexts::automation_runtime::lease_service::{
     try_preserve_failed_branch, LeaseService, ReleaseMode,
 };
-use crate::contexts::automation_runtime::model::{CliWriterLease, LeaseRecord};
+use crate::contexts::automation_runtime::model::{
+    CliWriterCleanupHandoff, CliWriterLease, LeaseRecord,
+};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::{
     DaemonStorePort, ResourceCleanupOutcome, WriterLockReleaseOutcome,
@@ -117,6 +119,35 @@ pub fn reclaim_specific_cli_writer_lease(
         WriterLockReleaseOutcome::OwnerMismatch { .. } => return Ok(false),
     }
     let _ = store.remove_lease(base_dir, expected_owner)?;
+    Ok(true)
+}
+
+pub fn persist_cli_writer_cleanup_handoff(
+    store: &dyn DaemonStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    expected_owner: &str,
+    cleanup_handoff: CliWriterCleanupHandoff,
+) -> AppResult<bool> {
+    let Some(current_owner) = read_project_writer_lock_owner(base_dir, project_id)? else {
+        return Ok(false);
+    };
+    if current_owner != expected_owner {
+        return Ok(false);
+    }
+
+    let Some(record) = read_lease_record_if_present(store, base_dir, expected_owner)? else {
+        return Ok(false);
+    };
+    let LeaseRecord::CliWriter(mut lease) = record else {
+        return Ok(false);
+    };
+    if lease.project_id != project_id.as_str() {
+        return Ok(false);
+    }
+
+    lease.cleanup_handoff = Some(cleanup_handoff);
+    store.write_lease_record(base_dir, &LeaseRecord::CliWriter(lease))?;
     Ok(true)
 }
 
@@ -503,6 +534,7 @@ impl CliWriterLeaseGuard {
             acquired_at: now,
             ttl_seconds,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         store.write_lease_record(base_dir, &LeaseRecord::CliWriter(lease))?;
 
@@ -867,6 +899,7 @@ mod tests {
             acquired_at: Utc::now(),
             ttl_seconds: CLI_LEASE_TTL_SECONDS,
             last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
         };
         FsDaemonStore
             .write_lease_record(temp.path(), &LeaseRecord::CliWriter(lease.clone()))
@@ -904,6 +937,7 @@ mod tests {
             acquired_at: Utc::now(),
             ttl_seconds: CLI_LEASE_TTL_SECONDS,
             last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
         };
         let fresh_lease = CliWriterLease {
             lease_id: "cli-fresh-race".to_owned(),
@@ -912,6 +946,7 @@ mod tests {
             acquired_at: Utc::now(),
             ttl_seconds: CLI_LEASE_TTL_SECONDS,
             last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
         };
         FsDaemonStore
             .write_lease_record(temp.path(), &LeaseRecord::CliWriter(stale_lease.clone()))
