@@ -6577,6 +6577,121 @@ fn run_stop_sigkill_terminates_same_process_group_backend_descendant() {
 }
 
 #[test]
+fn run_stop_sigkill_terminates_orphaned_backend_process_group_child() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-stop-sigkill-orphaned-backend",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+
+    let backend_group_pid_path = temp_dir.path().join("backend-group-leader.pid");
+    let backend_orphan_pid_path = temp_dir.path().join("backend-orphan.pid");
+    let orchestrator_script = format!(
+        "trap '' TERM; setsid sh -c 'echo $$ > \"{leader}\"; sh -c '\\''echo $$ > \"{orphan}\"; exec sleep 60'\\'' & while [ ! -s \"{orphan}\" ]; do sleep 0.05; done; exit 0' & while [ ! -s \"{leader}\" ] || [ ! -s \"{orphan}\" ]; do sleep 0.05; done; while :; do sleep 1; done",
+        leader = backend_group_pid_path.display(),
+        orphan = backend_orphan_pid_path.display(),
+    );
+    let mut orchestrator = Command::new("bash")
+        .args(["-lc", &orchestrator_script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn orchestrator");
+    let orchestrator_pid = orchestrator.id();
+
+    let backend_group_pid = wait_for_pid_file(&backend_group_pid_path, "backend group leader");
+    let backend_orphan_pid = wait_for_pid_file(&backend_orphan_pid_path, "backend orphan");
+    assert!(
+        pid_is_alive(backend_orphan_pid),
+        "orphaned backend child must be alive before stop"
+    );
+    fs::write(
+        backend_processes_path(temp_dir.path(), "alpha"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "processes": [
+                live_backend_process_record_json(
+                    backend_group_pid,
+                    "run-stop-sigkill-orphaned-backend",
+                    "2026-04-10T00:00:00Z"
+                )
+            ]
+        }))
+        .expect("serialize backend process record"),
+    )
+    .expect("write backend process record");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_group_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_group_pid),
+        "backend group leader should exit before stop so only the process group remains"
+    );
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&live_pid_record_json(
+            orchestrator_pid,
+            "cli",
+            Some("run-stop-sigkill-orphaned-backend"),
+            Some("2026-04-10T00:00:00Z"),
+            Some("cli-stop-orphaned-backend"),
+        ))
+        .expect("serialize cli pid"),
+    )
+    .expect("write run pid");
+
+    let output = Command::new(binary())
+        .args(["run", "stop"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run stop");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("required SIGKILL after timeout"),
+        "stop should escalate to SIGKILL for the TERM-ignoring orchestrator: {stdout}"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pid_is_alive(backend_orphan_pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        !pid_is_alive(backend_orphan_pid),
+        "forced stop should kill the orphaned backend process group child"
+    );
+    assert!(
+        !backend_processes_path(temp_dir.path(), "alpha").exists(),
+        "successful backend group cleanup should remove the persisted backend process file"
+    );
+
+    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    assert!(
+        !orchestrator_status.success(),
+        "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
+    );
+}
+
+#[test]
 fn run_stop_refuses_live_legacy_pid_record_without_proc_start_ticks_when_no_lease_exists() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");

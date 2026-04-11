@@ -2008,16 +2008,46 @@ async fn run_with_termination_signal<F>(
 where
     F: Future<Output = AppResult<()>>,
 {
+    run_with_termination_signal_waiter(
+        cancellation_token,
+        cleanup_context,
+        wait_for_run_termination_signal(),
+        future,
+    )
+    .await
+}
+
+async fn run_with_termination_signal_waiter<F, S>(
+    cancellation_token: CancellationToken,
+    cleanup_context: RunSignalCleanupContext<'_>,
+    signal_waiter: S,
+    future: F,
+) -> AppResult<()>
+where
+    F: Future<Output = AppResult<()>>,
+    S: Future<Output = AppResult<()>>,
+{
     tokio::pin!(future);
+    tokio::pin!(signal_waiter);
 
     tokio::select! {
         result = &mut future => result,
-        signal = wait_for_run_termination_signal() => {
+        signal = &mut signal_waiter => {
             signal?;
             eprintln!("termination signal received; stopping run gracefully...");
             cancellation_token.cancel();
             match tokio::time::timeout(RUN_STOP_GRACE_PERIOD, &mut future).await {
-                Ok(result) => result,
+                Ok(result) => {
+                    match reconcile_signal_interruption(&cleanup_context) {
+                        Ok(true) => Err(cleanup_context.origin.error(
+                            "run interrupted by termination signal",
+                        )),
+                        Ok(false) => result,
+                        Err(error) => Err(cleanup_context.origin.error(format!(
+                            "termination signal received; interrupted-state cleanup failed: {error}"
+                        ))),
+                    }
+                }
                 Err(_) => {
                     let cleanup_result = reconcile_signal_interruption(&cleanup_context);
                     let reason = match cleanup_result {
@@ -2381,10 +2411,10 @@ fn stale_backend_processes_for_attempt(
 fn kill_stale_backend_process_group(
     record: &crate::adapters::fs::RunBackendProcessRecord,
 ) -> AppResult<bool> {
-    if !FileSystem::is_backend_process_alive(record) {
-        return Ok(false);
-    }
     if !FileSystem::backend_process_is_authoritative(record) {
+        if !FileSystem::is_backend_process_alive(record) {
+            return Ok(false);
+        }
         return Err(AppError::Io(std::io::Error::other(format!(
             "refusing stale recovery because backend pid {} is still alive but lacks authoritative process identity",
             record.pid
@@ -2400,7 +2430,8 @@ fn kill_stale_backend_process_group(
     match kill(Pid::from_raw(-pid), Signal::SIGKILL) {
         Ok(()) => Ok(true),
         Err(nix::errno::Errno::ESRCH) => match kill(Pid::from_raw(pid), Signal::SIGKILL) {
-            Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(true),
+            Ok(()) => Ok(true),
+            Err(nix::errno::Errno::ESRCH) => Ok(false),
             Err(error) => Err(AppError::Io(std::io::Error::other(format!(
                 "failed to SIGKILL stale backend pid {}: {error}",
                 record.pid
@@ -3144,8 +3175,11 @@ async fn handle_stop() -> AppResult<()> {
                     .or(read_project_writer_lock_owner(&current_dir, &project_id)?);
                 let tracked_descendants = snapshot_descendant_processes(pid_record.pid)?;
                 let describe_stopped_process =
-                    |base: &'static str, killed_descendants: usize| -> &'static str {
-                        if killed_descendants == 0 {
+                    |base: &'static str,
+                     killed_backend_groups: usize,
+                     killed_descendants: usize|
+                     -> &'static str {
+                        if killed_backend_groups == 0 && killed_descendants == 0 {
                             base
                         } else {
                             match base {
@@ -3165,29 +3199,39 @@ async fn handle_stop() -> AppResult<()> {
                             }
                         }
                     };
+                let cleanup_backend_processes = || {
+                    cleanup_stale_backend_process_groups(
+                        &current_dir,
+                        &project_id,
+                        &observed_attempt,
+                    )
+                };
                 let stop_outcome = match open_stop_process_handle(&pid_record)? {
                     None => describe_stopped_process(
                         "process already exited before SIGTERM",
+                        cleanup_backend_processes()?,
                         kill_tracked_descendant_processes(&tracked_descendants)?,
                     ),
                     Some(handle) => match send_signal_to_handle(&handle, Signal::SIGTERM)? {
                         SignalSendOutcome::AlreadyExited => describe_stopped_process(
                             "process already exited before SIGTERM",
+                            cleanup_backend_processes()?,
                             kill_tracked_descendant_processes(&tracked_descendants)?,
                         ),
                         SignalSendOutcome::Delivered => {
                             if wait_for_handle_exit(&handle, RUN_STOP_GRACE_PERIOD).await? {
                                 describe_stopped_process(
                                     "terminated gracefully with SIGTERM",
+                                    cleanup_backend_processes()?,
                                     kill_tracked_descendant_processes(&tracked_descendants)?,
                                 )
                             } else {
-                                let killed_descendants =
-                                    kill_tracked_descendant_processes(&tracked_descendants)?;
+                                let killed_backend_groups = cleanup_backend_processes()?;
                                 match send_signal_to_handle(&handle, Signal::SIGKILL)? {
                                     SignalSendOutcome::AlreadyExited => describe_stopped_process(
                                         "process exited before SIGKILL",
-                                        killed_descendants,
+                                        killed_backend_groups,
+                                        kill_tracked_descendant_processes(&tracked_descendants)?,
                                     ),
                                     SignalSendOutcome::Delivered => {
                                         if !wait_for_handle_exit(&handle, Duration::from_secs(1))
@@ -3200,8 +3244,11 @@ async fn handle_stop() -> AppResult<()> {
                                                 ),
                                             });
                                         }
+                                        let killed_descendants =
+                                            kill_tracked_descendant_processes(&tracked_descendants)?;
                                         describe_stopped_process(
                                             "required SIGKILL after timeout",
+                                            killed_backend_groups,
                                             killed_descendants,
                                         )
                                     }
@@ -3351,11 +3398,11 @@ async fn handle_sync_milestone() -> AppResult<()> {
 mod tests {
     use super::{
         persist_next_step_recommendation, prepare_milestone_controller_for_execution,
-        resume_attempt_has_exact_lineage, select_next_milestone_bead,
-        select_next_milestone_bead_from_recommendation, sync_terminal_milestone_task,
-        sync_terminal_milestone_task_and_continue_selection,
+        resume_attempt_has_exact_lineage, run_with_termination_signal_waiter,
+        select_next_milestone_bead, select_next_milestone_bead_from_recommendation,
+        sync_terminal_milestone_task, sync_terminal_milestone_task_and_continue_selection,
         sync_terminal_milestone_task_with_options, MilestoneControllerExecutionOrigin,
-        ProjectMilestoneControllerRuntime,
+        ProjectMilestoneControllerRuntime, RunSignalCleanupContext, RunSignalCleanupOrigin,
     };
     use chrono::Utc;
     #[cfg(unix)]
@@ -3363,9 +3410,12 @@ mod tests {
 
     use crate::adapters::bv_process::NextBeadResponse;
     use crate::adapters::fs::{
-        FileSystem, FsDaemonStore, FsMilestoneControllerStore, FsMilestoneJournalStore,
-        FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore, FsTaskRunLineageStore,
+        FileSystem, FsDaemonStore, FsJournalStore, FsMilestoneControllerStore,
+        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
+        FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsTaskRunLineageStore,
+        RunPidOwner,
     };
+    use crate::contexts::agent_execution::model::CancellationToken;
     use crate::contexts::automation_runtime::model::{
         DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
     };
@@ -3387,11 +3437,13 @@ mod tests {
         ActiveRun, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin,
         TaskSource,
     };
+    use crate::contexts::project_run_record::service::{RunSnapshotPort, RunSnapshotWritePort};
     use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
     use crate::shared::error::AppError;
     use crate::test_support::br::{MockBrAdapter, MockBrResponse};
     use crate::test_support::bv::{MockBvAdapter, MockBvResponse};
     use crate::test_support::env::{lock_path_mutex, PathGuard};
+    use tokio::sync::oneshot;
 
     fn sample_bundle(id: &str, name: &str) -> MilestoneBundle {
         MilestoneBundle {
@@ -6872,6 +6924,96 @@ mod tests {
         assert!(
             !FileSystem::is_pid_running_unchecked(child_pid),
             "tracked cleanup should remove the orphaned child process"
+        );
+    }
+
+    #[tokio::test]
+    async fn termination_signal_wrapper_reconciles_interrupted_snapshot_when_future_returns_without_cleanup(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        crate::contexts::workspace_governance::initialize_workspace(temp_dir.path(), Utc::now())
+            .expect("initialize workspace");
+        let project_id = ProjectId::new("signal-wrapper-reconcile".to_owned()).expect("project id");
+        let run_started_at = Utc::now();
+        let mut snapshot = RunSnapshot::initial(20);
+        snapshot.status = RunStatus::Running;
+        snapshot.completion_rounds = 1;
+        snapshot.status_summary = "running: Implementation".to_owned();
+        snapshot.active_run = Some(ActiveRun {
+            run_id: "run-signal-wrapper".to_owned(),
+            stage_cursor: StageCursor::initial(StageId::Implementation),
+            started_at: run_started_at,
+            prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+            prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+            qa_iterations_current_cycle: 0,
+            review_iterations_current_cycle: 0,
+            final_review_restart_count: 0,
+            stage_resolution_snapshot: None,
+        });
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(temp_dir.path(), &project_id, &snapshot)
+            .expect("write running snapshot");
+        FileSystem::write_pid_file(
+            temp_dir.path(),
+            &project_id,
+            RunPidOwner::Cli,
+            Some("writer-signal-wrapper"),
+            Some("run-signal-wrapper"),
+            Some(run_started_at),
+        )
+        .expect("write pid file");
+
+        let cancellation_token = CancellationToken::new();
+        let cancellation_for_future = cancellation_token.clone();
+        let (signal_tx, signal_rx) = oneshot::channel::<()>();
+        let cleanup_context = RunSignalCleanupContext {
+            origin: RunSignalCleanupOrigin::Start,
+            run_snapshot_read: &FsRunSnapshotStore,
+            run_snapshot_write: &FsRunSnapshotWriteStore,
+            journal_store: &FsJournalStore,
+            log_write: &FsRuntimeLogWriteStore,
+            base_dir: temp_dir.path(),
+            project_id: &project_id,
+            writer_owner: Some("writer-signal-wrapper"),
+        };
+        let future = async move {
+            cancellation_for_future.cancelled().await;
+            Err(AppError::RunStartFailed {
+                reason: "simulated cancellation result without durable cleanup".to_owned(),
+            })
+        };
+
+        signal_tx.send(()).expect("deliver synthetic signal");
+        let error = run_with_termination_signal_waiter(
+            cancellation_token,
+            cleanup_context,
+            async move {
+                signal_rx.await.expect("receive synthetic signal");
+                Ok(())
+            },
+            future,
+        )
+        .await
+        .expect_err("signal wrapper should surface interruption");
+
+        assert!(
+            error.to_string().contains("termination signal"),
+            "signal wrapper should surface interruption-specific context: {error}"
+        );
+        let updated = FsRunSnapshotStore
+            .read_run_snapshot(temp_dir.path(), &project_id)
+            .expect("read updated snapshot");
+        assert_eq!(updated.status, RunStatus::Failed);
+        assert!(updated.active_run.is_none());
+        assert!(
+            updated.interrupted_run.is_some(),
+            "interrupted run metadata should be preserved after signal reconciliation"
+        );
+        assert!(
+            FileSystem::read_pid_file(temp_dir.path(), &project_id)
+                .expect("read pid file")
+                .is_none(),
+            "signal reconciliation should remove run.pid even when the engine future skipped cleanup"
         );
     }
 
