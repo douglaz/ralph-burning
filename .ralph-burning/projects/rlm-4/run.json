@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260411170802",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 8
+      "completion_round": 9
     },
     "started_at": "2026-04-11T17:08:02.886858415Z",
     "prompt_hash_at_cycle_start": "211ff42622498c7ebf504d9d32c69b84b938cce5905291c1ac44ea666340646a",
     "prompt_hash_at_stage_start": "211ff42622498c7ebf504d9d32c69b84b938cce5905291c1ac44ea666340646a",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 7
+    "final_review_restart_count": 8
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 8,
+  "completion_rounds": 9,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-8-89eb302c",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 8,
+        "body": "`src/cli/run.rs:2198-2201` persists the new `cleanup_handoff`, but `src/contexts/automation_runtime/cli_writer_lease.rs:125-150` does that with an unsynchronized read-modify-write while the lease heartbeat is still running. `heartbeat_tick()` at `src/contexts/automation_runtime/cli_writer_lease.rs:620-625` also does a read-modify-write of the same lease file. If a heartbeat reads the old record just before the signal path writes `cleanup_handoff`, the heartbeat can write its stale copy back afterward and erase the handoff. That reintroduces the exact stale-lock problem this bead is fixing: `run.pid` is removed, the process dies, and recovery has no durable evidence to reclaim the fresh CLI lease until TTL expiry. The handoff write needs to be serialized with heartbeat updates (or merged atomically) instead of racing them.",
+        "created_at": "2026-04-11T20:10:08.926529917Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "627e5282ba37dc53208826188a62af1dc4888e4871092715f431ef449e0264bf"
+      },
+      {
+        "amendment_id": "fr-8-b81848e4",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 8,
+        "body": "The missing-`run_failed` repair only runs inside `sync_terminal_milestone_task_with_options()`, but that function returns immediately when `project_record.task_source` is absent (`src/cli/run.rs:1103-1105`). The signal path still persists only the failed snapshot with `failure_class: None` (`src/cli/run.rs:2070-2082`), and the later repair is reached only after the milestone/task-source gate (`src/cli/run.rs:1138`). For non-bead projects, a SIGKILL during the grace-period wait still leaves `run.json` in `failed (interrupted by termination signal)` with no durable `run_failed` event forever. The fix needs a project-wide repair/finalization path, not one limited to milestone-linked runs.",
+        "created_at": "2026-04-11T20:10:08.926536319Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "3c2c9794acc8b27dd0ca9112d4810b6700b4e9b6cf5727140c5624626aa32f12"
+      },
+      {
+        "amendment_id": "fr-8-8f0d01cd",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 8,
+        "body": "`RunBackendProcessRecord` still allows missing process-identity metadata (`src/adapters/fs.rs:177-187`), but `kill_stale_backend_process_group()` now returns early for every non-authoritative record (`src/cli/run.rs:2718-2730`). `cleanup_stale_backend_process_groups()` then unconditionally deletes the backend-process records for the attempt (`src/cli/run.rs:2829-2834`). That means a legacy or partially-populated record whose leader PID has already exited will no longer use `unix_process_group_members()`/`kill(-pgid)` to clean surviving descendants; the orphaned backend tree keeps running and the bookkeeping is removed so later recovery cannot target it. The new safety check should still allow dead-leader PGID cleanup when PID reuse has been ruled out, rather than dropping the record and abandoning the descendants.",
+        "created_at": "2026-04-11T20:10:08.926539254Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "000f2d6820a9c7c5de86cab57ebbc36c8bf09b3e2c8e3780061eae8322ce9fe1"
+      }
+    ],
     "processed_count": 15
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 9 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-11T19:31:37.015088633Z",
+    "resolved_at": "2026-04-11T19:57:27.545902064Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

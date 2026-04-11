@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T20:07:12.682656801Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nThese three amendments all identify concrete failure modes in process lifecycle handling: race-prone lease persistence can drop recovery signals, non-bead failure repair can be skipped permanently, and stale backend cleanup can discard records needed to reap descendants. I recommend accepting all three.\n\n## Votes\n\n- `fr-8-89eb302c`: Accept\n  The described lease RMW race is real: concurrent heartbeat and signal-path writes to the same lease file can overwrite a newly written cleanup_handoff and erase durable reclaim state. Because recovery depends on that marker, this is a correctness and robustness regression unless updates are serialized or merged atomically.\n- `fr-8-b81848e4`: Accept\n  The code path noted means non-bead projects can exit after SIGKILL in the grace window with only a failure snapshot lacking a durable run_failed event, since the repair/finalization hook is gated behind task-source-specific logic. That leaves permanent incomplete terminal state and breaks downstream assumptions about terminalization semantics.\n- `fr-8-8f0d01cd`: Accept\n  Dropping non-authoritative records before attempting PGID-based descendant cleanup creates a leak and loses attribution needed for future recovery. If the leader PID is dead but descendants survive, skipping kill(-pgid) and deleting bookkeeping abandons live processes. Safety is harmed because stale trees persist and cannot be recovered deterministically later.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 8
+}
