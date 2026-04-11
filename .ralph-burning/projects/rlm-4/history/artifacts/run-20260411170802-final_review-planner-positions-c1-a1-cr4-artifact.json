@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr4-artifact",
+  "payload_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T18:36:38.001026707Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness and recovery defects: SIGTERM handoff can create conflicting terminal journal writes via an unsynchronized sequence counter, and stale backend cleanup can turn harmless leftover process records into hard recovery failures.\n\n## Votes\n\n- `fr-4-368d80ff`: Accept\n  The cited signal path can durably mark the run failed before the engine future returns, then still await that future. If the engine later enters its normal failure path, `fail_run` increments its stale in-memory `seq` and appends another `run_failed` event without re-reading journal state, which can produce duplicate or out-of-order sequence numbers. That is a genuine journal integrity bug and the handoff needs to prevent or serialize the second terminal write.\n- `fr-4-0cad23f0`: Accept\n  The current Unix cleanup path errors immediately when the tracked backend leader is already dead, and stale recovery invokes that cleanup before it can reconcile the snapshot. As a result, a stale `active-processes.json` record can block `run resume` or stale-stop recovery even when no backend process remains. Cleanup should preserve the PGID-reuse safety check for signaling, but a dead leader must not automatically make stale snapshot recovery fail when there is nothing left to kill.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
