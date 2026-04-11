@@ -7750,6 +7750,63 @@ fn status_reconciliation_ignores_terminal_events_before_unjournaled_resume_snaps
     assert!(snapshot.active_run.is_some());
 }
 
+/// Status reconciliation must still trust a durable terminal event when the
+/// active snapshot was written before `run_started` reached the journal.
+#[test]
+fn status_reconciliation_repairs_terminal_snapshot_without_run_started_event() {
+    use ralph_burning::contexts::project_run_record::queries;
+
+    let run_id = RunId::new("run-missing-run-started-status").unwrap();
+    let started_at = Utc::now();
+
+    let mut snapshot = RunSnapshot {
+        active_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                    StageId::Planning,
+                ),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
+        interrupted_run: None,
+        status: RunStatus::Running,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        max_completion_rounds: Some(20),
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "running: planning".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+
+    let events = vec![journal::run_failed_event(
+        1,
+        started_at,
+        &run_id,
+        StageId::Planning,
+        "stage_failure",
+        "failed before run_started persisted",
+        1,
+        20,
+        None,
+    )];
+
+    let patched = queries::reconcile_snapshot_status(&mut snapshot, &events);
+    assert!(
+        patched,
+        "terminal reconciliation should still patch a stale running snapshot without a durable run_started event"
+    );
+    assert_eq!(snapshot.status, RunStatus::Failed);
+    assert!(snapshot.active_run.is_none());
+}
+
 /// `last_terminal_event_type` returns the correct terminal event.
 #[test]
 fn last_terminal_event_type_returns_run_failed() {

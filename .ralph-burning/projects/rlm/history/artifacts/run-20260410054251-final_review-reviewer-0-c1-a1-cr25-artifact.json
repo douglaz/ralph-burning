@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr25-artifact",
+  "payload_id": "run-20260410054251-final_review-reviewer-0-c1-a1-cr25-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T21:40:33.340814402Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the committed changes in src/adapters/fs.rs, src/cli/run.rs, and tests/cli.rs, and ran the new targeted tests. I found 1 correctness issue: legacy pid-only liveness now trusts bare PID existence, which can strand upgraded workspaces in a false Running state after PID reuse.\n\n## Amendments\n\n1. Do not treat a legacy pid-only run marker as live based solely on raw PID existence. In src/cli/run.rs:1567-1573, any non-authoritative run.pid is now classified as LegacyCliProcess/LegacyDaemonProcess whenever kill(pid, 0) succeeds, even though those records have no proc_start_ticks to prove process identity. If the original orchestrator died and the OS later reused that PID, run status will keep reporting the snapshot as running instead of stale (src/cli/run.rs:6851-6868), while both run resume (src/cli/run.rs:1866-1869) and run stop (src/cli/run.rs:3023-3025) hard-refuse to recover it. That recreates the stuck Running/manual-JSON-repair path for upgraded workspaces. Keep a second ownership proof for legacy pid-only records, such as the matching fresh writer lease, or otherwise degrade them to stale instead of trusting a bare PID.\n   Rationale: Legacy run.pid files do not carry enough identity to distinguish the original orchestrator from an unrelated process that later reuses the same PID. Trusting only the numeric PID makes stale recovery depend on PID reuse luck and can permanently strand older runs.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 25
+}

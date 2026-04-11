@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411022402-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260411022402-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-11T02:28:14.076458036Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nMade running-status reconciliation honor the active attempt boundary even when no prior same-run journal event exists by treating the snapshot timestamp as a synthetic boundary with sequence 0. This preserves the existing resume-aware stale-terminal filtering while allowing `handle_status`/reconciliation to patch a stale `Running` snapshot when a durable `run_failed` exists but `run_started` never reached the journal. Added regression coverage in the default run-queries test suite and mirrored the scenario in the workflow-engine status tests.\n\n## Steps\n\n1. [Completed] Inspected `reconcile_snapshot_status`/`terminal_status_for_running_attempt` and the existing status reconciliation tests to confirm resumed attempts already use a boundary but the no-`run_started` case still returned `None`.\n2. [Completed] Updated `running_attempt_boundary_sequence` so the snapshot-derived boundary falls back to sequence `0` when the active attempt has no earlier same-run journal events, allowing later durable terminal events for that attempt to reconcile correctly.\n3. [Completed] Added a default-suite regression test for a stale running snapshot with only `run_failed` in the journal, and added the same scenario to the feature-gated workflow-engine status tests.\n4. [Completed] Validated the change with formatting, full test, clippy, and focused regression runs.\n\n## Validation Evidence\n\n- `cargo test` passed.\n- `cargo clippy` passed (with existing unrelated warnings).\n- `cargo fmt --check` passed.\n- Focused default-suite regression passed: `cargo test --test unit reconcile_snapshot_status_repairs_terminal_run_without_run_started_event -- --nocapture`.\n- Focused feature-gated regression passed: `cargo test --features test-stub --test unit status_reconciliation_repairs_terminal_snapshot_without_run_started_event -- --nocapture`.\n\n## Outstanding Risks\n\n- `cargo clippy` still reports pre-existing warnings in unrelated files; this change does not address those warnings.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

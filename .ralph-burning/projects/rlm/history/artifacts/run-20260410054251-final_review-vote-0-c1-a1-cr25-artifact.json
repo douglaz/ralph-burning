@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260410054251-final_review-vote-0-c1-a1-cr25-artifact",
+  "payload_id": "run-20260410054251-final_review-vote-0-c1-a1-cr25-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-10T21:42:07.173249669Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the amendment: bare PID existence is not a sufficient ownership proof for legacy pid-only run markers, and the current behavior can strand upgraded workspaces in a false-running state that neither resume nor stop can safely recover.\n\n## Votes\n\n- `fr-25-6d0379b7`: Accept\n  `classify_running_snapshot_liveness` falls back to `is_pid_running_unchecked(record.pid)` for non-authoritative `run.pid` records, which only shows that some process currently occupies that PID. For legacy pid-only records there is no `proc_start_ticks` or equivalent identity metadata, so PID reuse can misclassify a stale snapshot as `LegacyCliProcess` or `LegacyDaemonProcess`. `run status` then continues to present the snapshot as running, while `run resume` and `run stop` explicitly refuse those legacy-live states, recreating a stuck false-Running/manual-repair path. Requiring a second ownership signal such as a fresh matching writer lease, or otherwise degrading these pid-only records to stale, is the safer and more maintainable behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 25
+}
