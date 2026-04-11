@@ -1657,7 +1657,11 @@ fn stop_target_pid_record_is_unchanged(
     observed_pid_record: &crate::adapters::fs::RunPidRecord,
 ) -> AppResult<bool> {
     let Some(current_pid_record) = FileSystem::read_pid_file(base_dir, project_id)? else {
-        return Ok(false);
+        // PID file was removed — the orchestrator exited cleanly between
+        // liveness classification and this revalidation.  Treat as
+        // unchanged so the caller falls through to the post-exit path
+        // instead of reporting a spurious handoff error.
+        return Ok(true);
     };
 
     Ok(current_pid_record == *observed_pid_record
