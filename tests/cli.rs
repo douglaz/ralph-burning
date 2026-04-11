@@ -171,6 +171,14 @@ fn live_pid_record_json(
     {
         record["proc_start_ticks"] = serde_json::json!(proc_start_ticks(pid));
     }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        if let Some(marker) =
+            ralph_burning::adapters::fs::FileSystem::proc_start_marker_for_pid(pid)
+        {
+            record["proc_start_marker"] = serde_json::json!(marker);
+        }
+    }
     record
 }
 
@@ -6025,6 +6033,54 @@ fn run_status_keeps_legacy_cli_owned_running_snapshot_active_with_live_pid_witho
     assert!(
         !stdout.contains("stale"),
         "live legacy pid-only records must not be auto-recovered while the orchestrator pid still exists: {stdout}"
+    );
+}
+
+#[test]
+fn run_status_treats_legacy_pid_record_as_stale_when_live_process_started_after_record() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-legacy-pid-reused-status",
+    "stage_cursor": { "stage": "implementation", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Implementation"
+}"#,
+    )
+    .expect("write running snapshot");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.pid"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "pid": std::process::id(),
+            "started_at": Utc::now() - Duration::days(365),
+            "owner": "cli",
+        }))
+        .expect("serialize legacy pid"),
+    )
+    .expect("write legacy pid");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Status: stale (process not found)"),
+        "legacy pid records must be treated as stale when the live process started after the recorded timestamp: {stdout}"
     );
 }
 

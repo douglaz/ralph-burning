@@ -734,7 +734,7 @@ fn preserve_interrupted_run(snapshot: &mut RunSnapshot) {
 
 fn orchestrator_process_is_alive(base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
     Ok(FileSystem::read_pid_file(base_dir, project_id)?
-        .is_some_and(|record| FileSystem::is_pid_alive(&record)))
+        .is_some_and(|record| FileSystem::pid_record_matches_live_process(&record)))
 }
 
 pub struct InterruptedRunUpdate<'a> {
@@ -8349,10 +8349,16 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::adapters::fs::{
-        FileSystem, FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
-        FsMilestoneSnapshotStore, FsMilestoneStore, RunPidOwner,
+        FileSystem, FsArtifactStore, FsJournalStore, FsMilestoneControllerStore,
+        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
+        FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRunSnapshotStore,
+        FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore, RunPidOwner, RunPidRecord,
+    };
+    use crate::contexts::agent_execution::model::{
+        InvocationEnvelope, InvocationMetadata, InvocationRequest, RawOutputReference, TokenCounts,
     };
     use crate::contexts::agent_execution::policy::ResolvedPanelMember;
+    use crate::contexts::agent_execution::{AgentExecutionPort, AgentExecutionService};
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
     };
@@ -8367,8 +8373,9 @@ mod tests {
         TaskOrigin, TaskSource,
     };
     use crate::contexts::project_run_record::service::{
-        JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
+        create_project, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
     };
+    use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
     use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
     use crate::shared::domain::{
         BackendFamily, FlowPreset, ProjectId, ResolvedBackendTarget, StageId,
@@ -8378,8 +8385,8 @@ mod tests {
     use super::{
         build_final_review_snapshot, complete_run, drift_still_satisfies_requirements,
         mark_running_run_interrupted, milestone_lineage_plan_hash, pause_run,
-        resolution_has_drifted, sync_milestone_bead_start, InterruptedRunContext,
-        InterruptedRunUpdate, RunningAttemptIdentity,
+        resolution_has_drifted, resume_run_with_retry, sync_milestone_bead_start,
+        InterruptedRunContext, InterruptedRunUpdate, RunningAttemptIdentity,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -8966,6 +8973,47 @@ mod tests {
 
     struct NoPendingAmendmentQueue;
 
+    #[derive(Clone, Default)]
+    struct NoopAgentExecutionAdapter;
+
+    impl AgentExecutionPort for NoopAgentExecutionAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &crate::contexts::agent_execution::InvocationContract,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn check_availability(&self, _backend: &ResolvedBackendTarget) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+            Ok(InvocationEnvelope {
+                raw_output_reference: RawOutputReference::Inline(r#"{"status":"ok"}"#.to_owned()),
+                parsed_payload: serde_json::json!({"status": "ok"}),
+                metadata: InvocationMetadata {
+                    invocation_id: request.invocation_id,
+                    duration: std::time::Duration::ZERO,
+                    token_counts: TokenCounts::default(),
+                    backend_used: request.resolved_target.backend.clone(),
+                    model_used: request.resolved_target.model.clone(),
+                    adapter_reported_backend: None,
+                    adapter_reported_model: None,
+                    attempt_number: 0,
+                    session_id: None,
+                    session_reused: false,
+                },
+                timestamp: Utc::now(),
+            })
+        }
+
+        async fn cancel(&self, _invocation_id: &str) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
     impl crate::contexts::project_run_record::service::AmendmentQueuePort for NoPendingAmendmentQueue {
         fn write_amendment(
             &self,
@@ -9052,6 +9100,110 @@ mod tests {
             status_summary: "running: planning".to_owned(),
             last_stage_resolution_snapshot: None,
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resume_run_with_retry_keeps_live_legacy_pid_only_snapshot_running() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+
+        runtime.block_on(async {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+            let effective_config =
+                EffectiveConfig::load(temp_dir.path()).expect("load effective config");
+            let project_id = ProjectId::new("resume-live-legacy-pid").expect("project id");
+            let created_at = Utc::now();
+
+            create_project(
+                &FsProjectStore,
+                &FsJournalStore,
+                temp_dir.path(),
+                CreateProjectInput {
+                    id: project_id.clone(),
+                    name: "Resume legacy pid".to_owned(),
+                    flow: FlowPreset::Standard,
+                    prompt_path: "prompt.md".to_owned(),
+                    prompt_contents: "prompt".to_owned(),
+                    prompt_hash: "prompt-hash".to_owned(),
+                    created_at,
+                    task_source: None,
+                },
+            )
+            .expect("create project");
+
+            let run_id =
+                crate::shared::domain::RunId::new("run-resume-live-legacy-pid").expect("run id");
+            let mut snapshot = running_snapshot_for_pid_cleanup(&run_id);
+            let run_started_at = Utc::now();
+            snapshot
+                .active_run
+                .as_mut()
+                .expect("active run")
+                .started_at = run_started_at;
+            FsRunSnapshotWriteStore
+                .write_run_snapshot(temp_dir.path(), &project_id, &snapshot)
+                .expect("write running snapshot");
+
+            let legacy_pid_record = RunPidRecord {
+                pid: std::process::id(),
+                started_at: Utc::now(),
+                owner: RunPidOwner::Cli,
+                writer_owner: None,
+                run_id: None,
+                run_started_at: None,
+                proc_start_ticks: None,
+                proc_start_marker: None,
+            };
+            FileSystem::write_atomic(
+                &FileSystem::live_project_root(temp_dir.path(), &project_id).join("run.pid"),
+                &serde_json::to_string_pretty(&legacy_pid_record).expect("serialize pid file"),
+            )
+            .expect("write legacy pid file");
+
+            let agent_service =
+                AgentExecutionService::new(NoopAgentExecutionAdapter, FsRawOutputStore, FsSessionStore);
+            let error = resume_run_with_retry(
+                &agent_service,
+                &FsRunSnapshotStore,
+                &FsRunSnapshotWriteStore,
+                &FsJournalStore,
+                &FsArtifactStore,
+                &FsPayloadArtifactWriteStore,
+                &FsRuntimeLogWriteStore,
+                &NoPendingAmendmentQueue,
+                temp_dir.path(),
+                None,
+                &project_id,
+                None,
+                FlowPreset::Standard,
+                &effective_config,
+                &RetryPolicy::default_policy(),
+                crate::contexts::agent_execution::CancellationToken::new(),
+            )
+            .await
+            .expect_err("live legacy pid should block resume instead of reconciling to failed");
+
+            assert!(matches!(
+                error,
+                AppError::ResumeFailed { reason }
+                    if reason == "project already has a running run; `run resume` only works from failed or paused snapshots"
+            ));
+
+            let final_snapshot = FsRunSnapshotStore
+                .read_run_snapshot(temp_dir.path(), &project_id)
+                .expect("read final snapshot");
+            assert_eq!(final_snapshot.status, RunStatus::Running);
+            assert!(
+                FileSystem::read_pid_file(temp_dir.path(), &project_id)
+                    .expect("read pid file")
+                    .is_some(),
+                "resume should keep a live legacy pid record instead of reconciling it away"
+            );
+        });
     }
 
     #[test]
