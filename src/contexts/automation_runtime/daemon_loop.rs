@@ -431,12 +431,26 @@ where
                                             }
                                         }
                                     } else {
-                                        // Lease file not found — nothing to release.
-                                        let _ = DaemonTaskService::clear_label_dirty(
-                                            self.store,
+                                        match self.clear_orphaned_task_lease_reference(
                                             &daemon_dir,
-                                            &dirty_task.task_id,
-                                        );
+                                            dirty_task,
+                                        ) {
+                                            Ok(()) => {
+                                                let _ = DaemonTaskService::clear_label_dirty(
+                                                    self.store,
+                                                    &daemon_dir,
+                                                    &dirty_task.task_id,
+                                                );
+                                            }
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "daemon: deferred lease metadata cleanup failed for terminal task '{}' in {}: {e}",
+                                                    dirty_task.task_id, reg.repo_slug
+                                                );
+                                                phase0_quarantined = true;
+                                                break;
+                                            }
+                                        }
                                     }
                                 } else {
                                     // No lease reference — nothing to release.
@@ -3619,29 +3633,13 @@ where
         match release_result {
             Ok(ref r) if r.resources_released => {
                 // All sub-steps succeeded — safe to clear durable lease reference.
-                let cleared =
-                    DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id)
-                        .map(|_| ());
-                if cleared.is_ok() {
-                    if let Ok(project_id) = ProjectId::new(lease.project_id.clone()) {
-                        // Only remove the pid file if it still belongs to
-                        // this task's run.  A fresh run may have claimed the
-                        // project and written a new pid file after the writer
-                        // lock was released above.
-                        if let Ok(Some(pid_record)) =
-                            FileSystem::read_pid_file(base_dir, &project_id)
-                        {
-                            if pid_record.pid == std::process::id() {
-                                let _ = FileSystem::remove_pid_file_if_matches(
-                                    base_dir,
-                                    &project_id,
-                                    &pid_record,
-                                );
-                            }
-                        }
-                    }
-                }
-                cleared
+                DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id).map_err(
+                    |_| AppError::LeaseCleanupPartialFailure {
+                        task_id: task_id.to_owned(),
+                    },
+                )?;
+                self.remove_owned_run_pid_file(base_dir, &lease.project_id);
+                Ok(())
             }
             Ok(_) => {
                 // Partial cleanup: some resources remain. Do NOT clear lease
@@ -3652,6 +3650,33 @@ where
                 })
             }
             Err(error) => Err(error),
+        }
+    }
+
+    fn clear_orphaned_task_lease_reference(
+        &self,
+        base_dir: &Path,
+        task: &DaemonTask,
+    ) -> AppResult<()> {
+        DaemonTaskService::clear_lease_reference(self.store, base_dir, &task.task_id).map_err(
+            |_| AppError::LeaseCleanupPartialFailure {
+                task_id: task.task_id.clone(),
+            },
+        )?;
+        self.remove_owned_run_pid_file(base_dir, &task.project_id);
+        Ok(())
+    }
+
+    fn remove_owned_run_pid_file(&self, base_dir: &Path, project_id: &str) {
+        if let Ok(project_id) = ProjectId::new(project_id.to_owned()) {
+            // Only remove the pid file if it still belongs to this daemon's
+            // run. A fresh run may have claimed the project after cleanup.
+            if let Ok(Some(pid_record)) = FileSystem::read_pid_file(base_dir, &project_id) {
+                if pid_record.pid == std::process::id() {
+                    let _ =
+                        FileSystem::remove_pid_file_if_matches(base_dir, &project_id, &pid_record);
+                }
+            }
         }
     }
 }
@@ -4150,6 +4175,20 @@ mod tests {
         }
     }
 
+    struct FailOnceLeaseReferenceClearStore {
+        task_id: String,
+        fail_next_clear_lease_write: AtomicBool,
+    }
+
+    impl FailOnceLeaseReferenceClearStore {
+        fn new(task_id: &str) -> Self {
+            Self {
+                task_id: task_id.to_owned(),
+                fail_next_clear_lease_write: AtomicBool::new(true),
+            }
+        }
+    }
+
     impl DaemonStorePort for FailOnceWaitingTaskWriteStore {
         fn list_tasks(&self, base_dir: &std::path::Path) -> AppResult<Vec<DaemonTask>> {
             FsDaemonStore.list_tasks(base_dir)
@@ -4169,6 +4208,112 @@ mod tests {
             {
                 return Err(AppError::Io(std::io::Error::other(
                     "simulated waiting-task metadata write failure",
+                )));
+            }
+
+            FsDaemonStore.write_task(base_dir, task)
+        }
+
+        fn list_leases(&self, base_dir: &std::path::Path) -> AppResult<Vec<WorktreeLease>> {
+            FsDaemonStore.list_leases(base_dir)
+        }
+
+        fn read_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<WorktreeLease> {
+            FsDaemonStore.read_lease(base_dir, lease_id)
+        }
+
+        fn write_lease(&self, base_dir: &std::path::Path, lease: &WorktreeLease) -> AppResult<()> {
+            FsDaemonStore.write_lease(base_dir, lease)
+        }
+
+        fn list_lease_records(&self, base_dir: &std::path::Path) -> AppResult<Vec<LeaseRecord>> {
+            FsDaemonStore.list_lease_records(base_dir)
+        }
+
+        fn read_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<LeaseRecord> {
+            FsDaemonStore.read_lease_record(base_dir, lease_id)
+        }
+
+        fn write_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease: &LeaseRecord,
+        ) -> AppResult<()> {
+            FsDaemonStore.write_lease_record(base_dir, lease)
+        }
+
+        fn remove_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<ResourceCleanupOutcome> {
+            FsDaemonStore.remove_lease(base_dir, lease_id)
+        }
+
+        fn read_daemon_journal(
+            &self,
+            base_dir: &std::path::Path,
+        ) -> AppResult<Vec<DaemonJournalEvent>> {
+            FsDaemonStore.read_daemon_journal(base_dir)
+        }
+
+        fn append_daemon_journal_event(
+            &self,
+            base_dir: &std::path::Path,
+            event: &DaemonJournalEvent,
+        ) -> AppResult<()> {
+            FsDaemonStore.append_daemon_journal_event(base_dir, event)
+        }
+
+        fn acquire_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            lease_id: &str,
+        ) -> AppResult<()> {
+            FsDaemonStore.acquire_writer_lock(base_dir, project_id, lease_id)
+        }
+
+        fn release_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            expected_owner: &str,
+        ) -> AppResult<WriterLockReleaseOutcome> {
+            FsDaemonStore.release_writer_lock(base_dir, project_id, expected_owner)
+        }
+    }
+
+    impl DaemonStorePort for FailOnceLeaseReferenceClearStore {
+        fn list_tasks(&self, base_dir: &std::path::Path) -> AppResult<Vec<DaemonTask>> {
+            FsDaemonStore.list_tasks(base_dir)
+        }
+
+        fn read_task(&self, base_dir: &std::path::Path, task_id: &str) -> AppResult<DaemonTask> {
+            FsDaemonStore.read_task(base_dir, task_id)
+        }
+
+        fn create_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            FsDaemonStore.create_task(base_dir, task)
+        }
+
+        fn write_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            if task.task_id == self.task_id
+                && task.lease_id.is_none()
+                && self
+                    .fail_next_clear_lease_write
+                    .swap(false, Ordering::SeqCst)
+            {
+                return Err(AppError::Io(std::io::Error::other(
+                    "simulated clear_lease_reference write failure",
                 )));
             }
 
@@ -5261,6 +5406,200 @@ mod tests {
         assert!(
             matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
             "unexpected cycle error: {error:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_stops_on_post_release_metadata_cleanup_failure() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = ProjectId::new("daemon-cycle-metadata-partial").expect("project id");
+        let first_task = sample_pending_task("task-daemon-cycle-metadata-partial-a", &project_id);
+        let second_task = sample_pending_task("task-daemon-cycle-metadata-partial-b", &project_id);
+        FsDaemonStore
+            .create_task(base, &first_task)
+            .expect("create first task");
+        FsDaemonStore
+            .create_task(base, &second_task)
+            .expect("create second task");
+
+        let store = FailOnceLeaseReferenceClearStore::new(&first_task.task_id);
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &store,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .process_cycle(base, &DaemonLoopConfig::default(), CancellationToken::new())
+            .await
+            .expect_err("metadata cleanup failure should stop the single-repo cycle");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected cycle error: {error:?}"
+        );
+
+        let first_lease_id = format!("lease-{}", first_task.task_id);
+        let completed_first = FsDaemonStore
+            .read_task(base, &first_task.task_id)
+            .expect("read first task after metadata cleanup failure");
+        assert_eq!(completed_first.status, TaskStatus::Completed);
+        assert_eq!(
+            completed_first.lease_id.as_deref(),
+            Some(first_lease_id.as_str()),
+            "the stale task lease reference should remain visible for operator recovery"
+        );
+        assert!(
+            FsDaemonStore.read_lease(base, &first_lease_id).is_err(),
+            "physical lease resources should already be gone when only the metadata write failed"
+        );
+
+        let untouched_second = FsDaemonStore
+            .read_task(base, &second_task.task_id)
+            .expect("read second task after interrupted cycle");
+        assert_eq!(
+            untouched_second.status,
+            TaskStatus::Pending,
+            "the daemon must stop scanning once a post-release metadata write fails"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_repairs_orphaned_lease_reference_after_metadata_failure() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let first_project_id = create_standard_project(&repo_root, "multi-repo-metadata-a");
+        let second_project_id = create_standard_project(&repo_root, "multi-repo-metadata-b");
+
+        let mut first_task = sample_pending_task("task-multi-repo-metadata-a", &first_project_id);
+        first_task.issue_ref = format!("{repo_slug}#11");
+        first_task.repo_slug = Some(repo_slug.to_owned());
+        first_task.issue_number = Some(11);
+        FsDaemonStore
+            .create_task(&daemon_dir, &first_task)
+            .expect("create first multi-repo task");
+
+        let mut second_task = sample_pending_task("task-multi-repo-metadata-b", &second_project_id);
+        second_task.issue_ref = format!("{repo_slug}#12");
+        second_task.repo_slug = Some(repo_slug.to_owned());
+        second_task.issue_number = Some(12);
+        FsDaemonStore
+            .create_task(&daemon_dir, &second_task)
+            .expect("create second multi-repo task");
+
+        let store = FailOnceLeaseReferenceClearStore::new(&first_task.task_id);
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &store,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration.clone()],
+            )
+            .await
+            .expect("first multi-repo cycle");
+
+        let first_after_first = FsDaemonStore
+            .read_task(&daemon_dir, &first_task.task_id)
+            .expect("read first task after metadata cleanup failure");
+        let first_lease_id = format!("lease-{}", first_task.task_id);
+        assert_eq!(first_after_first.status, TaskStatus::Completed);
+        assert!(first_after_first.label_dirty);
+        assert_eq!(
+            first_after_first.lease_id.as_deref(),
+            Some(first_lease_id.as_str())
+        );
+        assert!(
+            FsDaemonStore
+                .read_lease(&daemon_dir, &first_lease_id)
+                .is_err(),
+            "the repo should be quarantined even after the physical lease is already gone"
+        );
+
+        let second_after_first = FsDaemonStore
+            .read_task(&daemon_dir, &second_task.task_id)
+            .expect("read second task after first cycle");
+        assert_eq!(
+            second_after_first.status,
+            TaskStatus::Pending,
+            "follow-on tasks must stay blocked until the orphaned lease reference is repaired"
+        );
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("second multi-repo cycle");
+
+        let repaired_first = FsDaemonStore
+            .read_task(&daemon_dir, &first_task.task_id)
+            .expect("read repaired first task");
+        assert!(!repaired_first.label_dirty);
+        assert!(
+            repaired_first.lease_id.is_none(),
+            "Phase 0 should repair orphaned task lease references even without a lease file"
+        );
+
+        let second_after_second = FsDaemonStore
+            .read_task(&daemon_dir, &second_task.task_id)
+            .expect("read second task after recovery cycle");
+        assert_eq!(
+            second_after_second.status,
+            TaskStatus::Completed,
+            "the repo should resume processing once the orphaned lease reference is repaired"
         );
     }
 
