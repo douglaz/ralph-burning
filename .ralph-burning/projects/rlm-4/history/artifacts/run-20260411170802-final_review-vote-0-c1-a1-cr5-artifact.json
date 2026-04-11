@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T19:00:18.987764148Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real stale-backend cleanup defects: one codifies a leaked orphaned backend after forced stop, and the other lets dead non-authoritative backend records spuriously block cleanup and stale recovery.\n\n## Votes\n\n- `fr-5-4046f3b6`: Accept\n  `kill_stale_backend_process_group()` currently errors out once the recorded leader is gone but other members of that PGID are still alive, and that failure propagates through `run stop` and stale recovery. The regression test explicitly asserts the orphan survives, so the cleanup path still fails its job in the forced-stop case; even if `kill(-pgid)` needs extra care, leaving known surviving backend members running is a correctness bug.\n- `fr-5-e636c5c4`: Accept\n  The ordering bug is real: `RunBackendProcessRecord` accepts missing `proc_start_*`, but cleanup rejects such records before checking whether the PID is already gone, so a dead legacy or partially written record can fail stop/recovery for no reason. Fixing it requires a liveness check that does not depend on authoritative identity, because `is_backend_process_alive()` returns false for every non-authoritative record, but the amendment correctly identifies the defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}
