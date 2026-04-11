@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T17:25:02.594117269Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBoth amendments should be accepted. They address concrete correctness and safety gaps in process lifecycle handling: one closes a crash-consistency window in SIGTERM interruption state persistence, and the other prevents unsafe process-group signaling under PID/PGID reuse.\n\n## Votes\n\n- `fr-1-f99b994c`: Accept\n  This is a real durability defect: observing SIGTERM without immediately persisting an interrupted marker or removing the PID file can leave persisted state claiming Running if the orchestrator exits before reconciliation runs. Immediate durable marking (or equivalent handoff) before entering the grace wait is necessary to avoid orphaned/lost state recovery ambiguity.\n- `fr-1-f208e741`: Accept\n  Using only authoritative identity fields before `kill(-pid, SIGKILL)` is insufficient for correctness under PID/PGID reuse. A stale record can match schema yet refer to a reallocated process group; signaling by negative PID without revalidating live identity can terminate unrelated processes. A reuse-safe check or explicit refusal is required for this destructive path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

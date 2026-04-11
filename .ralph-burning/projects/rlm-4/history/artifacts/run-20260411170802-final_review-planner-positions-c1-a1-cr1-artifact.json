@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260411170802-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T17:24:59.406529691Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real robustness defects in the current run-control code: one is a crash-consistency gap in SIGTERM handling, and the other is an unsafe stale-backend cleanup path under PID/PGID reuse.\n\n## Votes\n\n- `fr-1-f99b994c`: Accept\n  `run_with_termination_signal_waiter()` cancels and then waits up to `RUN_STOP_GRACE_PERIOD`, but it does not durably change the snapshot or remove `run.pid` until after the future returns or the timeout fires. If the orchestrator is killed during that window, persisted state still says `Running` and still advertises the old pid, which is exactly the stale-state durability hole the interruption cleanup is supposed to prevent. A fix needs an immediate durable interruption marker or equivalent handoff before entering the grace wait, with later completion allowed to reconcile forward.\n- `fr-1-f208e741`: Accept\n  The current stale-backend cleanup only checks `backend_process_is_authoritative(record)`, which means identity fields are present; it does not prove the live numeric PID/PGID still belongs to the recorded backend before sending `kill(-pid, SIGKILL)` or falling back to `kill(pid, SIGKILL)`. Under PID reuse, that can signal an unrelated process group or process. Because this is a direct process-kill path, reuse-safe validation is required before signaling, and cleanup should refuse to proceed when that guarantee cannot be established.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411170802-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260411170802-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T17:27:43.914432965Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real robustness defects in the current run-control path: SIGTERM handling is not crash-durable during the grace wait, and stale backend cleanup can signal a reused PID without revalidating identity.\n\n## Votes\n\n- `fr-1-f99b994c`: Accept\n  `run_with_termination_signal_waiter()` only calls `reconcile_signal_interruption()` after the backend future returns or the grace timeout expires. Until then, the persisted snapshot can remain `Running` and `run.pid` can remain present. If the orchestrator is killed during that window, durable state is left stale, which defeats the interruption-recovery mechanism. The fix needs an immediate durable interruption/handoff marker before entering the grace wait, with later completion allowed to reconcile forward if the run actually finishes cleanly.\n- `fr-1-f208e741`: Accept\n  `kill_stale_backend_process_group()` now treats stored identity fields as sufficient and sends signals based on the numeric pid/pgid without first proving the live target still matches the recorded backend process. That is unsafe under PID reuse: if the original backend leader exited and the process group is gone, `kill(-pid, SIGKILL)` can return `ESRCH` and the direct `kill(pid, SIGKILL)` fallback can hit an unrelated reused process. Cleanup should revalidate identity in a reuse-safe way before signaling, or refuse automatic cleanup when that proof is unavailable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
