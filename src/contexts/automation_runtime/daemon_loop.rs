@@ -70,6 +70,13 @@ type ConfiguredRequirementsServiceBuilder = Box<
         + Sync,
 >;
 
+fn allow_aborted_dispatch_fast_path(outcome: AppResult<()>) -> AppResult<()> {
+    match outcome {
+        Ok(()) | Err(AppError::InvocationCancelled { .. }) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonLoopConfig {
     pub poll_interval: Duration,
@@ -843,6 +850,7 @@ where
 
         let latest_task = self.store.read_task(store_dir, &active_task.task_id)?;
         if latest_task.status == TaskStatus::Aborted {
+            allow_aborted_dispatch_fast_path(outcome)?;
             // Sync label: Aborted → rb:failed. On failure, mark label_dirty and
             // quarantine — do NOT release the lease in this cycle so no further
             // mutations occur. Phase 0 will repair the label and release the lease.
@@ -1544,6 +1552,7 @@ where
 
         let latest_task = self.store.read_task(base_dir, &active_task.task_id)?;
         if latest_task.status == TaskStatus::Aborted {
+            allow_aborted_dispatch_fast_path(outcome)?;
             self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
             return Ok(());
         }
@@ -4857,6 +4866,30 @@ mod tests {
                 .expect("writer lock state after partial cleanup"),
             WriterLockReleaseOutcome::AlreadyAbsent
         ));
+    }
+
+    #[test]
+    fn aborted_dispatch_fast_path_allows_successful_outcomes() {
+        assert!(super::allow_aborted_dispatch_fast_path(Ok(())).is_ok());
+        assert!(
+            super::allow_aborted_dispatch_fast_path(Err(AppError::InvocationCancelled {
+                backend: "daemon".to_owned(),
+                contract_id: "task-aborted".to_owned(),
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn aborted_dispatch_fast_path_propagates_non_cancellation_errors() {
+        let error = super::allow_aborted_dispatch_fast_path(Err(AppError::Io(
+            std::io::Error::other("backend cleanup failed"),
+        )))
+        .expect_err("non-cancellation outcome should not be swallowed");
+        assert!(
+            matches!(error, AppError::Io(_)),
+            "unexpected propagated error: {error:?}"
+        );
     }
 
     /// Regression test: dispatch_in_worktree_with_service must return Ok(())
