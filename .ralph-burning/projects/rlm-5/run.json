@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 11
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-10-88cddcf4",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 10,
-        "body": "Add an attempt-based fallback in daemon cancellation cleanup for cases where `run.pid` is already gone or no longer matches the current daemon process. `prepare_cancelled_dispatch_handoff()` explicitly preserves `expected_attempt` when the pid file is missing/mismatched (`src/contexts/automation_runtime/daemon_loop.rs:2943-2961`), but both `finish_cancelled_dispatch()` branches only try `reconcile_cancelled_dispatch_run()` when `interrupted_marker_persisted` is false (`src/contexts/automation_runtime/daemon_loop.rs:3124-3143`, `src/contexts/automation_runtime/daemon_loop.rs:3156-3168`). That helper calls `mark_current_process_running_run_interrupted()` (`src/contexts/automation_runtime/daemon_loop.rs:2877-2900`), which immediately returns `false` if `run.pid` is absent or no longer belongs to this process (`src/contexts/workflow_composition/engine.rs:857-889`). The daemon then surfaces `InvocationCancelled`, callers release the task lease, and the project can be left with a stale `run.json` still marked `Running`; on the grace-completed path it also skips `cleanup_cancelled_dispatch_backend_processes()`, so tracked backend groups can survive. Use the saved `expected_attempt` to reconcile/finalize interrupted state and run backend cleanup even when the pid file has already disappeared.",
-        "created_at": "2026-04-12T01:05:26.425807376Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "19ca404d5cc6dc7ac1a50009a827105a0336b4be397868dca64437bfc475633c"
-      }
-    ],
-    "processed_count": 16
+    "pending": [],
+    "processed_count": 17
   },
-  "status_summary": "running: final review restart round 11 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-12T00:52:29.600571824Z",

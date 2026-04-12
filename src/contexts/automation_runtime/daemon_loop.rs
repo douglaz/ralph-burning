@@ -2879,25 +2879,39 @@ where
         workspace_dir: &Path,
         project_id: &ProjectId,
         writer_owner: &str,
+        expected_attempt: Option<&engine::RunningAttemptIdentity>,
         summary: &'static str,
         log_message: &'static str,
     ) -> AppResult<bool> {
-        engine::mark_current_process_running_run_interrupted(
-            engine::InterruptedRunContext {
-                run_snapshot_read: self.run_snapshot_read,
-                run_snapshot_write: self.run_snapshot_write,
-                journal_store: self.journal_store,
-                log_write: self.log_write,
-                base_dir: workspace_dir,
-                project_id,
-            },
-            Some(writer_owner),
-            engine::InterruptedRunUpdate {
-                summary,
-                log_message,
-                failure_class: Some("cancellation"),
-            },
-        )
+        let interrupted_context = engine::InterruptedRunContext {
+            run_snapshot_read: self.run_snapshot_read,
+            run_snapshot_write: self.run_snapshot_write,
+            journal_store: self.journal_store,
+            log_write: self.log_write,
+            base_dir: workspace_dir,
+            project_id,
+        };
+
+        match expected_attempt {
+            Some(expected_attempt) => engine::mark_running_run_interrupted(
+                interrupted_context,
+                expected_attempt,
+                engine::InterruptedRunUpdate {
+                    summary,
+                    log_message,
+                    failure_class: Some("cancellation"),
+                },
+            ),
+            None => engine::mark_current_process_running_run_interrupted(
+                interrupted_context,
+                Some(writer_owner),
+                engine::InterruptedRunUpdate {
+                    summary,
+                    log_message,
+                    failure_class: Some("cancellation"),
+                },
+            ),
+        }
     }
 
     fn load_dispatch_run_snapshot(
@@ -3125,6 +3139,7 @@ where
                         workspace_dir,
                         project_id,
                         &lease.lease_id,
+                        interrupted_handoff.expected_attempt.as_ref(),
                         summary,
                         log_message,
                     ) {
@@ -3157,6 +3172,7 @@ where
                         workspace_dir,
                         project_id,
                         &lease.lease_id,
+                        interrupted_handoff.expected_attempt.as_ref(),
                         summary,
                         log_message,
                     )
@@ -5389,6 +5405,189 @@ mod tests {
         assert!(
             !FileSystem::is_pid_running_unchecked(backend_pid),
             "daemon cancellation cleanup should SIGKILL the tracked backend process group"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn finish_cancelled_dispatch_recovers_by_attempt_without_run_pid_and_cleans_backends() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-cancel-missing-pid");
+        let started_at = Utc::now();
+        let run_id = "run-daemon-cancel-missing-pid".to_owned();
+
+        let snapshot = RunSnapshot {
+            active_run: Some(ActiveRun {
+                run_id: run_id.clone(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            interrupted_run: None,
+            status: RunStatus::Running,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "running: implementation".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base, &project_id, &snapshot)
+            .expect("write running snapshot");
+
+        FileSystem::write_pid_file(
+            base,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some("lease-daemon-cancel-missing-pid"),
+            Some(run_id.as_str()),
+            Some(started_at),
+        )
+        .expect("write pid file");
+
+        let backend_pid_path = base.join("tracked-backend-missing-pid.pid");
+        let script = format!(
+            "setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done",
+            backend_pid_path.display(),
+            backend_pid_path.display(),
+        );
+        let mut parent = std::process::Command::new("bash")
+            .args(["-lc", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn backend helper");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while (!backend_pid_path.exists() || std::fs::read_to_string(&backend_pid_path).is_err())
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let backend_pid = std::fs::read_to_string(&backend_pid_path)
+            .expect("read backend pid")
+            .trim()
+            .parse::<u32>()
+            .expect("parse backend pid");
+        assert!(
+            FileSystem::is_pid_running_unchecked(backend_pid),
+            "tracked backend should be alive before cleanup"
+        );
+        let status = parent.wait().expect("wait for backend helper");
+        assert!(
+            status.success(),
+            "backend helper should exit cleanly: {status:?}"
+        );
+
+        let project_root = FileSystem::live_project_root(base, &project_id);
+        FileSystem::register_backend_process(&project_root, backend_pid)
+            .expect("register tracked backend process");
+        FileSystem::remove_pid_file(base, &project_id).expect("remove pid file before cleanup");
+        assert_eq!(
+            FileSystem::read_backend_processes(base, &project_id)
+                .expect("read tracked backend processes")
+                .len(),
+            1,
+            "tracked backend cleanup precondition should be durable"
+        );
+
+        let mut task = sample_waiting_task("daemon-cancel-missing-pid-task", "req-run");
+        task.project_id = project_id.as_str().to_owned();
+        task.status = TaskStatus::Active;
+        task.dispatch_mode = DispatchMode::Workflow;
+        task.requirements_run_id = None;
+
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-cancel-missing-pid".to_owned(),
+            task_id: task.task_id.clone(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.to_path_buf(),
+            branch_name: "rb/test".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: 300,
+            last_heartbeat: Utc::now(),
+        };
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+        let dispatch_future = std::future::ready(Ok(()));
+        tokio::pin!(dispatch_future);
+        let error = daemon
+            .finish_cancelled_dispatch(
+                base,
+                base,
+                &task,
+                &lease,
+                &project_id,
+                &mut heartbeat,
+                &mut dispatch_future,
+                "failed (interrupted by daemon shutdown)",
+                "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+            )
+            .await
+            .expect_err("missing pid cleanup should still surface cancellation");
+        assert!(
+            matches!(error, AppError::InvocationCancelled { .. }),
+            "unexpected error after daemon cancellation cleanup: {error:?}"
+        );
+
+        let recovered = FsRunSnapshotStore
+            .read_run_snapshot(base, &project_id)
+            .expect("read recovered snapshot");
+        assert_eq!(recovered.status, RunStatus::Failed);
+        assert!(recovered.active_run.is_none());
+        assert!(
+            recovered.interrupted_run.is_some(),
+            "expected-attempt fallback should preserve interrupted run metadata"
+        );
+        assert!(
+            FileSystem::read_pid_file(base, &project_id)
+                .expect("read pid file after cleanup")
+                .is_none(),
+            "missing run.pid fallback must not leave a pid file behind"
+        );
+        assert!(
+            FileSystem::read_backend_processes(base, &project_id)
+                .expect("read tracked backend processes after cleanup")
+                .is_empty(),
+            "missing run.pid fallback should still prune tracked backend processes"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while FileSystem::is_pid_running_unchecked(backend_pid)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            !FileSystem::is_pid_running_unchecked(backend_pid),
+            "missing run.pid fallback should still SIGKILL the tracked backend process group"
         );
     }
 
