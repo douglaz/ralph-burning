@@ -2262,14 +2262,14 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         // completion_panel and final_review each produce 3 panel records.
         let payloads = count_payload_files(&ws, "november")?;
         let artifacts = count_artifact_files(&ws, "november")?;
-        if payloads != 11 {
+        if payloads != 12 {
             return Err(format!(
-                "expected 11 payloads (no prompt_review), got {payloads}"
+                "expected 12 payloads (no prompt_review, 3 reviewers), got {payloads}"
             ));
         }
-        if artifacts != 11 {
+        if artifacts != 12 {
             return Err(format!(
-                "expected 11 artifacts (no prompt_review), got {artifacts}"
+                "expected 12 artifacts (no prompt_review, 3 reviewers), got {artifacts}"
             ));
         }
 
