@@ -45,12 +45,36 @@ impl Drop for TemporaryGitIndex {
 }
 
 impl WorktreeAdapter {
+    fn is_executable(path: &Path) -> bool {
+        let Ok(metadata) = fs::metadata(path) else {
+            return false;
+        };
+        if !metadata.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            metadata.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
+    }
+
     fn git_binary() -> &'static Path {
         static GIT_BINARY: OnceLock<PathBuf> = OnceLock::new();
         GIT_BINARY
             .get_or_init(|| {
                 let candidates = [
                     std::env::var_os("RALPH_BURNING_TEST_GIT").map(PathBuf::from),
+                    std::env::var_os("PATH").and_then(|paths| {
+                        std::env::split_paths(&paths)
+                            .map(|dir| dir.join("git"))
+                            .find(|path| Self::is_executable(path))
+                    }),
                     Some(PathBuf::from("/run/current-system/sw/bin/git")),
                     Some(PathBuf::from("/usr/bin/git")),
                     Some(PathBuf::from("/usr/local/bin/git")),
@@ -59,14 +83,7 @@ impl WorktreeAdapter {
                 candidates
                     .into_iter()
                     .flatten()
-                    .find(|path| path.is_file())
-                    .or_else(|| {
-                        std::env::var_os("PATH").and_then(|paths| {
-                            std::env::split_paths(&paths)
-                                .map(|dir| dir.join("git"))
-                                .find(|path| path.is_file())
-                        })
-                    })
+                    .find(|path| Self::is_executable(path))
                     .unwrap_or_else(|| PathBuf::from("git"))
             })
             .as_path()

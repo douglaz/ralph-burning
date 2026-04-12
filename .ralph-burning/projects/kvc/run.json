@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260412152311",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-fc2e6e6b",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "In `src/adapters/worktree.rs:48-70` and `src/adapters/worktree.rs:138-140`, stop pinning `WorktreeAdapter` to the first hard-coded absolute git path before consulting `PATH`. On Linux/macOS this will usually select `/usr/bin/git`, which means any `PATH`-injected wrapper is silently ignored for every worktree operation. That is a correctness regression: the existing hard-rollback failure scenario in `src/contexts/conformance_spec/scenarios.rs:5894-5928` now no longer intercepts `git reset --hard`, and `target/debug/ralph-burning conformance run --filter SC-ROLLBACK-008` fails with `expected failure, got success`. Preserve ambient `PATH` resolution (or search `PATH` first with executable checks) so fake/custom git binaries still work.",
-        "created_at": "2026-04-12T15:41:49.427950091Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "94d810b7cd6940d2784dc190c8ba9481a7dbf22568c108cafacbe9fe7cd52f42"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-12T15:29:15.036271738Z",
