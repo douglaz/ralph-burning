@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260412152311",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
     "started_at": "2026-04-12T15:23:11.472431288Z",
     "prompt_hash_at_cycle_start": "aaa3e307626aac55394da5008181c8cb7d637de38b6156883f8c9b0ef7643710",
     "prompt_hash_at_stage_start": "aaa3e307626aac55394da5008181c8cb7d637de38b6156883f8c9b0ef7643710",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-b502924f",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "Complete the opt-in review change for the automation-runtime bootstrap path. `src/contexts/automation_runtime/daemon_loop.rs:1547-1555` describes `DispatchMode::RequirementsQuick` as the flow that finishes requirements, derives the seed, and continues into project creation, but `src/contexts/automation_runtime/daemon_loop.rs:2175-2177` still hardcodes `req_svc.quick(..., true)`. That means daemon-driven bootstrap/project creation still always runs the requirements review step, with no way to get the new default draft->create fast path or to make review truly opt-in outside the CLI `project bootstrap` command.",
+        "created_at": "2026-04-12T15:56:16.712363316Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "8be61aef28a9a6befd39879419563236819703296389ccc104fbbb4fa3149d2b"
+      }
+    ],
     "processed_count": 1
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-12T15:29:15.036271738Z",
+    "resolved_at": "2026-04-12T15:46:43.711486690Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
