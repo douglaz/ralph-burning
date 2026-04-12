@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-0-c1-a1-cr11-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-0-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T01:27:10.329213316Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real durability/liveness defects in interrupted-cleanup handling: shutdown lease cleanup can strand orphaned task metadata without any durable retry marker, and interrupted-run repair currently treats a missing `run.pid` as proof of death even though daemon handoff deletes that file before the orchestrator is known dead.\n\n## Votes\n\n- `fr-11-0c818ed2`: Accept\n  `release_task_lease()` clears physical resources and removes `run.pid` before `clear_lease_reference()` runs. If that final task write fails, it returns `LeaseCleanupPartialFailure`, but `cleanup_active_leases()` only marks the task `Aborted`, logs, and exits; it does not set `label_dirty` or any equivalent recovery marker. Phase 0 repair only iterates `label_dirty` tasks, so the daemon can leave an `Aborted` task pointing at a nonexistent lease with no automatic repair path on restart. That is a real durability bug and the task needs a durable retry marker before shutdown returns the partial-cleanup error.\n- `fr-11-41cdaf28`: Accept\n  `prepare_cancelled_dispatch_handoff()` persists the interrupted snapshot through `mark_running_run_interrupted()`, and that helper removes `run.pid` immediately even when no `run_failed` event has been written yet. `repair_missing_interrupted_handoff_run_failed_event()` suppresses repair only when a live `run.pid` still exists; if the pid file is absent, it finalizes. For daemon-owned interruption summaries there is no persisted liveness handoff comparable to the CLI cleanup handoff, so during the daemon grace window a `run status`/sync/read can append `run_failed` while the old orchestrator is still alive. That publishes terminal state out of order and needs either separate daemon liveness proof or repair suppression until death is actually established.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

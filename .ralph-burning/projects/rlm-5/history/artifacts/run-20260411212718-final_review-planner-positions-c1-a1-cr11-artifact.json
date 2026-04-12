@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr11-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T01:23:18.295940339Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real durability/liveness defects: shutdown lease cleanup can strand orphaned task lease metadata without any durable retry marker, and daemon interruption repair can currently synthesize a terminal failure from pid absence even though the daemon deliberately removes `run.pid` before process death is proven.\n\n## Votes\n\n- `fr-11-0c818ed2`: Accept\n  `release_task_lease()` removes physical resources and `run.pid` before `clear_lease_reference()` runs. If that final metadata write fails, `cleanup_active_leases()` only marks the task `Aborted`, logs, and returns the error; the task keeps `lease_id` even though the lease record is already gone. The only built-in automatic orphan repair path is the Phase 0 `label_dirty` scan, and shutdown cleanup does not set `label_dirty` or any equivalent durable recovery marker. That leaves a contradictory state that can persist across daemon restarts with no automatic repair.\n- `fr-11-41cdaf28`: Accept\n  `prepare_cancelled_dispatch_handoff()` persists the interrupted snapshot and removes `run.pid` immediately, but `repair_missing_interrupted_handoff_run_failed_event()` treats a missing pid as enough to finalize `run_failed`. During the daemon grace window, a `run status`/sync/read can therefore append terminal failure while the daemon-owned orchestrator is still alive and may still be settling. That violates the intended 'process is definitively gone' guard and creates an out-of-order terminal publication race. Daemon-owned interrupted summaries need a separate liveness/handoff proof, or repair must stay suppressed until death is actually proven.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}
