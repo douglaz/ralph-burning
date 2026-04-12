@@ -1503,14 +1503,14 @@ fn default_implementer_backend() -> BackendSelection {
 
 fn default_final_review_backends() -> Vec<PanelBackendSpec> {
     vec![
-        PanelBackendSpec::required_selection(BackendSelection::new(
-            BackendFamily::Codex,
-            Some("gpt-5.4-xhigh".to_owned()),
-        )),
-        PanelBackendSpec::required_selection(BackendSelection::new(
-            BackendFamily::Claude,
-            Some("claude-opus-4-6".to_owned()),
-        )),
+        // First codex reviewer — model comes from role_models.final_reviewer
+        // default (gpt-5.4-xhigh), overridable by workspace/project config.
+        PanelBackendSpec::required(BackendFamily::Codex),
+        // Claude reviewer — model comes from role_models.final_reviewer
+        // default, overridable by workspace/project config.
+        PanelBackendSpec::required(BackendFamily::Claude),
+        // Third reviewer uses inline model override since it needs a
+        // different model than the first codex reviewer.
         PanelBackendSpec::required_selection(BackendSelection::new(
             BackendFamily::Codex,
             Some("gpt-5.3-codex-spark-xhigh".to_owned()),
@@ -1553,6 +1553,10 @@ fn default_backend_runtime_settings(backend_name: &str) -> AppResult<BackendRunt
             "codex" => BackendRoleModels {
                 implementer: Some("gpt-5.4-high".to_owned()),
                 final_reviewer: Some("gpt-5.4-xhigh".to_owned()),
+                ..Default::default()
+            },
+            "claude" => BackendRoleModels {
+                final_reviewer: Some("claude-opus-4-6".to_owned()),
                 ..Default::default()
             },
             _ => BackendRoleModels::default(),
