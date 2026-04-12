@@ -80,6 +80,11 @@ fn allow_aborted_dispatch_fast_path(outcome: AppResult<()>) -> AppResult<()> {
     }
 }
 
+fn worktree_lease_record_is_missing(error: &AppError) -> bool {
+    matches!(error, AppError::Io(io_error) if io_error.kind() == std::io::ErrorKind::NotFound)
+        || matches!(error, AppError::CorruptRecord { details, .. } if details == "canonical file is missing")
+}
+
 const DAEMON_TASK_CANCELLATION_STATUS_SUMMARY: &str =
     "failed (interrupted by daemon task cancellation)";
 const DAEMON_TASK_CANCELLATION_LOG_MESSAGE: &str =
@@ -399,57 +404,69 @@ where
                             if dirty_task.is_terminal() {
                                 // Terminal tasks: release deferred lease, then clear dirty.
                                 if let Some(ref lid) = dirty_task.lease_id {
-                                    if let Ok(lease) = self.store.read_lease(&daemon_dir, lid) {
-                                        // Preserve checkpoint commits for failed tasks
-                                        // before the worktree is removed.
-                                        if dirty_task.status == TaskStatus::Failed {
-                                            self.try_push_failed_task_branch(checkout, &lease);
+                                    match self.store.read_lease(&daemon_dir, lid) {
+                                        Ok(lease) => {
+                                            // Preserve checkpoint commits for failed tasks
+                                            // before the worktree is removed.
+                                            if dirty_task.status == TaskStatus::Failed {
+                                                self.try_push_failed_task_branch(checkout, &lease);
+                                            }
+                                            match self.release_task_lease(
+                                                &daemon_dir,
+                                                checkout,
+                                                &dirty_task.task_id,
+                                                &lease,
+                                            ) {
+                                                Ok(()) => {
+                                                    let _ = DaemonTaskService::clear_label_dirty(
+                                                        self.store,
+                                                        &daemon_dir,
+                                                        &dirty_task.task_id,
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    // Partial cleanup: keep label_dirty so Phase 0
+                                                    // retries cleanup on the next cycle and block
+                                                    // the repo until it succeeds.
+                                                    eprintln!(
+                                                        "daemon: deferred lease release failed for terminal task '{}' in {}: {e}",
+                                                        dirty_task.task_id, reg.repo_slug
+                                                    );
+                                                    phase0_quarantined = true;
+                                                    break;
+                                                }
+                                            }
                                         }
-                                        match self.release_task_lease(
-                                            &daemon_dir,
-                                            checkout,
-                                            &dirty_task.task_id,
-                                            &lease,
-                                        ) {
-                                            Ok(()) => {
-                                                let _ = DaemonTaskService::clear_label_dirty(
-                                                    self.store,
-                                                    &daemon_dir,
-                                                    &dirty_task.task_id,
-                                                );
-                                            }
-                                            Err(e) => {
-                                                // Partial cleanup: keep label_dirty so Phase 0
-                                                // retries cleanup on the next cycle and block
-                                                // the repo until it succeeds.
-                                                eprintln!(
-                                                    "daemon: deferred lease release failed for terminal task '{}' in {}: {e}",
-                                                    dirty_task.task_id, reg.repo_slug
-                                                );
-                                                phase0_quarantined = true;
-                                                break;
+                                        Err(error) if worktree_lease_record_is_missing(&error) => {
+                                            match self.clear_orphaned_task_lease_reference(
+                                                &daemon_dir,
+                                                checkout,
+                                                dirty_task,
+                                            ) {
+                                                Ok(()) => {
+                                                    let _ = DaemonTaskService::clear_label_dirty(
+                                                        self.store,
+                                                        &daemon_dir,
+                                                        &dirty_task.task_id,
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    eprintln!(
+                                                        "daemon: deferred lease metadata cleanup failed for terminal task '{}' in {}: {e}",
+                                                        dirty_task.task_id, reg.repo_slug
+                                                    );
+                                                    phase0_quarantined = true;
+                                                    break;
+                                                }
                                             }
                                         }
-                                    } else {
-                                        match self.clear_orphaned_task_lease_reference(
-                                            &daemon_dir,
-                                            dirty_task,
-                                        ) {
-                                            Ok(()) => {
-                                                let _ = DaemonTaskService::clear_label_dirty(
-                                                    self.store,
-                                                    &daemon_dir,
-                                                    &dirty_task.task_id,
-                                                );
-                                            }
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "daemon: deferred lease metadata cleanup failed for terminal task '{}' in {}: {e}",
-                                                    dirty_task.task_id, reg.repo_slug
-                                                );
-                                                phase0_quarantined = true;
-                                                break;
-                                            }
+                                        Err(error) => {
+                                            eprintln!(
+                                                "daemon: deferred lease read failed for terminal task '{}' in {}: {error}",
+                                                dirty_task.task_id, reg.repo_slug
+                                            );
+                                            phase0_quarantined = true;
+                                            break;
                                         }
                                     }
                                 } else {
@@ -3638,7 +3655,7 @@ where
                         task_id: task_id.to_owned(),
                     },
                 )?;
-                self.remove_owned_run_pid_file(base_dir, &lease.project_id);
+                self.remove_owned_run_pid_file(repo_root, &lease.project_id);
                 Ok(())
             }
             Ok(_) => {
@@ -3656,6 +3673,7 @@ where
     fn clear_orphaned_task_lease_reference(
         &self,
         base_dir: &Path,
+        repo_root: &Path,
         task: &DaemonTask,
     ) -> AppResult<()> {
         DaemonTaskService::clear_lease_reference(self.store, base_dir, &task.task_id).map_err(
@@ -3663,18 +3681,18 @@ where
                 task_id: task.task_id.clone(),
             },
         )?;
-        self.remove_owned_run_pid_file(base_dir, &task.project_id);
+        self.remove_owned_run_pid_file(repo_root, &task.project_id);
         Ok(())
     }
 
-    fn remove_owned_run_pid_file(&self, base_dir: &Path, project_id: &str) {
+    fn remove_owned_run_pid_file(&self, repo_root: &Path, project_id: &str) {
         if let Ok(project_id) = ProjectId::new(project_id.to_owned()) {
             // Only remove the pid file if it still belongs to this daemon's
             // run. A fresh run may have claimed the project after cleanup.
-            if let Ok(Some(pid_record)) = FileSystem::read_pid_file(base_dir, &project_id) {
+            if let Ok(Some(pid_record)) = FileSystem::read_pid_file(repo_root, &project_id) {
                 if pid_record.pid == std::process::id() {
                     let _ =
-                        FileSystem::remove_pid_file_if_matches(base_dir, &project_id, &pid_record);
+                        FileSystem::remove_pid_file_if_matches(repo_root, &project_id, &pid_record);
                 }
             }
         }
@@ -3996,7 +4014,7 @@ mod tests {
     use crate::contexts::agent_execution::model::CancellationToken;
     use crate::contexts::agent_execution::AgentExecutionService;
     use crate::contexts::automation_runtime::model::{
-        DaemonJournalEvent, DaemonTask, DispatchMode, TaskStatus,
+        CliWriterLease, DaemonJournalEvent, DaemonTask, DispatchMode, TaskStatus,
     };
     use crate::contexts::automation_runtime::repo_registry::{DataDirLayout, RepoRegistration};
     use crate::contexts::automation_runtime::{
@@ -5497,6 +5515,15 @@ mod tests {
 
         let first_project_id = create_standard_project(&repo_root, "multi-repo-metadata-a");
         let second_project_id = create_standard_project(&repo_root, "multi-repo-metadata-b");
+        FileSystem::write_pid_file(
+            &repo_root,
+            &first_project_id,
+            RunPidOwner::Daemon,
+            Some("daemon-owner"),
+            Some("run-multi-repo-metadata-a"),
+            Some(Utc::now()),
+        )
+        .expect("write multi-repo pid file");
 
         let mut first_task = sample_pending_task("task-multi-repo-metadata-a", &first_project_id);
         first_task.issue_ref = format!("{repo_slug}#11");
@@ -5592,6 +5619,12 @@ mod tests {
             repaired_first.lease_id.is_none(),
             "Phase 0 should repair orphaned task lease references even without a lease file"
         );
+        assert!(
+            FileSystem::read_pid_file(&repo_root, &first_project_id)
+                .expect("read pid file after orphaned repair")
+                .is_none(),
+            "Phase 0 orphaned cleanup must remove the checkout run.pid, not look under daemon state"
+        );
 
         let second_after_second = FsDaemonStore
             .read_task(&daemon_dir, &second_task.task_id)
@@ -5600,6 +5633,207 @@ mod tests {
             second_after_second.status,
             TaskStatus::Completed,
             "the repo should resume processing once the orphaned lease reference is repaired"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_removes_run_pid_from_checkout_root_on_completion() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let project_id = create_standard_project(&repo_root, "multi-repo-pid-cleanup");
+        FileSystem::write_pid_file(
+            &repo_root,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some("daemon-owner"),
+            Some("run-multi-repo-pid-cleanup"),
+            Some(Utc::now()),
+        )
+        .expect("write multi-repo pid file");
+
+        let mut task = sample_pending_task("task-multi-repo-pid-cleanup", &project_id);
+        task.issue_ref = format!("{repo_slug}#21");
+        task.repo_slug = Some(repo_slug.to_owned());
+        task.issue_number = Some(21);
+        FsDaemonStore
+            .create_task(&daemon_dir, &task)
+            .expect("create multi-repo task");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("multi-repo cycle should complete");
+
+        let completed_task = FsDaemonStore
+            .read_task(&daemon_dir, &task.task_id)
+            .expect("read completed multi-repo task");
+        assert_eq!(completed_task.status, TaskStatus::Completed);
+        assert!(
+            FileSystem::read_pid_file(&repo_root, &project_id)
+                .expect("read pid file after completion")
+                .is_none(),
+            "multi-repo completion cleanup must remove run.pid from the checkout root"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_quarantines_corrupt_terminal_lease_records() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let project_id = create_standard_project(&repo_root, "multi-repo-corrupt-lease");
+        let mut dirty_task = sample_pending_task("task-multi-repo-corrupt-lease", &project_id);
+        dirty_task.issue_ref = format!("{repo_slug}#31");
+        dirty_task.repo_slug = Some(repo_slug.to_owned());
+        dirty_task.issue_number = Some(31);
+        dirty_task.status = TaskStatus::Completed;
+        dirty_task.lease_id = Some("lease-corrupt-terminal".to_owned());
+        dirty_task.label_dirty = true;
+        FsDaemonStore
+            .create_task(&daemon_dir, &dirty_task)
+            .expect("create dirty terminal task");
+
+        let mut blocked_task =
+            sample_pending_task("task-multi-repo-corrupt-lease-blocked", &project_id);
+        blocked_task.issue_ref = format!("{repo_slug}#32");
+        blocked_task.repo_slug = Some(repo_slug.to_owned());
+        blocked_task.issue_number = Some(32);
+        FsDaemonStore
+            .create_task(&daemon_dir, &blocked_task)
+            .expect("create blocked task");
+
+        FsDaemonStore
+            .write_lease_record(
+                &daemon_dir,
+                &LeaseRecord::CliWriter(CliWriterLease {
+                    lease_id: "lease-corrupt-terminal".to_owned(),
+                    project_id: project_id.as_str().to_owned(),
+                    owner: "cli".to_owned(),
+                    acquired_at: Utc::now(),
+                    ttl_seconds: 300,
+                    last_heartbeat: Utc::now(),
+                    cleanup_handoff: None,
+                }),
+            )
+            .expect("write wrong-type lease record");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                std::slice::from_ref(&registration),
+            )
+            .await
+            .expect("corrupt lease should quarantine repo without crashing the daemon");
+
+        let dirty_after_first = FsDaemonStore
+            .read_task(&daemon_dir, &dirty_task.task_id)
+            .expect("read dirty task after first cycle");
+        assert!(dirty_after_first.label_dirty);
+        assert_eq!(
+            dirty_after_first.lease_id.as_deref(),
+            Some("lease-corrupt-terminal"),
+            "corrupt lease records must remain visible instead of being cleared as orphaned"
+        );
+        let blocked_after_first = FsDaemonStore
+            .read_task(&daemon_dir, &blocked_task.task_id)
+            .expect("read blocked task after first cycle");
+        assert_eq!(
+            blocked_after_first.status,
+            TaskStatus::Pending,
+            "Phase 0 must keep the repo quarantined while the terminal lease record is corrupt"
+        );
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("repeated corrupt lease reads should continue quarantining the repo");
+
+        let blocked_after_second = FsDaemonStore
+            .read_task(&daemon_dir, &blocked_task.task_id)
+            .expect("read blocked task after second cycle");
+        assert_eq!(
+            blocked_after_second.status,
+            TaskStatus::Pending,
+            "the repo must stay blocked across cycles until the corrupt lease record is repaired"
         );
     }
 

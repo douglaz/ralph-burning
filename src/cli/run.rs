@@ -1665,7 +1665,9 @@ fn observed_running_attempt_owner(
             return Ok(pid_record.writer_owner);
         }
     }
-    read_project_writer_lock_owner(base_dir, project_id)
+    Ok(read_project_writer_lock_owner(base_dir, project_id)?.or(
+        find_detached_project_writer_owner(&FsDaemonStore, base_dir, project_id)?,
+    ))
 }
 
 fn stop_target_pid_record_is_unchanged(
@@ -7414,7 +7416,7 @@ mod tests {
             &worktree_lease.lease_id,
         )
         .expect("acquire writer lock");
-        <FsDaemonStore as DaemonStorePort>::write_task(
+        <FsDaemonStore as DaemonStorePort>::create_task(
             &FsDaemonStore,
             base_dir,
             &DaemonTask {
@@ -7594,6 +7596,66 @@ mod tests {
             task.lease_id.as_deref(),
             Some(worktree_lease.lease_id.as_str()),
             "partial detached cleanup must preserve the task lease reference"
+        );
+    }
+
+    #[test]
+    fn observed_running_attempt_owner_falls_back_to_detached_owner_without_pid_or_lock() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("stale-running-detached-owner").expect("project id");
+        let now = Utc::now();
+        let detached_owner = "lease-stale-running-detached-owner";
+
+        <FsDaemonStore as DaemonStorePort>::write_task(
+            &FsDaemonStore,
+            base_dir,
+            &DaemonTask {
+                task_id: "task-stale-running-detached-owner".to_owned(),
+                issue_ref: "acme/widgets#stale-running-detached-owner".to_owned(),
+                project_id: project_id.as_str().to_owned(),
+                project_name: Some("detached stale running".to_owned()),
+                prompt: Some("Prompt".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::Command),
+                routing_warnings: vec![],
+                status: TaskStatus::Active,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: Some(detached_owner.to_owned()),
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                workflow_run_id: None,
+                repo_slug: None,
+                issue_number: None,
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            },
+        )
+        .expect("write detached daemon task");
+
+        let owner = super::observed_running_attempt_owner(
+            base_dir,
+            &project_id,
+            &crate::contexts::workflow_composition::engine::RunningAttemptIdentity {
+                run_id: "run-stale".to_owned(),
+                started_at: now,
+            },
+        )
+        .expect("read observed stale running owner");
+
+        assert_eq!(
+            owner.as_deref(),
+            Some(detached_owner),
+            "stale running recovery must surface detached daemon lease owners when pid and writer lock are already gone"
         );
     }
 

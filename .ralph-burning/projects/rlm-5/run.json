@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 8
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-7-19abe56a",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "`src/contexts/automation_runtime/daemon_loop.rs:3636-3677` now removes `run.pid` via `remove_owned_run_pid_file(base_dir, ...)`, but in multi-repo callers `base_dir` is the per-repo daemon state dir, not the checkout root. `FileSystem::read_pid_file` resolves paths from `base_dir/.git` (`src/adapters/fs.rs:901-941`), so multi-repo cleanup looks under `<data-dir>/.../daemon/.git/ralph-burning-live/...` and never touches the real checkout pid file. That leaves stale `run.pid` files behind after daemon task completion/shutdown in multi-repo mode, which is exactly the stale-state regression this bead is trying to eliminate.",
-        "created_at": "2026-04-11T23:58:47.943878889Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "2aa3f41e86da69c1db2edbaebe27994b6c6468fd338b8bbae7763eae46b02ded"
-      },
-      {
-        "amendment_id": "fr-7-45f8456b",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "The new detached-owner fallback is only wired into failed/paused recovery (`src/cli/run.rs:1952-1955`). Stale-running recovery still uses `observed_running_attempt_owner()` (`src/cli/run.rs:1653-1668`, `1941-1948`, `3498-3508`), which only consults `run.pid` and the writer lock. If the daemon already released those but failed to clear `task.lease_id`, `run resume` or stale `run stop` on a `RunStatus::Running` snapshot will reacquire the recovery lease and continue without surfacing the contradictory task metadata. The partial-cleanup state is still silently ignored on this path.",
-        "created_at": "2026-04-11T23:58:47.943881154Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "82c189c3b7e423f0bd7b89ee9688ce952e66d59e4ef661361265c102ba0cbd2a"
-      },
-      {
-        "amendment_id": "fr-7-dcb45071",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "`src/contexts/automation_runtime/daemon_loop.rs:401-454` treats every `read_lease()` failure as if the lease file were simply missing and immediately clears the task-side lease reference through `clear_orphaned_task_lease_reference()`. But `read_lease()` also fails on corrupt/wrong-type records (`src/adapters/fs.rs:2347-2354`) and other I/O errors. In those cases the repo should stay quarantined; clearing `task.lease_id` hides an unresolved durable-state problem and allows the repo to continue with a still-broken lease record/worktree state.",
-        "created_at": "2026-04-11T23:58:47.943882937Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "05a13b50b67111c753c10b09024d1eaded529e002866588c3eedfe25b0a60fd7"
-      }
-    ],
-    "processed_count": 10
+    "pending": [],
+    "processed_count": 13
   },
-  "status_summary": "running: final review restart round 8 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-11T23:47:42.371353820Z",
