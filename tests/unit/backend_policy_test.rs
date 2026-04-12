@@ -52,6 +52,36 @@ fn empty_backend_settings(enabled: bool) -> BackendRuntimeSettings {
 }
 
 #[test]
+fn compiled_defaults_use_codex_high_implementer_and_cross_model_final_review_panel() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let policy = BackendPolicyService::new(&effective);
+
+    let implementer = policy
+        .resolve_role_target(BackendPolicyRole::Implementer, 1)
+        .expect("resolve implementer");
+    assert_eq!(BackendFamily::Codex, implementer.backend.family);
+    assert_eq!("gpt-5.4-high", implementer.model.model_id);
+
+    let panel = policy
+        .resolve_final_review_panel(1)
+        .expect("resolve final review panel");
+    assert_eq!(2, panel.reviewers.len());
+    assert_eq!(
+        BackendFamily::Codex,
+        panel.reviewers[0].target.backend.family
+    );
+    assert_eq!("gpt-5.4-xhigh", panel.reviewers[0].target.model.model_id);
+    assert_eq!(
+        BackendFamily::Claude,
+        panel.reviewers[1].target.backend.family
+    );
+    assert_eq!("claude-opus-4-6", panel.reviewers[1].target.model.model_id);
+}
+
+#[test]
 fn project_config_round_trips_role_timeouts_and_sections() {
     let mut config = ProjectConfig::default();
     config.settings.default_flow = Some(FlowPreset::Standard);
@@ -296,8 +326,9 @@ fn final_review_panel_resolution_includes_planner_target() {
         .expect("resolve final review panel");
 
     assert_eq!(BackendFamily::Claude, panel.planner.backend.family);
-    assert!(
-        !panel.reviewers.is_empty(),
+    assert_eq!(
+        2,
+        panel.reviewers.len(),
         "final-review reviewers should resolve"
     );
     assert_eq!(BackendFamily::Claude, panel.arbiter.backend.family);
@@ -437,10 +468,10 @@ fn opposite_family_uses_fallback_chain_and_cycle_alternates() {
             .expect("even cycle planner family")
     );
 
-    let implementer = policy
-        .resolve_role_target(BackendPolicyRole::Implementer, 1)
-        .expect("implementer target");
-    assert_eq!(BackendFamily::Claude, implementer.backend.family);
+    let reviewer = policy
+        .resolve_role_target(BackendPolicyRole::Reviewer, 1)
+        .expect("reviewer target");
+    assert_eq!(BackendFamily::OpenRouter, reviewer.backend.family);
 }
 
 #[test]

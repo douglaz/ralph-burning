@@ -11716,14 +11716,14 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             }
 
             // Change implementer backend config to force drift. Default
-            // implementer for cycle 1 is claude (same as planner=claude),
-            // so switching to codex produces an actual target change.
+            // implementer for cycle 1 is codex/gpt-5.4-high, so switching
+            // to claude produces an actual target change.
             let ws_toml = workspace_config_path(ws.path());
             let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
             let patched = if content.contains("[workflow]") {
-                content.replace("[workflow]", "[workflow]\nimplementer_backend = \"codex\"")
+                content.replace("[workflow]", "[workflow]\nimplementer_backend = \"claude\"")
             } else {
-                format!("{content}\n[workflow]\nimplementer_backend = \"codex\"\n")
+                format!("{content}\n[workflow]\nimplementer_backend = \"claude\"\n")
             };
             std::fs::write(&ws_toml, patched).map_err(|e| format!("write: {e}"))?;
 
@@ -11744,8 +11744,8 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             }
 
             // Check journal for durable_warning event indicating drift detection.
-            // Changing implementer_backend from default (claude) to codex changes the
-            // resolved model from claude-opus-4-6 to codex, so drift MUST fire.
+            // Changing implementer_backend from the default codex/gpt-5.4-high
+            // to claude changes the resolved target, so drift MUST fire.
             let events = read_journal(&ws, "drift-impl")?;
             let warning_event = events
                 .iter()

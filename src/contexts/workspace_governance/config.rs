@@ -431,7 +431,8 @@ impl EffectiveConfig {
                     .implementer_backend
                     .as_ref()
                     .map(|selection| selection.display_string()),
-            )?,
+            )?
+            .or(Some(default_implementer_backend())),
             reviewer_backend: resolve_backend_selection(
                 workspace_config.workflow.reviewer_backend.as_deref(),
                 project_config.workflow.reviewer_backend.as_deref(),
@@ -1496,10 +1497,20 @@ fn default_completion_backends() -> Vec<PanelBackendSpec> {
     ]
 }
 
+fn default_implementer_backend() -> BackendSelection {
+    BackendSelection::new(BackendFamily::Codex, Some("gpt-5.4-high".to_owned()))
+}
+
 fn default_final_review_backends() -> Vec<PanelBackendSpec> {
     vec![
-        PanelBackendSpec::required(BackendFamily::Claude),
-        PanelBackendSpec::required(BackendFamily::Codex),
+        PanelBackendSpec::required_selection(BackendSelection::new(
+            BackendFamily::Codex,
+            Some("gpt-5.4-xhigh".to_owned()),
+        )),
+        PanelBackendSpec::required_selection(BackendSelection::new(
+            BackendFamily::Claude,
+            Some("claude-opus-4-6".to_owned()),
+        )),
     ]
 }
 

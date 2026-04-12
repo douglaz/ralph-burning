@@ -3,7 +3,7 @@ use std::fs;
 use chrono::TimeZone;
 use ralph_burning::adapters::fs::FileSystem;
 use ralph_burning::contexts::workspace_governance::{
-    EffectiveConfig, DEFAULT_FLOW_PRESET, DEFAULT_PROMPT_REVIEW_ENABLED,
+    ConfigValue, EffectiveConfig, DEFAULT_FLOW_PRESET, DEFAULT_PROMPT_REVIEW_ENABLED,
 };
 use ralph_burning::shared::domain::{
     FlowPreset, PromptReviewSettings, WorkspaceConfig, WorkspaceSettings,
@@ -36,6 +36,31 @@ fn effective_config_loads_compiled_defaults() {
         {
             ralph_burning::contexts::workspace_governance::ConfigValue::String(value) => value,
             other => panic!("expected string config value, got {other:?}"),
+        }
+    );
+    assert_eq!(
+        Some("codex(gpt-5.4-high)".to_owned()),
+        match config
+            .get("workflow.implementer_backend")
+            .expect("implementer backend")
+            .value
+        {
+            ConfigValue::String(value) => value,
+            other => panic!("expected string config value, got {other:?}"),
+        }
+    );
+    assert_eq!(
+        vec![
+            "codex/gpt-5.4-xhigh".to_owned(),
+            "claude/claude-opus-4-6".to_owned(),
+        ],
+        match config
+            .get("final_review.backends")
+            .expect("final review backends")
+            .value
+        {
+            ConfigValue::StringList(values) => values,
+            other => panic!("expected string list config value, got {other:?}"),
         }
     );
     assert!(matches!(

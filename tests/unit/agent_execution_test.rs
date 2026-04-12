@@ -441,8 +441,8 @@ async fn service_reuses_supported_sessions_and_persists_updated_metadata() {
     let sessions = PersistedSessions {
         sessions: vec![SessionMetadata {
             role: BackendRole::Implementer,
-            backend_family: BackendFamily::Claude,
-            model_id: "claude-opus-4-6".to_owned(),
+            backend_family: BackendFamily::Codex,
+            model_id: "gpt-5.4-high".to_owned(),
             session_id: "existing-session".to_owned(),
             created_at: timestamp,
             last_used_at: timestamp,
