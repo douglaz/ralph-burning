@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 15
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-14-355cf877",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 14,
-        "body": "Update `tests/cli.rs:12722-12859`. The ignored `cli_run_resume_recovers_stale_daemon_owned_running_and_reclaims_worktree_lock` scenario still asserts the pre-`rlm.5` behavior (resume succeeds after reclaiming a stale daemon worktree lease), but the current implementation now intentionally fails closed when worktree/lease cleanup cannot be positively proven. Running the ignored test now fails with `lease cleanup partially failed ...`, so the only CLI end-to-end coverage for stale daemon worktree-owner recovery is stale and contradicts the shipped contract. Replace it with a real-worktree success case, or rewrite it to assert the new partial-cleanup failure behavior.",
-        "created_at": "2026-04-12T02:42:21.658707849Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "6422d283a93ec019aef5c978f2381a0da7505ddb39ed7eb73d388f9fbb2ca32b"
-      }
-    ],
-    "processed_count": 23
+    "pending": [],
+    "processed_count": 24
   },
-  "status_summary": "running: final review restart round 15 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-12T02:27:31.532340167Z",
