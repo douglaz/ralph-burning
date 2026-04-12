@@ -1628,6 +1628,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         &self,
         role: BackendPolicyRole,
         family: BackendFamily,
+        include_defaults: bool,
     ) -> Option<String> {
         let key = format!("backends.{}.role_models.{}", family.as_str(), role.as_str());
         let entry = self.config.get(&key).ok()?;
@@ -1635,6 +1636,13 @@ impl<'a> BackendDiagnosticsService<'a> {
             entry.value,
             crate::contexts::workspace_governance::config::ConfigValue::String(None)
         ) {
+            return None;
+        }
+
+        if !include_defaults
+            && entry.source
+                == crate::contexts::workspace_governance::config::ConfigValueSource::Default
+        {
             return None;
         }
 
@@ -1650,9 +1658,11 @@ impl<'a> BackendDiagnosticsService<'a> {
     ///
     /// Model resolution order (matching `BackendPolicyService::target_for_family`):
     /// 1. Explicit model from the role's backend selection override
-    /// 2. Role-specific model from `backends.<family>.role_models.<role>`
+    /// 2. Explicit role-specific model from `backends.<family>.role_models.<role>`
     /// 3. Base backend embedded model from `default_backend = "family(model)"`
-    /// 4. Family default model
+    ///    or `settings.default_model` when it applies to the resolved family
+    /// 4. Compiled role-specific default model
+    /// 5. Family default model
     fn model_source_for_role(&self, role: BackendPolicyRole, family: BackendFamily) -> String {
         let bp = self.config.backend_policy();
 
@@ -1673,17 +1683,12 @@ impl<'a> BackendDiagnosticsService<'a> {
             }
         }
 
-        // 2. Check role-specific model from runtime settings
-        if let Some(source) = self.role_model_source_for_role(role, family) {
+        // 2. Check explicit role-specific models from workspace/project config.
+        if let Some(source) = self.role_model_source_for_role(role, family, false) {
             return source;
         }
 
-        // 3. Check base backend model — `target_for_family` resolves from
-        //    `base_backend.model` before falling through to the compile-time
-        //    family default. The model in `base_backend` may have been set
-        //    from `default_backend = "family(model)"` or merged from
-        //    `settings.default_model`. Distinguish the two sources by
-        //    comparing with `bp.default_model`.
+        // 3. Check explicit base backend model overrides.
         if family == bp.base_backend.family && bp.base_backend.model.is_some() {
             if bp.default_model.as_ref() == bp.base_backend.model.as_ref() {
                 return self.source_for_default_model();
@@ -1692,7 +1697,12 @@ impl<'a> BackendDiagnosticsService<'a> {
             }
         }
 
-        // 4. Family default
+        // 4. Check compiled role-specific defaults.
+        if let Some(source) = self.role_model_source_for_role(role, family, true) {
+            return source;
+        }
+
+        // 5. Family default
         "default".to_owned()
     }
 
@@ -1704,7 +1714,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             }
 
             if let Some(source) =
-                self.role_model_source_for_role(BackendPolicyRole::Planner, family)
+                self.role_model_source_for_role(BackendPolicyRole::Planner, family, false)
             {
                 return source;
             }
@@ -1715,6 +1725,12 @@ impl<'a> BackendDiagnosticsService<'a> {
                 } else {
                     return self.source_for_base_backend();
                 }
+            }
+
+            if let Some(source) =
+                self.role_model_source_for_role(BackendPolicyRole::Planner, family, true)
+            {
+                return source;
             }
 
             return "default".to_owned();

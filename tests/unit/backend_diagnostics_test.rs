@@ -292,6 +292,29 @@ fn show_effective_reports_compiled_implementer_default_source() {
 }
 
 #[test]
+fn show_effective_explicit_default_model_beats_compiled_codex_role_defaults() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("codex".to_owned());
+    workspace.settings.default_model = Some("workspace-default-model".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    let implementer = view
+        .roles
+        .iter()
+        .find(|r| r.role == "implementer")
+        .expect("implementer row should exist");
+    assert_eq!("workspace-default-model", implementer.model_id);
+    assert_eq!("workspace.toml", implementer.model_source);
+}
+
+#[test]
 fn show_effective_cli_override_source() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());
@@ -785,6 +808,37 @@ fn show_effective_reports_final_review_panel_members() {
 }
 
 #[test]
+fn show_effective_final_reviewer_uses_explicit_default_model_before_compiled_codex_default() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("codex".to_owned());
+    workspace.settings.default_model = Some("workspace-default-model".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    let final_reviewer = view
+        .roles
+        .iter()
+        .find(|r| r.role == "final_reviewer")
+        .expect("compatibility final_reviewer row should exist");
+    assert_eq!("workspace-default-model", final_reviewer.model_id);
+    assert_eq!("workspace.toml", final_reviewer.model_source);
+
+    let reviewer0 = view
+        .roles
+        .iter()
+        .find(|r| r.role == "final_review_panel.reviewer[0]")
+        .expect("first final-review reviewer row should exist");
+    assert_eq!("workspace-default-model", reviewer0.model_id);
+    assert_eq!("workspace.toml", reviewer0.model_source);
+}
+
+#[test]
 fn probe_singular_final_reviewer_returns_first_panel_member() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());
@@ -804,6 +858,35 @@ fn probe_singular_final_reviewer_returns_first_panel_member() {
         .expect("singular role probe should return a target");
     assert_eq!("codex", target.backend_family);
     assert_eq!("gpt-5.4-xhigh", target.model_id);
+}
+
+#[test]
+fn probe_implementer_and_final_reviewer_use_explicit_default_model_before_compiled_codex_defaults()
+{
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("codex".to_owned());
+    workspace.settings.default_model = Some("workspace-default-model".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    let implementer = service
+        .probe("implementer", FlowPreset::Standard, 1)
+        .expect("implementer probe should resolve");
+    let implementer_target = implementer.target.expect("implementer target");
+    assert_eq!("codex", implementer_target.backend_family);
+    assert_eq!("workspace-default-model", implementer_target.model_id);
+
+    let final_reviewer = service
+        .probe("final_reviewer", FlowPreset::Standard, 1)
+        .expect("final reviewer probe should resolve");
+    let final_reviewer_target = final_reviewer.target.expect("final reviewer target");
+    assert_eq!("codex", final_reviewer_target.backend_family);
+    assert_eq!("workspace-default-model", final_reviewer_target.model_id);
 }
 
 #[test]

@@ -199,6 +199,36 @@ fn compiled_default_final_review_panel_honors_role_model_overrides() {
 }
 
 #[test]
+fn explicit_default_model_overrides_compiled_codex_role_defaults() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("codex".to_owned());
+    workspace.settings.default_model = Some("workspace-default-model".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let policy = BackendPolicyService::new(&effective);
+
+    let implementer = policy
+        .resolve_role_target(BackendPolicyRole::Implementer, 1)
+        .expect("resolve implementer");
+    assert_eq!(BackendFamily::Codex, implementer.backend.family);
+    assert_eq!("workspace-default-model", implementer.model.model_id);
+
+    let panel = policy
+        .resolve_final_review_panel(1)
+        .expect("resolve final review panel");
+    assert_eq!(2, panel.reviewers.len());
+    assert_eq!(
+        "workspace-default-model",
+        panel.reviewers[0].target.model.model_id
+    );
+    assert_eq!("claude-opus-4-6", panel.reviewers[1].target.model.model_id);
+}
+
+#[test]
 fn project_config_round_trips_role_timeouts_and_sections() {
     let mut config = ProjectConfig::default();
     config.settings.default_flow = Some(FlowPreset::Standard);
