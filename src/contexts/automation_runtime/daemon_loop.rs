@@ -12,8 +12,9 @@ use crate::adapters::fs::{
 };
 use crate::adapters::github::GithubPort;
 use crate::cli::run::{
-    cleanup_stale_backend_process_groups,
+    cleanup_stale_backend_process_groups, interrupted_handoff_cleanup_candidate_with_dirs,
     repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_with_dirs,
+    InterruptedHandoffCleanupCandidate,
 };
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
@@ -22,6 +23,9 @@ use crate::contexts::agent_execution::policy::BackendPolicyService;
 use crate::contexts::agent_execution::service::{AgentExecutionPort, RawOutputPort};
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
+use crate::contexts::automation_runtime::cli_writer_lease::{
+    cleanup_detached_project_writer_owner, read_project_writer_lock_owner,
+};
 use crate::contexts::automation_runtime::lease_service::LeaseService;
 use crate::contexts::automation_runtime::model::{
     CliWriterCleanupHandoff, DaemonTask, DispatchMode, LeaseRecord, RebaseFailureClassification,
@@ -106,6 +110,12 @@ fn finish_aborted_dispatch_task_cleanup(
 fn worktree_lease_record_is_missing(error: &AppError) -> bool {
     matches!(error, AppError::Io(io_error) if io_error.kind() == std::io::ErrorKind::NotFound)
         || matches!(error, AppError::CorruptRecord { details, .. } if details == "canonical file is missing")
+}
+
+enum PersistedCancelledHandoffPhase0State {
+    NotApplicable,
+    WaitingForLiveOwner,
+    ReadyForLeaseCleanup,
 }
 
 const DAEMON_TASK_CANCELLATION_STATUS_SUMMARY: &str =
@@ -403,6 +413,59 @@ where
 
             let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
             let checkout = &reg.repo_root;
+            let tasks = match DaemonTaskService::list_tasks(self.store, &daemon_dir) {
+                Ok(tasks) => tasks,
+                Err(error) => {
+                    eprintln!("daemon: list_tasks failed for {}: {error}", reg.repo_slug);
+                    continue;
+                }
+            };
+
+            for terminal_task in tasks
+                .iter()
+                .filter(|task| !task.label_dirty && task.lease_id.is_some() && task.is_terminal())
+            {
+                match self.phase0_finalize_persisted_cancelled_handoff(
+                    &daemon_dir,
+                    checkout,
+                    terminal_task,
+                )? {
+                    PersistedCancelledHandoffPhase0State::NotApplicable
+                    | PersistedCancelledHandoffPhase0State::WaitingForLiveOwner => {}
+                    PersistedCancelledHandoffPhase0State::ReadyForLeaseCleanup => {
+                        if let Err(error) =
+                            github_intake::sync_label_for_task(github, terminal_task).await
+                        {
+                            let _ = DaemonTaskService::mark_label_dirty(
+                                self.store,
+                                &daemon_dir,
+                                &terminal_task.task_id,
+                            );
+                            eprintln!(
+                                "daemon: phase-0 label sync failed for recovered terminal task '{}' in {}: {error}",
+                                terminal_task.task_id, reg.repo_slug
+                            );
+                            continue;
+                        }
+                        if let Err(error) = self.phase0_release_terminal_task_lease(
+                            &daemon_dir,
+                            checkout,
+                            terminal_task,
+                        ) {
+                            let _ = DaemonTaskService::mark_label_dirty(
+                                self.store,
+                                &daemon_dir,
+                                &terminal_task.task_id,
+                            );
+                            eprintln!(
+                                "daemon: phase-0 cleanup failed for recovered terminal task '{}' in {}: {error}",
+                                terminal_task.task_id, reg.repo_slug
+                            );
+                            continue;
+                        }
+                    }
+                }
+            }
 
             // Phase 0: Attempt to repair label_dirty tasks from prior cycles.
             // A GitHub label failure during repair quarantines this repo for the
@@ -420,130 +483,78 @@ where
             // - Non-terminal tasks (Claimed/Active) are reverted to Pending so
             //   Phase 3 can re-process them in this cycle.
             let mut phase0_quarantined = false;
-            if let Ok(tasks) = DaemonTaskService::list_tasks(self.store, &daemon_dir) {
-                for dirty_task in tasks.iter().filter(|t| t.label_dirty) {
-                    match github_intake::sync_label_for_task(github, dirty_task).await {
-                        Ok(()) => {
-                            if dirty_task.is_terminal() {
-                                // Terminal tasks: release deferred lease, then clear dirty.
-                                if let Some(ref lid) = dirty_task.lease_id {
-                                    match self.store.read_lease(&daemon_dir, lid) {
-                                        Ok(lease) => {
-                                            // Preserve checkpoint commits for failed tasks
-                                            // before the worktree is removed.
-                                            if dirty_task.status == TaskStatus::Failed {
-                                                self.try_push_failed_task_branch(checkout, &lease);
-                                            }
-                                            match self.release_task_lease(
-                                                &daemon_dir,
-                                                checkout,
-                                                &dirty_task.task_id,
-                                                &lease,
-                                            ) {
-                                                Ok(()) => {
-                                                    let _ = DaemonTaskService::clear_label_dirty(
-                                                        self.store,
-                                                        &daemon_dir,
-                                                        &dirty_task.task_id,
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    // Partial cleanup: keep label_dirty so Phase 0
-                                                    // retries cleanup on the next cycle and block
-                                                    // the repo until it succeeds.
-                                                    eprintln!(
-                                                        "daemon: deferred lease release failed for terminal task '{}' in {}: {e}",
-                                                        dirty_task.task_id, reg.repo_slug
-                                                    );
-                                                    phase0_quarantined = true;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        Err(error) if worktree_lease_record_is_missing(&error) => {
-                                            match self.clear_orphaned_task_lease_reference(
-                                                &daemon_dir,
-                                                checkout,
-                                                dirty_task,
-                                            ) {
-                                                Ok(()) => {
-                                                    let _ = DaemonTaskService::clear_label_dirty(
-                                                        self.store,
-                                                        &daemon_dir,
-                                                        &dirty_task.task_id,
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    eprintln!(
-                                                        "daemon: deferred lease metadata cleanup failed for terminal task '{}' in {}: {e}",
-                                                        dirty_task.task_id, reg.repo_slug
-                                                    );
-                                                    phase0_quarantined = true;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        Err(error) => {
-                                            eprintln!(
-                                                "daemon: deferred lease read failed for terminal task '{}' in {}: {error}",
-                                                dirty_task.task_id, reg.repo_slug
-                                            );
-                                            phase0_quarantined = true;
-                                            break;
-                                        }
-                                    }
-                                } else {
-                                    // No lease reference — nothing to release.
+            for dirty_task in tasks.iter().filter(|t| t.label_dirty) {
+                match github_intake::sync_label_for_task(github, dirty_task).await {
+                    Ok(()) => {
+                        if dirty_task.is_terminal() {
+                            // Terminal tasks: release deferred lease, then clear dirty.
+                            match self.phase0_release_terminal_task_lease(
+                                &daemon_dir,
+                                checkout,
+                                dirty_task,
+                            ) {
+                                Ok(()) => {
                                     let _ = DaemonTaskService::clear_label_dirty(
                                         self.store,
                                         &daemon_dir,
                                         &dirty_task.task_id,
                                     );
                                 }
-                            } else {
-                                // Non-terminal tasks (Claimed/Active): revert to Pending
-                                // so Phase 3 can re-process them in this cycle.
-                                match DaemonTaskService::revert_to_pending_for_recovery(
-                                    self.store,
-                                    self.worktree,
-                                    &daemon_dir,
-                                    checkout,
-                                    &dirty_task.task_id,
-                                ) {
-                                    Ok(reverted) => {
-                                        let _ = DaemonTaskService::clear_label_dirty(
-                                            self.store,
-                                            &daemon_dir,
-                                            &reverted.task_id,
-                                        );
-                                        eprintln!(
-                                            "daemon: reverted interrupted task '{}' to pending in {}",
-                                            reverted.task_id, reg.repo_slug
-                                        );
-                                    }
-                                    Err(e) => {
-                                        // Revert failed (typically lease cleanup
-                                        // partial): keep label_dirty for the next
-                                        // Phase 0 cycle and block this repo until
-                                        // recovery succeeds.
-                                        eprintln!(
-                                            "daemon: revert failed for task '{}' in {}: {e}",
-                                            dirty_task.task_id, reg.repo_slug
-                                        );
-                                        phase0_quarantined = true;
-                                        break;
-                                    }
+                                Err(e) => {
+                                    // Partial cleanup: keep label_dirty so Phase 0
+                                    // retries cleanup on the next cycle and block
+                                    // the repo until it succeeds.
+                                    eprintln!(
+                                        "daemon: deferred lease release failed for terminal task '{}' in {}: {e}",
+                                        dirty_task.task_id, reg.repo_slug
+                                    );
+                                    phase0_quarantined = true;
+                                    break;
+                                }
+                            }
+                        } else {
+                            // Non-terminal tasks (Claimed/Active): revert to Pending
+                            // so Phase 3 can re-process them in this cycle.
+                            match DaemonTaskService::revert_to_pending_for_recovery(
+                                self.store,
+                                self.worktree,
+                                &daemon_dir,
+                                checkout,
+                                &dirty_task.task_id,
+                            ) {
+                                Ok(reverted) => {
+                                    let _ = DaemonTaskService::clear_label_dirty(
+                                        self.store,
+                                        &daemon_dir,
+                                        &reverted.task_id,
+                                    );
+                                    eprintln!(
+                                        "daemon: reverted interrupted task '{}' to pending in {}",
+                                        reverted.task_id, reg.repo_slug
+                                    );
+                                }
+                                Err(e) => {
+                                    // Revert failed (typically lease cleanup
+                                    // partial): keep label_dirty for the next
+                                    // Phase 0 cycle and block this repo until
+                                    // recovery succeeds.
+                                    eprintln!(
+                                        "daemon: revert failed for task '{}' in {}: {e}",
+                                        dirty_task.task_id, reg.repo_slug
+                                    );
+                                    phase0_quarantined = true;
+                                    break;
                                 }
                             }
                         }
-                        Err(e) => {
-                            eprintln!(
-                                "daemon: label repair failed for task '{}' in {}: {e} — quarantining repo for this cycle",
-                                dirty_task.task_id, reg.repo_slug
-                            );
-                            phase0_quarantined = true;
-                            break;
-                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "daemon: label repair failed for task '{}' in {}: {e} — quarantining repo for this cycle",
+                            dirty_task.task_id, reg.repo_slug
+                        );
+                        phase0_quarantined = true;
+                        break;
                     }
                 }
             }
@@ -1182,6 +1193,8 @@ where
         config: &DaemonLoopConfig,
         shutdown: CancellationToken,
     ) -> AppResult<bool> {
+        self.phase0_finalize_persisted_cancelled_handoffs(base_dir, base_dir)?;
+
         // Phase 1: Poll watchers for new issue candidates before task processing
         self.poll_watchers(base_dir)?;
 
@@ -3726,6 +3739,135 @@ where
             repo_root,
             lease,
         );
+    }
+
+    fn phase0_release_terminal_task_lease(
+        &self,
+        base_dir: &Path,
+        repo_root: &Path,
+        task: &DaemonTask,
+    ) -> AppResult<()> {
+        if let Some(ref lease_id) = task.lease_id {
+            let project_id = ProjectId::new(task.project_id.clone())?;
+            if read_project_writer_lock_owner(base_dir, &project_id)?.as_deref()
+                != Some(lease_id.as_str())
+            {
+                self.remove_owned_run_pid_file(
+                    base_dir,
+                    repo_root,
+                    &task.project_id,
+                    Some(lease_id.as_str()),
+                    &task.task_id,
+                )?;
+                if cleanup_detached_project_writer_owner(
+                    self.store,
+                    self.worktree,
+                    base_dir,
+                    repo_root,
+                    &project_id,
+                    lease_id,
+                )? {
+                    return Ok(());
+                }
+            }
+            match self.store.read_lease(base_dir, lease_id) {
+                Ok(lease) => {
+                    if task.status == TaskStatus::Failed {
+                        self.try_push_failed_task_branch(repo_root, &lease);
+                    }
+                    self.release_task_lease(base_dir, repo_root, &task.task_id, &lease)
+                }
+                Err(error) if worktree_lease_record_is_missing(&error) => {
+                    self.clear_orphaned_task_lease_reference(base_dir, repo_root, task)
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn phase0_finalize_persisted_cancelled_handoff(
+        &self,
+        daemon_store_dir: &Path,
+        workspace_dir: &Path,
+        task: &DaemonTask,
+    ) -> AppResult<PersistedCancelledHandoffPhase0State> {
+        if !matches!(task.status, TaskStatus::Aborted | TaskStatus::Failed) {
+            return Ok(PersistedCancelledHandoffPhase0State::NotApplicable);
+        }
+        let Some(lease_id) = task.lease_id.as_deref() else {
+            return Ok(PersistedCancelledHandoffPhase0State::NotApplicable);
+        };
+        let lease_record = match self.store.read_lease_record(daemon_store_dir, lease_id) {
+            Ok(record) => record,
+            Err(error) if worktree_lease_record_is_missing(&error) => {
+                return Ok(PersistedCancelledHandoffPhase0State::NotApplicable);
+            }
+            Err(error) => return Err(error),
+        };
+        let LeaseRecord::Worktree(lease) = lease_record else {
+            return Err(AppError::CorruptRecord {
+                file: "lease".to_owned(),
+                details: format!(
+                    "expected worktree lease '{lease_id}' while finalizing daemon cleanup handoff"
+                ),
+            });
+        };
+        if lease.project_id != task.project_id || lease.cleanup_handoff.is_none() {
+            return Ok(PersistedCancelledHandoffPhase0State::NotApplicable);
+        }
+
+        let project_id = ProjectId::new(task.project_id.clone())?;
+        let mut snapshot = self
+            .run_snapshot_read
+            .read_run_snapshot(workspace_dir, &project_id)?;
+        match interrupted_handoff_cleanup_candidate_with_dirs(
+            daemon_store_dir,
+            workspace_dir,
+            &project_id,
+            &snapshot,
+        )? {
+            InterruptedHandoffCleanupCandidate::None => {
+                Ok(PersistedCancelledHandoffPhase0State::NotApplicable)
+            }
+            InterruptedHandoffCleanupCandidate::WaitingForLiveOwner => {
+                Ok(PersistedCancelledHandoffPhase0State::WaitingForLiveOwner)
+            }
+            InterruptedHandoffCleanupCandidate::Ready { .. } => {
+                let _ =
+                    repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_with_dirs(
+                        daemon_store_dir,
+                        workspace_dir,
+                        &project_id,
+                        &mut snapshot,
+                    )?;
+                Ok(PersistedCancelledHandoffPhase0State::ReadyForLeaseCleanup)
+            }
+        }
+    }
+
+    fn phase0_finalize_persisted_cancelled_handoffs(
+        &self,
+        daemon_store_dir: &Path,
+        workspace_dir: &Path,
+    ) -> AppResult<()> {
+        for task in DaemonTaskService::list_tasks(self.store, daemon_store_dir)?
+            .into_iter()
+            .filter(|task| !task.label_dirty && task.lease_id.is_some() && task.is_terminal())
+        {
+            if matches!(
+                self.phase0_finalize_persisted_cancelled_handoff(
+                    daemon_store_dir,
+                    workspace_dir,
+                    &task,
+                )?,
+                PersistedCancelledHandoffPhase0State::ReadyForLeaseCleanup
+            ) {
+                self.phase0_release_terminal_task_lease(daemon_store_dir, workspace_dir, &task)?;
+            }
+        }
+        Ok(())
     }
 
     fn release_task_lease(
@@ -6363,6 +6505,183 @@ mod tests {
         assert!(
             matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
             "unexpected cycle error: {error:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_phase0_repairs_persisted_cancelled_handoff_for_aborted_task() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-phase0-handoff");
+        let started_at = Utc::now();
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-phase0-handoff".to_owned(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: DAEMON_SHUTDOWN_STATUS_SUMMARY.to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base, &project_id, &snapshot)
+            .expect("write interrupted snapshot");
+        std::fs::write(
+            base.join(format!(
+                ".ralph-burning/projects/{}/journal.ndjson",
+                project_id.as_str()
+            )),
+            format!(
+                "{{\"sequence\":1,\"timestamp\":\"{}\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"{}\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-phase0-handoff\",\"first_stage\":\"implementation\",\"max_completion_rounds\":20}}}}",
+                (started_at - chrono::Duration::seconds(1)).to_rfc3339(),
+                project_id.as_str(),
+                started_at.to_rfc3339(),
+            ),
+        )
+        .expect("write journal without run_failed");
+        FileSystem::write_backend_processes(
+            base,
+            &project_id,
+            &[crate::adapters::fs::RunBackendProcessRecord {
+                pid: std::process::id().saturating_add(100_000),
+                recorded_at: started_at,
+                run_id: Some("run-phase0-handoff".to_owned()),
+                run_started_at: Some(started_at),
+                proc_start_ticks: Some(u64::MAX),
+                proc_start_marker: None,
+            }],
+        )
+        .expect("write stale backend process record");
+
+        let lease = crate::contexts::automation_runtime::model::WorktreeLease {
+            lease_id: "lease-phase0-handoff".to_owned(),
+            task_id: "task-phase0-handoff".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.join("worktrees/phase0-handoff"),
+            branch_name: "rb/phase0-handoff".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: Some(CliWriterCleanupHandoff {
+                pid: std::process::id().saturating_add(100_000),
+                run_id: Some("run-phase0-handoff".to_owned()),
+                run_started_at: Some(started_at),
+                proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
+                proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+            }),
+        };
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write phase0 handoff lease");
+        FsDaemonStore
+            .write_task(
+                base,
+                &DaemonTask {
+                    task_id: lease.task_id.clone(),
+                    issue_ref: "acme/widgets#phase0-handoff".to_owned(),
+                    project_id: project_id.as_str().to_owned(),
+                    project_name: Some("phase0 handoff".to_owned()),
+                    prompt: Some("Prompt".to_owned()),
+                    routing_command: None,
+                    routing_labels: vec![],
+                    resolved_flow: Some(FlowPreset::Standard),
+                    routing_source: None,
+                    routing_warnings: vec![],
+                    status: TaskStatus::Aborted,
+                    created_at: started_at,
+                    updated_at: started_at,
+                    attempt_count: 0,
+                    lease_id: Some(lease.lease_id.clone()),
+                    failure_class: None,
+                    failure_message: None,
+                    dispatch_mode: DispatchMode::Workflow,
+                    source_revision: None,
+                    requirements_run_id: None,
+                    workflow_run_id: None,
+                    repo_slug: None,
+                    issue_number: None,
+                    pr_url: None,
+                    last_seen_comment_id: None,
+                    last_seen_review_id: None,
+                    label_dirty: false,
+                },
+            )
+            .expect("write aborted task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let did_work = daemon
+            .process_cycle(base, &DaemonLoopConfig::default(), CancellationToken::new())
+            .await
+            .expect("phase0 repair cycle should succeed");
+        assert!(
+            !did_work,
+            "phase0 handoff recovery should settle the aborted task without dispatching new work"
+        );
+
+        let repaired_journal = FsJournalStore
+            .read_journal(base, &project_id)
+            .expect("read repaired journal");
+        assert_eq!(
+            repaired_journal
+                .iter()
+                .filter(|event| {
+                    event.event_type
+                        == crate::contexts::project_run_record::model::JournalEventType::RunFailed
+                })
+                .count(),
+            1,
+            "phase0 recovery should append the missing daemon run_failed event"
+        );
+        assert!(
+            FileSystem::read_backend_processes(base, &project_id)
+                .expect("read backend processes after phase0 repair")
+                .is_empty(),
+            "phase0 recovery should prune stale daemon backend process records"
+        );
+        let repaired_task = FsDaemonStore
+            .read_task(base, &lease.task_id)
+            .expect("read repaired task");
+        assert!(
+            repaired_task.lease_id.is_none(),
+            "phase0 recovery should release the aborted task lease after repairing the handoff"
+        );
+        assert!(
+            FsDaemonStore.read_lease(base, &lease.lease_id).is_err(),
+            "phase0 recovery should remove the persisted worktree lease"
         );
     }
 

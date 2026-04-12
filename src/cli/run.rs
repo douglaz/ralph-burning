@@ -46,7 +46,7 @@ use crate::contexts::automation_runtime::cli_writer_lease::{
     DetachedProjectWriterOwner, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
 use crate::contexts::automation_runtime::model::CliWriterCleanupHandoff;
-use crate::contexts::automation_runtime::LeaseRecord;
+use crate::contexts::automation_runtime::{DaemonStorePort, LeaseRecord};
 use crate::contexts::milestone_record::bundle::{planned_bead_membership_refs, MilestoneBundle};
 use crate::contexts::milestone_record::controller::{
     self as milestone_controller, ControllerBeadStatus, ControllerTaskStatus,
@@ -1655,36 +1655,51 @@ fn observed_running_attempt_owner(
     project_id: &ProjectId,
     expected_attempt: &engine::RunningAttemptIdentity,
 ) -> AppResult<Option<String>> {
+    let mut observed_owners = Vec::new();
     if let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? {
         if FileSystem::pid_record_matches_attempt(
             &pid_record,
             &expected_attempt.run_id,
             expected_attempt.started_at,
-        ) && pid_record.writer_owner.is_some()
-        {
-            return Ok(pid_record.writer_owner);
+        ) {
+            observed_owners.extend(pid_record.writer_owner);
         }
     }
     if let Some(owner) = read_project_writer_lock_owner(base_dir, project_id)? {
-        return Ok(Some(owner));
+        observed_owners.push(owner);
     }
-
-    detached_project_writer_owner_for_recovery(base_dir, project_id)
+    observed_owners.extend(detached_project_writer_owners_for_recovery(
+        base_dir, project_id,
+    )?);
+    reconcile_observed_recovery_owners(project_id, observed_owners)
 }
 
-fn detached_project_writer_owner_for_recovery(
+fn detached_project_writer_owners_for_recovery(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
+) -> AppResult<Vec<String>> {
+    Ok(
+        match find_detached_project_writer_owner(&FsDaemonStore, base_dir, project_id)? {
+            DetachedProjectWriterOwner::None => Vec::new(),
+            DetachedProjectWriterOwner::Single(owner) => vec![owner],
+            DetachedProjectWriterOwner::Ambiguous(owners) => owners,
+        },
+    )
+}
+
+fn reconcile_observed_recovery_owners(
+    project_id: &ProjectId,
+    mut owners: Vec<String>,
 ) -> AppResult<Option<String>> {
-    match find_detached_project_writer_owner(&FsDaemonStore, base_dir, project_id)? {
-        DetachedProjectWriterOwner::None => Ok(None),
-        DetachedProjectWriterOwner::Single(owner) => Ok(Some(owner)),
-        DetachedProjectWriterOwner::Ambiguous(owners) => {
-            Err(AppError::ProjectWriterStateAmbiguous {
-                project_id: project_id.to_string(),
-                owners,
-            })
-        }
+    owners.sort();
+    owners.dedup();
+    match owners.len() {
+        0 => Ok(None),
+        1 => Ok(owners.into_iter().next()),
+        _ => Err(AppError::ProjectWriterStateAmbiguous {
+            project_id: project_id.to_string(),
+            owners,
+        }),
     }
 }
 
@@ -1970,10 +1985,19 @@ fn observed_resume_recovery_owner(
             }
         }
         RunStatus::Failed | RunStatus::Paused => Ok(ResumeRecoveryObservation {
-            observed_owner: match read_project_writer_lock_owner(base_dir, project_id)? {
-                Some(owner) => Some(owner),
-                None => detached_project_writer_owner_for_recovery(base_dir, project_id)?,
-            },
+            observed_owner: reconcile_observed_recovery_owners(project_id, {
+                let mut owners = Vec::new();
+                if let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? {
+                    owners.extend(pid_record.writer_owner);
+                }
+                if let Some(owner) = read_project_writer_lock_owner(base_dir, project_id)? {
+                    owners.push(owner);
+                }
+                owners.extend(detached_project_writer_owners_for_recovery(
+                    base_dir, project_id,
+                )?);
+                owners
+            })?,
             should_reconcile_claimed_running_snapshot: false,
             allow_dead_cli_cleanup_reclaim: true,
         }),
@@ -2015,25 +2039,11 @@ fn daemon_handoff_process_death_proven(
     project_id: &ProjectId,
     expected_attempt: &engine::RunningAttemptIdentity,
 ) -> AppResult<bool> {
-    let Some((_owner, record)) =
-        read_project_writer_lease_record(&FsDaemonStore, daemon_store_dir, project_id)?
+    let Some(handoff) =
+        matching_daemon_cleanup_handoff(daemon_store_dir, project_id, expected_attempt)?
     else {
         return Ok(false);
     };
-    let LeaseRecord::Worktree(lease) = record else {
-        return Ok(false);
-    };
-    if lease.project_id != project_id.as_str() {
-        return Ok(false);
-    }
-    let Some(handoff) = lease.cleanup_handoff.as_ref() else {
-        return Ok(false);
-    };
-    if handoff.run_id.as_deref() != Some(expected_attempt.run_id.as_str())
-        || handoff.run_started_at != Some(expected_attempt.started_at)
-    {
-        return Ok(false);
-    }
     if !FileSystem::process_identity_is_authoritative(
         handoff.proc_start_ticks,
         handoff.proc_start_marker.as_deref(),
@@ -2048,21 +2058,99 @@ fn daemon_handoff_process_death_proven(
     ))
 }
 
-fn interrupted_handoff_cleanup_candidate(
+fn daemon_cleanup_handoff_matches_attempt(
+    handoff: &CliWriterCleanupHandoff,
+    expected_attempt: &engine::RunningAttemptIdentity,
+) -> bool {
+    handoff.run_id.as_deref() == Some(expected_attempt.run_id.as_str())
+        && handoff.run_started_at == Some(expected_attempt.started_at)
+}
+
+fn matching_daemon_cleanup_handoff(
+    daemon_store_dir: &std::path::Path,
+    project_id: &ProjectId,
+    expected_attempt: &engine::RunningAttemptIdentity,
+) -> AppResult<Option<CliWriterCleanupHandoff>> {
+    let mut matching_handoffs = Vec::new();
+    let mut matched_owners = HashSet::new();
+
+    if let Some((_owner, record)) =
+        read_project_writer_lease_record(&FsDaemonStore, daemon_store_dir, project_id)?
+    {
+        if let LeaseRecord::Worktree(lease) = record {
+            if lease.project_id == project_id.as_str() {
+                if let Some(handoff) = lease.cleanup_handoff.as_ref() {
+                    if daemon_cleanup_handoff_matches_attempt(handoff, expected_attempt)
+                        && matched_owners.insert(lease.lease_id.clone())
+                    {
+                        matching_handoffs.push((lease.lease_id, handoff.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    for record in FsDaemonStore.list_lease_records(daemon_store_dir)? {
+        let LeaseRecord::Worktree(lease) = record else {
+            continue;
+        };
+        if lease.project_id != project_id.as_str() {
+            continue;
+        }
+        let Some(handoff) = lease.cleanup_handoff.as_ref() else {
+            continue;
+        };
+        if daemon_cleanup_handoff_matches_attempt(handoff, expected_attempt)
+            && matched_owners.insert(lease.lease_id.clone())
+        {
+            matching_handoffs.push((lease.lease_id, handoff.clone()));
+        }
+    }
+
+    match matching_handoffs.len() {
+        0 => Ok(None),
+        1 => Ok(matching_handoffs
+            .into_iter()
+            .next()
+            .map(|(_, handoff)| handoff)),
+        _ => {
+            let mut owners = matching_handoffs
+                .into_iter()
+                .map(|(owner, _)| owner)
+                .collect::<Vec<_>>();
+            owners.sort();
+            Err(AppError::ProjectWriterStateAmbiguous {
+                project_id: project_id.to_string(),
+                owners,
+            })
+        }
+    }
+}
+
+pub(crate) enum InterruptedHandoffCleanupCandidate {
+    None,
+    WaitingForLiveOwner,
+    Ready {
+        expected_attempt: engine::RunningAttemptIdentity,
+        daemon_handoff: bool,
+    },
+}
+
+pub(crate) fn interrupted_handoff_cleanup_candidate_with_dirs(
     daemon_store_dir: &std::path::Path,
     workspace_dir: &std::path::Path,
     project_id: &ProjectId,
     snapshot: &RunSnapshot,
-) -> AppResult<Option<(engine::RunningAttemptIdentity, bool)>> {
+) -> AppResult<InterruptedHandoffCleanupCandidate> {
     if snapshot.status != RunStatus::Failed || snapshot.active_run.is_some() {
-        return Ok(None);
+        return Ok(InterruptedHandoffCleanupCandidate::None);
     }
     if interrupted_handoff_failure_details(snapshot).is_none() {
-        return Ok(None);
+        return Ok(InterruptedHandoffCleanupCandidate::None);
     }
 
     let Some(interrupted_run) = snapshot.interrupted_run.as_ref() else {
-        return Ok(None);
+        return Ok(InterruptedHandoffCleanupCandidate::None);
     };
 
     let expected_attempt = engine::RunningAttemptIdentity {
@@ -2080,15 +2168,18 @@ fn interrupted_handoff_cleanup_candidate(
     // already marked interrupted but the engine future is still settling.
     if let Ok(Some(pid_record)) = FileSystem::read_pid_file(workspace_dir, project_id) {
         if FileSystem::is_pid_alive(&pid_record) {
-            return Ok(None);
+            return Ok(InterruptedHandoffCleanupCandidate::WaitingForLiveOwner);
         }
     } else if daemon_handoff
         && !daemon_handoff_process_death_proven(daemon_store_dir, project_id, &expected_attempt)?
     {
-        return Ok(None);
+        return Ok(InterruptedHandoffCleanupCandidate::WaitingForLiveOwner);
     }
 
-    Ok(Some((expected_attempt, daemon_handoff)))
+    Ok(InterruptedHandoffCleanupCandidate::Ready {
+        expected_attempt,
+        daemon_handoff,
+    })
 }
 
 fn repair_missing_interrupted_handoff_run_failed_event_with_dirs(
@@ -2103,7 +2194,9 @@ fn repair_missing_interrupted_handoff_run_failed_event_with_dirs(
     let Some((log_message, failure_class)) = interrupted_handoff_failure_details(snapshot) else {
         return Ok(false);
     };
-    let Some((expected_attempt, _)) = interrupted_handoff_cleanup_candidate(
+    let InterruptedHandoffCleanupCandidate::Ready {
+        expected_attempt, ..
+    } = interrupted_handoff_cleanup_candidate_with_dirs(
         daemon_store_dir,
         workspace_dir,
         project_id,
@@ -2145,7 +2238,7 @@ pub(crate) fn repair_missing_interrupted_handoff_run_failed_event_and_reload_sna
     project_id: &ProjectId,
     snapshot: &mut RunSnapshot,
 ) -> AppResult<bool> {
-    let cleanup_candidate = interrupted_handoff_cleanup_candidate(
+    let cleanup_candidate = interrupted_handoff_cleanup_candidate_with_dirs(
         daemon_store_dir,
         workspace_dir,
         project_id,
@@ -2157,7 +2250,11 @@ pub(crate) fn repair_missing_interrupted_handoff_run_failed_event_and_reload_sna
         project_id,
         snapshot,
     )?;
-    if let Some((expected_attempt, true)) = cleanup_candidate {
+    if let InterruptedHandoffCleanupCandidate::Ready {
+        expected_attempt,
+        daemon_handoff: true,
+    } = cleanup_candidate
+    {
         cleanup_stale_backend_process_groups(workspace_dir, project_id, &expected_attempt)?;
     }
     if repaired {
@@ -7292,6 +7389,98 @@ mod tests {
     }
 
     #[test]
+    fn repair_missing_interrupted_handoff_run_failed_event_repairs_detached_daemon_handoff_without_writer_lock(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/daemon-detached-handoff"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/daemon-detached-handoff/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"daemon-detached-handoff","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-detached","first_stage":"implementation","max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let project_id = ProjectId::new("daemon-detached-handoff").expect("project id");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-detached".to_owned(),
+                stage_cursor: StageCursor::new(StageId::Implementation, 1, 1, 1)
+                    .expect("stage cursor"),
+                started_at,
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed (interrupted by daemon shutdown)".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base_dir, &project_id, &snapshot)
+            .expect("write interrupted run snapshot");
+
+        let dead_handoff = CliWriterCleanupHandoff {
+            pid: std::process::id().saturating_add(100_000),
+            run_id: Some("run-detached".to_owned()),
+            run_started_at: Some(started_at),
+            proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+        let worktree_lease = WorktreeLease {
+            lease_id: "lease-detached-daemon-handoff".to_owned(),
+            task_id: "task-detached-daemon-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            worktree_path: base_dir.join("worktrees/detached-daemon-handoff"),
+            branch_name: "rb/detached-daemon-handoff".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: Some(dead_handoff),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::Worktree(worktree_lease),
+        )
+        .expect("write detached daemon handoff lease");
+
+        let repaired =
+            repair_missing_interrupted_handoff_run_failed_event(base_dir, &project_id, &snapshot)
+                .expect("repair detached daemon handoff");
+        assert!(
+            repaired,
+            "detached daemon handoff proof should still allow repair after the writer lock is gone"
+        );
+
+        let journal_events = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("read repaired project journal");
+        assert_eq!(
+            journal_events
+                .iter()
+                .filter(|event| event.event_type == JournalEventType::RunFailed)
+                .count(),
+            1,
+            "detached daemon handoff repair should append the missing run_failed event"
+        );
+    }
+
+    #[test]
     fn repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_cleans_stale_daemon_backends(
     ) {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -8112,6 +8301,87 @@ mod tests {
     }
 
     #[test]
+    fn observed_running_attempt_owner_blocks_on_pid_owner_plus_detached_owner() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("ambiguous-stale-running-pid-owner").expect("project id");
+        let now = Utc::now();
+
+        FileSystem::write_pid_file(
+            base_dir,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some("pid-owner-stale-running"),
+            Some("run-ambiguous-pid"),
+            Some(now),
+        )
+        .expect("write authoritative pid file");
+
+        let detached_owner = "lease-ambiguous-pid-owner";
+        <FsDaemonStore as DaemonStorePort>::write_task(
+            &FsDaemonStore,
+            base_dir,
+            &DaemonTask {
+                task_id: "task-ambiguous-pid-owner".to_owned(),
+                issue_ref: "acme/widgets#ambiguous-pid-owner".to_owned(),
+                project_id: project_id.as_str().to_owned(),
+                project_name: Some("ambiguous pid owner".to_owned()),
+                prompt: Some("Prompt".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::Command),
+                routing_warnings: vec![],
+                status: TaskStatus::Failed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: Some(detached_owner.to_owned()),
+                failure_class: Some("stale_writer_owner_reclaimed".to_owned()),
+                failure_message: Some("partial cleanup preserved lease state".to_owned()),
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                workflow_run_id: None,
+                repo_slug: None,
+                issue_number: None,
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            },
+        )
+        .expect("write orphaned detached task");
+
+        let error = super::observed_running_attempt_owner(
+            base_dir,
+            &project_id,
+            &crate::contexts::workflow_composition::engine::RunningAttemptIdentity {
+                run_id: "run-ambiguous-pid".to_owned(),
+                started_at: now,
+            },
+        )
+        .expect_err("pid owner plus detached owner must block stale-running recovery");
+
+        match error {
+            AppError::ProjectWriterStateAmbiguous {
+                project_id: actual,
+                owners,
+            } => {
+                assert_eq!(actual, project_id.to_string());
+                assert_eq!(
+                    owners,
+                    vec![
+                        detached_owner.to_owned(),
+                        "pid-owner-stale-running".to_owned(),
+                    ]
+                );
+            }
+            other => panic!("expected ambiguous writer-state error, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn observed_resume_recovery_owner_blocks_failed_snapshot_on_ambiguous_detached_owners() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
@@ -8199,6 +8469,110 @@ mod tests {
                     owners,
                     vec![
                         "cli-ambiguous-failed-resume-owner".to_owned(),
+                        detached_owner.to_owned(),
+                    ]
+                );
+            }
+            other => panic!("expected ambiguous writer-state error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn observed_resume_recovery_owner_blocks_failed_snapshot_on_writer_lock_plus_detached_owner() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id =
+            ProjectId::new("ambiguous-failed-resume-locked-owner").expect("project id");
+        let now = Utc::now();
+
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::CliWriter(CliWriterLease {
+                lease_id: "cli-locked-failed-resume-owner".to_owned(),
+                project_id: project_id.to_string(),
+                owner: "cli".to_owned(),
+                acquired_at: now,
+                ttl_seconds: super::CLI_LEASE_TTL_SECONDS,
+                last_heartbeat: now,
+                cleanup_handoff: None,
+            }),
+        )
+        .expect("write locked cli lease");
+        <FsDaemonStore as DaemonStorePort>::acquire_writer_lock(
+            &FsDaemonStore,
+            base_dir,
+            &project_id,
+            "cli-locked-failed-resume-owner",
+        )
+        .expect("acquire writer lock");
+
+        let detached_owner = "lease-ambiguous-locked-failed-resume-owner";
+        <FsDaemonStore as DaemonStorePort>::write_task(
+            &FsDaemonStore,
+            base_dir,
+            &DaemonTask {
+                task_id: "task-ambiguous-locked-failed-resume-owner".to_owned(),
+                issue_ref: "acme/widgets#ambiguous-locked-failed-resume-owner".to_owned(),
+                project_id: project_id.as_str().to_owned(),
+                project_name: Some("ambiguous locked failed resume".to_owned()),
+                prompt: Some("Prompt".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::Command),
+                routing_warnings: vec![],
+                status: TaskStatus::Failed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: Some(detached_owner.to_owned()),
+                failure_class: Some("stale_writer_owner_reclaimed".to_owned()),
+                failure_message: Some("partial cleanup preserved lease state".to_owned()),
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                workflow_run_id: None,
+                repo_slug: None,
+                issue_number: None,
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            },
+        )
+        .expect("write orphaned detached task");
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: None,
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let error = match super::observed_resume_recovery_owner(base_dir, &project_id, &snapshot) {
+            Ok(_) => {
+                panic!("writer lock plus detached owner must block failed-snapshot recovery")
+            }
+            Err(error) => error,
+        };
+
+        match error {
+            AppError::ProjectWriterStateAmbiguous {
+                project_id: actual,
+                owners,
+            } => {
+                assert_eq!(actual, project_id.to_string());
+                assert_eq!(
+                    owners,
+                    vec![
+                        "cli-locked-failed-resume-owner".to_owned(),
                         detached_owner.to_owned(),
                     ]
                 );
