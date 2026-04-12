@@ -3232,10 +3232,17 @@ where
                                 project_id,
                                 interrupted_handoff.expected_attempt.as_ref(),
                             )?;
-                            Err(AppError::InvocationCancelled {
-                                backend: "daemon".to_owned(),
-                                contract_id: task.task_id.clone(),
-                            })
+                            // Preserve the real dispatch error if one arrived
+                            // during the grace period; only synthesize
+                            // InvocationCancelled when the dispatch itself
+                            // succeeded or was already a cancellation.
+                            match result {
+                                Err(ref e) if !matches!(e, AppError::InvocationCancelled { .. }) => result,
+                                _ => Err(AppError::InvocationCancelled {
+                                    backend: "daemon".to_owned(),
+                                    contract_id: task.task_id.clone(),
+                                }),
+                            }
                         }
                         Ok(false) => result,
                         Err(error) => Err(error),
@@ -3255,10 +3262,13 @@ where
                                 project_id,
                                 interrupted_handoff.expected_attempt.as_ref(),
                             )?;
-                            Err(AppError::InvocationCancelled {
-                                backend: "daemon".to_owned(),
-                                contract_id: task.task_id.clone(),
-                            })
+                            match result {
+                                Err(ref e) if !matches!(e, AppError::InvocationCancelled { .. }) => result,
+                                _ => Err(AppError::InvocationCancelled {
+                                    backend: "daemon".to_owned(),
+                                    contract_id: task.task_id.clone(),
+                                }),
+                            }
                         }
                         Ok(false) => result,
                         Err(error) => Err(error),
@@ -3819,6 +3829,14 @@ where
         let lease_record = match self.store.read_lease_record(daemon_store_dir, lease_id) {
             Ok(record) => record,
             Err(error) if worktree_lease_record_is_missing(&error) => {
+                // Lease file already gone (crash after release but before
+                // clearing the task reference). Clear the orphaned lease_id
+                // so the task doesn't appear perpetually claimed.
+                let _ = DaemonTaskService::clear_lease_reference(
+                    self.store,
+                    daemon_store_dir,
+                    &task.task_id,
+                );
                 return Ok(PersistedCancelledHandoffPhase0State::NotApplicable);
             }
             Err(error) => return Err(error),
