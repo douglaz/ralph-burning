@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412152311-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T15:38:31.207186882Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the git-path regression amendment. Reject the other two: one is based on an inaccurate characterization of the branch and does not identify a shipped behavior bug, and the other treats intentionally versioned durable-history files as transient artifacts.\n\n## Votes\n\n- `fr-1-fc2e6e6b`: Accept\n  `src/adapters/worktree.rs` now resolves hard-coded git paths before consulting `PATH` and caches that choice for the process lifetime. On this Linux setup that picks `/usr/bin/git`, so PATH-injected wrappers are bypassed. That is a real correctness regression: `target/debug/ralph-burning conformance run --filter SC-ROLLBACK-008` now fails with `expected failure, got success`, which confirms the rollback failure path is no longer interceptable via a fake git on PATH.\n- `fr-1-68ed9188`: Reject\n  The cited bootstrap gating logic is already present and still correct, and this branch adds regression coverage for both the default skip-review path and the `--enable-review` path. That means there is no missing runtime behavior to fix here. The amendment's premise that the diff only changes runtime state artifacts is also inaccurate for the branch under review, which includes code and test changes beyond those files.\n- `fr-1-adf22fe0`: Reject\n  In this repository, `.ralph-burning/projects/*/run.json`, `journal.ndjson`, and `history/artifacts/*` are intentionally tracked as durable audit/history state; only transient subtrees like `sessions.json`, `runtime/`, `rollback/`, and `history/payloads/` are gitignored. So these files are not accidental runtime trash by project design. The cited churn may be noisy, but it is not a correctness, safety, or maintainability defect in this patch.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

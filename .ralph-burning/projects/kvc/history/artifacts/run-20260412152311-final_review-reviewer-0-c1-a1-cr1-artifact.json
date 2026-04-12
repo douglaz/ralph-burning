@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412152311-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T15:34:11.001141110Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the committed changes and the touched implementation paths. The new bootstrap regression tests look sound, and the daemon-loop diff is formatting-only, but the `WorktreeAdapter` git-binary discovery introduces one real regression by bypassing `PATH` overrides for all git operations.\n\n## Amendments\n\n1. In `src/adapters/worktree.rs:48-70` and `src/adapters/worktree.rs:138-140`, stop pinning `WorktreeAdapter` to the first hard-coded absolute git path before consulting `PATH`. On Linux/macOS this will usually select `/usr/bin/git`, which means any `PATH`-injected wrapper is silently ignored for every worktree operation. That is a correctness regression: the existing hard-rollback failure scenario in `src/contexts/conformance_spec/scenarios.rs:5894-5928` now no longer intercepts `git reset --hard`, and `target/debug/ralph-burning conformance run --filter SC-ROLLBACK-008` fails with `expected failure, got success`. Preserve ambient `PATH` resolution (or search `PATH` first with executable checks) so fake/custom git binaries still work.\n   Rationale: The new resolver changes runtime behavior, not just test setup. It breaks any flow that relies on PATH precedence to inject a git wrapper, including the checked-in rollback conformance coverage and operator environments that intentionally shim git.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

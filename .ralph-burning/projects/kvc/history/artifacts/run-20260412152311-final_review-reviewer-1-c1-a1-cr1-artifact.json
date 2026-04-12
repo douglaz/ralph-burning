@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412152311-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T15:33:19.211588365Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nTwo real issues found: the patch does not alter the feature implementation for `project bootstrap` opt-in review and only mutates live run artifacts, introducing nondeterministic state churn.\n\n## Amendments\n\n1. This diff does not implement the bootstrap contract at the code level. The only changed files are runtime state artifacts (`.ralph-burning/projects/kvc/journal.ndjson:5-8`, `.ralph-burning/projects/kvc/run.json:16-37`), while the actual bootstrap control points that already support gating already exist unchanged in `src/cli/project.rs:546-548` and `src/contexts/requirements_drafting/service.rs:1386, 1481-1485`. Net effect is behavior-neutral with respect to the requested goal (`--enable-review` default/opt-in flow), which makes this patch an incorrect implementation for the bead.\n   Rationale: Acceptance criteria requires a functional change in bootstrap/review flow; changing only persisted run snapshots cannot satisfy it.\n2. Committing `.ralph-burning/projects/kvc/journal.ndjson` and `.ralph-burning/projects/kvc/run.json` in this patch introduces environment-specific, non-deterministic state into source control (`.ralph-burning/projects/kvc/journal.ndjson` appended `reviewer_started` events at lines 7-8, and `.ralph-burning/projects/kvc/run.json:16-37` showing a live `final_review` snapshot). These are runtime artifacts; this can create spurious churn and make history dependent on local agent execution timing.\n   Rationale: These files are mutable runtime records and should not be used as the change carrier for this feature. Keeping them committed can cause reproducibility and maintenance issues.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

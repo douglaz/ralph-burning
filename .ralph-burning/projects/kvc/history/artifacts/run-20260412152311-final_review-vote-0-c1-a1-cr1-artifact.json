@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412152311-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T15:41:49.414567472Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the git-path regression amendment. Reject the bootstrap-contract and runtime-artifact amendments: the branch does add real regression coverage for the bootstrap review gate, while the cited `.ralph-burning` files are intentionally versioned canonical/durable run history in this repository rather than accidental transient output.\n\n## Votes\n\n- `fr-1-fc2e6e6b`: Accept\n  `src/adapters/worktree.rs` changed `Command::new(\"git\")` to a cached resolver that checks hard-coded absolute paths before consulting `PATH`. On this Linux checkout that picks `/usr/bin/git`, so a PATH-prepended wrapper is bypassed for all worktree operations. I verified the regression directly: `target/debug/ralph-burning conformance run --filter SC-ROLLBACK-008` now fails with `expected failure, got success`, which matches the amendment's claim that the fake `git reset --hard` interceptor no longer takes effect.\n- `fr-1-68ed9188`: Reject\n  The amendment's premise is incorrect for the branch under review. The diff from `origin/master` to `HEAD` includes code and test changes (`tests/cli.rs`, `src/adapters/worktree.rs`, etc.), not just runtime-state files. For the bootstrap contract specifically, the gating logic at the cited control points was already present, and this branch adds regression tests that prove both behaviors: default bootstrap leaves `latest_review_id` null and journals no review, while `--enable-review` persists and journals the review. I ran `cargo test --features test-stub --test cli project_bootstrap_`, and those tests pass. That is not a behavior-neutral failure to implement the contract.\n- `fr-1-adf22fe0`: Reject\n  In this repository, `run.json`, `journal.ndjson`, and `history/artifacts/*` are part of the intentionally versioned canonical/durable history surface, while truly transient state is what `.gitignore` excludes (`sessions.json`, `runtime/`, `rollback/`, `history/payloads/`, etc.). The code comments reinforce that design: `RunSnapshot` is the canonical run state and `ArtifactRecord` is a durable history artifact record. So the cited files are not accidental runtime trash by project convention. They may be noisy, but that is not, by itself, a correctness or maintainability defect in this patch.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
