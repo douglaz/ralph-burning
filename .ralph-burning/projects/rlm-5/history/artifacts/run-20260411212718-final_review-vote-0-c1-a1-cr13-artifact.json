@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-0-c1-a1-cr13-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-0-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T02:20:57.071419350Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments address real correctness defects caused by conflating the checkout workspace path with the daemon-state path in multi-repo dispatch cancellation and repair flows.\n\n## Votes\n\n- `fr-13-7186d8aa`: Accept\n  `finish_cancelled_dispatch` already has both directories, but `prepare_cancelled_dispatch_handoff` currently uses `workspace_dir` for lease persistence. In multi-repo mode the lease record lives under the daemon store, not the checkout root, so the cleanup handoff is written to the wrong location and the authoritative lease never gets the liveness proof. Threading the daemon-store path through this handoff persistence is the correct fix for cancellation recovery.\n- `fr-13-ce50aa47`: Accept\n  The interrupted-handoff repair path has the same path-mixing bug: it must read snapshot and pid state from the checkout/workspace while consulting writer-lock and lease state from the daemon store. Using the checkout root for both prevents multi-repo retries from seeing the persisted daemon handoff, so missing `run_failed` repair and stale backend cleanup are skipped. Splitting those inputs is necessary for correct recovery behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

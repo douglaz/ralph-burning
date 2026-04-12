@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr13-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T02:17:40.555423778Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments address real multi-repo path-separation defects. The current code conflates checkout-root runtime state with daemon-store state, which breaks daemon cleanup handoff persistence and later repair/reconciliation.\n\n## Votes\n\n- `fr-13-7186d8aa`: Accept\n  `finish_cancelled_dispatch` already has both `base_dir` and `workspace_dir`, but `prepare_cancelled_dispatch_handoff` currently passes `workspace_dir` into `persist_daemon_cleanup_handoff`. `FsDaemonStore` reads and writes leases under `FileSystem::daemon_root(base_dir)`, so in multi-repo mode this targets the checkout’s `.ralph-burning/daemon` tree instead of the real per-repo daemon data dir. That means the authoritative worktree lease never gets the cleanup handoff liveness proof, which is a correctness bug for cancellation recovery. Threading the daemon-store dir separately is the right fix.\n- `fr-13-ce50aa47`: Accept\n  The repair path has the same directory-mixing bug. `load_dispatch_run_snapshot` passes `workspace_dir` into `repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot`, but that helper consults `FsDaemonStore`/`read_project_writer_lease_record` to validate daemon handoff state. In multi-repo mode the writer lock and lease live under the daemon data dir, not the checkout root, so the repair logic cannot see a valid handoff and will incorrectly skip appending the missing `run_failed` event and stale backend cleanup. Splitting workspace paths from daemon-store paths here is necessary for correct recovery behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}
