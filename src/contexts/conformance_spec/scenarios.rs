@@ -13117,9 +13117,9 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                 .into_iter()
                 .filter(|invocation| invocation.contract_label == "final_review:reviewer")
                 .count();
-            if reviewer_invocations != 4 {
+            if reviewer_invocations != 6 {
                 return Err(format!(
-                    "expected both final-review rounds to collect reviewer proposals, got {reviewer_invocations} reviewer invocations"
+                    "expected both final-review rounds to collect reviewer proposals (3 reviewers × 2 rounds), got {reviewer_invocations} reviewer invocations"
                 ));
             }
 
@@ -13283,9 +13283,9 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                 .into_iter()
                 .filter(|invocation| invocation.contract_label == "final_review:reviewer")
                 .count();
-            if reviewer_invocations != 4 {
+            if reviewer_invocations != 6 {
                 return Err(format!(
-                    "restart-cap force-complete should still collect the capped round's proposals; expected 4 reviewer invocations, got {reviewer_invocations}"
+                    "restart-cap force-complete should still collect the capped round's proposals; expected 6 reviewer invocations (3 reviewers × 2 rounds), got {reviewer_invocations}"
                 ));
             }
 
