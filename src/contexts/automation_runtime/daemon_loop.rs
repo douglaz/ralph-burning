@@ -421,15 +421,27 @@ where
                 }
             };
 
+            let mut phase0_quarantined = false;
             for terminal_task in tasks
                 .iter()
                 .filter(|task| !task.label_dirty && task.lease_id.is_some() && task.is_terminal())
             {
-                match self.phase0_finalize_persisted_cancelled_handoff(
+                let handoff_state = match self.phase0_finalize_persisted_cancelled_handoff(
                     &daemon_dir,
                     checkout,
                     terminal_task,
-                )? {
+                ) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        eprintln!(
+                            "daemon: phase-0 handoff finalization failed for recovered terminal task '{}' in {}: {error} — quarantining repo for this cycle",
+                            terminal_task.task_id, reg.repo_slug
+                        );
+                        phase0_quarantined = true;
+                        break;
+                    }
+                };
+                match handoff_state {
                     PersistedCancelledHandoffPhase0State::NotApplicable
                     | PersistedCancelledHandoffPhase0State::WaitingForLiveOwner => {}
                     PersistedCancelledHandoffPhase0State::ReadyForLeaseCleanup => {
@@ -445,7 +457,8 @@ where
                                 "daemon: phase-0 label sync failed for recovered terminal task '{}' in {}: {error}",
                                 terminal_task.task_id, reg.repo_slug
                             );
-                            continue;
+                            phase0_quarantined = true;
+                            break;
                         }
                         if let Err(error) = self.phase0_release_terminal_task_lease(
                             &daemon_dir,
@@ -461,10 +474,14 @@ where
                                 "daemon: phase-0 cleanup failed for recovered terminal task '{}' in {}: {error}",
                                 terminal_task.task_id, reg.repo_slug
                             );
-                            continue;
+                            phase0_quarantined = true;
+                            break;
                         }
                     }
                 }
+            }
+            if phase0_quarantined {
+                continue; // Multi-repo failure isolation: skip to next repo
             }
 
             // Phase 0: Attempt to repair label_dirty tasks from prior cycles.
@@ -482,7 +499,6 @@ where
             //   (deferred from the previous cycle's quarantine).
             // - Non-terminal tasks (Claimed/Active) are reverted to Pending so
             //   Phase 3 can re-process them in this cycle.
-            let mut phase0_quarantined = false;
             for dirty_task in tasks.iter().filter(|t| t.label_dirty) {
                 match github_intake::sync_label_for_task(github, dirty_task).await {
                     Ok(()) => {
@@ -6686,6 +6702,115 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_quarantines_recovered_handoff_finalization_errors_per_repo() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let bad_repo_root = temp.path().join("repo-bad");
+        let good_repo_root = temp.path().join("repo-good");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&bad_repo_root, Utc::now()).expect("init bad workspace");
+        initialize_workspace(&good_repo_root, Utc::now()).expect("init good workspace");
+
+        let bad_registration = RepoRegistration {
+            repo_slug: "acme/bad".to_owned(),
+            repo_root: bad_repo_root.clone(),
+            workspace_root: bad_repo_root.join(".ralph-burning"),
+        };
+        let good_registration = RepoRegistration {
+            repo_slug: "acme/good".to_owned(),
+            repo_root: good_repo_root.clone(),
+            workspace_root: good_repo_root.join(".ralph-burning"),
+        };
+
+        let bad_daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "bad");
+        let bad_project_id = create_standard_project(&bad_repo_root, "bad-phase0-handoff");
+        let bad_task = DaemonTask {
+            status: TaskStatus::Aborted,
+            lease_id: Some("lease-bad-phase0-handoff".to_owned()),
+            ..sample_pending_task("task-bad-phase0-handoff", &bad_project_id)
+        };
+        FsDaemonStore
+            .create_task(&bad_daemon_dir, &bad_task)
+            .expect("create bad recovered terminal task");
+        FsDaemonStore
+            .write_lease_record(
+                &bad_daemon_dir,
+                &LeaseRecord::CliWriter(CliWriterLease {
+                    lease_id: "lease-bad-phase0-handoff".to_owned(),
+                    project_id: bad_project_id.as_str().to_owned(),
+                    owner: "cli".to_owned(),
+                    acquired_at: Utc::now(),
+                    ttl_seconds: 300,
+                    last_heartbeat: Utc::now(),
+                    cleanup_handoff: None,
+                }),
+            )
+            .expect("write wrong-type recovered handoff lease");
+
+        let good_daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "good");
+        let good_project_id = create_standard_project(&good_repo_root, "good-phase0-progress");
+        let good_task = sample_pending_task("task-good-phase0-progress", &good_project_id);
+        FsDaemonStore
+            .create_task(&good_daemon_dir, &good_task)
+            .expect("create good pending task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[bad_registration, good_registration],
+            )
+            .await
+            .expect("bad recovered handoff should quarantine only its repo");
+
+        let bad_after = FsDaemonStore
+            .read_task(&bad_daemon_dir, &bad_task.task_id)
+            .expect("read bad task after cycle");
+        assert_eq!(
+            bad_after.status,
+            TaskStatus::Aborted,
+            "the failing repo should be left untouched for later operator recovery"
+        );
+        assert_eq!(
+            bad_after.lease_id.as_deref(),
+            Some("lease-bad-phase0-handoff"),
+            "the recovered handoff lease should remain visible after repo quarantine"
+        );
+
+        let good_after = FsDaemonStore
+            .read_task(&good_daemon_dir, &good_task.task_id)
+            .expect("read good task after cycle");
+        assert_eq!(
+            good_after.status,
+            TaskStatus::Completed,
+            "a corrupt recovered handoff in one repo must not block later repos in the same cycle"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn process_cycle_stops_on_post_release_metadata_cleanup_failure() {
         let temp = tempdir().expect("tempdir");
         let base = temp.path();
@@ -7295,6 +7420,190 @@ mod tests {
             blocked_after_second.status,
             TaskStatus::Pending,
             "the repo must stay blocked across cycles until the corrupt lease record is repaired"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_blocks_repo_after_recovered_terminal_cleanup_failure() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let project_id = create_standard_project(&repo_root, "multi-repo-recovered-terminal");
+        let started_at = Utc::now();
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-multi-repo-recovered-terminal".to_owned(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: DAEMON_SHUTDOWN_STATUS_SUMMARY.to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(&repo_root, &project_id, &snapshot)
+            .expect("write interrupted snapshot");
+        std::fs::write(
+            repo_root.join(format!(
+                ".ralph-burning/projects/{}/journal.ndjson",
+                project_id.as_str()
+            )),
+            format!(
+                "{{\"sequence\":1,\"timestamp\":\"{}\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"{}\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-multi-repo-recovered-terminal\",\"first_stage\":\"implementation\",\"max_completion_rounds\":20}}}}",
+                (started_at - chrono::Duration::seconds(1)).to_rfc3339(),
+                project_id.as_str(),
+                started_at.to_rfc3339(),
+            ),
+        )
+        .expect("write journal without run_failed");
+        FileSystem::write_backend_processes(
+            &repo_root,
+            &project_id,
+            &[RunBackendProcessRecord {
+                pid: std::process::id().saturating_add(100_000),
+                recorded_at: started_at,
+                run_id: Some("run-multi-repo-recovered-terminal".to_owned()),
+                run_started_at: Some(started_at),
+                proc_start_ticks: Some(u64::MAX),
+                proc_start_marker: None,
+            }],
+        )
+        .expect("write stale backend process record");
+
+        let recovered_lease = WorktreeLease {
+            lease_id: "lease-multi-repo-recovered-terminal".to_owned(),
+            task_id: "task-multi-repo-recovered-terminal".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: repo_root.join("worktrees/multi-repo-recovered-terminal"),
+            branch_name: "rb/multi-repo-recovered-terminal".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: Some(CliWriterCleanupHandoff {
+                pid: std::process::id().saturating_add(100_000),
+                run_id: Some("run-multi-repo-recovered-terminal".to_owned()),
+                run_started_at: Some(started_at),
+                proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
+                proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+            }),
+        };
+        FsDaemonStore
+            .write_lease(&daemon_dir, &recovered_lease)
+            .expect("write recovered terminal lease");
+        let recovered_task = DaemonTask {
+            task_id: recovered_lease.task_id.clone(),
+            issue_ref: format!("{repo_slug}#41"),
+            project_id: project_id.as_str().to_owned(),
+            project_name: Some("Recovered terminal".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: None,
+            routing_warnings: vec![],
+            status: TaskStatus::Aborted,
+            created_at: started_at,
+            updated_at: started_at,
+            attempt_count: 0,
+            lease_id: Some(recovered_lease.lease_id.clone()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            workflow_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        FsDaemonStore
+            .write_task(&daemon_dir, &recovered_task)
+            .expect("write recovered terminal task");
+
+        let blocked_task =
+            sample_pending_task("task-multi-repo-blocked-after-recovery", &project_id);
+        FsDaemonStore
+            .create_task(&daemon_dir, &blocked_task)
+            .expect("create blocked task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::AlreadyAbsent);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("recovered terminal cleanup failure should quarantine only this repo");
+
+        let recovered_after = FsDaemonStore
+            .read_task(&daemon_dir, &recovered_task.task_id)
+            .expect("read recovered task after cycle");
+        assert!(
+            recovered_after.label_dirty,
+            "phase-0 cleanup failures for recovered terminal tasks must stay dirty for retry"
+        );
+        assert_eq!(
+            recovered_after.lease_id.as_deref(),
+            Some("lease-multi-repo-recovered-terminal"),
+            "the recovered task lease must remain visible after partial cleanup"
+        );
+
+        let blocked_after = FsDaemonStore
+            .read_task(&daemon_dir, &blocked_task.task_id)
+            .expect("read blocked task after cycle");
+        assert_eq!(
+            blocked_after.status,
+            TaskStatus::Pending,
+            "the repo must stop before processing later pending tasks in the same cycle"
         );
     }
 
