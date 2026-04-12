@@ -285,6 +285,10 @@ fn show_effective_reports_compiled_implementer_default_source() {
         "workflow.implementer_backend (default)", implementer.override_source,
         "compiled implementer default should be attributed to workflow.implementer_backend"
     );
+    assert_eq!(
+        "backends.codex.role_models.implementer (default)", implementer.model_source,
+        "compiled implementer default model should point to the codex role-model default"
+    );
 }
 
 #[test]
@@ -745,9 +749,16 @@ fn show_effective_reports_final_review_panel_members() {
     let service = BackendDiagnosticsService::new(&config);
     let view = service.show_effective();
 
-    assert!(
-        !view.roles.iter().any(|r| r.role == "final_reviewer"),
-        "generic final_reviewer row should not be shown once final-review reviewers are panel-scoped"
+    let final_reviewer = view
+        .roles
+        .iter()
+        .find(|r| r.role == "final_reviewer")
+        .expect("compatibility final_reviewer row should exist");
+    assert_eq!("codex", final_reviewer.backend_family);
+    assert_eq!("gpt-5.4-xhigh", final_reviewer.model_id);
+    assert_eq!(
+        "backends.codex.role_models.final_reviewer (default)",
+        final_reviewer.model_source
     );
 
     let reviewer0 = view
@@ -758,6 +769,10 @@ fn show_effective_reports_final_review_panel_members() {
     assert_eq!("codex", reviewer0.backend_family);
     assert_eq!("gpt-5.4-xhigh", reviewer0.model_id);
     assert_eq!("final_review.backends (default)", reviewer0.override_source);
+    assert_eq!(
+        "backends.codex.role_models.final_reviewer (default)",
+        reviewer0.model_source
+    );
 
     let reviewer1 = view
         .roles
@@ -770,7 +785,7 @@ fn show_effective_reports_final_review_panel_members() {
 }
 
 #[test]
-fn probe_singular_final_reviewer_is_rejected() {
+fn probe_singular_final_reviewer_returns_first_panel_member() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());
 
@@ -779,14 +794,16 @@ fn probe_singular_final_reviewer_is_rejected() {
 
     let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
     let service = BackendDiagnosticsService::new(&config);
-    let error = service
+    let result = service
         .probe("final_reviewer", FlowPreset::Standard, 1)
-        .expect_err("singular final_reviewer probe should be rejected");
+        .expect("singular final_reviewer probe should resolve the first reviewer");
 
-    assert!(
-        error.to_string().contains("use 'final_review_panel'"),
-        "error should direct operators to the panel probe: {error}"
-    );
+    assert_eq!("final_reviewer", result.role);
+    let target = result
+        .target
+        .expect("singular role probe should return a target");
+    assert_eq!("codex", target.backend_family);
+    assert_eq!("gpt-5.4-xhigh", target.model_id);
 }
 
 // ── structured panel failure tests ───────────────────────────────────────────

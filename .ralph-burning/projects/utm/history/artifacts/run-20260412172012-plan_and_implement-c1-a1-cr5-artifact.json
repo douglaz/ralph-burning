@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260412172012-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-12T18:54:47.368044403Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRestored backward-compatible backend diagnostics while keeping the new Codex/Opus defaults: `backend show-effective` now includes the legacy `final_reviewer` row alongside additive `final_review_panel.reviewer[n]` rows, `backend probe --role final_reviewer` resolves the first configured final-review reviewer again, compiled Codex role-model defaults are attributed to `backends.codex.role_models.{implementer,final_reviewer} (default)` instead of generic `default`, and the legacy `BackendResolver` now preserves role-specific defaults like implementer `codex/gpt-5.4-high` when backend-family selections change without an explicit model override.\n\n## Steps\n\n1. [Completed] Inspect the current diagnostics and resolver paths to confirm the pending regressions: removed `final_reviewer` compatibility, generic model-source attribution for compiled Codex role-model defaults, and legacy resolver fallback to family defaults after backend-family changes.\n2. [Completed] Patch `src/contexts/agent_execution/diagnostics.rs` to restore additive `final_reviewer` compatibility for `show-effective` and `probe`, and to report compiled role-model defaults with role-specific source strings; patch `src/contexts/agent_execution/service.rs` so backend-family changes retain role-specific default models when no explicit model override is present.\n3. [Completed] Add regression coverage for the restored CLI/unit contracts and the legacy resolver path, format the tree, and run the required validation suite.\n\n## Validation Evidence\n\n- `cargo test` passed.\n- `cargo clippy` passed.\n- `cargo fmt --check` passed.\n- New/updated diagnostics regressions now assert that `show-effective` keeps a compatibility `final_reviewer` row, still exposes additive `final_review_panel.reviewer[0]` / `[1]` rows, and reports compiled Codex defaults via `backends.codex.role_models.implementer (default)` and `backends.codex.role_models.final_reviewer (default)`.\n- New probe coverage now verifies `backend probe --role final_reviewer --flow standard` succeeds and resolves the default first final-review reviewer to Codex `gpt-5.4-xhigh` instead of rejecting the role.\n- A new ungated unit regression verifies the legacy `BackendResolver` preserves the implementer’s role-specific Codex default (`gpt-5.4-high`) when workspace/project backend-family selections change without an explicit model override.\n\n## Outstanding Risks\n\n- The worktree still contains pre-existing unrelated modifications in `.ralph-burning/projects/utm/journal.ndjson` and `.ralph-burning/projects/utm/run.json`, which I left untouched.\n- `cargo clippy` still reports existing warning-level findings outside this change set (for example `src/adapters/fs.rs:1122`), but the command completed successfully.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 5
+}

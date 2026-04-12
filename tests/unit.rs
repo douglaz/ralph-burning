@@ -20,6 +20,9 @@ mod workspace_test;
 #[path = "unit/config_test.rs"]
 mod config_test;
 
+#[path = "unit/backend_resolver_test.rs"]
+mod backend_resolver_test;
+
 #[path = "unit/active_project_test.rs"]
 mod active_project_test;
 

@@ -14486,6 +14486,37 @@ fn backend_probe_final_review_panel() {
 }
 
 #[test]
+fn backend_probe_final_reviewer() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "backend",
+            "probe",
+            "--role",
+            "final_reviewer",
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe final_reviewer");
+
+    assert!(
+        output.status.success(),
+        "backend probe final_reviewer should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("gpt-5.4-xhigh"),
+        "should show the default first final reviewer target: {}",
+        stdout
+    );
+}
+
+#[test]
 fn backend_probe_json_contract() {
     let temp_dir = initialize_workspace_fixture();
 

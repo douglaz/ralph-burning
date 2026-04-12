@@ -50,10 +50,10 @@ impl BackendResolver {
         let mut target = role.default_target();
 
         if let Some(workspace_defaults) = workspace_defaults {
-            Self::apply_selection(&mut target, workspace_defaults);
+            Self::apply_selection(role, &mut target, workspace_defaults);
         }
         if let Some(project_config) = project_config {
-            Self::apply_selection(&mut target, project_config);
+            Self::apply_selection(role, &mut target, project_config);
         }
         if let Some(model_override) = explicit_model_override {
             Self::apply_model_override(&mut target, model_override);
@@ -78,11 +78,20 @@ impl BackendResolver {
         )
     }
 
-    fn apply_selection(target: &mut ResolvedBackendTarget, selection: &BackendSelectionConfig) {
+    fn apply_selection(
+        role: BackendRole,
+        target: &mut ResolvedBackendTarget,
+        selection: &BackendSelectionConfig,
+    ) {
         if let Some(backend_family) = selection.backend_family {
             target.backend = BackendSpec::from_family(backend_family);
             if target.model.backend_family != backend_family {
-                target.model = ModelSpec::default_for_backend(backend_family);
+                let default_model = if role.default_target().backend.family == backend_family {
+                    role.default_target().model.model_id
+                } else {
+                    backend_family.default_model_id().to_owned()
+                };
+                target.model = ModelSpec::new(backend_family, default_model);
             }
         }
 
