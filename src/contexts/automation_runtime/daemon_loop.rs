@@ -2157,6 +2157,16 @@ where
             .prompt
             .clone()
             .unwrap_or_else(|| format!("Automated task for issue {}", task.issue_ref));
+        let enable_review = self.requirements_quick_enable_review(task).map_err(|e| {
+            let _ = DaemonTaskService::mark_failed(
+                self.store,
+                base_dir,
+                &task.task_id,
+                "requirements_quick_failed",
+                &format!("failed to resolve requirements_quick review mode: {e}"),
+            );
+            e
+        })?;
 
         // Build a fresh requirements service — use the configured builder if available,
         // otherwise fall back to the default (which reads RALPH_BURNING_BACKEND from env).
@@ -2173,7 +2183,7 @@ where
                 e
             })?;
         let run_id = match req_svc
-            .quick(workspace_dir, &idea, Utc::now(), None, true)
+            .quick(workspace_dir, &idea, Utc::now(), None, enable_review)
             .await
         {
             Ok(run_id) => run_id,
@@ -2295,6 +2305,22 @@ where
         );
 
         Ok(())
+    }
+
+    fn requirements_quick_enable_review(&self, task: &DaemonTask) -> AppResult<bool> {
+        if let Some(command) = task.routing_command.as_deref() {
+            if let Some(parsed) = watcher::parse_requirements_command_details(command)? {
+                return Ok(parsed.enable_review);
+            }
+        }
+
+        if let Some(prompt) = task.prompt.as_deref() {
+            if let Some(parsed) = watcher::parse_requirements_command_details(prompt)? {
+                return Ok(parsed.enable_review);
+            }
+        }
+
+        Ok(false)
     }
 
     /// Handle full-mode requirements dispatch (`draft` and `milestone`).
@@ -4300,6 +4326,9 @@ mod tests {
     use crate::contexts::project_run_record::model::{ActiveRun, RunSnapshot, RunStatus};
     use crate::contexts::project_run_record::service::{
         create_project, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
+    };
+    use crate::contexts::requirements_drafting::model::{
+        RequirementsJournalEventType, RequirementsStatus,
     };
     use crate::contexts::requirements_drafting::service::{
         RequirementsService, RequirementsStorePort,
@@ -7735,6 +7764,157 @@ mod tests {
         assert!(
             result.is_ok(),
             "RunStatus::Completed must return Ok(()) for reconciliation retries, got: {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_requirements_quick_skips_review_when_not_requested() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+
+        let project_id = ProjectId::new("quick-no-review".to_owned()).expect("project id");
+        let mut task = sample_pending_task("task-quick-no-review", &project_id);
+        task.dispatch_mode = DispatchMode::RequirementsQuick;
+        task.prompt = Some("/rb requirements quick\n\nShip the bootstrap flow.".to_owned());
+
+        let store = FsDaemonStore;
+        store.create_task(base, &task).expect("create task");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let effective_config =
+            crate::contexts::workspace_governance::config::EffectiveConfig::load(base)
+                .expect("load config");
+        let daemon = DaemonLoop::new(
+            &store,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        )
+        .with_requirements_store(&FsRequirementsStore)
+        .with_configured_requirements_service_builder(Box::new(|effective_config| {
+            crate::composition::agent_execution_builder::build_requirements_service_for_selector(
+                "stub",
+                effective_config,
+            )
+        }));
+
+        daemon
+            .handle_requirements_quick(base, base, &task, &effective_config)
+            .await
+            .expect("handle requirements quick");
+
+        let updated = store
+            .read_task(base, &task.task_id)
+            .expect("read updated task");
+        let run_id = updated
+            .requirements_run_id
+            .as_deref()
+            .expect("requirements run id");
+        let run = FsRequirementsStore
+            .read_run(base, run_id)
+            .expect("read requirements run");
+        let journal = FsRequirementsStore
+            .read_journal(base, run_id)
+            .expect("read requirements journal");
+
+        assert_eq!(run.status, RequirementsStatus::Completed);
+        assert!(
+            run.latest_review_id.is_none(),
+            "default daemon requirements_quick should skip review"
+        );
+        assert!(
+            !journal
+                .iter()
+                .any(|entry| entry.event_type == RequirementsJournalEventType::ReviewCompleted),
+            "default daemon requirements_quick should not journal a review"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_requirements_quick_honors_enable_review_command() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+
+        let project_id = ProjectId::new("quick-review".to_owned()).expect("project id");
+        let mut task = sample_pending_task("task-quick-review", &project_id);
+        task.dispatch_mode = DispatchMode::RequirementsQuick;
+        task.prompt = Some("/rb requirements quick\n\nShip the bootstrap flow.".to_owned());
+        task.routing_command = Some("/rb requirements quick --enable-review".to_owned());
+
+        let store = FsDaemonStore;
+        store.create_task(base, &task).expect("create task");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let effective_config =
+            crate::contexts::workspace_governance::config::EffectiveConfig::load(base)
+                .expect("load config");
+        let daemon = DaemonLoop::new(
+            &store,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        )
+        .with_requirements_store(&FsRequirementsStore)
+        .with_configured_requirements_service_builder(Box::new(|effective_config| {
+            crate::composition::agent_execution_builder::build_requirements_service_for_selector(
+                "stub",
+                effective_config,
+            )
+        }));
+
+        daemon
+            .handle_requirements_quick(base, base, &task, &effective_config)
+            .await
+            .expect("handle requirements quick");
+
+        let updated = store
+            .read_task(base, &task.task_id)
+            .expect("read updated task");
+        let run_id = updated
+            .requirements_run_id
+            .as_deref()
+            .expect("requirements run id");
+        let run = FsRequirementsStore
+            .read_run(base, run_id)
+            .expect("read requirements run");
+        let journal = FsRequirementsStore
+            .read_journal(base, run_id)
+            .expect("read requirements journal");
+
+        assert_eq!(run.status, RequirementsStatus::Completed);
+        assert!(
+            run.latest_review_id.is_some(),
+            "enable-review should preserve the requirements review pass"
+        );
+        assert!(
+            journal
+                .iter()
+                .any(|entry| entry.event_type == RequirementsJournalEventType::ReviewCompleted),
+            "enable-review should journal the review completion event"
         );
     }
 }

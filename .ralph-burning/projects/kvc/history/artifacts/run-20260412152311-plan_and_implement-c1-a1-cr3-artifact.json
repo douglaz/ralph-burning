@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260412152311-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-12T16:03:03.743883355Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nCompleted the pending automation-runtime amendment for opt-in requirements review. `requirements_quick` in the daemon loop now derives its review behavior from the task’s requirements command instead of hardcoding review on, defaulting to draft->seed/project handoff without review and honoring `/rb requirements quick --enable-review` when explicitly requested. I also extended command parsing to preserve the new flag and added daemon/runtime regression tests for both the default skip path and the opt-in review path.\n\n## Steps\n\n1. [Completed] Inspect the daemon requirements quick path and confirm the pending amendment: `handle_requirements_quick` still passed `true` into `RequirementsService::quick`, forcing review in automation-runtime bootstrap flows.\n2. [Completed] Implement opt-in review parsing for automation-runtime requirements commands by extending watcher command parsing to understand `/rb requirements quick --enable-review` and wiring daemon quick-mode dispatch to resolve the flag from persisted task command/prompt context.\n3. [Completed] Add regression coverage for the new command parsing and for daemon-driven quick requirements runs, asserting the default path skips `review_completed` and the explicit flag preserves the review pass.\n4. [Completed] Run targeted and repository-wide validation after formatting the touched files.\n\n## Validation Evidence\n\n- `cargo test --features test-stub handle_requirements_quick_ --quiet` passed.\n- `cargo test --features test-stub parse_requirements_command_ --quiet` passed.\n- `cargo test` passed.\n- `cargo clippy` completed successfully; only pre-existing warnings remain.\n- `cargo fmt --check` passed.\n\n## Outstanding Risks\n\n- Pre-existing workspace state files remain modified and were left untouched: `.ralph-burning/projects/kvc/run.json` and `.ralph-burning/projects/kvc/journal.ndjson`.\n- `cargo clippy` still reports existing repository warnings unrelated to this amendment (for example in `src/adapters/fs.rs`, `src/cli/project.rs`, `src/cli/run.rs`, and milestone/workflow modules).\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 3
+}
