@@ -74,10 +74,32 @@ type ConfiguredRequirementsServiceBuilder = Box<
         + Sync,
 >;
 
-fn allow_aborted_dispatch_fast_path(outcome: AppResult<()>) -> AppResult<()> {
+fn aborted_dispatch_cleanup_error(outcome: AppResult<()>) -> Option<AppError> {
     match outcome {
-        Ok(()) | Err(AppError::InvocationCancelled { .. }) => Ok(()),
-        Err(error) => Err(error),
+        Ok(()) | Err(AppError::InvocationCancelled { .. }) => None,
+        Err(error) => Some(error),
+    }
+}
+
+fn finish_aborted_dispatch_task_cleanup(
+    task_id: &str,
+    outcome: AppResult<()>,
+    lease_release_result: AppResult<()>,
+) -> AppResult<()> {
+    match (
+        lease_release_result,
+        aborted_dispatch_cleanup_error(outcome),
+    ) {
+        (Ok(()), None) => Ok(()),
+        (Ok(()), Some(error)) => Err(error),
+        (Err(error), None) => Err(error),
+        (Err(release_error), Some(dispatch_error)) => {
+            eprintln!(
+                "daemon: aborted task '{}' hit dispatch cleanup error before lease cleanup settled: {}",
+                task_id, dispatch_error
+            );
+            Err(release_error)
+        }
     }
 }
 
@@ -910,7 +932,6 @@ where
 
         let latest_task = self.store.read_task(store_dir, &active_task.task_id)?;
         if latest_task.status == TaskStatus::Aborted {
-            allow_aborted_dispatch_fast_path(outcome)?;
             // Sync label: Aborted → rb:failed. On failure, mark label_dirty and
             // quarantine — do NOT release the lease in this cycle so no further
             // mutations occur. Phase 0 will repair the label and release the lease.
@@ -926,8 +947,11 @@ where
                 );
                 return Err(e);
             }
-            self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease)?;
-            return Ok(());
+            return finish_aborted_dispatch_task_cleanup(
+                &active_task.task_id,
+                outcome,
+                self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease),
+            );
         }
 
         match outcome {
@@ -1618,9 +1642,11 @@ where
 
         let latest_task = self.store.read_task(base_dir, &active_task.task_id)?;
         if latest_task.status == TaskStatus::Aborted {
-            allow_aborted_dispatch_fast_path(outcome)?;
-            self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
-            return Ok(());
+            return finish_aborted_dispatch_task_cleanup(
+                &active_task.task_id,
+                outcome,
+                self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease),
+            );
         }
 
         match outcome {
@@ -4163,7 +4189,7 @@ mod tests {
         FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
         FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRequirementsStore,
         FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
-        RunPidOwner, RunPidRecord,
+        RunBackendProcessRecord, RunPidOwner, RunPidRecord,
     };
     use crate::adapters::github::InMemoryGithubClient;
     use crate::adapters::stub_backend::StubBackendAdapter;
@@ -4171,7 +4197,8 @@ mod tests {
     use crate::contexts::agent_execution::model::CancellationToken;
     use crate::contexts::agent_execution::AgentExecutionService;
     use crate::contexts::automation_runtime::model::{
-        CliWriterLease, DaemonJournalEvent, DaemonTask, DispatchMode, TaskStatus,
+        CliWriterCleanupHandoff, CliWriterLease, DaemonJournalEvent, DaemonTask, DispatchMode,
+        TaskStatus,
     };
     use crate::contexts::automation_runtime::repo_registry::{DataDirLayout, RepoRegistration};
     use crate::contexts::automation_runtime::{
@@ -5263,6 +5290,19 @@ mod tests {
         FsDaemonStore
             .acquire_writer_lock(base, &project_id, &lease.lease_id)
             .expect("acquire daemon handoff writer lock");
+        FileSystem::write_backend_processes(
+            base,
+            &project_id,
+            &[RunBackendProcessRecord {
+                pid: std::process::id().saturating_add(100_000),
+                recorded_at: started_at,
+                run_id: Some("run-daemon-handoff-repair".to_owned()),
+                run_started_at: Some(started_at),
+                proc_start_ticks: Some(u64::MAX),
+                proc_start_marker: None,
+            }],
+        )
+        .expect("write stale daemon backend process record");
 
         std::fs::write(
             base.join(format!(
@@ -5316,6 +5356,12 @@ mod tests {
                 .count(),
             1,
             "dispatch snapshot load should append the missing daemon run_failed event"
+        );
+        assert!(
+            FileSystem::read_backend_processes(base, &project_id)
+                .expect("read backend processes after daemon repair")
+                .is_empty(),
+            "dispatch snapshot repair should also prune stale daemon-owned backend records"
         );
     }
 
@@ -6917,25 +6963,51 @@ mod tests {
     }
 
     #[test]
-    fn aborted_dispatch_fast_path_allows_successful_outcomes() {
-        assert!(super::allow_aborted_dispatch_fast_path(Ok(())).is_ok());
+    fn aborted_dispatch_cleanup_allows_successful_outcomes() {
         assert!(
-            super::allow_aborted_dispatch_fast_path(Err(AppError::InvocationCancelled {
+            super::finish_aborted_dispatch_task_cleanup("task-aborted", Ok(()), Ok(())).is_ok()
+        );
+        assert!(super::finish_aborted_dispatch_task_cleanup(
+            "task-aborted",
+            Err(AppError::InvocationCancelled {
                 backend: "daemon".to_owned(),
                 contract_id: "task-aborted".to_owned(),
-            }))
-            .is_ok()
+            }),
+            Ok(())
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn aborted_dispatch_cleanup_propagates_dispatch_errors_after_lease_release() {
+        let error = super::finish_aborted_dispatch_task_cleanup(
+            "task-aborted",
+            Err(AppError::Io(std::io::Error::other(
+                "backend cleanup failed",
+            ))),
+            Ok(()),
+        )
+        .expect_err("non-cancellation outcome should surface after lease release");
+        assert!(
+            matches!(error, AppError::Io(_)),
+            "unexpected propagated error: {error:?}"
         );
     }
 
     #[test]
-    fn aborted_dispatch_fast_path_propagates_non_cancellation_errors() {
-        let error = super::allow_aborted_dispatch_fast_path(Err(AppError::Io(
-            std::io::Error::other("backend cleanup failed"),
-        )))
-        .expect_err("non-cancellation outcome should not be swallowed");
+    fn aborted_dispatch_cleanup_prioritizes_lease_cleanup_failures() {
+        let error = super::finish_aborted_dispatch_task_cleanup(
+            "task-aborted",
+            Err(AppError::Io(std::io::Error::other(
+                "backend cleanup failed",
+            ))),
+            Err(AppError::LeaseCleanupPartialFailure {
+                task_id: "task-aborted".to_owned(),
+            }),
+        )
+        .expect_err("lease cleanup failures must stay visible for Phase 0 recovery");
         assert!(
-            matches!(error, AppError::Io(_)),
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
             "unexpected propagated error: {error:?}"
         );
     }
