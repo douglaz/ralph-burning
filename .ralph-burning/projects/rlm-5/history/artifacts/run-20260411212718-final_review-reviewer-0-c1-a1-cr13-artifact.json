@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr13-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T02:15:20.806100137Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master` and the affected implementation paths. I found two correctness regressions in the new daemon-cleanup flow: the multi-repo daemon writes the cleanup handoff to the wrong base directory, and its later repair path also reads from the wrong base directory, so the new SIGTERM recovery only works in single-repo mode.\n\n## Amendments\n\n1. Thread the daemon store directory through `finish_cancelled_dispatch`/`prepare_cancelled_dispatch_handoff` and call `persist_daemon_cleanup_handoff` with `base_dir` instead of `workspace_dir` (`src/contexts/automation_runtime/daemon_loop.rs:2678-2705`, `src/contexts/automation_runtime/daemon_loop.rs:2960-3009`). `FsDaemonStore` resolves lease files under `FileSystem::daemon_root(base_dir)` (`src/adapters/fs.rs:936-938`), so the current code writes the handoff into the checkout root in multi-repo mode and never persists liveness proof for the real worktree lease.\n   Rationale: This breaks the new SIGTERM cleanup feature on the multi-repo/GitHub daemon path: if shutdown races with a stuck backend there is no durable handoff to recover from, so the task is left with the same stale run state this bead is supposed to fix.\n2. Split the repair helper inputs the same way: `load_dispatch_run_snapshot` must pass the daemon store dir to the interrupted-handoff repair, not the repo checkout root (`src/contexts/automation_runtime/daemon_loop.rs:2944-2956`). The repair path reads the handoff lease through `FsDaemonStore`/`read_project_writer_lease_record` (`src/cli/run.rs:2013-2021`, `src/cli/run.rs:2125-2135`, `src/contexts/automation_runtime/cli_writer_lease.rs:108-116`), so multi-repo daemon retries can never append the missing `run_failed` event or prune stale backend records even if the handoff was written correctly.\n   Rationale: Fixing the write side alone is not enough. As shipped, the new recovery logic only works when daemon state and project state share the same base directory, which is not true for the multi-repo daemon.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

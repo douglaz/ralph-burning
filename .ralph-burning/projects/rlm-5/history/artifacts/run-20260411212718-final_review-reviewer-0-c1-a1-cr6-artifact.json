@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T23:35:09.493820737Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the daemon SIGTERM cleanup and strict lease-cleanup changes against `origin/master..HEAD`, including the updated CLI recovery helpers and daemon loop paths. I found two correctness gaps: both involve failures while clearing `task.lease_id` after lease/worktree deletion, which currently make the contradictory state non-durable or non-quarantined.\n\n## Amendments\n\n1. Preserve detached stale-owner discoverability until the daemon task's `lease_id` is cleared. In `cleanup_detached_project_writer_owner`, the worktree and lease record are deleted before `DaemonTaskService::clear_lease_reference` runs ([src/contexts/automation_runtime/cli_writer_lease.rs:397-417]). Follow-up recovery only discovers detached owners from `list_lease_records` ([src/contexts/automation_runtime/cli_writer_lease.rs:291-320]) and only attempts detached cleanup when `observed_owner` is present ([src/cli/run.rs:1835-1846]). If the task-file write fails, the first `run resume`/`run stop` attempt returns `LeaseCleanupPartialFailure`, but the next attempt no longer sees any detached owner and proceeds while the daemon task still carries a stale `lease_id`. Keep the lease record until the task reference is cleared, or extend detached-owner discovery to fall back to task-side orphaned lease references.\n   Rationale: The new fail-closed cleanup is only durable if a retry can rediscover the contradictory state. Deleting the only discoverable owner token before the task update succeeds turns the block into a one-shot warning.\n2. Treat post-release task-metadata write failures as partial lease cleanup failures before deciding whether the daemon can continue. `release_task_lease` returns the raw result of `DaemonTaskService::clear_lease_reference` after `LeaseService::release` has already removed the worktree, writer lock, and lease file ([src/contexts/automation_runtime/daemon_loop.rs:3611-3644]). The new callers only stop/quarantine on `LeaseCleanupPartialFailure` ([src/contexts/automation_runtime/daemon_loop.rs:611-618], [src/contexts/automation_runtime/daemon_loop.rs:1152-1159]). If clearing `task.lease_id` fails, single-repo mode just logs and keeps scanning, and multi-repo mode does not mark `label_dirty`, leaving a terminal task with a stale lease reference and no Phase 0 recovery path. Map this branch to `LeaseCleanupPartialFailure` or otherwise quarantine it as contradictory durable state.\n   Rationale: This is still a partial cleanup failure: physical resources are gone, but durable task metadata is inconsistent. Surfacing it as generic I/O defeats the new 'surface and block on partial cleanup' behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

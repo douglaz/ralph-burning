@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:10:55.077571099Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the daemon cleanup diff in `src/contexts/automation_runtime/daemon_loop.rs` and the helper export in `src/cli/run.rs`, along with the new daemon-loop tests. Found one correctness issue: `finish_cancelled_dispatch()` cleanup errors are still swallowed by the outer aborted-task success paths.\n\n## Amendments\n\n1. Propagate non-cancellation errors from the aborted-task fast paths in `src/contexts/automation_runtime/daemon_loop.rs`. After `drive_dispatch_multi_repo()` / `drive_dispatch()` returns, the code at lines 844-862 and 1545-1548 exits as soon as `latest_task.status == TaskStatus::Aborted`, without inspecting `outcome`. That drops the new errors returned by `finish_cancelled_dispatch()` at lines 3003-3114 (for example, failed backend-process cleanup during daemon shutdown/cancellation), then still releases the task lease and reports a clean abort. Only `Ok(())` / `Err(AppError::InvocationCancelled { .. })` should be swallowed here; any other error needs to surface before the lease is cleared.\n   Rationale: As written, the new daemon SIGTERM/backend-cleanup failure path never reaches the real task-processing callers. A failed backend cleanup can therefore be hidden while the daemon removes the lease and leaves orphaned subprocesses behind, which defeats the main safety goal of this change.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

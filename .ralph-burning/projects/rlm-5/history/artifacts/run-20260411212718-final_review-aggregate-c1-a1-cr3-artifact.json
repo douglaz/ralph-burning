@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411212718-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260411212718-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:35:53.320084209Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 3/25\n\n## Accepted\n\n- `fr-3-928bcfa7`\n- `fr-3-19c9e48a`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-928bcfa7`\n\nAdd a daemon-side repair path for interrupted cancellation handoffs that survive only as `run.json`. `prepare_cancelled_dispatch_handoff` eagerly flips the snapshot to Failed and removes `run.pid` before the grace wait ([src/contexts/automation_runtime/daemon_loop.rs:2894-2913]), but the only code that appends the missing `run_failed` journal event is `finalize_cancelled_dispatch_handoff`, which only runs if the same process survives to finish the grace path ([src/contexts/automation_runtime/daemon_loop.rs:2916-2980,3031-3098]). In the supervisor-SIGKILL case from the bead description, the daemon can die after persisting the handoff and before finalization, leaving a permanently incomplete journal for that run. Mirror the CLI signal path’s later repair hook (see [src/cli/run.rs:1972-2024,3213-3217]) so a later status/resume/reconcile pass can append the missing terminal event.\n\n### `fr-3-19c9e48a`\n\nStop discarding `release_task_lease` errors on the remaining daemon terminal paths. `release_task_lease` now returns `LeaseCleanupPartialFailure` when worktree/lease cleanup only partially succeeded ([src/contexts/automation_runtime/daemon_loop.rs:3565-3614]), but the daemon still ignores that result after aborted PR handling, PR-runtime failure, reconciliation failure, normal completion, and ordinary dispatch failure in both multi-repo and single-repo flows ([src/contexts/automation_runtime/daemon_loop.rs:941-946,972-977,1033-1056,1087-1088,1595-1600,1628-1635,1651-1652]). Those branches can still report a task as terminal and move on even though the durable lease/worktree state is contradictory. Propagate or quarantine those errors the same way the newly patched aborted/shutdown paths do.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

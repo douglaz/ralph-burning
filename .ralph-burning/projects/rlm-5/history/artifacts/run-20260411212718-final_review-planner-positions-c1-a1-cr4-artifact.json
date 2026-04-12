@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr4-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:57:11.659246143Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments address real state-consistency defects. One currently suppresses a terminal lease-cleanup failure and lets the single-repo daemon keep dispatching after durable cleanup only partially succeeded; the other leaves daemon-cancellation journal repair trapped in a daemon-only load path, so CLI recovery/status flows can still observe failed snapshots without the required durable `run_failed` event.\n\n## Votes\n\n- `fr-4-5a46212e`: Accept\n  `release_task_lease()` now intentionally treats partial cleanup as a hard inconsistency by returning `LeaseCleanupPartialFailure` and preserving the lease/task reference for operator recovery. In single-repo mode, `process_cycle()` currently catches that error from `process_task()`, logs it, and keeps scanning, which defeats the new invariant and lets later tasks run against contradictory durable state. This is not just a per-task failure; it is a daemon-level safety condition, so bubbling it out or quarantining the daemon is the correct behavior.\n- `fr-4-f664cc70`: Accept\n  The daemon-specific repair helper recognizes the daemon handoff summaries, but it is only reached through `load_dispatch_run_snapshot()`, which is used before daemon dispatch, not by `run status`, terminal milestone sync, or `run resume`. Those CLI paths still call the older signal-only helper that matches only `failed (interrupted by termination signal)`, so a daemon handoff crash can leave the journal permanently missing its terminal `run_failed` event. Since downstream sync logic explicitly requires that durable event for failed snapshots, the repair needs to live in the shared status/resume repair path rather than only inside daemon dispatch loading.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

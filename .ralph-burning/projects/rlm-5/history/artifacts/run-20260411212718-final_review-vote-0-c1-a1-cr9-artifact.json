@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-0-c1-a1-cr9-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-0-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T00:42:34.760991791Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real recovery/cleanup defects. The first fail-opens on ambiguous detached ownership by collapsing it into the same `None` path as \"no stale owner,\" and the second can misclassify a newly acquired `run.pid` as leftover state from the just-released task, leaving an orphaned `lease_id` that falsely blocks later processing.\n\n## Votes\n\n- `fr-9-7be0c89b`: Accept\n  `find_detached_project_writer_owner()` currently maps both zero matches and multiple matches to `None`. The resume/stop recovery paths then interpret that result as absence of stale ownership, so if the writer lock is free they can acquire a fresh CLI writer lease and continue without resolving any of the contradictory detached lease state. Because detached cleanup is owner-specific and the remaining task/lease metadata is durable and behaviorally significant, silently treating ambiguity as safe absence is not correct or robust; it should block recovery until the ambiguity is resolved.\n- `fr-9-c7a7a336`: Accept\n  The race is valid. `release_task_lease()` calls `LeaseService::release()` first, and that can already remove the worktree lease record and release the writer lock before `remove_owned_run_pid_file()` runs. Once the lock is released, another process can legitimately acquire the project and write a fresh `run.pid`. In that case `remove_owned_run_pid_file()` returns `LeaseCleanupPartialFailure`, but the failure now refers to a different owner’s current pid file, not leaked resources from the finished task. Leaving the old task’s `lease_id` in place after that misattributes ownership and can drive later orphan-repair/quarantine logic down the wrong path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

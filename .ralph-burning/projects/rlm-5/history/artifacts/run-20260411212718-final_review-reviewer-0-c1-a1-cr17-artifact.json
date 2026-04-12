@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr17-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T03:42:57.237250949Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the net `rlm.5` changes across the daemon/CLI lifecycle code and supporting tests. I found 2 correctness gaps, both in the stale daemon-owner reclaim path; the new Phase-0 quarantine logic itself looks consistent.\n\n## Amendments\n\n1. Fail closed when the writer lock still points at a stale daemon owner whose lease record is already gone but whose task metadata still retains that lease ID. In `src/contexts/automation_runtime/cli_writer_lease.rs:210-217`, `reclaim_specific_project_writer_owner()` treats a missing lease record as success after only releasing the writer lock, and `src/cli/run.rs:1915-1924` immediately reacquires a new CLI writer lease on that success path. That bypasses the new orphan-task detection that only exists in `cleanup_detached_project_writer_owner()` and lets `run resume` / `run stop` continue while a daemon task still durably claims the old lease. Mirror the detached-owner partial-cleanup check here: if any task in the project still references `expected_owner`, surface `LeaseCleanupPartialFailure` and block reacquisition until the stale task metadata is repaired.\n   Rationale: Otherwise the new fail-closed cleanup policy is skipped for the active-owner case, and recovery can proceed on contradictory durable state.\n2. Add owner-aware `run.pid` cleanup to stale daemon-owner reclaim. The worktree-owner cleanup paths in `src/contexts/automation_runtime/cli_writer_lease.rs:261-286` and `src/contexts/automation_runtime/cli_writer_lease.rs:399-444` remove the worktree / writer-lock / lease metadata but never delete the matching daemon-owned `run.pid`, unlike `src/contexts/automation_runtime/daemon_loop.rs:3906-3918`. `run stop`'s stale-recovery flow in `src/cli/run.rs:3729-3755` relies on those helpers and does not remove the old pid afterward, so it can report the project recovered while leaving the lingering `run.pid` on disk. Reuse the same owner-aware pid-file cleanup before treating stale-owner reclaim as successful.\n   Rationale: Leaving `run.pid` behind means the daemon-cleanup feature is still incomplete on stale-owner reclaim paths and later recovery code can continue to observe a phantom owner.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

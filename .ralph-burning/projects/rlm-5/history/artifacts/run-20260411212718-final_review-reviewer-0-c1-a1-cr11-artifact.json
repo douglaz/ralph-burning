@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr11-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T01:19:56.582944619Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the daemon SIGTERM cleanup and writer-lease changes across `daemon_loop.rs`, `cli_writer_lease.rs`, `run.rs`, `engine.rs`, and `error.rs`. I found two correctness gaps: shutdown cleanup errors can leave unrecoverable orphaned task lease metadata, and the new daemon interruption repair can publish `run_failed` before the cancelled daemon-owned run has actually exited.\n\n## Amendments\n\n1. Handle post-release metadata failures during daemon shutdown cleanup. In `src/contexts/automation_runtime/daemon_loop.rs:3216-3233`, `cleanup_active_leases()` only marks the task `Aborted` and logs the error. If `release_task_lease()` fails after physical cleanup succeeded but before `clear_lease_reference()` completes (`src/contexts/automation_runtime/daemon_loop.rs:3667-3680`), the task is left with an orphaned `lease_id` while the lease record and `run.pid` are already gone. The only automatic repair path for that state is Phase 0, but it only scans `label_dirty` tasks (`src/contexts/automation_runtime/daemon_loop.rs:401-452`), so shutdown cleanup failures are never repaired on the next daemon start. Mark the affected task dirty, or persist an equivalent recovery marker, before returning the partial-cleanup error.\n   Rationale: Without a recovery marker, a transient task-write failure during shutdown strands the task in contradictory durable state and blocks later retry/recovery even though the daemon now surfaces the error.\n2. Do not finalize daemon interruption handoffs solely because `run.pid` is missing. The new daemon handoff path removes `run.pid` as soon as it persists the interrupted snapshot (`src/contexts/automation_runtime/daemon_loop.rs:2933-2997`), but it does not persist any daemon-owned liveness handoff. `repair_missing_interrupted_handoff_run_failed_event()` was expanded to daemon summaries (`src/cli/run.rs:1993-2037`), and `run status` invokes that repair path on every read (`src/cli/run.rs:8334-8347`). During the 5-second daemon grace window, a status/sync/read can therefore append `run_failed` while the old daemon-owned orchestrator is still alive, publishing terminal state out of order. Add a daemon-owned handoff/liveness proof, or suppress repair for daemon-owned interruption summaries until process death is proven.\n   Rationale: This turns a read path into premature terminal-state publication for daemon-owned cancellations, which can confuse recovery logic and external automation that trusts the journal ordering.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

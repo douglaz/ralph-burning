@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411212718-final_review-aggregate-c1-a1-cr16-artifact",
+  "payload_id": "run-20260411212718-final_review-aggregate-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T03:25:14.891271250Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 16/25\n\n## Accepted\n\n- `fr-16-2b6c3bab`\n- `fr-16-dd7fc5f6`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-16-2b6c3bab`\n\nQuarantine recovered handoff-finalization errors per repo instead of propagating them out of `process_cycle_multi_repo`. In `src/contexts/automation_runtime/daemon_loop.rs:428-432`, `phase0_finalize_persisted_cancelled_handoff(...)` is called with `?`, but that helper can return real runtime errors from lease/snapshot/handoff reads (`src/contexts/automation_runtime/daemon_loop.rs:3802-3844`). In multi-repo mode that means one repo with a corrupt or ambiguous recovered handoff now aborts the entire cycle for every registered repo, instead of isolating the bad repo the way the rest of Phase 0 does.\n\n### `fr-16-dd7fc5f6`\n\nBlock the repo when the new recovered-terminal Phase 0 path hits label-sync or lease-cleanup failure. In `src/contexts/automation_runtime/daemon_loop.rs:436-464`, failures only mark `label_dirty` and `continue`. But `tasks` was snapshotted before that at `src/contexts/automation_runtime/daemon_loop.rs:416-422`, so the later dirty-task quarantine loop (`src/contexts/automation_runtime/daemon_loop.rs:485-562`) never sees the just-dirtied task in the same cycle. The daemon can therefore keep processing other pending tasks even though `phase0_release_terminal_task_lease` already failed and the recovered task still has contradictory durable state.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 16
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-plan_and_implement-c1-a1-cr18-artifact",
+  "payload_id": "run-20260411212718-plan_and_implement-c1-a1-cr18",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-12T03:59:16.934077595Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the remaining `ralph-burning-rlm.5` stale daemon-owner cleanup amendments. `src/contexts/automation_runtime/cli_writer_lease.rs` now fails closed when `reclaim_specific_project_writer_owner()` sees a stale writer lock whose lease record is already gone but whose task metadata still retains that lease ID, preventing `run resume`/`run stop` from reacquiring a fresh CLI writer lease over contradictory durable state. The same module now owns shared daemon `run.pid` cleanup logic, and both direct stale-owner reclaim and detached-owner cleanup remove matching daemon-owned pid files before reporting success while still honoring successor-owner races. `src/contexts/automation_runtime/daemon_loop.rs` now reuses that shared pid cleanup helper, and `src/cli/run.rs` gained a regression proving recovery guard acquisition is blocked on the orphaned-task metadata case.\n\n## Steps\n\n1. [Completed] Inspected the stale daemon-owner reclaim paths in `src/contexts/automation_runtime/cli_writer_lease.rs`, the recovery guard reacquisition path in `src/cli/run.rs`, and the daemon pid cleanup helper in `src/contexts/automation_runtime/daemon_loop.rs` to confirm where missing lease records were treated as clean success and where stale daemon `run.pid` files were left behind.\n2. [Completed] Patched `cli_writer_lease.rs` to detect orphaned task-side lease references during specific-owner reclaim, to share owner-aware daemon `run.pid` cleanup across stale-owner reclaim paths, and updated `daemon_loop.rs` to call the shared helper instead of maintaining a duplicate implementation.\n3. [Completed] Added focused regressions for missing-lease fail-closed recovery and both stale-owner pid cleanup paths, then ran targeted tests plus the required repository validation commands.\n\n## Validation Evidence\n\n- Targeted regression passed: `cargo test reclaim_specific_project_writer_owner_ --lib`.\n- Targeted regression passed: `cargo test cleanup_detached_project_writer_owner_removes_matching_daemon_run_pid --lib`.\n- Targeted regression passed: `cargo test acquire_recovery_writer_guard_blocks_when_writer_lock_owner_lease_record_is_missing_but_task_still_references_it --lib`.\n- `cargo test` passed.\n- `cargo clippy` passed with only pre-existing unrelated warnings.\n- `cargo fmt --check` passed.\n\n## Outstanding Risks\n\n- `cargo clippy` still reports pre-existing unrelated repository warnings (for example `proc_start_marker_raw` dead code and several existing style lints); this change did not introduce new clippy failures.\n- The worktree still has unrelated local changes in `.ralph-burning/projects/rlm-5/journal.ndjson` and `.ralph-burning/projects/rlm-5/run.json`; they were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 18
+}

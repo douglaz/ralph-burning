@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr18-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T04:05:19.644221428Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the round-18 diff from 6919d015 to 36962014, including the updated stale-owner recovery and run.pid cleanup logic in src/contexts/automation_runtime/cli_writer_lease.rs, the shared helper call sites in src/contexts/automation_runtime/daemon_loop.rs, and the new regression coverage in src/cli/run.rs. I did not find any correctness, safety, or robustness issues in these changes. Targeted regression tests for the new reclaim/cleanup paths passed.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 18
+}

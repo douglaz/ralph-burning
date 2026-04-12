@@ -273,6 +273,7 @@ impl LeaseService {
             acquired_at: now,
             ttl_seconds,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         if let Err(error) = store.write_lease(base_dir, &lease) {
             // Rollback: attempt every applicable cleanup step and aggregate

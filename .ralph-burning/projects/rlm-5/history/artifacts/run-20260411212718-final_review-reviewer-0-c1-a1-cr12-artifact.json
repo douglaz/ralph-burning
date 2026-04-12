@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr12-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T01:50:29.336933797Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the daemon SIGTERM cleanup and detached-owner changes. I found two correctness gaps: aborted-task cleanup errors can strand Aborted tasks with unreleased leases, and the new daemon-handoff repair path restores run state without cleaning orphaned backend process groups.\n\n## Amendments\n\n1. Fix aborted-task cleanup so a non-cancellation error from finish_cancelled_dispatch() does not strand the task lease. finish_cancelled_dispatch() now returns backend/interrupted-state cleanup errors (src/contexts/automation_runtime/daemon_loop.rs:3161-3255), but both aborted-task branches call allow_aborted_dispatch_fast_path() before label sync / release_task_lease() (src/contexts/automation_runtime/daemon_loop.rs:77-82, 912-929, 1620-1623). For a task-local abort, any Io/corrupt cleanup error exits early with the task already marked Aborted, its lease still attached, and in multi-repo mode label_dirty still false, so Phase 0 never revisits it and the project stays blocked until TTL-based reconcile.\n   Rationale: The new fail-closed cleanup path is correct, but the aborted-task fast path now skips the only normal lease-release/repair flow when cleanup returns a non-cancellation error. That leaves an Aborted task holding resources with no automatic recovery marker.\n2. Run stale backend-process cleanup when repairing an interrupted daemon handoff after the daemon dies mid-shutdown. repair_missing_interrupted_handoff_run_failed_event() only restores the missing run_failed event (src/cli/run.rs:2051-2101), and both load_dispatch_run_snapshot() and handle_resume() consume that repaired snapshot without calling cleanup_stale_backend_process_groups() (src/contexts/automation_runtime/daemon_loop.rs:2918-2931; src/cli/run.rs:3304-3360). If the daemon is SIGKILLed after persisting the handoff but before finish_cancelled_dispatch() reaches backend cleanup, the orphaned backend process group survives and a resumed/retried run can start a second backend alongside it.\n   Rationale: This is the exact crash window the handoff-repair path is meant to recover from. Repairing the journal/run snapshot without also clearing tracked backend processes leaves live old workers behind and can cause duplicate backends or conflicting state on resume.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

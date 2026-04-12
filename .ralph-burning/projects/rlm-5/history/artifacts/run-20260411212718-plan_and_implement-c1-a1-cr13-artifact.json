@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-plan_and_implement-c1-a1-cr13-artifact",
+  "payload_id": "run-20260411212718-plan_and_implement-c1-a1-cr13",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-12T02:04:08.879224113Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the two remaining `ralph-burning-rlm.5` amendments. In `src/contexts/automation_runtime/daemon_loop.rs`, aborted-task dispatch handling now releases the task lease and only then propagates any non-cancellation error returned from `finish_cancelled_dispatch()`, while still preserving `LeaseCleanupPartialFailure` as the surfaced error when durable lease cleanup also fails. In `src/cli/run.rs`, interrupted daemon-handoff repair now shares a liveness/attempt gate and runs `cleanup_stale_backend_process_groups()` for dead daemon-owned interrupted attempts during snapshot repair/reload, so resume and daemon dispatch snapshot loading prune orphaned backend process records before continuing. Added focused regressions covering aborted cleanup result ordering, daemon dispatch snapshot repair plus stale backend pruning, and shared daemon-handoff repair cleanup.\n\n## Steps\n\n1. [Completed] Inspected the aborted-task fast paths in `daemon_loop.rs` and the interrupted-handoff repair flow in `run.rs` to confirm where non-cancellation cleanup errors were escaping before lease release and where dead daemon handoffs were repaired without stale backend cleanup.\n2. [Completed] Patched the daemon aborted-task branches to finalize lease cleanup before surfacing dispatch-cleanup errors, added a shared interrupted-handoff cleanup candidate helper in `run.rs`, and wired daemon-handoff snapshot repair/reload to prune stale backend process groups once daemon death is proven.\n3. [Completed] Added focused regression tests in `src/contexts/automation_runtime/daemon_loop.rs` and `src/cli/run.rs`, then ran targeted regressions plus the required repository validation commands.\n\n## Validation Evidence\n\n- Targeted aborted-cleanup regressions passed: `cargo test --features test-stub aborted_dispatch_cleanup`.\n- Targeted daemon snapshot repair regression passed: `cargo test --features test-stub load_dispatch_run_snapshot_repairs_missing_run_failed_event_from_daemon_handoff`.\n- Targeted shared repair cleanup regression passed: `cargo test repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_cleans_stale_daemon_backends`.\n- `cargo test` passed.\n- `cargo clippy` passed with only pre-existing unrelated warnings.\n- `cargo fmt --check` passed.\n\n## Outstanding Risks\n\n- `cargo clippy` still emits pre-existing unrelated repository warnings (for example `proc_start_marker_raw` dead code and several existing style lints); this change did not introduce new clippy failures.\n- The worktree still has unrelated local changes in `.ralph-burning/projects/rlm-5/journal.ndjson` and `.ralph-burning/projects/rlm-5/run.json`; they were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 13
+}

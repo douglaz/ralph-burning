@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-0-c1-a1-cr12-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-0-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T01:55:13.438856460Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real recovery defects. One lets abort-time cleanup errors bypass lease release or quarantine bookkeeping, leaving a terminal task effectively stuck. The other repairs interrupted run state without reaping backend processes, so a retry or resume can overlap with an orphaned backend from the prior attempt.\n\n## Votes\n\n- `fr-12-515a28ec`: Accept\n  The aborted-task branches in `daemon_loop.rs` call `allow_aborted_dispatch_fast_path(outcome)?` before label repair and `release_task_lease(...)`. Because `finish_cancelled_dispatch()` now propagates interrupted-state and backend-cleanup failures, any non-`InvocationCancelled` error returns early with the task already persisted as `Aborted` but its lease still attached. In the multi-repo branch that early exit also skips `mark_label_dirty`, so the Phase 0 repair loop will not pick the task back up. That strands exclusive state behind a terminal task and is a real correctness and recovery bug.\n- `fr-12-3c65baa1`: Accept\n  `repair_missing_interrupted_handoff_run_failed_event*()` repairs journal state only; it does not call `cleanup_stale_backend_process_groups()`. After that repair, both `load_dispatch_run_snapshot()` and `handle_resume()` consume the repaired `Failed` snapshot and can proceed to new execution without first reaping backend processes for the interrupted attempt. If the daemon died after persisting the handoff but before `finish_cancelled_dispatch()` reached backend cleanup, the old backend process group can survive and overlap with the resumed or retried run. That violates single-attempt isolation and should be fixed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

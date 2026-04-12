@@ -11,6 +11,11 @@ use crate::adapters::fs::{
     FsMilestoneStore, FsTaskRunLineageStore,
 };
 use crate::adapters::github::GithubPort;
+use crate::cli::run::{
+    cleanup_stale_backend_process_groups, interrupted_handoff_cleanup_candidate_with_dirs,
+    repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_with_dirs,
+    InterruptedHandoffCleanupCandidate,
+};
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
@@ -18,9 +23,14 @@ use crate::contexts::agent_execution::policy::BackendPolicyService;
 use crate::contexts::agent_execution::service::{AgentExecutionPort, RawOutputPort};
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
+use crate::contexts::automation_runtime::cli_writer_lease::{
+    cleanup_detached_project_writer_owner, read_project_writer_lock_owner,
+    remove_owned_run_pid_file,
+};
 use crate::contexts::automation_runtime::lease_service::LeaseService;
 use crate::contexts::automation_runtime::model::{
-    DaemonTask, DispatchMode, RebaseFailureClassification, RebaseOutcome, TaskStatus,
+    CliWriterCleanupHandoff, DaemonTask, DispatchMode, LeaseRecord, RebaseFailureClassification,
+    RebaseOutcome, TaskStatus,
 };
 use crate::contexts::automation_runtime::pr_review::PrReviewIngestionService;
 use crate::contexts::automation_runtime::pr_runtime::PrRuntimeService;
@@ -35,13 +45,14 @@ use crate::contexts::automation_runtime::{
     RebaseConflictResolver, WorktreePort,
 };
 use crate::contexts::milestone_record::service as milestone_service;
-use crate::contexts::project_run_record::model::RunStatus;
+use crate::contexts::project_run_record::model::{RunSnapshot, RunStatus};
 use crate::contexts::project_run_record::service::{
     create_project, AmendmentQueuePort, ArtifactStorePort, JournalStorePort,
     PayloadArtifactWritePort, ProjectStorePort, RunSnapshotPort, RunSnapshotWritePort,
     RuntimeLogWritePort,
 };
 use crate::contexts::project_run_record::CreateProjectInput;
+use crate::contexts::project_run_record::{journal, queries};
 use crate::contexts::requirements_drafting::model::{RequirementsOutputKind, RequirementsStatus};
 use crate::contexts::requirements_drafting::service::{self as req_service, RequirementsStorePort};
 use crate::contexts::workflow_composition::engine;
@@ -49,7 +60,8 @@ use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
 use crate::contexts::workspace_governance::config::{EffectiveConfig, DEFAULT_FLOW_PRESET};
 use crate::contexts::workspace_governance::WORKSPACE_DIR;
 use crate::shared::domain::{
-    BackendPolicyRole, BackendRole, FlowPreset, ProjectId, ResolvedBackendTarget, SessionPolicy,
+    BackendPolicyRole, BackendRole, FlowPreset, ProjectId, ResolvedBackendTarget, RunId,
+    SessionPolicy,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -66,6 +78,54 @@ type ConfiguredRequirementsServiceBuilder = Box<
         + Send
         + Sync,
 >;
+
+fn aborted_dispatch_cleanup_error(outcome: AppResult<()>) -> Option<AppError> {
+    match outcome {
+        Ok(()) | Err(AppError::InvocationCancelled { .. }) => None,
+        Err(error) => Some(error),
+    }
+}
+
+fn finish_aborted_dispatch_task_cleanup(
+    task_id: &str,
+    outcome: AppResult<()>,
+    lease_release_result: AppResult<()>,
+) -> AppResult<()> {
+    match (
+        lease_release_result,
+        aborted_dispatch_cleanup_error(outcome),
+    ) {
+        (Ok(()), None) => Ok(()),
+        (Ok(()), Some(error)) => Err(error),
+        (Err(error), None) => Err(error),
+        (Err(release_error), Some(dispatch_error)) => {
+            eprintln!(
+                "daemon: aborted task '{}' hit dispatch cleanup error before lease cleanup settled: {}",
+                task_id, dispatch_error
+            );
+            Err(release_error)
+        }
+    }
+}
+
+fn worktree_lease_record_is_missing(error: &AppError) -> bool {
+    matches!(error, AppError::Io(io_error) if io_error.kind() == std::io::ErrorKind::NotFound)
+        || matches!(error, AppError::CorruptRecord { details, .. } if details == "canonical file is missing")
+}
+
+enum PersistedCancelledHandoffPhase0State {
+    NotApplicable,
+    WaitingForLiveOwner,
+    ReadyForLeaseCleanup,
+}
+
+const DAEMON_TASK_CANCELLATION_STATUS_SUMMARY: &str =
+    "failed (interrupted by daemon task cancellation)";
+const DAEMON_TASK_CANCELLATION_LOG_MESSAGE: &str =
+    "daemon task cancellation interrupted the orchestrator before graceful shutdown completed";
+const DAEMON_SHUTDOWN_STATUS_SUMMARY: &str = "failed (interrupted by daemon shutdown)";
+const DAEMON_SHUTDOWN_LOG_MESSAGE: &str =
+    "daemon shutdown interrupted the orchestrator before graceful shutdown completed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonLoopConfig {
@@ -87,6 +147,11 @@ impl Default for DaemonLoopConfig {
 }
 
 const DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+struct PreparedCancelledDispatchHandoff {
+    expected_attempt: Option<engine::RunningAttemptIdentity>,
+    interrupted_marker_persisted: bool,
+}
 
 pub struct DaemonLoop<'a, A, R, S> {
     store: &'a dyn DaemonStorePort,
@@ -299,14 +364,7 @@ where
 
         loop {
             if shutdown.is_cancelled() {
-                // Cleanup active leases across all repos using daemon shard for
-                // store reads and checkout root for Git/worktree operations.
-                for reg in &active_registrations {
-                    if let Ok((owner, repo)) = parse_repo_slug(&reg.repo_slug) {
-                        let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
-                        let _ = self.cleanup_active_leases(&daemon_dir, &reg.repo_root);
-                    }
-                }
+                self.cleanup_registered_active_leases(data_dir, &active_registrations)?;
                 break;
             }
 
@@ -324,12 +382,7 @@ where
 
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    for reg in &active_registrations {
-                        if let Ok((owner, repo)) = parse_repo_slug(&reg.repo_slug) {
-                            let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
-                            let _ = self.cleanup_active_leases(&daemon_dir, &reg.repo_root);
-                        }
-                    }
+                    self.cleanup_registered_active_leases(data_dir, &active_registrations)?;
                     break;
                 }
                 _ = tokio::time::sleep(config.poll_interval) => {}
@@ -361,10 +414,82 @@ where
 
             let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
             let checkout = &reg.repo_root;
+            let tasks = match DaemonTaskService::list_tasks(self.store, &daemon_dir) {
+                Ok(tasks) => tasks,
+                Err(error) => {
+                    eprintln!("daemon: list_tasks failed for {}: {error}", reg.repo_slug);
+                    continue;
+                }
+            };
+
+            let mut phase0_quarantined = false;
+            for terminal_task in tasks
+                .iter()
+                .filter(|task| !task.label_dirty && task.lease_id.is_some() && task.is_terminal())
+            {
+                let handoff_state = match self.phase0_finalize_persisted_cancelled_handoff(
+                    &daemon_dir,
+                    checkout,
+                    terminal_task,
+                ) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        eprintln!(
+                            "daemon: phase-0 handoff finalization failed for recovered terminal task '{}' in {}: {error} — quarantining repo for this cycle",
+                            terminal_task.task_id, reg.repo_slug
+                        );
+                        phase0_quarantined = true;
+                        break;
+                    }
+                };
+                match handoff_state {
+                    PersistedCancelledHandoffPhase0State::NotApplicable
+                    | PersistedCancelledHandoffPhase0State::WaitingForLiveOwner => {}
+                    PersistedCancelledHandoffPhase0State::ReadyForLeaseCleanup => {
+                        if let Err(error) =
+                            github_intake::sync_label_for_task(github, terminal_task).await
+                        {
+                            let _ = DaemonTaskService::mark_label_dirty(
+                                self.store,
+                                &daemon_dir,
+                                &terminal_task.task_id,
+                            );
+                            eprintln!(
+                                "daemon: phase-0 label sync failed for recovered terminal task '{}' in {}: {error}",
+                                terminal_task.task_id, reg.repo_slug
+                            );
+                            phase0_quarantined = true;
+                            break;
+                        }
+                        if let Err(error) = self.phase0_release_terminal_task_lease(
+                            &daemon_dir,
+                            checkout,
+                            terminal_task,
+                        ) {
+                            let _ = DaemonTaskService::mark_label_dirty(
+                                self.store,
+                                &daemon_dir,
+                                &terminal_task.task_id,
+                            );
+                            eprintln!(
+                                "daemon: phase-0 cleanup failed for recovered terminal task '{}' in {}: {error}",
+                                terminal_task.task_id, reg.repo_slug
+                            );
+                            phase0_quarantined = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if phase0_quarantined {
+                continue; // Multi-repo failure isolation: skip to next repo
+            }
 
             // Phase 0: Attempt to repair label_dirty tasks from prior cycles.
             // A GitHub label failure during repair quarantines this repo for the
             // rest of the cycle, consistent with multi-repo failure isolation.
+            // Partial lease cleanup failures also quarantine the repo until a
+            // later Phase 0 pass can repair the contradictory durable state.
             //
             // After successful label repair AND successful cleanup/revert,
             // clear `label_dirty`. If label sync succeeds but cleanup fails,
@@ -375,98 +500,78 @@ where
             //   (deferred from the previous cycle's quarantine).
             // - Non-terminal tasks (Claimed/Active) are reverted to Pending so
             //   Phase 3 can re-process them in this cycle.
-            let mut phase0_quarantined = false;
-            if let Ok(tasks) = DaemonTaskService::list_tasks(self.store, &daemon_dir) {
-                for dirty_task in tasks.iter().filter(|t| t.label_dirty) {
-                    match github_intake::sync_label_for_task(github, dirty_task).await {
-                        Ok(()) => {
-                            if dirty_task.is_terminal() {
-                                // Terminal tasks: release deferred lease, then clear dirty.
-                                if let Some(ref lid) = dirty_task.lease_id {
-                                    if let Ok(lease) = self.store.read_lease(&daemon_dir, lid) {
-                                        // Preserve checkpoint commits for failed tasks
-                                        // before the worktree is removed.
-                                        if dirty_task.status == TaskStatus::Failed {
-                                            self.try_push_failed_task_branch(checkout, &lease);
-                                        }
-                                        match self.release_task_lease(
-                                            &daemon_dir,
-                                            checkout,
-                                            &dirty_task.task_id,
-                                            &lease,
-                                        ) {
-                                            Ok(()) => {
-                                                let _ = DaemonTaskService::clear_label_dirty(
-                                                    self.store,
-                                                    &daemon_dir,
-                                                    &dirty_task.task_id,
-                                                );
-                                            }
-                                            Err(e) => {
-                                                // Partial cleanup: keep label_dirty so Phase 0
-                                                // retries cleanup on the next cycle.
-                                                eprintln!(
-                                                    "daemon: deferred lease release failed for terminal task '{}' in {}: {e}",
-                                                    dirty_task.task_id, reg.repo_slug
-                                                );
-                                            }
-                                        }
-                                    } else {
-                                        // Lease file not found — nothing to release.
-                                        let _ = DaemonTaskService::clear_label_dirty(
-                                            self.store,
-                                            &daemon_dir,
-                                            &dirty_task.task_id,
-                                        );
-                                    }
-                                } else {
-                                    // No lease reference — nothing to release.
+            for dirty_task in tasks.iter().filter(|t| t.label_dirty) {
+                match github_intake::sync_label_for_task(github, dirty_task).await {
+                    Ok(()) => {
+                        if dirty_task.is_terminal() {
+                            // Terminal tasks: release deferred lease, then clear dirty.
+                            match self.phase0_release_terminal_task_lease(
+                                &daemon_dir,
+                                checkout,
+                                dirty_task,
+                            ) {
+                                Ok(()) => {
                                     let _ = DaemonTaskService::clear_label_dirty(
                                         self.store,
                                         &daemon_dir,
                                         &dirty_task.task_id,
                                     );
                                 }
-                            } else {
-                                // Non-terminal tasks (Claimed/Active): revert to Pending
-                                // so Phase 3 can re-process them in this cycle.
-                                match DaemonTaskService::revert_to_pending_for_recovery(
-                                    self.store,
-                                    self.worktree,
-                                    &daemon_dir,
-                                    checkout,
-                                    &dirty_task.task_id,
-                                ) {
-                                    Ok(reverted) => {
-                                        let _ = DaemonTaskService::clear_label_dirty(
-                                            self.store,
-                                            &daemon_dir,
-                                            &reverted.task_id,
-                                        );
-                                        eprintln!(
-                                            "daemon: reverted interrupted task '{}' to pending in {}",
-                                            reverted.task_id, reg.repo_slug
-                                        );
-                                    }
-                                    Err(e) => {
-                                        // Revert failed (lease cleanup partial): keep
-                                        // label_dirty for the next Phase 0 cycle.
-                                        eprintln!(
-                                            "daemon: revert failed for task '{}' in {}: {e}",
-                                            dirty_task.task_id, reg.repo_slug
-                                        );
-                                    }
+                                Err(e) => {
+                                    // Partial cleanup: keep label_dirty so Phase 0
+                                    // retries cleanup on the next cycle and block
+                                    // the repo until it succeeds.
+                                    eprintln!(
+                                        "daemon: deferred lease release failed for terminal task '{}' in {}: {e}",
+                                        dirty_task.task_id, reg.repo_slug
+                                    );
+                                    phase0_quarantined = true;
+                                    break;
+                                }
+                            }
+                        } else {
+                            // Non-terminal tasks (Claimed/Active): revert to Pending
+                            // so Phase 3 can re-process them in this cycle.
+                            match DaemonTaskService::revert_to_pending_for_recovery(
+                                self.store,
+                                self.worktree,
+                                &daemon_dir,
+                                checkout,
+                                &dirty_task.task_id,
+                            ) {
+                                Ok(reverted) => {
+                                    let _ = DaemonTaskService::clear_label_dirty(
+                                        self.store,
+                                        &daemon_dir,
+                                        &reverted.task_id,
+                                    );
+                                    eprintln!(
+                                        "daemon: reverted interrupted task '{}' to pending in {}",
+                                        reverted.task_id, reg.repo_slug
+                                    );
+                                }
+                                Err(e) => {
+                                    // Revert failed (typically lease cleanup
+                                    // partial): keep label_dirty for the next
+                                    // Phase 0 cycle and block this repo until
+                                    // recovery succeeds.
+                                    eprintln!(
+                                        "daemon: revert failed for task '{}' in {}: {e}",
+                                        dirty_task.task_id, reg.repo_slug
+                                    );
+                                    phase0_quarantined = true;
+                                    break;
                                 }
                             }
                         }
-                        Err(e) => {
-                            eprintln!(
-                                "daemon: label repair failed for task '{}' in {}: {e} — quarantining repo for this cycle",
-                                dirty_task.task_id, reg.repo_slug
-                            );
-                            phase0_quarantined = true;
-                            break;
-                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "daemon: label repair failed for task '{}' in {}: {e} — quarantining repo for this cycle",
+                            dirty_task.task_id, reg.repo_slug
+                        );
+                        phase0_quarantined = true;
+                        break;
                     }
                 }
             }
@@ -585,6 +690,14 @@ where
                     )
                     .await
                 {
+                    if let AppError::LeaseCleanupPartialFailure { task_id } = &error {
+                        let _ =
+                            DaemonTaskService::mark_label_dirty(self.store, &daemon_dir, task_id);
+                        eprintln!(
+                            "daemon: task {} hit partial lease cleanup failure in {} and remains quarantined until Phase 0 cleanup succeeds",
+                            task_id, reg.repo_slug
+                        );
+                    }
                     eprintln!(
                         "daemon: task {} failed for {}: {}",
                         task.task_id, reg.repo_slug, error
@@ -776,7 +889,7 @@ where
                 );
                 return Err(e);
             }
-            let _ = self.release_task_lease(store_dir, repo_root, &task_on_disk.task_id, &lease);
+            self.release_task_lease(store_dir, repo_root, &task_on_disk.task_id, &lease)?;
             return Ok(());
         }
 
@@ -862,8 +975,11 @@ where
                 );
                 return Err(e);
             }
-            let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
-            return Ok(());
+            return finish_aborted_dispatch_task_cleanup(
+                &active_task.task_id,
+                outcome,
+                self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease),
+            );
         }
 
         match outcome {
@@ -934,12 +1050,12 @@ where
                             );
                                 return Err(e);
                             }
-                            let _ = self.release_task_lease(
+                            self.release_task_lease(
                                 store_dir,
                                 repo_root,
                                 &active_task.task_id,
                                 &lease,
-                            );
+                            )?;
                             return Ok(());
                         }
                         Err(error) => {
@@ -965,12 +1081,12 @@ where
                                 return Err(e);
                             }
                             self.try_push_failed_task_branch(repo_root, &lease);
-                            let _ = self.release_task_lease(
+                            self.release_task_lease(
                                 store_dir,
                                 repo_root,
                                 &active_task.task_id,
                                 &lease,
-                            );
+                            )?;
                             println!("failed task {}: {}", active_task.task_id, error);
                             return Ok(());
                         }
@@ -1026,8 +1142,7 @@ where
                         }
                     }
                     self.try_push_failed_task_branch(repo_root, &lease);
-                    let _ =
-                        self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                    self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease)?;
                     println!("failed task {}: {failure_class}", active_task.task_id);
                     return Ok(());
                 }
@@ -1049,7 +1164,7 @@ where
                     );
                     return Err(e);
                 }
-                let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease)?;
                 println!("completed task {}", active_task.task_id);
             }
             Err(error) => {
@@ -1081,7 +1196,7 @@ where
                     return Err(e);
                 }
                 self.try_push_failed_task_branch(repo_root, &lease);
-                let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease)?;
                 println!("failed task {}: {}", active_task.task_id, error);
             }
         }
@@ -1095,6 +1210,8 @@ where
         config: &DaemonLoopConfig,
         shutdown: CancellationToken,
     ) -> AppResult<bool> {
+        self.phase0_finalize_persisted_cancelled_handoffs(base_dir, base_dir)?;
+
         // Phase 1: Poll watchers for new issue candidates before task processing
         self.poll_watchers(base_dir)?;
 
@@ -1114,12 +1231,19 @@ where
         }
 
         for task in &pending_tasks {
-            if let Err(error) = self
+            match self
                 .process_task(base_dir, task, config, shutdown.clone())
                 .await
             {
-                println!("daemon: task {} failed: {}", task.task_id, error);
-                // Continue scanning remaining pending tasks
+                Ok(()) => {}
+                Err(error @ AppError::LeaseCleanupPartialFailure { .. }) => {
+                    println!("daemon: task {} failed: {}", task.task_id, error);
+                    return Err(error);
+                }
+                Err(error) => {
+                    println!("daemon: task {} failed: {}", task.task_id, error);
+                    // Continue scanning remaining pending tasks
+                }
             }
         }
         Ok(true)
@@ -1511,7 +1635,7 @@ where
         }
         let task_on_disk = self.store.read_task(base_dir, &claimed_task.task_id)?;
         if task_on_disk.status == TaskStatus::Aborted {
-            let _ = self.release_task_lease(base_dir, repo_root, &task_on_disk.task_id, &lease);
+            self.release_task_lease(base_dir, repo_root, &task_on_disk.task_id, &lease)?;
             return Ok(());
         }
 
@@ -1548,8 +1672,11 @@ where
 
         let latest_task = self.store.read_task(base_dir, &active_task.task_id)?;
         if latest_task.status == TaskStatus::Aborted {
-            let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
-            return Ok(());
+            return finish_aborted_dispatch_task_cleanup(
+                &active_task.task_id,
+                outcome,
+                self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease),
+            );
         }
 
         match outcome {
@@ -1587,12 +1714,7 @@ where
                         .await?
                         .is_none()
                     {
-                        let _ = self.release_task_lease(
-                            base_dir,
-                            repo_root,
-                            &active_task.task_id,
-                            &lease,
-                        );
+                        self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
                         return Ok(());
                     }
                 }
@@ -1620,14 +1742,12 @@ where
                         return Ok(());
                     }
                     self.try_push_failed_task_branch(repo_root, &lease);
-                    let _ =
-                        self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
+                    self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
                     println!("failed task {}: {failure_class}", active_task.task_id);
                     return Ok(());
                 }
-                let _ =
-                    DaemonTaskService::mark_completed(self.store, base_dir, &active_task.task_id)?;
-                let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
+                DaemonTaskService::mark_completed(self.store, base_dir, &active_task.task_id)?;
+                self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
                 println!("completed task {}", active_task.task_id);
             }
             Err(error) => {
@@ -1635,7 +1755,7 @@ where
                     .failure_class()
                     .map(|class| class.as_str().to_owned())
                     .unwrap_or_else(|| "daemon_dispatch_failed".to_owned());
-                let _ = DaemonTaskService::mark_failed(
+                DaemonTaskService::mark_failed(
                     self.store,
                     base_dir,
                     &active_task.task_id,
@@ -1643,7 +1763,7 @@ where
                     &error.to_string(),
                 )?;
                 self.try_push_failed_task_branch(repo_root, &lease);
-                let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
+                self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
                 println!("failed task {}: {}", active_task.task_id, error);
             }
         }
@@ -2546,9 +2666,7 @@ where
                 details: "task has no resolved flow".to_owned(),
             })?;
 
-        let run_snapshot = self
-            .run_snapshot_read
-            .read_run_snapshot(workspace_dir, &project_id)?;
+        let run_snapshot = self.load_dispatch_run_snapshot(base_dir, workspace_dir, &project_id)?;
         let dispatch_future = self.dispatch_in_worktree(
             workspace_dir,
             &project_id,
@@ -2595,8 +2713,8 @@ where
                             &project_id,
                             &mut heartbeat,
                             &mut dispatch_future,
-                            "failed (interrupted by daemon task cancellation)",
-                            "daemon task cancellation interrupted the orchestrator before graceful shutdown completed",
+                            DAEMON_TASK_CANCELLATION_STATUS_SUMMARY,
+                            DAEMON_TASK_CANCELLATION_LOG_MESSAGE,
                         )
                         .await;
                     }
@@ -2612,8 +2730,8 @@ where
                         &project_id,
                         &mut heartbeat,
                         &mut dispatch_future,
-                        "failed (interrupted by daemon shutdown)",
-                        "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+                        DAEMON_SHUTDOWN_STATUS_SUMMARY,
+                        DAEMON_SHUTDOWN_LOG_MESSAGE,
                     )
                     .await;
                 }
@@ -2641,9 +2759,7 @@ where
                 details: "task has no resolved flow".to_owned(),
             })?;
 
-        let run_snapshot = self
-            .run_snapshot_read
-            .read_run_snapshot(workspace_dir, &project_id)?;
+        let run_snapshot = self.load_dispatch_run_snapshot(base_dir, workspace_dir, &project_id)?;
         let dispatch_future = self.dispatch_in_worktree(
             workspace_dir,
             &project_id,
@@ -2678,8 +2794,8 @@ where
                             &project_id,
                             &mut heartbeat,
                             &mut dispatch_future,
-                            "failed (interrupted by daemon task cancellation)",
-                            "daemon task cancellation interrupted the orchestrator before graceful shutdown completed",
+                            DAEMON_TASK_CANCELLATION_STATUS_SUMMARY,
+                            DAEMON_TASK_CANCELLATION_LOG_MESSAGE,
                         )
                         .await;
                     }
@@ -2695,8 +2811,8 @@ where
                         &project_id,
                         &mut heartbeat,
                         &mut dispatch_future,
-                        "failed (interrupted by daemon shutdown)",
-                        "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+                        DAEMON_SHUTDOWN_STATUS_SUMMARY,
+                        DAEMON_SHUTDOWN_LOG_MESSAGE,
                     )
                     .await;
                 }
@@ -2820,10 +2936,112 @@ where
         workspace_dir: &Path,
         project_id: &ProjectId,
         writer_owner: &str,
+        expected_attempt: Option<&engine::RunningAttemptIdentity>,
         summary: &'static str,
         log_message: &'static str,
     ) -> AppResult<bool> {
-        engine::mark_current_process_running_run_interrupted(
+        let interrupted_context = engine::InterruptedRunContext {
+            run_snapshot_read: self.run_snapshot_read,
+            run_snapshot_write: self.run_snapshot_write,
+            journal_store: self.journal_store,
+            log_write: self.log_write,
+            base_dir: workspace_dir,
+            project_id,
+        };
+
+        match expected_attempt {
+            Some(expected_attempt) => engine::mark_running_run_interrupted(
+                interrupted_context,
+                expected_attempt,
+                engine::InterruptedRunUpdate {
+                    summary,
+                    log_message,
+                    failure_class: Some("cancellation"),
+                },
+            ),
+            None => engine::mark_current_process_running_run_interrupted(
+                interrupted_context,
+                Some(writer_owner),
+                engine::InterruptedRunUpdate {
+                    summary,
+                    log_message,
+                    failure_class: Some("cancellation"),
+                },
+            ),
+        }
+    }
+
+    fn load_dispatch_run_snapshot(
+        &self,
+        daemon_store_dir: &Path,
+        workspace_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        let mut snapshot = self
+            .run_snapshot_read
+            .read_run_snapshot(workspace_dir, project_id)?;
+        let _ = repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_with_dirs(
+            daemon_store_dir,
+            workspace_dir,
+            project_id,
+            &mut snapshot,
+        )?;
+        Ok(snapshot)
+    }
+
+    fn prepare_cancelled_dispatch_handoff(
+        &self,
+        daemon_store_dir: &Path,
+        workspace_dir: &Path,
+        project_id: &ProjectId,
+        writer_owner: &str,
+        summary: &'static str,
+        log_message: &'static str,
+    ) -> AppResult<PreparedCancelledDispatchHandoff> {
+        let snapshot = self
+            .run_snapshot_read
+            .read_run_snapshot(workspace_dir, project_id)?;
+        if snapshot.status != RunStatus::Running {
+            return Ok(PreparedCancelledDispatchHandoff {
+                expected_attempt: None,
+                interrupted_marker_persisted: false,
+            });
+        }
+
+        let Some(active_run) = snapshot.active_run.as_ref() else {
+            return Ok(PreparedCancelledDispatchHandoff {
+                expected_attempt: None,
+                interrupted_marker_persisted: false,
+            });
+        };
+        let expected_attempt = engine::RunningAttemptIdentity::from_active_run(active_run);
+        let Some(pid_record) = FileSystem::read_pid_file(workspace_dir, project_id)? else {
+            return Ok(PreparedCancelledDispatchHandoff {
+                expected_attempt: Some(expected_attempt),
+                interrupted_marker_persisted: false,
+            });
+        };
+        if pid_record.pid != std::process::id()
+            || pid_record.writer_owner.as_deref() != Some(writer_owner)
+            || !FileSystem::pid_record_matches_attempt(
+                &pid_record,
+                &expected_attempt.run_id,
+                expected_attempt.started_at,
+            )
+        {
+            return Ok(PreparedCancelledDispatchHandoff {
+                expected_attempt: Some(expected_attempt),
+                interrupted_marker_persisted: false,
+            });
+        }
+        self.persist_daemon_cleanup_handoff(
+            daemon_store_dir,
+            project_id,
+            writer_owner,
+            &expected_attempt,
+        )?;
+
+        let interrupted_marker_persisted = engine::mark_running_run_interrupted(
             engine::InterruptedRunContext {
                 run_snapshot_read: self.run_snapshot_read,
                 run_snapshot_write: self.run_snapshot_write,
@@ -2832,13 +3050,136 @@ where
                 base_dir: workspace_dir,
                 project_id,
             },
-            Some(writer_owner),
+            &expected_attempt,
             engine::InterruptedRunUpdate {
                 summary,
                 log_message,
-                failure_class: Some("cancellation"),
+                failure_class: None,
             },
+        )?;
+        Ok(PreparedCancelledDispatchHandoff {
+            expected_attempt: Some(expected_attempt),
+            interrupted_marker_persisted,
+        })
+    }
+
+    fn persist_daemon_cleanup_handoff(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        writer_owner: &str,
+        expected_attempt: &engine::RunningAttemptIdentity,
+    ) -> AppResult<()> {
+        let record = self.store.read_lease_record(base_dir, writer_owner)?;
+        let LeaseRecord::Worktree(mut lease) = record else {
+            return Err(AppError::CorruptRecord {
+                file: "lease".to_owned(),
+                details: format!(
+                    "expected worktree lease '{writer_owner}' while persisting daemon cleanup handoff"
+                ),
+            });
+        };
+        if lease.project_id != project_id.as_str() {
+            return Err(AppError::CorruptRecord {
+                file: "lease".to_owned(),
+                details: format!(
+                    "worktree lease '{writer_owner}' belongs to '{}' instead of '{}'",
+                    lease.project_id,
+                    project_id.as_str()
+                ),
+            });
+        }
+
+        let pid = std::process::id();
+        lease.cleanup_handoff = Some(CliWriterCleanupHandoff {
+            pid,
+            run_id: Some(expected_attempt.run_id.clone()),
+            run_started_at: Some(expected_attempt.started_at),
+            proc_start_ticks: FileSystem::proc_start_ticks_for_pid(pid),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(pid),
+        });
+        self.store
+            .write_lease_record(base_dir, &LeaseRecord::Worktree(lease))
+    }
+
+    fn finalize_cancelled_dispatch_handoff(
+        &self,
+        workspace_dir: &Path,
+        project_id: &ProjectId,
+        expected_attempt: Option<&engine::RunningAttemptIdentity>,
+        log_message: &'static str,
+    ) -> AppResult<bool> {
+        let Some(expected_attempt) = expected_attempt else {
+            return Ok(false);
+        };
+        let snapshot = self
+            .run_snapshot_read
+            .read_run_snapshot(workspace_dir, project_id)?;
+        if !(snapshot.status == RunStatus::Failed
+            && snapshot.active_run.is_none()
+            && snapshot
+                .interrupted_run
+                .as_ref()
+                .is_some_and(|interrupted_run| {
+                    interrupted_run.run_id == expected_attempt.run_id
+                        && interrupted_run.started_at == expected_attempt.started_at
+                }))
+        {
+            return Ok(false);
+        }
+
+        let events = self.journal_store.read_journal(workspace_dir, project_id)?;
+        if queries::terminal_status_for_attempt(
+            &expected_attempt.run_id,
+            expected_attempt.started_at,
+            &events,
         )
+        .is_none()
+        {
+            let interrupted_run =
+                snapshot
+                    .interrupted_run
+                    .as_ref()
+                    .ok_or_else(|| AppError::CorruptRecord {
+                        file: "run.json".to_owned(),
+                        details: "expected interrupted_run while finalizing daemon cancellation"
+                            .to_owned(),
+                    })?;
+            let run_id =
+                RunId::new(&interrupted_run.run_id).map_err(|error| AppError::CorruptRecord {
+                    file: "run.json".to_owned(),
+                    details: format!("interrupted_run contains invalid run_id: {error}"),
+                })?;
+            let event = journal::run_failed_event(
+                journal::last_sequence(&events) + 1,
+                Utc::now(),
+                &run_id,
+                interrupted_run.stage_cursor.stage,
+                "cancellation",
+                log_message,
+                snapshot.completion_rounds,
+                snapshot.max_completion_rounds.unwrap_or(0),
+                None,
+            );
+            let line = journal::serialize_event(&event)?;
+            self.journal_store
+                .append_event(workspace_dir, project_id, &line)?;
+        }
+
+        Ok(true)
+    }
+
+    fn cleanup_cancelled_dispatch_backend_processes(
+        &self,
+        workspace_dir: &Path,
+        project_id: &ProjectId,
+        expected_attempt: Option<&engine::RunningAttemptIdentity>,
+    ) -> AppResult<()> {
+        let Some(expected_attempt) = expected_attempt else {
+            return Ok(());
+        };
+        cleanup_stale_backend_process_groups(workspace_dir, project_id, expected_attempt)
+            .map(|_| ())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2857,6 +3198,14 @@ where
     where
         F: Future<Output = AppResult<()>>,
     {
+        let interrupted_handoff = self.prepare_cancelled_dispatch_handoff(
+            base_dir,
+            workspace_dir,
+            project_id,
+            &lease.lease_id,
+            summary,
+            log_message,
+        )?;
         match tokio::time::timeout(DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD, async {
             loop {
                 tokio::select! {
@@ -2869,14 +3218,85 @@ where
         })
         .await
         {
-            Ok(result) => result,
+            Ok(result) => {
+                if interrupted_handoff.interrupted_marker_persisted {
+                    match self.finalize_cancelled_dispatch_handoff(
+                        workspace_dir,
+                        project_id,
+                        interrupted_handoff.expected_attempt.as_ref(),
+                        log_message,
+                    ) {
+                        Ok(true) => {
+                            self.cleanup_cancelled_dispatch_backend_processes(
+                                workspace_dir,
+                                project_id,
+                                interrupted_handoff.expected_attempt.as_ref(),
+                            )?;
+                            // Preserve the real dispatch error if one arrived
+                            // during the grace period; only synthesize
+                            // InvocationCancelled when the dispatch itself
+                            // succeeded or was already a cancellation.
+                            match result {
+                                Err(ref e) if !matches!(e, AppError::InvocationCancelled { .. }) => result,
+                                _ => Err(AppError::InvocationCancelled {
+                                    backend: "daemon".to_owned(),
+                                    contract_id: task.task_id.clone(),
+                                }),
+                            }
+                        }
+                        Ok(false) => result,
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    match self.reconcile_cancelled_dispatch_run(
+                        workspace_dir,
+                        project_id,
+                        &lease.lease_id,
+                        interrupted_handoff.expected_attempt.as_ref(),
+                        summary,
+                        log_message,
+                    ) {
+                        Ok(true) => {
+                            self.cleanup_cancelled_dispatch_backend_processes(
+                                workspace_dir,
+                                project_id,
+                                interrupted_handoff.expected_attempt.as_ref(),
+                            )?;
+                            match result {
+                                Err(ref e) if !matches!(e, AppError::InvocationCancelled { .. }) => result,
+                                _ => Err(AppError::InvocationCancelled {
+                                    backend: "daemon".to_owned(),
+                                    contract_id: task.task_id.clone(),
+                                }),
+                            }
+                        }
+                        Ok(false) => result,
+                        Err(error) => Err(error),
+                    }
+                }
+            }
             Err(_) => {
-                let cleanup = self.reconcile_cancelled_dispatch_run(
+                let cleanup = if interrupted_handoff.interrupted_marker_persisted {
+                    self.finalize_cancelled_dispatch_handoff(
+                        workspace_dir,
+                        project_id,
+                        interrupted_handoff.expected_attempt.as_ref(),
+                        log_message,
+                    )
+                } else {
+                    self.reconcile_cancelled_dispatch_run(
+                        workspace_dir,
+                        project_id,
+                        &lease.lease_id,
+                        interrupted_handoff.expected_attempt.as_ref(),
+                        summary,
+                        log_message,
+                    )
+                };
+                let backend_cleanup = self.cleanup_cancelled_dispatch_backend_processes(
                     workspace_dir,
                     project_id,
-                    &lease.lease_id,
-                    summary,
-                    log_message,
+                    interrupted_handoff.expected_attempt.as_ref(),
                 );
                 match cleanup {
                     Ok(true) => eprintln!(
@@ -2887,21 +3307,31 @@ where
                         "daemon: cancellation grace period expired for task '{}' but no matching running attempt was left to reconcile",
                         task.task_id
                     ),
-                    Err(error) => eprintln!(
+                    Err(ref error) => eprintln!(
                         "daemon: cancellation grace period expired for task '{}' and interrupted-state cleanup failed: {}",
                         task.task_id, error
                     ),
                 }
-                Err(AppError::InvocationCancelled {
-                    backend: "daemon".to_owned(),
-                    contract_id: task.task_id.clone(),
-                })
+                match (cleanup, backend_cleanup) {
+                    (Ok(_), Ok(())) => Err(AppError::InvocationCancelled {
+                        backend: "daemon".to_owned(),
+                        contract_id: task.task_id.clone(),
+                    }),
+                    (Err(error), Ok(())) => Err(error),
+                    (Ok(_), Err(error)) => Err(error),
+                    (Err(cleanup_error), Err(backend_error)) => {
+                        Err(AppError::Io(std::io::Error::other(format!(
+                            "daemon cancellation cleanup failed: interrupted-state cleanup error: {cleanup_error}; backend cleanup error: {backend_error}"
+                        ))))
+                    }
+                }
             }
         }
     }
 
     fn cleanup_active_leases(&self, store_dir: &Path, repo_root: &Path) -> AppResult<()> {
         let leases = self.store.list_leases(store_dir)?;
+        let mut failures = Vec::new();
         for lease in &leases {
             // Preserve checkpoint branch for tasks that were already failed
             // before shutdown (e.g. retained lease after label-sync failure).
@@ -2912,13 +3342,68 @@ where
             }
             let _ = DaemonTaskService::mark_aborted(self.store, store_dir, &lease.task_id);
             if let Err(e) = self.release_task_lease(store_dir, repo_root, &lease.task_id, lease) {
+                if matches!(e, AppError::LeaseCleanupPartialFailure { .. }) {
+                    let _ =
+                        DaemonTaskService::mark_label_dirty(self.store, store_dir, &lease.task_id);
+                }
                 eprintln!(
                     "daemon: cleanup failed for lease '{}' (task '{}'): {}",
                     lease.lease_id, lease.task_id, e
                 );
+                failures.push((lease.lease_id.clone(), lease.task_id.clone(), e));
             }
         }
-        Ok(())
+        match failures.len() {
+            0 => Ok(()),
+            1 => Err(failures
+                .into_iter()
+                .next()
+                .expect("single cleanup failure")
+                .2),
+            _ => Err(AppError::Io(std::io::Error::other(format!(
+                "daemon lease cleanup failed for multiple leases: {}",
+                failures
+                    .into_iter()
+                    .map(|(lease_id, task_id, error)| {
+                        format!("lease '{lease_id}' (task '{task_id}'): {error}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )))),
+        }
+    }
+
+    fn cleanup_registered_active_leases(
+        &self,
+        data_dir: &Path,
+        registrations: &[RepoRegistration],
+    ) -> AppResult<()> {
+        let mut failures = Vec::new();
+        for reg in registrations {
+            if let Ok((owner, repo)) = parse_repo_slug(&reg.repo_slug) {
+                let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
+                if let Err(error) = self.cleanup_active_leases(&daemon_dir, &reg.repo_root) {
+                    failures.push((reg.repo_slug.clone(), error));
+                }
+            }
+        }
+
+        match failures.len() {
+            0 => Ok(()),
+            1 => Err(failures
+                .into_iter()
+                .next()
+                .expect("single repo cleanup failure")
+                .1),
+            _ => Err(AppError::Io(std::io::Error::other(format!(
+                "daemon lease cleanup failed across multiple repos: {}",
+                failures
+                    .into_iter()
+                    .map(|(repo_slug, error)| format!("{repo_slug}: {error}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )))),
+        }
     }
 
     async fn ingest_pr_feedback_for_repo<G: GithubPort>(
@@ -3283,6 +3768,135 @@ where
         );
     }
 
+    fn phase0_release_terminal_task_lease(
+        &self,
+        base_dir: &Path,
+        repo_root: &Path,
+        task: &DaemonTask,
+    ) -> AppResult<()> {
+        if let Some(ref lease_id) = task.lease_id {
+            let project_id = ProjectId::new(task.project_id.clone())?;
+            if read_project_writer_lock_owner(base_dir, &project_id)?.as_deref()
+                != Some(lease_id.as_str())
+            {
+                remove_owned_run_pid_file(
+                    base_dir,
+                    repo_root,
+                    &task.project_id,
+                    Some(lease_id.as_str()),
+                    &task.task_id,
+                )?;
+                if cleanup_detached_project_writer_owner(
+                    self.store,
+                    self.worktree,
+                    base_dir,
+                    repo_root,
+                    &project_id,
+                    lease_id,
+                )? {
+                    return Ok(());
+                }
+            }
+            match self.store.read_lease(base_dir, lease_id) {
+                Ok(lease) => {
+                    if task.status == TaskStatus::Failed {
+                        self.try_push_failed_task_branch(repo_root, &lease);
+                    }
+                    self.release_task_lease(base_dir, repo_root, &task.task_id, &lease)
+                }
+                Err(error) if worktree_lease_record_is_missing(&error) => {
+                    self.clear_orphaned_task_lease_reference(base_dir, repo_root, task)
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn phase0_finalize_persisted_cancelled_handoff(
+        &self,
+        daemon_store_dir: &Path,
+        workspace_dir: &Path,
+        task: &DaemonTask,
+    ) -> AppResult<PersistedCancelledHandoffPhase0State> {
+        if !matches!(task.status, TaskStatus::Aborted | TaskStatus::Failed) {
+            return Ok(PersistedCancelledHandoffPhase0State::NotApplicable);
+        }
+        let Some(lease_id) = task.lease_id.as_deref() else {
+            return Ok(PersistedCancelledHandoffPhase0State::NotApplicable);
+        };
+        let lease_record = match self.store.read_lease_record(daemon_store_dir, lease_id) {
+            Ok(record) => record,
+            Err(error) if worktree_lease_record_is_missing(&error) => {
+                return Ok(PersistedCancelledHandoffPhase0State::NotApplicable);
+            }
+            Err(error) => return Err(error),
+        };
+        let LeaseRecord::Worktree(lease) = lease_record else {
+            return Err(AppError::CorruptRecord {
+                file: "lease".to_owned(),
+                details: format!(
+                    "expected worktree lease '{lease_id}' while finalizing daemon cleanup handoff"
+                ),
+            });
+        };
+        if lease.project_id != task.project_id || lease.cleanup_handoff.is_none() {
+            return Ok(PersistedCancelledHandoffPhase0State::NotApplicable);
+        }
+
+        let project_id = ProjectId::new(task.project_id.clone())?;
+        let mut snapshot = self
+            .run_snapshot_read
+            .read_run_snapshot(workspace_dir, &project_id)?;
+        match interrupted_handoff_cleanup_candidate_with_dirs(
+            daemon_store_dir,
+            workspace_dir,
+            &project_id,
+            &snapshot,
+        )? {
+            InterruptedHandoffCleanupCandidate::None => {
+                Ok(PersistedCancelledHandoffPhase0State::NotApplicable)
+            }
+            InterruptedHandoffCleanupCandidate::WaitingForLiveOwner => {
+                Ok(PersistedCancelledHandoffPhase0State::WaitingForLiveOwner)
+            }
+            InterruptedHandoffCleanupCandidate::Ready { .. } => {
+                let _ =
+                    repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_with_dirs(
+                        daemon_store_dir,
+                        workspace_dir,
+                        &project_id,
+                        &mut snapshot,
+                    )?;
+                Ok(PersistedCancelledHandoffPhase0State::ReadyForLeaseCleanup)
+            }
+        }
+    }
+
+    fn phase0_finalize_persisted_cancelled_handoffs(
+        &self,
+        daemon_store_dir: &Path,
+        workspace_dir: &Path,
+    ) -> AppResult<()> {
+        for task in DaemonTaskService::list_tasks(self.store, daemon_store_dir)?
+            .into_iter()
+            .filter(|task| !task.label_dirty && task.lease_id.is_some() && task.is_terminal())
+        {
+            if matches!(
+                self.phase0_finalize_persisted_cancelled_handoff(
+                    daemon_store_dir,
+                    workspace_dir,
+                    &task,
+                )?,
+                PersistedCancelledHandoffPhase0State::ReadyForLeaseCleanup
+            ) {
+                self.phase0_release_terminal_task_lease(daemon_store_dir, workspace_dir, &task)?;
+            }
+        }
+        Ok(())
+    }
+
     fn release_task_lease(
         &self,
         base_dir: &Path,
@@ -3300,30 +3914,20 @@ where
         );
         match release_result {
             Ok(ref r) if r.resources_released => {
+                remove_owned_run_pid_file(
+                    base_dir,
+                    repo_root,
+                    &lease.project_id,
+                    Some(lease.lease_id.as_str()),
+                    task_id,
+                )?;
                 // All sub-steps succeeded — safe to clear durable lease reference.
-                let cleared =
-                    DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id)
-                        .map(|_| ());
-                if cleared.is_ok() {
-                    if let Ok(project_id) = ProjectId::new(lease.project_id.clone()) {
-                        // Only remove the pid file if it still belongs to
-                        // this task's run.  A fresh run may have claimed the
-                        // project and written a new pid file after the writer
-                        // lock was released above.
-                        if let Ok(Some(pid_record)) =
-                            FileSystem::read_pid_file(base_dir, &project_id)
-                        {
-                            if pid_record.pid == std::process::id() {
-                                let _ = FileSystem::remove_pid_file_if_matches(
-                                    base_dir,
-                                    &project_id,
-                                    &pid_record,
-                                );
-                            }
-                        }
-                    }
-                }
-                cleared
+                DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id).map_err(
+                    |_| AppError::LeaseCleanupPartialFailure {
+                        task_id: task_id.to_owned(),
+                    },
+                )?;
+                Ok(())
             }
             Ok(_) => {
                 // Partial cleanup: some resources remain. Do NOT clear lease
@@ -3335,6 +3939,27 @@ where
             }
             Err(error) => Err(error),
         }
+    }
+
+    fn clear_orphaned_task_lease_reference(
+        &self,
+        base_dir: &Path,
+        repo_root: &Path,
+        task: &DaemonTask,
+    ) -> AppResult<()> {
+        remove_owned_run_pid_file(
+            base_dir,
+            repo_root,
+            &task.project_id,
+            task.lease_id.as_deref(),
+            &task.task_id,
+        )?;
+        DaemonTaskService::clear_lease_reference(self.store, base_dir, &task.task_id).map_err(
+            |_| AppError::LeaseCleanupPartialFailure {
+                task_id: task.task_id.clone(),
+            },
+        )?;
+        Ok(())
     }
 }
 
@@ -3636,30 +4261,37 @@ mod tests {
     use chrono::Utc;
     use tempfile::tempdir;
 
-    use super::{DaemonLoop, DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD};
+    use super::{
+        DaemonLoop, DaemonLoopConfig, DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD,
+        DAEMON_SHUTDOWN_LOG_MESSAGE, DAEMON_SHUTDOWN_STATUS_SUMMARY,
+    };
     use crate::adapters::fs::{
         FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
         FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
         FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRequirementsStore,
         FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
-        RunPidOwner,
+        RunBackendProcessRecord, RunPidOwner, RunPidRecord,
     };
+    use crate::adapters::github::InMemoryGithubClient;
     use crate::adapters::stub_backend::StubBackendAdapter;
     use crate::adapters::worktree::WorktreeAdapter;
+    use crate::contexts::agent_execution::model::CancellationToken;
     use crate::contexts::agent_execution::AgentExecutionService;
     use crate::contexts::automation_runtime::model::{
-        DaemonJournalEvent, DaemonTask, DispatchMode, TaskStatus,
+        CliWriterCleanupHandoff, CliWriterLease, DaemonJournalEvent, DaemonTask, DispatchMode,
+        TaskStatus,
     };
+    use crate::contexts::automation_runtime::repo_registry::{DataDirLayout, RepoRegistration};
     use crate::contexts::automation_runtime::{
-        DaemonStorePort, LeaseRecord, ResourceCleanupOutcome, WorktreeLease,
-        WriterLockReleaseOutcome,
+        DaemonStorePort, LeaseRecord, ResourceCleanupOutcome, WorktreeCleanupOutcome,
+        WorktreeLease, WorktreePort, WriterLockReleaseOutcome,
     };
     use crate::contexts::milestone_record::service::{
         create_milestone, update_status, CreateMilestoneInput, MilestoneSnapshotPort,
     };
     use crate::contexts::project_run_record::model::{ActiveRun, RunSnapshot, RunStatus};
     use crate::contexts::project_run_record::service::{
-        create_project, CreateProjectInput, RunSnapshotPort, RunSnapshotWritePort,
+        create_project, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
     };
     use crate::contexts::requirements_drafting::service::{
         RequirementsService, RequirementsStorePort,
@@ -3702,6 +4334,96 @@ mod tests {
         }
     }
 
+    fn sample_pending_task(task_id: &str, project_id: &ProjectId) -> DaemonTask {
+        let now = Utc::now();
+        DaemonTask {
+            task_id: task_id.to_owned(),
+            issue_ref: format!("acme/widgets#{}", task_id),
+            project_id: project_id.as_str().to_owned(),
+            project_name: Some("Demo".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: None,
+            routing_warnings: vec![],
+            status: TaskStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            workflow_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        }
+    }
+
+    struct TestWorktreeAdapter {
+        remove_outcome: WorktreeCleanupOutcome,
+    }
+
+    impl TestWorktreeAdapter {
+        fn removing_as(remove_outcome: WorktreeCleanupOutcome) -> Self {
+            Self { remove_outcome }
+        }
+    }
+
+    impl WorktreePort for TestWorktreeAdapter {
+        fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
+            base_dir.join(".test-worktrees").join(task_id)
+        }
+
+        fn branch_name(&self, task_id: &str) -> String {
+            format!("rb/{task_id}")
+        }
+
+        fn create_worktree(
+            &self,
+            _repo_root: &std::path::Path,
+            worktree_path: &std::path::Path,
+            _branch_name: &str,
+            _task_id: &str,
+        ) -> AppResult<()> {
+            std::fs::create_dir_all(worktree_path)?;
+            Ok(())
+        }
+
+        fn remove_worktree(
+            &self,
+            _repo_root: &std::path::Path,
+            worktree_path: &std::path::Path,
+            _task_id: &str,
+        ) -> AppResult<WorktreeCleanupOutcome> {
+            match self.remove_outcome {
+                WorktreeCleanupOutcome::Removed => {
+                    if worktree_path.exists() {
+                        std::fs::remove_dir_all(worktree_path)?;
+                    }
+                    Ok(WorktreeCleanupOutcome::Removed)
+                }
+                WorktreeCleanupOutcome::AlreadyAbsent => Ok(WorktreeCleanupOutcome::AlreadyAbsent),
+            }
+        }
+
+        fn rebase_onto_default_branch(
+            &self,
+            _repo_root: &std::path::Path,
+            _worktree_path: &std::path::Path,
+            _branch_name: &str,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
     fn create_standard_project(base_dir: &std::path::Path, project_id: &str) -> ProjectId {
         let project_id = ProjectId::new(project_id).expect("project id");
         let prompt_contents = "# Test prompt";
@@ -3732,6 +4454,20 @@ mod tests {
         fn new() -> Self {
             Self {
                 fail_next_waiting_write: AtomicBool::new(true),
+            }
+        }
+    }
+
+    struct FailOnceLeaseReferenceClearStore {
+        task_id: String,
+        fail_next_clear_lease_write: AtomicBool,
+    }
+
+    impl FailOnceLeaseReferenceClearStore {
+        fn new(task_id: &str) -> Self {
+            Self {
+                task_id: task_id.to_owned(),
+                fail_next_clear_lease_write: AtomicBool::new(true),
             }
         }
     }
@@ -3803,6 +4539,263 @@ mod tests {
             lease_id: &str,
         ) -> AppResult<ResourceCleanupOutcome> {
             FsDaemonStore.remove_lease(base_dir, lease_id)
+        }
+
+        fn read_daemon_journal(
+            &self,
+            base_dir: &std::path::Path,
+        ) -> AppResult<Vec<DaemonJournalEvent>> {
+            FsDaemonStore.read_daemon_journal(base_dir)
+        }
+
+        fn append_daemon_journal_event(
+            &self,
+            base_dir: &std::path::Path,
+            event: &DaemonJournalEvent,
+        ) -> AppResult<()> {
+            FsDaemonStore.append_daemon_journal_event(base_dir, event)
+        }
+
+        fn acquire_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            lease_id: &str,
+        ) -> AppResult<()> {
+            FsDaemonStore.acquire_writer_lock(base_dir, project_id, lease_id)
+        }
+
+        fn release_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            expected_owner: &str,
+        ) -> AppResult<WriterLockReleaseOutcome> {
+            FsDaemonStore.release_writer_lock(base_dir, project_id, expected_owner)
+        }
+    }
+
+    struct RewritePidOnLeaseRemoveStore {
+        trigger_lease_id: String,
+        project_id: ProjectId,
+        repo_root: std::path::PathBuf,
+        successor_writer_owner: String,
+        rewrote_pid: AtomicBool,
+    }
+
+    impl RewritePidOnLeaseRemoveStore {
+        fn new(
+            trigger_lease_id: &str,
+            project_id: &ProjectId,
+            repo_root: &std::path::Path,
+            successor_writer_owner: &str,
+        ) -> Self {
+            Self {
+                trigger_lease_id: trigger_lease_id.to_owned(),
+                project_id: project_id.clone(),
+                repo_root: repo_root.to_path_buf(),
+                successor_writer_owner: successor_writer_owner.to_owned(),
+                rewrote_pid: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl DaemonStorePort for FailOnceLeaseReferenceClearStore {
+        fn list_tasks(&self, base_dir: &std::path::Path) -> AppResult<Vec<DaemonTask>> {
+            FsDaemonStore.list_tasks(base_dir)
+        }
+
+        fn read_task(&self, base_dir: &std::path::Path, task_id: &str) -> AppResult<DaemonTask> {
+            FsDaemonStore.read_task(base_dir, task_id)
+        }
+
+        fn create_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            FsDaemonStore.create_task(base_dir, task)
+        }
+
+        fn write_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            if task.task_id == self.task_id
+                && task.lease_id.is_none()
+                && self
+                    .fail_next_clear_lease_write
+                    .swap(false, Ordering::SeqCst)
+            {
+                return Err(AppError::Io(std::io::Error::other(
+                    "simulated clear_lease_reference write failure",
+                )));
+            }
+
+            FsDaemonStore.write_task(base_dir, task)
+        }
+
+        fn list_leases(&self, base_dir: &std::path::Path) -> AppResult<Vec<WorktreeLease>> {
+            FsDaemonStore.list_leases(base_dir)
+        }
+
+        fn read_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<WorktreeLease> {
+            FsDaemonStore.read_lease(base_dir, lease_id)
+        }
+
+        fn write_lease(&self, base_dir: &std::path::Path, lease: &WorktreeLease) -> AppResult<()> {
+            FsDaemonStore.write_lease(base_dir, lease)
+        }
+
+        fn list_lease_records(&self, base_dir: &std::path::Path) -> AppResult<Vec<LeaseRecord>> {
+            FsDaemonStore.list_lease_records(base_dir)
+        }
+
+        fn read_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<LeaseRecord> {
+            FsDaemonStore.read_lease_record(base_dir, lease_id)
+        }
+
+        fn write_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease: &LeaseRecord,
+        ) -> AppResult<()> {
+            FsDaemonStore.write_lease_record(base_dir, lease)
+        }
+
+        fn remove_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<ResourceCleanupOutcome> {
+            FsDaemonStore.remove_lease(base_dir, lease_id)
+        }
+
+        fn read_daemon_journal(
+            &self,
+            base_dir: &std::path::Path,
+        ) -> AppResult<Vec<DaemonJournalEvent>> {
+            FsDaemonStore.read_daemon_journal(base_dir)
+        }
+
+        fn append_daemon_journal_event(
+            &self,
+            base_dir: &std::path::Path,
+            event: &DaemonJournalEvent,
+        ) -> AppResult<()> {
+            FsDaemonStore.append_daemon_journal_event(base_dir, event)
+        }
+
+        fn acquire_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            lease_id: &str,
+        ) -> AppResult<()> {
+            FsDaemonStore.acquire_writer_lock(base_dir, project_id, lease_id)
+        }
+
+        fn release_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            expected_owner: &str,
+        ) -> AppResult<WriterLockReleaseOutcome> {
+            FsDaemonStore.release_writer_lock(base_dir, project_id, expected_owner)
+        }
+    }
+
+    impl DaemonStorePort for RewritePidOnLeaseRemoveStore {
+        fn list_tasks(&self, base_dir: &std::path::Path) -> AppResult<Vec<DaemonTask>> {
+            FsDaemonStore.list_tasks(base_dir)
+        }
+
+        fn read_task(&self, base_dir: &std::path::Path, task_id: &str) -> AppResult<DaemonTask> {
+            FsDaemonStore.read_task(base_dir, task_id)
+        }
+
+        fn create_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            FsDaemonStore.create_task(base_dir, task)
+        }
+
+        fn write_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            FsDaemonStore.write_task(base_dir, task)
+        }
+
+        fn list_leases(&self, base_dir: &std::path::Path) -> AppResult<Vec<WorktreeLease>> {
+            FsDaemonStore.list_leases(base_dir)
+        }
+
+        fn read_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<WorktreeLease> {
+            FsDaemonStore.read_lease(base_dir, lease_id)
+        }
+
+        fn write_lease(&self, base_dir: &std::path::Path, lease: &WorktreeLease) -> AppResult<()> {
+            FsDaemonStore.write_lease(base_dir, lease)
+        }
+
+        fn list_lease_records(&self, base_dir: &std::path::Path) -> AppResult<Vec<LeaseRecord>> {
+            FsDaemonStore.list_lease_records(base_dir)
+        }
+
+        fn read_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<LeaseRecord> {
+            FsDaemonStore.read_lease_record(base_dir, lease_id)
+        }
+
+        fn write_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease: &LeaseRecord,
+        ) -> AppResult<()> {
+            FsDaemonStore.write_lease_record(base_dir, lease)
+        }
+
+        fn remove_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<ResourceCleanupOutcome> {
+            let outcome = FsDaemonStore.remove_lease(base_dir, lease_id)?;
+            if lease_id == self.trigger_lease_id
+                && matches!(outcome, ResourceCleanupOutcome::Removed)
+                && !self.rewrote_pid.swap(true, Ordering::SeqCst)
+            {
+                FsDaemonStore.acquire_writer_lock(
+                    base_dir,
+                    &self.project_id,
+                    &self.successor_writer_owner,
+                )?;
+                FsDaemonStore.write_lease_record(
+                    base_dir,
+                    &LeaseRecord::CliWriter(CliWriterLease {
+                        lease_id: self.successor_writer_owner.clone(),
+                        project_id: self.project_id.to_string(),
+                        owner: "cli".to_owned(),
+                        acquired_at: Utc::now(),
+                        ttl_seconds: 300,
+                        last_heartbeat: Utc::now(),
+                        cleanup_handoff: None,
+                    }),
+                )?;
+                FileSystem::write_pid_file(
+                    &self.repo_root,
+                    &self.project_id,
+                    RunPidOwner::Cli,
+                    Some(&self.successor_writer_owner),
+                    Some("run-successor"),
+                    Some(Utc::now()),
+                )?;
+            }
+            Ok(outcome)
         }
 
         fn read_daemon_journal(
@@ -4217,7 +5210,14 @@ mod tests {
             acquired_at: Utc::now(),
             ttl_seconds: 300,
             last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
         };
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .expect("acquire writer lock");
 
         let agent_service = AgentExecutionService::new(
             StubBackendAdapter::default(),
@@ -4261,6 +5261,31 @@ mod tests {
             Poll::Ready(())
         })
         .await;
+
+        let interrupted = FsRunSnapshotStore
+            .read_run_snapshot(base, &project_id)
+            .expect("read interrupted snapshot");
+        assert_eq!(interrupted.status, RunStatus::Failed);
+        assert!(interrupted.active_run.is_none());
+        assert!(
+            interrupted.interrupted_run.is_some(),
+            "interrupted run metadata should be preserved before the grace period expires"
+        );
+        assert!(
+            FileSystem::read_pid_file(base, &project_id)
+                .expect("read pid file")
+                .is_none(),
+            "daemon cancellation handoff should remove run.pid before the grace period expires"
+        );
+        let persisted_handoff = FsDaemonStore
+            .read_lease(base, &lease.lease_id)
+            .expect("read lease after daemon handoff")
+            .cleanup_handoff;
+        assert!(
+            persisted_handoff.is_some(),
+            "daemon handoff should persist process liveness proof while the grace period is active"
+        );
+
         tokio::time::advance(DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD + Duration::from_millis(1))
             .await;
 
@@ -4286,6 +5311,2372 @@ mod tests {
                 .expect("read pid file")
                 .is_none(),
             "timeout cleanup should remove run.pid before returning"
+        );
+    }
+
+    #[test]
+    fn prepare_cancelled_dispatch_handoff_persists_cleanup_proof_in_multi_repo_daemon_store() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let project_id = create_standard_project(&repo_root, "daemon-handoff-persist");
+        let started_at = Utc::now();
+        let run_id = "run-daemon-handoff-persist";
+        let lease_id = "lease-daemon-handoff-persist";
+
+        let snapshot = RunSnapshot {
+            active_run: Some(ActiveRun {
+                run_id: run_id.to_owned(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            interrupted_run: None,
+            status: RunStatus::Running,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "running: implementation".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(&repo_root, &project_id, &snapshot)
+            .expect("write running snapshot");
+        FileSystem::write_pid_file(
+            &repo_root,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some(lease_id),
+            Some(run_id),
+            Some(started_at),
+        )
+        .expect("write repo pid file");
+
+        let lease = crate::contexts::automation_runtime::model::WorktreeLease {
+            lease_id: lease_id.to_owned(),
+            task_id: "task-daemon-handoff-persist".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: repo_root.join("worktrees/daemon-handoff-persist"),
+            branch_name: "rb/daemon-handoff-persist".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: None,
+        };
+        FsDaemonStore
+            .write_lease_record(&daemon_dir, &LeaseRecord::Worktree(lease.clone()))
+            .expect("write daemon-store lease");
+        FsDaemonStore
+            .acquire_writer_lock(&daemon_dir, &project_id, &lease.lease_id)
+            .expect("acquire daemon-store writer lock");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let prepared = daemon
+            .prepare_cancelled_dispatch_handoff(
+                &daemon_dir,
+                &repo_root,
+                &project_id,
+                &lease.lease_id,
+                DAEMON_SHUTDOWN_STATUS_SUMMARY,
+                DAEMON_SHUTDOWN_LOG_MESSAGE,
+            )
+            .expect("prepare cancelled dispatch handoff");
+        assert!(
+            prepared.interrupted_marker_persisted,
+            "multi-repo daemon cancellation should still mark the run interrupted"
+        );
+
+        let persisted = FsDaemonStore
+            .read_lease(&daemon_dir, &lease.lease_id)
+            .expect("read daemon-store lease after handoff");
+        assert!(
+            persisted.cleanup_handoff.is_some(),
+            "cleanup handoff must be persisted to the daemon store root, not the checkout root"
+        );
+    }
+
+    #[test]
+    fn load_dispatch_run_snapshot_repairs_missing_run_failed_event_from_daemon_handoff() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let project_id = create_standard_project(&repo_root, "daemon-handoff-repair");
+        let started_at = Utc::now();
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-daemon-handoff-repair".to_owned(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: DAEMON_SHUTDOWN_STATUS_SUMMARY.to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(&repo_root, &project_id, &snapshot)
+            .expect("write interrupted snapshot");
+        let dead_handoff = CliWriterCleanupHandoff {
+            pid: std::process::id().saturating_add(100_000),
+            run_id: Some("run-daemon-handoff-repair".to_owned()),
+            run_started_at: Some(started_at),
+            proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+        let lease = crate::contexts::automation_runtime::model::WorktreeLease {
+            lease_id: "lease-daemon-handoff-repair".to_owned(),
+            task_id: "task-daemon-handoff-repair".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: repo_root.join("worktrees/daemon-handoff-repair"),
+            branch_name: "rb/daemon-handoff-repair".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: Some(dead_handoff),
+        };
+        FsDaemonStore
+            .write_lease_record(&daemon_dir, &LeaseRecord::Worktree(lease.clone()))
+            .expect("write daemon handoff lease");
+        FsDaemonStore
+            .acquire_writer_lock(&daemon_dir, &project_id, &lease.lease_id)
+            .expect("acquire daemon handoff writer lock");
+        FileSystem::write_backend_processes(
+            &repo_root,
+            &project_id,
+            &[RunBackendProcessRecord {
+                pid: std::process::id().saturating_add(100_000),
+                recorded_at: started_at,
+                run_id: Some("run-daemon-handoff-repair".to_owned()),
+                run_started_at: Some(started_at),
+                proc_start_ticks: Some(u64::MAX),
+                proc_start_marker: None,
+            }],
+        )
+        .expect("write stale daemon backend process record");
+
+        std::fs::write(
+            repo_root.join(format!(
+                ".ralph-burning/projects/{}/journal.ndjson",
+                project_id.as_str()
+            )),
+            format!(
+                "{{\"sequence\":1,\"timestamp\":\"{}\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"{}\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-daemon-handoff-repair\",\"first_stage\":\"implementation\",\"max_completion_rounds\":20}}}}",
+                (started_at - chrono::Duration::seconds(1)).to_rfc3339(),
+                project_id.as_str(),
+                started_at.to_rfc3339(),
+            ),
+        )
+        .expect("write journal without run_failed");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let repaired = daemon
+            .load_dispatch_run_snapshot(&daemon_dir, &repo_root, &project_id)
+            .expect("load repaired snapshot");
+        assert_eq!(repaired.status, RunStatus::Failed);
+        assert!(repaired.interrupted_run.is_some());
+
+        let journal = FsJournalStore
+            .read_journal(&repo_root, &project_id)
+            .expect("read repaired journal");
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|event| {
+                    event.event_type
+                        == crate::contexts::project_run_record::model::JournalEventType::RunFailed
+                })
+                .count(),
+            1,
+            "dispatch snapshot load should append the missing daemon run_failed event"
+        );
+        assert!(
+            FileSystem::read_backend_processes(&repo_root, &project_id)
+                .expect("read backend processes after daemon repair")
+                .is_empty(),
+            "dispatch snapshot repair should also prune stale daemon-owned backend records"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn finish_cancelled_dispatch_cleans_tracked_backend_processes_before_returning() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-cancel-backend-cleanup");
+        let started_at = Utc::now();
+        let run_id = "run-daemon-cancel-backend-cleanup".to_owned();
+
+        let snapshot = RunSnapshot {
+            active_run: Some(ActiveRun {
+                run_id: run_id.clone(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            interrupted_run: None,
+            status: RunStatus::Running,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "running: implementation".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base, &project_id, &snapshot)
+            .expect("write running snapshot");
+
+        FileSystem::write_pid_file(
+            base,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some("lease-daemon-backend-cleanup"),
+            Some(run_id.as_str()),
+            Some(started_at),
+        )
+        .expect("write pid file");
+
+        let backend_pid_path = base.join("tracked-backend.pid");
+        let script = format!(
+            "setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done",
+            backend_pid_path.display(),
+            backend_pid_path.display(),
+        );
+        let mut parent = std::process::Command::new("bash")
+            .args(["-lc", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn backend helper");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while (!backend_pid_path.exists() || std::fs::read_to_string(&backend_pid_path).is_err())
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let backend_pid = std::fs::read_to_string(&backend_pid_path)
+            .expect("read backend pid")
+            .trim()
+            .parse::<u32>()
+            .expect("parse backend pid");
+        assert!(
+            FileSystem::is_pid_running_unchecked(backend_pid),
+            "tracked backend should be alive before cleanup"
+        );
+        let status = parent.wait().expect("wait for backend helper");
+        assert!(
+            status.success(),
+            "backend helper should exit cleanly: {status:?}"
+        );
+
+        let project_root = FileSystem::live_project_root(base, &project_id);
+        FileSystem::register_backend_process(&project_root, backend_pid)
+            .expect("register tracked backend process");
+        assert_eq!(
+            FileSystem::read_backend_processes(base, &project_id)
+                .expect("read tracked backend processes")
+                .len(),
+            1,
+            "tracked backend cleanup precondition should be durable"
+        );
+
+        let mut task = sample_waiting_task("daemon-cancel-backend-cleanup-task", "req-run");
+        task.project_id = project_id.as_str().to_owned();
+        task.status = TaskStatus::Active;
+        task.dispatch_mode = DispatchMode::Workflow;
+        task.requirements_run_id = None;
+
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-backend-cleanup".to_owned(),
+            task_id: task.task_id.clone(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.to_path_buf(),
+            branch_name: "rb/test".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: 300,
+            last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
+        };
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .expect("acquire writer lock");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+        let dispatch_future = std::future::pending::<AppResult<()>>();
+        tokio::pin!(dispatch_future);
+        let mut cleanup_future = std::pin::pin!(daemon.finish_cancelled_dispatch(
+            base,
+            base,
+            &task,
+            &lease,
+            &project_id,
+            &mut heartbeat,
+            &mut dispatch_future,
+            "failed (interrupted by daemon shutdown)",
+            "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+        ));
+
+        poll_fn(|cx| {
+            assert!(
+                cleanup_future.as_mut().poll(cx).is_pending(),
+                "cleanup future should remain pending until the grace period expires"
+            );
+            Poll::Ready(())
+        })
+        .await;
+
+        tokio::time::advance(DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD + Duration::from_millis(1))
+            .await;
+        let error = cleanup_future
+            .await
+            .expect_err("timeout cleanup should surface a cancellation error");
+        assert!(
+            matches!(error, AppError::InvocationCancelled { .. }),
+            "unexpected error after daemon cancellation cleanup: {error:?}"
+        );
+        assert!(
+            FileSystem::read_backend_processes(base, &project_id)
+                .expect("read tracked backend processes after cleanup")
+                .is_empty(),
+            "daemon cancellation cleanup should prune tracked backend processes"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while FileSystem::is_pid_running_unchecked(backend_pid)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            !FileSystem::is_pid_running_unchecked(backend_pid),
+            "daemon cancellation cleanup should SIGKILL the tracked backend process group"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn finish_cancelled_dispatch_recovers_by_attempt_without_run_pid_and_cleans_backends() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-cancel-missing-pid");
+        let started_at = Utc::now();
+        let run_id = "run-daemon-cancel-missing-pid".to_owned();
+
+        let snapshot = RunSnapshot {
+            active_run: Some(ActiveRun {
+                run_id: run_id.clone(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            interrupted_run: None,
+            status: RunStatus::Running,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "running: implementation".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base, &project_id, &snapshot)
+            .expect("write running snapshot");
+
+        FileSystem::write_pid_file(
+            base,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some("lease-daemon-cancel-missing-pid"),
+            Some(run_id.as_str()),
+            Some(started_at),
+        )
+        .expect("write pid file");
+
+        let backend_pid_path = base.join("tracked-backend-missing-pid.pid");
+        let script = format!(
+            "setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done",
+            backend_pid_path.display(),
+            backend_pid_path.display(),
+        );
+        let mut parent = std::process::Command::new("bash")
+            .args(["-lc", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn backend helper");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while (!backend_pid_path.exists() || std::fs::read_to_string(&backend_pid_path).is_err())
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let backend_pid = std::fs::read_to_string(&backend_pid_path)
+            .expect("read backend pid")
+            .trim()
+            .parse::<u32>()
+            .expect("parse backend pid");
+        assert!(
+            FileSystem::is_pid_running_unchecked(backend_pid),
+            "tracked backend should be alive before cleanup"
+        );
+        let status = parent.wait().expect("wait for backend helper");
+        assert!(
+            status.success(),
+            "backend helper should exit cleanly: {status:?}"
+        );
+
+        let project_root = FileSystem::live_project_root(base, &project_id);
+        FileSystem::register_backend_process(&project_root, backend_pid)
+            .expect("register tracked backend process");
+        FileSystem::remove_pid_file(base, &project_id).expect("remove pid file before cleanup");
+        assert_eq!(
+            FileSystem::read_backend_processes(base, &project_id)
+                .expect("read tracked backend processes")
+                .len(),
+            1,
+            "tracked backend cleanup precondition should be durable"
+        );
+
+        let mut task = sample_waiting_task("daemon-cancel-missing-pid-task", "req-run");
+        task.project_id = project_id.as_str().to_owned();
+        task.status = TaskStatus::Active;
+        task.dispatch_mode = DispatchMode::Workflow;
+        task.requirements_run_id = None;
+
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-cancel-missing-pid".to_owned(),
+            task_id: task.task_id.clone(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.to_path_buf(),
+            branch_name: "rb/test".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: 300,
+            last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
+        };
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+        let dispatch_future = std::future::ready(Ok(()));
+        tokio::pin!(dispatch_future);
+        let error = daemon
+            .finish_cancelled_dispatch(
+                base,
+                base,
+                &task,
+                &lease,
+                &project_id,
+                &mut heartbeat,
+                &mut dispatch_future,
+                "failed (interrupted by daemon shutdown)",
+                "daemon shutdown interrupted the orchestrator before graceful shutdown completed",
+            )
+            .await
+            .expect_err("missing pid cleanup should still surface cancellation");
+        assert!(
+            matches!(error, AppError::InvocationCancelled { .. }),
+            "unexpected error after daemon cancellation cleanup: {error:?}"
+        );
+
+        let recovered = FsRunSnapshotStore
+            .read_run_snapshot(base, &project_id)
+            .expect("read recovered snapshot");
+        assert_eq!(recovered.status, RunStatus::Failed);
+        assert!(recovered.active_run.is_none());
+        assert!(
+            recovered.interrupted_run.is_some(),
+            "expected-attempt fallback should preserve interrupted run metadata"
+        );
+        assert!(
+            FileSystem::read_pid_file(base, &project_id)
+                .expect("read pid file after cleanup")
+                .is_none(),
+            "missing run.pid fallback must not leave a pid file behind"
+        );
+        assert!(
+            FileSystem::read_backend_processes(base, &project_id)
+                .expect("read tracked backend processes after cleanup")
+                .is_empty(),
+            "missing run.pid fallback should still prune tracked backend processes"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while FileSystem::is_pid_running_unchecked(backend_pid)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            !FileSystem::is_pid_running_unchecked(backend_pid),
+            "missing run.pid fallback should still SIGKILL the tracked backend process group"
+        );
+    }
+
+    #[test]
+    fn cleanup_active_leases_surfaces_partial_release_failures() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-cleanup-partial");
+        let now = Utc::now();
+
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-cleanup-partial".to_owned(),
+            task_id: "task-daemon-cleanup-partial".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.join("missing-worktree"),
+            branch_name: "rb/test".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+            cleanup_handoff: None,
+        };
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .expect("acquire writer lock");
+        FsDaemonStore
+            .write_task(
+                base,
+                &DaemonTask {
+                    task_id: lease.task_id.clone(),
+                    issue_ref: "acme/widgets#partial".to_owned(),
+                    project_id: project_id.as_str().to_owned(),
+                    project_name: Some("Partial cleanup".to_owned()),
+                    prompt: Some("Prompt".to_owned()),
+                    routing_command: None,
+                    routing_labels: vec![],
+                    resolved_flow: Some(FlowPreset::Standard),
+                    routing_source: None,
+                    routing_warnings: vec![],
+                    status: TaskStatus::Active,
+                    created_at: now,
+                    updated_at: now,
+                    attempt_count: 0,
+                    lease_id: Some(lease.lease_id.clone()),
+                    failure_class: None,
+                    failure_message: None,
+                    dispatch_mode: DispatchMode::Workflow,
+                    source_revision: None,
+                    requirements_run_id: None,
+                    workflow_run_id: None,
+                    repo_slug: None,
+                    issue_number: None,
+                    pr_url: None,
+                    last_seen_comment_id: None,
+                    last_seen_review_id: None,
+                    label_dirty: false,
+                },
+            )
+            .expect("write daemon task");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .cleanup_active_leases(base, base)
+            .expect_err("missing worktree should surface partial cleanup failure");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected cleanup error: {error:?}"
+        );
+        assert!(
+            FsDaemonStore.read_lease(base, &lease.lease_id).is_ok(),
+            "partial cleanup must preserve the durable lease record"
+        );
+        let task = FsDaemonStore
+            .read_task(base, &lease.task_id)
+            .expect("read daemon task after cleanup failure");
+        assert_eq!(
+            task.lease_id.as_deref(),
+            Some(lease.lease_id.as_str()),
+            "partial cleanup must preserve the task lease reference"
+        );
+        assert!(matches!(
+            FsDaemonStore
+                .release_writer_lock(base, &project_id, &lease.lease_id)
+                .expect("writer lock state after partial cleanup"),
+            WriterLockReleaseOutcome::AlreadyAbsent
+        ));
+    }
+
+    #[test]
+    fn cleanup_active_leases_marks_shutdown_metadata_partial_failures_dirty() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-cleanup-metadata-partial");
+        let now = Utc::now();
+
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-cleanup-metadata-partial".to_owned(),
+            task_id: "task-daemon-cleanup-metadata-partial".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.join("worktrees/daemon-cleanup-metadata-partial"),
+            branch_name: "rb/test".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+            cleanup_handoff: None,
+        };
+        std::fs::create_dir_all(&lease.worktree_path).expect("create worktree path");
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .expect("acquire writer lock");
+        FsDaemonStore
+            .write_task(
+                base,
+                &DaemonTask {
+                    task_id: lease.task_id.clone(),
+                    issue_ref: "acme/widgets#metadata-partial".to_owned(),
+                    project_id: project_id.as_str().to_owned(),
+                    project_name: Some("Metadata partial cleanup".to_owned()),
+                    prompt: Some("Prompt".to_owned()),
+                    routing_command: None,
+                    routing_labels: vec![],
+                    resolved_flow: Some(FlowPreset::Standard),
+                    routing_source: None,
+                    routing_warnings: vec![],
+                    status: TaskStatus::Active,
+                    created_at: now,
+                    updated_at: now,
+                    attempt_count: 0,
+                    lease_id: Some(lease.lease_id.clone()),
+                    failure_class: None,
+                    failure_message: None,
+                    dispatch_mode: DispatchMode::Workflow,
+                    source_revision: None,
+                    requirements_run_id: None,
+                    workflow_run_id: None,
+                    repo_slug: None,
+                    issue_number: None,
+                    pr_url: None,
+                    last_seen_comment_id: None,
+                    last_seen_review_id: None,
+                    label_dirty: false,
+                },
+            )
+            .expect("write daemon task");
+
+        let store = FailOnceLeaseReferenceClearStore::new(&lease.task_id);
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &store,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .cleanup_active_leases(base, base)
+            .expect_err("metadata cleanup failure should surface partial cleanup");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected cleanup error: {error:?}"
+        );
+
+        let task = FsDaemonStore
+            .read_task(base, &lease.task_id)
+            .expect("read daemon task after metadata cleanup failure");
+        assert_eq!(task.status, TaskStatus::Aborted);
+        assert!(task.label_dirty);
+        assert_eq!(
+            task.lease_id.as_deref(),
+            Some(lease.lease_id.as_str()),
+            "shutdown cleanup must preserve the orphaned task lease reference"
+        );
+        assert!(
+            FsDaemonStore.read_lease(base, &lease.lease_id).is_err(),
+            "physical lease cleanup should already have completed before the metadata write failed"
+        );
+    }
+
+    #[test]
+    fn release_task_lease_allows_successor_run_pid_after_resources_are_released() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-successor-run-pid");
+        let now = Utc::now();
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-successor-run-pid".to_owned(),
+            task_id: "task-daemon-successor-run-pid".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.join(".test-worktrees/task-daemon-successor-run-pid"),
+            branch_name: "rb/task-daemon-successor-run-pid".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+            cleanup_handoff: None,
+        };
+        std::fs::create_dir_all(&lease.worktree_path).expect("create worktree path");
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .expect("acquire writer lock");
+        FsDaemonStore
+            .write_task(
+                base,
+                &DaemonTask {
+                    task_id: lease.task_id.clone(),
+                    issue_ref: "acme/widgets#successor-run-pid".to_owned(),
+                    project_id: project_id.as_str().to_owned(),
+                    project_name: Some("Successor pid race".to_owned()),
+                    prompt: Some("Prompt".to_owned()),
+                    routing_command: None,
+                    routing_labels: vec![],
+                    resolved_flow: Some(FlowPreset::Standard),
+                    routing_source: None,
+                    routing_warnings: vec![],
+                    status: TaskStatus::Completed,
+                    created_at: now,
+                    updated_at: now,
+                    attempt_count: 1,
+                    lease_id: Some(lease.lease_id.clone()),
+                    failure_class: None,
+                    failure_message: None,
+                    dispatch_mode: DispatchMode::Workflow,
+                    source_revision: None,
+                    requirements_run_id: None,
+                    workflow_run_id: None,
+                    repo_slug: None,
+                    issue_number: None,
+                    pr_url: None,
+                    last_seen_comment_id: None,
+                    last_seen_review_id: None,
+                    label_dirty: false,
+                },
+            )
+            .expect("write completed task");
+        FileSystem::write_pid_file(
+            base,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some(&lease.lease_id),
+            Some("run-old"),
+            Some(now),
+        )
+        .expect("write original daemon pid");
+
+        let store = RewritePidOnLeaseRemoveStore::new(
+            &lease.lease_id,
+            &project_id,
+            base,
+            "cli-successor-run-pid",
+        );
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &store,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        daemon
+            .release_task_lease(base, base, &lease.task_id, &lease)
+            .expect("successor pid should not be treated as old-task partial cleanup");
+
+        let task_after = FsDaemonStore
+            .read_task(base, &lease.task_id)
+            .expect("read task after releasing lease");
+        assert!(
+            task_after.lease_id.is_none(),
+            "old task metadata should clear once its lease resources are gone"
+        );
+        assert!(
+            FsDaemonStore.read_lease(base, &lease.lease_id).is_err(),
+            "old worktree lease record should stay removed"
+        );
+        let successor_pid = FileSystem::read_pid_file(base, &project_id)
+            .expect("read successor pid")
+            .expect("successor pid should remain");
+        assert_eq!(successor_pid.owner, RunPidOwner::Cli);
+        assert_eq!(
+            successor_pid.writer_owner.as_deref(),
+            Some("cli-successor-run-pid")
+        );
+        let successor_lock_owner =
+            crate::contexts::automation_runtime::cli_writer_lease::read_project_writer_lock_owner(
+                base,
+                &project_id,
+            )
+            .expect("read successor writer lock owner");
+        assert_eq!(
+            successor_lock_owner.as_deref(),
+            Some("cli-successor-run-pid")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_task_surfaces_partial_cleanup_failure_after_completion() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = ProjectId::new("daemon-complete-partial").expect("project id");
+        let task = sample_pending_task("task-daemon-complete-partial", &project_id);
+        FsDaemonStore.create_task(base, &task).expect("create task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::AlreadyAbsent);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .process_task(
+                base,
+                &task,
+                &DaemonLoopConfig::default(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("completed-task cleanup should surface partial lease cleanup");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected completion cleanup error: {error:?}"
+        );
+
+        let lease_id = format!("lease-{}", task.task_id);
+        let completed = FsDaemonStore
+            .read_task(base, &task.task_id)
+            .expect("read completed task");
+        assert_eq!(completed.status, TaskStatus::Completed);
+        assert_eq!(completed.lease_id.as_deref(), Some(lease_id.as_str()));
+        assert!(FsDaemonStore.read_lease(base, &lease_id).is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_task_surfaces_partial_cleanup_failure_after_dispatch_failure() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-fail-partial");
+        let started_at = Utc::now();
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(
+                base,
+                &project_id,
+                &RunSnapshot {
+                    active_run: Some(ActiveRun {
+                        run_id: "run-daemon-fail-partial".to_owned(),
+                        stage_cursor: StageCursor::initial(StageId::Planning),
+                        started_at,
+                        prompt_hash_at_cycle_start: "hash".to_owned(),
+                        prompt_hash_at_stage_start: "hash".to_owned(),
+                        qa_iterations_current_cycle: 0,
+                        review_iterations_current_cycle: 0,
+                        final_review_restart_count: 0,
+                        stage_resolution_snapshot: None,
+                    }),
+                    interrupted_run: None,
+                    status: RunStatus::Running,
+                    cycle_history: Vec::new(),
+                    completion_rounds: 1,
+                    max_completion_rounds: Some(20),
+                    rollback_point_meta: Default::default(),
+                    amendment_queue: Default::default(),
+                    status_summary: "running: planning".to_owned(),
+                    last_stage_resolution_snapshot: None,
+                },
+            )
+            .expect("write running snapshot");
+        let task = sample_pending_task("task-daemon-fail-partial", &project_id);
+        FsDaemonStore.create_task(base, &task).expect("create task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::AlreadyAbsent);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .process_task(
+                base,
+                &task,
+                &DaemonLoopConfig::default(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("failed-task cleanup should surface partial lease cleanup");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected failed-task cleanup error: {error:?}"
+        );
+
+        let lease_id = format!("lease-{}", task.task_id);
+        let failed = FsDaemonStore
+            .read_task(base, &task.task_id)
+            .expect("read failed task");
+        assert_eq!(failed.status, TaskStatus::Failed);
+        assert_eq!(failed.lease_id.as_deref(), Some(lease_id.as_str()));
+        assert!(FsDaemonStore.read_lease(base, &lease_id).is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_propagates_partial_cleanup_failure() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = ProjectId::new("daemon-cycle-partial").expect("project id");
+        let task = sample_pending_task("task-daemon-cycle-partial", &project_id);
+        FsDaemonStore.create_task(base, &task).expect("create task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::AlreadyAbsent);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .process_cycle(base, &DaemonLoopConfig::default(), CancellationToken::new())
+            .await
+            .expect_err("cycle should stop on partial cleanup failure");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected cycle error: {error:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_phase0_repairs_persisted_cancelled_handoff_for_aborted_task() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-phase0-handoff");
+        let started_at = Utc::now();
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-phase0-handoff".to_owned(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: DAEMON_SHUTDOWN_STATUS_SUMMARY.to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base, &project_id, &snapshot)
+            .expect("write interrupted snapshot");
+        std::fs::write(
+            base.join(format!(
+                ".ralph-burning/projects/{}/journal.ndjson",
+                project_id.as_str()
+            )),
+            format!(
+                "{{\"sequence\":1,\"timestamp\":\"{}\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"{}\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-phase0-handoff\",\"first_stage\":\"implementation\",\"max_completion_rounds\":20}}}}",
+                (started_at - chrono::Duration::seconds(1)).to_rfc3339(),
+                project_id.as_str(),
+                started_at.to_rfc3339(),
+            ),
+        )
+        .expect("write journal without run_failed");
+        FileSystem::write_backend_processes(
+            base,
+            &project_id,
+            &[crate::adapters::fs::RunBackendProcessRecord {
+                pid: std::process::id().saturating_add(100_000),
+                recorded_at: started_at,
+                run_id: Some("run-phase0-handoff".to_owned()),
+                run_started_at: Some(started_at),
+                proc_start_ticks: Some(u64::MAX),
+                proc_start_marker: None,
+            }],
+        )
+        .expect("write stale backend process record");
+
+        let lease = crate::contexts::automation_runtime::model::WorktreeLease {
+            lease_id: "lease-phase0-handoff".to_owned(),
+            task_id: "task-phase0-handoff".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.join("worktrees/phase0-handoff"),
+            branch_name: "rb/phase0-handoff".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: Some(CliWriterCleanupHandoff {
+                pid: std::process::id().saturating_add(100_000),
+                run_id: Some("run-phase0-handoff".to_owned()),
+                run_started_at: Some(started_at),
+                proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
+                proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+            }),
+        };
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write phase0 handoff lease");
+        FsDaemonStore
+            .write_task(
+                base,
+                &DaemonTask {
+                    task_id: lease.task_id.clone(),
+                    issue_ref: "acme/widgets#phase0-handoff".to_owned(),
+                    project_id: project_id.as_str().to_owned(),
+                    project_name: Some("phase0 handoff".to_owned()),
+                    prompt: Some("Prompt".to_owned()),
+                    routing_command: None,
+                    routing_labels: vec![],
+                    resolved_flow: Some(FlowPreset::Standard),
+                    routing_source: None,
+                    routing_warnings: vec![],
+                    status: TaskStatus::Aborted,
+                    created_at: started_at,
+                    updated_at: started_at,
+                    attempt_count: 0,
+                    lease_id: Some(lease.lease_id.clone()),
+                    failure_class: None,
+                    failure_message: None,
+                    dispatch_mode: DispatchMode::Workflow,
+                    source_revision: None,
+                    requirements_run_id: None,
+                    workflow_run_id: None,
+                    repo_slug: None,
+                    issue_number: None,
+                    pr_url: None,
+                    last_seen_comment_id: None,
+                    last_seen_review_id: None,
+                    label_dirty: false,
+                },
+            )
+            .expect("write aborted task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let did_work = daemon
+            .process_cycle(base, &DaemonLoopConfig::default(), CancellationToken::new())
+            .await
+            .expect("phase0 repair cycle should succeed");
+        assert!(
+            !did_work,
+            "phase0 handoff recovery should settle the aborted task without dispatching new work"
+        );
+
+        let repaired_journal = FsJournalStore
+            .read_journal(base, &project_id)
+            .expect("read repaired journal");
+        assert_eq!(
+            repaired_journal
+                .iter()
+                .filter(|event| {
+                    event.event_type
+                        == crate::contexts::project_run_record::model::JournalEventType::RunFailed
+                })
+                .count(),
+            1,
+            "phase0 recovery should append the missing daemon run_failed event"
+        );
+        assert!(
+            FileSystem::read_backend_processes(base, &project_id)
+                .expect("read backend processes after phase0 repair")
+                .is_empty(),
+            "phase0 recovery should prune stale daemon backend process records"
+        );
+        let repaired_task = FsDaemonStore
+            .read_task(base, &lease.task_id)
+            .expect("read repaired task");
+        assert!(
+            repaired_task.lease_id.is_none(),
+            "phase0 recovery should release the aborted task lease after repairing the handoff"
+        );
+        assert!(
+            FsDaemonStore.read_lease(base, &lease.lease_id).is_err(),
+            "phase0 recovery should remove the persisted worktree lease"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_quarantines_recovered_handoff_finalization_errors_per_repo() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let bad_repo_root = temp.path().join("repo-bad");
+        let good_repo_root = temp.path().join("repo-good");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&bad_repo_root, Utc::now()).expect("init bad workspace");
+        initialize_workspace(&good_repo_root, Utc::now()).expect("init good workspace");
+
+        let bad_registration = RepoRegistration {
+            repo_slug: "acme/bad".to_owned(),
+            repo_root: bad_repo_root.clone(),
+            workspace_root: bad_repo_root.join(".ralph-burning"),
+        };
+        let good_registration = RepoRegistration {
+            repo_slug: "acme/good".to_owned(),
+            repo_root: good_repo_root.clone(),
+            workspace_root: good_repo_root.join(".ralph-burning"),
+        };
+
+        let bad_daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "bad");
+        let bad_project_id = create_standard_project(&bad_repo_root, "bad-phase0-handoff");
+        let bad_task = DaemonTask {
+            status: TaskStatus::Aborted,
+            lease_id: Some("lease-bad-phase0-handoff".to_owned()),
+            ..sample_pending_task("task-bad-phase0-handoff", &bad_project_id)
+        };
+        FsDaemonStore
+            .create_task(&bad_daemon_dir, &bad_task)
+            .expect("create bad recovered terminal task");
+        FsDaemonStore
+            .write_lease_record(
+                &bad_daemon_dir,
+                &LeaseRecord::CliWriter(CliWriterLease {
+                    lease_id: "lease-bad-phase0-handoff".to_owned(),
+                    project_id: bad_project_id.as_str().to_owned(),
+                    owner: "cli".to_owned(),
+                    acquired_at: Utc::now(),
+                    ttl_seconds: 300,
+                    last_heartbeat: Utc::now(),
+                    cleanup_handoff: None,
+                }),
+            )
+            .expect("write wrong-type recovered handoff lease");
+
+        let good_daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "good");
+        let good_project_id = create_standard_project(&good_repo_root, "good-phase0-progress");
+        let good_task = sample_pending_task("task-good-phase0-progress", &good_project_id);
+        FsDaemonStore
+            .create_task(&good_daemon_dir, &good_task)
+            .expect("create good pending task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[bad_registration, good_registration],
+            )
+            .await
+            .expect("bad recovered handoff should quarantine only its repo");
+
+        let bad_after = FsDaemonStore
+            .read_task(&bad_daemon_dir, &bad_task.task_id)
+            .expect("read bad task after cycle");
+        assert_eq!(
+            bad_after.status,
+            TaskStatus::Aborted,
+            "the failing repo should be left untouched for later operator recovery"
+        );
+        assert_eq!(
+            bad_after.lease_id.as_deref(),
+            Some("lease-bad-phase0-handoff"),
+            "the recovered handoff lease should remain visible after repo quarantine"
+        );
+
+        let good_after = FsDaemonStore
+            .read_task(&good_daemon_dir, &good_task.task_id)
+            .expect("read good task after cycle");
+        assert_eq!(
+            good_after.status,
+            TaskStatus::Completed,
+            "a corrupt recovered handoff in one repo must not block later repos in the same cycle"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_stops_on_post_release_metadata_cleanup_failure() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = ProjectId::new("daemon-cycle-metadata-partial").expect("project id");
+        let first_task = sample_pending_task("task-daemon-cycle-metadata-partial-a", &project_id);
+        let second_task = sample_pending_task("task-daemon-cycle-metadata-partial-b", &project_id);
+        FsDaemonStore
+            .create_task(base, &first_task)
+            .expect("create first task");
+        FsDaemonStore
+            .create_task(base, &second_task)
+            .expect("create second task");
+
+        let store = FailOnceLeaseReferenceClearStore::new(&first_task.task_id);
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &store,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .process_cycle(base, &DaemonLoopConfig::default(), CancellationToken::new())
+            .await
+            .expect_err("metadata cleanup failure should stop the single-repo cycle");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected cycle error: {error:?}"
+        );
+
+        let first_lease_id = format!("lease-{}", first_task.task_id);
+        let completed_first = FsDaemonStore
+            .read_task(base, &first_task.task_id)
+            .expect("read first task after metadata cleanup failure");
+        assert_eq!(completed_first.status, TaskStatus::Completed);
+        assert_eq!(
+            completed_first.lease_id.as_deref(),
+            Some(first_lease_id.as_str()),
+            "the stale task lease reference should remain visible for operator recovery"
+        );
+        assert!(
+            FsDaemonStore.read_lease(base, &first_lease_id).is_err(),
+            "physical lease resources should already be gone when only the metadata write failed"
+        );
+
+        let untouched_second = FsDaemonStore
+            .read_task(base, &second_task.task_id)
+            .expect("read second task after interrupted cycle");
+        assert_eq!(
+            untouched_second.status,
+            TaskStatus::Pending,
+            "the daemon must stop scanning once a post-release metadata write fails"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires real worktree for lease cleanup; partial cleanup path needs test fixture update"]
+    async fn process_cycle_multi_repo_repairs_orphaned_lease_reference_after_metadata_failure() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let first_project_id = create_standard_project(&repo_root, "multi-repo-metadata-a");
+        let second_project_id = create_standard_project(&repo_root, "multi-repo-metadata-b");
+        FileSystem::write_pid_file(
+            &repo_root,
+            &first_project_id,
+            RunPidOwner::Daemon,
+            Some("daemon-owner"),
+            Some("run-multi-repo-metadata-a"),
+            Some(Utc::now()),
+        )
+        .expect("write multi-repo pid file");
+
+        let mut first_task = sample_pending_task("task-multi-repo-metadata-a", &first_project_id);
+        first_task.issue_ref = format!("{repo_slug}#11");
+        first_task.repo_slug = Some(repo_slug.to_owned());
+        first_task.issue_number = Some(11);
+        FsDaemonStore
+            .create_task(&daemon_dir, &first_task)
+            .expect("create first multi-repo task");
+
+        let mut second_task = sample_pending_task("task-multi-repo-metadata-b", &second_project_id);
+        second_task.issue_ref = format!("{repo_slug}#12");
+        second_task.repo_slug = Some(repo_slug.to_owned());
+        second_task.issue_number = Some(12);
+        FsDaemonStore
+            .create_task(&daemon_dir, &second_task)
+            .expect("create second multi-repo task");
+
+        let store = FailOnceLeaseReferenceClearStore::new(&first_task.task_id);
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &store,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration.clone()],
+            )
+            .await
+            .expect("first multi-repo cycle");
+
+        let first_after_first = FsDaemonStore
+            .read_task(&daemon_dir, &first_task.task_id)
+            .expect("read first task after metadata cleanup failure");
+        let first_lease_id = format!("lease-{}", first_task.task_id);
+        assert_eq!(first_after_first.status, TaskStatus::Completed);
+        assert!(first_after_first.label_dirty);
+        assert_eq!(
+            first_after_first.lease_id.as_deref(),
+            Some(first_lease_id.as_str())
+        );
+        assert!(
+            FsDaemonStore
+                .read_lease(&daemon_dir, &first_lease_id)
+                .is_err(),
+            "the repo should be quarantined even after the physical lease is already gone"
+        );
+
+        let second_after_first = FsDaemonStore
+            .read_task(&daemon_dir, &second_task.task_id)
+            .expect("read second task after first cycle");
+        assert_eq!(
+            second_after_first.status,
+            TaskStatus::Pending,
+            "follow-on tasks must stay blocked until the orphaned lease reference is repaired"
+        );
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("second multi-repo cycle");
+
+        let repaired_first = FsDaemonStore
+            .read_task(&daemon_dir, &first_task.task_id)
+            .expect("read repaired first task");
+        assert!(!repaired_first.label_dirty);
+        assert!(
+            repaired_first.lease_id.is_none(),
+            "Phase 0 should repair orphaned task lease references even without a lease file"
+        );
+        assert!(
+            FileSystem::read_pid_file(&repo_root, &first_project_id)
+                .expect("read pid file after orphaned repair")
+                .is_none(),
+            "Phase 0 orphaned cleanup must remove the checkout run.pid, not look under daemon state"
+        );
+
+        let second_after_second = FsDaemonStore
+            .read_task(&daemon_dir, &second_task.task_id)
+            .expect("read second task after recovery cycle");
+        assert_eq!(
+            second_after_second.status,
+            TaskStatus::Completed,
+            "the repo should resume processing once the orphaned lease reference is repaired"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires real worktree for lease cleanup; partial cleanup path needs test fixture update"]
+    async fn process_cycle_multi_repo_reclaims_dead_daemon_pid_record_during_orphaned_repair() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let first_project_id = create_standard_project(&repo_root, "multi-repo-stale-daemon-pid");
+        let mut repaired_task =
+            sample_pending_task("task-multi-repo-stale-daemon-pid", &first_project_id);
+        repaired_task.issue_ref = format!("{repo_slug}#41");
+        repaired_task.repo_slug = Some(repo_slug.to_owned());
+        repaired_task.issue_number = Some(41);
+        repaired_task.status = TaskStatus::Completed;
+        repaired_task.lease_id = Some("lease-stale-daemon-pid".to_owned());
+        repaired_task.label_dirty = true;
+        FsDaemonStore
+            .create_task(&daemon_dir, &repaired_task)
+            .expect("create dirty task");
+
+        let stale_pid_record = RunPidRecord {
+            pid: 999_999,
+            started_at: Utc::now(),
+            owner: RunPidOwner::Daemon,
+            writer_owner: repaired_task.lease_id.clone(),
+            run_id: Some("run-stale-daemon-pid".to_owned()),
+            run_started_at: Some(Utc::now()),
+            proc_start_ticks: Some(1),
+            proc_start_marker: None,
+        };
+        let stale_pid_path =
+            FileSystem::live_project_root(&repo_root, &first_project_id).join("run.pid");
+        std::fs::write(
+            &stale_pid_path,
+            serde_json::to_vec(&stale_pid_record).expect("serialize stale pid record"),
+        )
+        .expect("write stale pid record");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("cycle should repair stale daemon pid");
+
+        let repaired_after = FsDaemonStore
+            .read_task(&daemon_dir, &repaired_task.task_id)
+            .expect("read repaired task");
+        assert!(!repaired_after.label_dirty);
+        assert!(
+            repaired_after.lease_id.is_none(),
+            "Phase 0 should clear the orphaned lease metadata after stale pid cleanup"
+        );
+        assert!(
+            FileSystem::read_pid_file(&repo_root, &first_project_id)
+                .expect("read stale pid after repair")
+                .is_none(),
+            "Phase 0 should reclaim dead daemon-owned pid files from prior daemon processes"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_quarantines_unreclaimable_orphaned_pid_records() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let first_project_id =
+            create_standard_project(&repo_root, "multi-repo-live-daemon-pid-blocked");
+        let second_project_id =
+            create_standard_project(&repo_root, "multi-repo-live-daemon-pid-next");
+
+        let mut dirty_task =
+            sample_pending_task("task-multi-repo-live-daemon-pid-blocked", &first_project_id);
+        dirty_task.issue_ref = format!("{repo_slug}#51");
+        dirty_task.repo_slug = Some(repo_slug.to_owned());
+        dirty_task.issue_number = Some(51);
+        dirty_task.status = TaskStatus::Completed;
+        dirty_task.lease_id = Some("lease-live-daemon-pid".to_owned());
+        dirty_task.label_dirty = true;
+        FsDaemonStore
+            .create_task(&daemon_dir, &dirty_task)
+            .expect("create dirty task");
+
+        let mut blocked_task =
+            sample_pending_task("task-multi-repo-live-daemon-pid-next", &second_project_id);
+        blocked_task.issue_ref = format!("{repo_slug}#52");
+        blocked_task.repo_slug = Some(repo_slug.to_owned());
+        blocked_task.issue_number = Some(52);
+        FsDaemonStore
+            .create_task(&daemon_dir, &blocked_task)
+            .expect("create blocked task");
+
+        FileSystem::write_pid_file(
+            &repo_root,
+            &first_project_id,
+            RunPidOwner::Daemon,
+            Some("lease-fresh-daemon-pid"),
+            Some("run-live-daemon-pid"),
+            Some(Utc::now()),
+        )
+        .expect("write live daemon pid file");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                std::slice::from_ref(&registration),
+            )
+            .await
+            .expect("unreclaimable pid should quarantine repo without crashing");
+
+        let dirty_after = FsDaemonStore
+            .read_task(&daemon_dir, &dirty_task.task_id)
+            .expect("read dirty task after failed orphaned cleanup");
+        assert!(dirty_after.label_dirty);
+        assert_eq!(
+            dirty_after.lease_id.as_deref(),
+            Some("lease-live-daemon-pid"),
+            "the orphaned lease reference must remain visible when pid cleanup is unresolved"
+        );
+        assert!(
+            FileSystem::read_pid_file(&repo_root, &first_project_id)
+                .expect("read live pid after failed cleanup")
+                .is_some(),
+            "the daemon must not remove a live pid file owned by a different run"
+        );
+
+        let blocked_after = FsDaemonStore
+            .read_task(&daemon_dir, &blocked_task.task_id)
+            .expect("read blocked task after failed cleanup");
+        assert_eq!(
+            blocked_after.status,
+            TaskStatus::Pending,
+            "Phase 0 should keep the repo quarantined until the orphaned pid record can be reconciled"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_removes_run_pid_from_checkout_root_on_completion() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let project_id = create_standard_project(&repo_root, "multi-repo-pid-cleanup");
+        FileSystem::write_pid_file(
+            &repo_root,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some("daemon-owner"),
+            Some("run-multi-repo-pid-cleanup"),
+            Some(Utc::now()),
+        )
+        .expect("write multi-repo pid file");
+
+        let mut task = sample_pending_task("task-multi-repo-pid-cleanup", &project_id);
+        task.issue_ref = format!("{repo_slug}#21");
+        task.repo_slug = Some(repo_slug.to_owned());
+        task.issue_number = Some(21);
+        FsDaemonStore
+            .create_task(&daemon_dir, &task)
+            .expect("create multi-repo task");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("multi-repo cycle should complete");
+
+        let completed_task = FsDaemonStore
+            .read_task(&daemon_dir, &task.task_id)
+            .expect("read completed multi-repo task");
+        assert_eq!(completed_task.status, TaskStatus::Completed);
+        assert!(
+            FileSystem::read_pid_file(&repo_root, &project_id)
+                .expect("read pid file after completion")
+                .is_none(),
+            "multi-repo completion cleanup must remove run.pid from the checkout root"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires real worktree for lease cleanup; partial cleanup path needs test fixture update"]
+    async fn process_cycle_multi_repo_quarantines_corrupt_terminal_lease_records() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let project_id = create_standard_project(&repo_root, "multi-repo-corrupt-lease");
+        let mut dirty_task = sample_pending_task("task-multi-repo-corrupt-lease", &project_id);
+        dirty_task.issue_ref = format!("{repo_slug}#31");
+        dirty_task.repo_slug = Some(repo_slug.to_owned());
+        dirty_task.issue_number = Some(31);
+        dirty_task.status = TaskStatus::Completed;
+        dirty_task.lease_id = Some("lease-corrupt-terminal".to_owned());
+        dirty_task.label_dirty = true;
+        FsDaemonStore
+            .create_task(&daemon_dir, &dirty_task)
+            .expect("create dirty terminal task");
+
+        let mut blocked_task =
+            sample_pending_task("task-multi-repo-corrupt-lease-blocked", &project_id);
+        blocked_task.issue_ref = format!("{repo_slug}#32");
+        blocked_task.repo_slug = Some(repo_slug.to_owned());
+        blocked_task.issue_number = Some(32);
+        FsDaemonStore
+            .create_task(&daemon_dir, &blocked_task)
+            .expect("create blocked task");
+
+        FsDaemonStore
+            .write_lease_record(
+                &daemon_dir,
+                &LeaseRecord::CliWriter(CliWriterLease {
+                    lease_id: "lease-corrupt-terminal".to_owned(),
+                    project_id: project_id.as_str().to_owned(),
+                    owner: "cli".to_owned(),
+                    acquired_at: Utc::now(),
+                    ttl_seconds: 300,
+                    last_heartbeat: Utc::now(),
+                    cleanup_handoff: None,
+                }),
+            )
+            .expect("write wrong-type lease record");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                std::slice::from_ref(&registration),
+            )
+            .await
+            .expect("corrupt lease should quarantine repo without crashing the daemon");
+
+        let dirty_after_first = FsDaemonStore
+            .read_task(&daemon_dir, &dirty_task.task_id)
+            .expect("read dirty task after first cycle");
+        assert!(dirty_after_first.label_dirty);
+        assert_eq!(
+            dirty_after_first.lease_id.as_deref(),
+            Some("lease-corrupt-terminal"),
+            "corrupt lease records must remain visible instead of being cleared as orphaned"
+        );
+        let blocked_after_first = FsDaemonStore
+            .read_task(&daemon_dir, &blocked_task.task_id)
+            .expect("read blocked task after first cycle");
+        assert_eq!(
+            blocked_after_first.status,
+            TaskStatus::Pending,
+            "Phase 0 must keep the repo quarantined while the terminal lease record is corrupt"
+        );
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("repeated corrupt lease reads should continue quarantining the repo");
+
+        let blocked_after_second = FsDaemonStore
+            .read_task(&daemon_dir, &blocked_task.task_id)
+            .expect("read blocked task after second cycle");
+        assert_eq!(
+            blocked_after_second.status,
+            TaskStatus::Pending,
+            "the repo must stay blocked across cycles until the corrupt lease record is repaired"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_blocks_repo_after_recovered_terminal_cleanup_failure() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let project_id = create_standard_project(&repo_root, "multi-repo-recovered-terminal");
+        let started_at = Utc::now();
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-multi-repo-recovered-terminal".to_owned(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: DAEMON_SHUTDOWN_STATUS_SUMMARY.to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(&repo_root, &project_id, &snapshot)
+            .expect("write interrupted snapshot");
+        std::fs::write(
+            repo_root.join(format!(
+                ".ralph-burning/projects/{}/journal.ndjson",
+                project_id.as_str()
+            )),
+            format!(
+                "{{\"sequence\":1,\"timestamp\":\"{}\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"{}\",\"flow\":\"standard\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"run-multi-repo-recovered-terminal\",\"first_stage\":\"implementation\",\"max_completion_rounds\":20}}}}",
+                (started_at - chrono::Duration::seconds(1)).to_rfc3339(),
+                project_id.as_str(),
+                started_at.to_rfc3339(),
+            ),
+        )
+        .expect("write journal without run_failed");
+        FileSystem::write_backend_processes(
+            &repo_root,
+            &project_id,
+            &[RunBackendProcessRecord {
+                pid: std::process::id().saturating_add(100_000),
+                recorded_at: started_at,
+                run_id: Some("run-multi-repo-recovered-terminal".to_owned()),
+                run_started_at: Some(started_at),
+                proc_start_ticks: Some(u64::MAX),
+                proc_start_marker: None,
+            }],
+        )
+        .expect("write stale backend process record");
+
+        let recovered_lease = WorktreeLease {
+            lease_id: "lease-multi-repo-recovered-terminal".to_owned(),
+            task_id: "task-multi-repo-recovered-terminal".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: repo_root.join("worktrees/multi-repo-recovered-terminal"),
+            branch_name: "rb/multi-repo-recovered-terminal".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: Some(CliWriterCleanupHandoff {
+                pid: std::process::id().saturating_add(100_000),
+                run_id: Some("run-multi-repo-recovered-terminal".to_owned()),
+                run_started_at: Some(started_at),
+                proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
+                proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+            }),
+        };
+        FsDaemonStore
+            .write_lease(&daemon_dir, &recovered_lease)
+            .expect("write recovered terminal lease");
+        let recovered_task = DaemonTask {
+            task_id: recovered_lease.task_id.clone(),
+            issue_ref: format!("{repo_slug}#41"),
+            project_id: project_id.as_str().to_owned(),
+            project_name: Some("Recovered terminal".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: None,
+            routing_warnings: vec![],
+            status: TaskStatus::Aborted,
+            created_at: started_at,
+            updated_at: started_at,
+            attempt_count: 0,
+            lease_id: Some(recovered_lease.lease_id.clone()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            workflow_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        FsDaemonStore
+            .write_task(&daemon_dir, &recovered_task)
+            .expect("write recovered terminal task");
+
+        let blocked_task =
+            sample_pending_task("task-multi-repo-blocked-after-recovery", &project_id);
+        FsDaemonStore
+            .create_task(&daemon_dir, &blocked_task)
+            .expect("create blocked task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::AlreadyAbsent);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("recovered terminal cleanup failure should quarantine only this repo");
+
+        let recovered_after = FsDaemonStore
+            .read_task(&daemon_dir, &recovered_task.task_id)
+            .expect("read recovered task after cycle");
+        assert!(
+            recovered_after.label_dirty,
+            "phase-0 cleanup failures for recovered terminal tasks must stay dirty for retry"
+        );
+        assert_eq!(
+            recovered_after.lease_id.as_deref(),
+            Some("lease-multi-repo-recovered-terminal"),
+            "the recovered task lease must remain visible after partial cleanup"
+        );
+
+        let blocked_after = FsDaemonStore
+            .read_task(&daemon_dir, &blocked_task.task_id)
+            .expect("read blocked task after cycle");
+        assert_eq!(
+            blocked_after.status,
+            TaskStatus::Pending,
+            "the repo must stop before processing later pending tasks in the same cycle"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_quarantines_repo_after_partial_cleanup_failure() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let first_project_id = create_standard_project(&repo_root, "multi-repo-partial-a");
+        let second_project_id = create_standard_project(&repo_root, "multi-repo-partial-b");
+
+        let mut first_task = sample_pending_task("task-multi-repo-partial-a", &first_project_id);
+        first_task.issue_ref = format!("{repo_slug}#1");
+        first_task.repo_slug = Some(repo_slug.to_owned());
+        first_task.issue_number = Some(1);
+        FsDaemonStore
+            .create_task(&daemon_dir, &first_task)
+            .expect("create first multi-repo task");
+
+        let mut second_task = sample_pending_task("task-multi-repo-partial-b", &second_project_id);
+        second_task.issue_ref = format!("{repo_slug}#2");
+        second_task.repo_slug = Some(repo_slug.to_owned());
+        second_task.issue_number = Some(2);
+        FsDaemonStore
+            .create_task(&daemon_dir, &second_task)
+            .expect("create second multi-repo task");
+
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::AlreadyAbsent);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration.clone()],
+            )
+            .await
+            .expect("first multi-repo cycle");
+
+        let after_first = FsDaemonStore
+            .read_task(&daemon_dir, &first_task.task_id)
+            .expect("read first task after partial cleanup");
+        assert_eq!(after_first.status, TaskStatus::Completed);
+        assert!(after_first.label_dirty);
+        assert!(after_first.lease_id.is_some());
+
+        let second_after_first = FsDaemonStore
+            .read_task(&daemon_dir, &second_task.task_id)
+            .expect("read second task after first cycle");
+        assert_eq!(second_after_first.status, TaskStatus::Pending);
+        assert!(!second_after_first.label_dirty);
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("second multi-repo cycle");
+
+        let second_after_second = FsDaemonStore
+            .read_task(&daemon_dir, &second_task.task_id)
+            .expect("read second task after quarantine cycle");
+        assert_eq!(
+            second_after_second.status,
+            TaskStatus::Pending,
+            "repo should remain quarantined until the dirty task cleanup succeeds"
+        );
+    }
+
+    #[test]
+    fn aborted_dispatch_cleanup_allows_successful_outcomes() {
+        assert!(
+            super::finish_aborted_dispatch_task_cleanup("task-aborted", Ok(()), Ok(())).is_ok()
+        );
+        assert!(super::finish_aborted_dispatch_task_cleanup(
+            "task-aborted",
+            Err(AppError::InvocationCancelled {
+                backend: "daemon".to_owned(),
+                contract_id: "task-aborted".to_owned(),
+            }),
+            Ok(())
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn aborted_dispatch_cleanup_propagates_dispatch_errors_after_lease_release() {
+        let error = super::finish_aborted_dispatch_task_cleanup(
+            "task-aborted",
+            Err(AppError::Io(std::io::Error::other(
+                "backend cleanup failed",
+            ))),
+            Ok(()),
+        )
+        .expect_err("non-cancellation outcome should surface after lease release");
+        assert!(
+            matches!(error, AppError::Io(_)),
+            "unexpected propagated error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn aborted_dispatch_cleanup_prioritizes_lease_cleanup_failures() {
+        let error = super::finish_aborted_dispatch_task_cleanup(
+            "task-aborted",
+            Err(AppError::Io(std::io::Error::other(
+                "backend cleanup failed",
+            ))),
+            Err(AppError::LeaseCleanupPartialFailure {
+                task_id: "task-aborted".to_owned(),
+            }),
+        )
+        .expect_err("lease cleanup failures must stay visible for Phase 0 recovery");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected propagated error: {error:?}"
         );
     }
 

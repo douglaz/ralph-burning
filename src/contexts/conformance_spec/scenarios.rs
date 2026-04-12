@@ -15688,6 +15688,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 acquired_at: now,
                 ttl_seconds: 300,
                 last_heartbeat: now,
+                cleanup_handoff: None,
             };
             store
                 .write_lease(&daemon_dir, &lease)
@@ -15766,6 +15767,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 acquired_at: now,
                 ttl_seconds: 300,
                 last_heartbeat: now,
+                cleanup_handoff: None,
             };
             store
                 .write_lease(&daemon_dir, &lease_302)
@@ -15887,6 +15889,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 acquired_at: now,
                 ttl_seconds: 300,
                 last_heartbeat: now,
+                cleanup_handoff: None,
             };
             store
                 .write_lease(&daemon_dir, &terminal_lease)
@@ -16952,6 +16955,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 acquired_at: now,
                 ttl_seconds: 300,
                 last_heartbeat: now,
+                cleanup_handoff: None,
             };
 
             let service = PrRuntimeService::new(&store, &PrWorktree, &github);
@@ -17244,6 +17248,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
 
         let service = PrRuntimeService::new(&store, &worktree, &github);
@@ -17363,6 +17368,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
 
         let cancel = CancellationToken::new();
@@ -17503,6 +17509,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
 
         let service = PrRuntimeService::new(&store, &NoDiffWorktree, &github);

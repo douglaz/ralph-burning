@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T03:47:22.360390183Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI accept both amendments. They both address concrete recovery correctness gaps in stale daemon-owner handling: preventing unsafe lease reacquisition when stale task metadata still references the old owner, and removing owner-owned pid artifacts so reclaimed ownership state is fully consistent.\n\n## Votes\n\n- `fr-17-daf1d3bb`: Accept\n  This closes a real fail-open path: a missing lease record should not be treated as clean success if project task metadata still durably claims the expected owner. Mirroring the detached-owner partial-cleanup behavior with `LeaseCleanupPartialFailure` is the correct conservative gate before reacquiring a new writer lease and avoids proceeding under potentially orphaned daemon ownership metadata.\n- `fr-17-b38be574`: Accept\n  This is a consistency/safety fix. Reclaiming stale daemon ownership without removing owner-scoped `run.pid` leaves durable process state behind, which can misreport recovery and confuse subsequent recovery/liveness checks. Reusing existing owner-aware pid cleanup logic before success is consistent with daemon cleanup semantics and reduces state drift.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 17
+}

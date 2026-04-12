@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr9-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T00:39:05.258238525Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real fail-open recovery bugs. The first hides ambiguous detached-owner state by collapsing it to `None`, and the second creates a race after successful lease release where a new `run.pid` can make an already-cleaned task look dirty again.\n\n## Votes\n\n- `fr-9-7be0c89b`: Accept\n  `find_detached_project_writer_owner()` currently conflates two distinct states: 'no detached owner exists' and 'multiple detached owners exist'. The resume/stop paths then treat that `None` as safe absence of stale ownership, so they can acquire a fresh writer lease while contradictory durable state still exists and without cleaning any of it. Because the cleanup APIs operate on a specific owner token and the codebase otherwise treats lingering lease metadata as blocking state, silently fail-opening on ambiguity is not robust.\n- `fr-9-c7a7a336`: Accept\n  The race is technically sound: `LeaseService::release()` drops the writer lock and removes the lease record before `remove_owned_run_pid_file()` runs, so another process can legitimately acquire the project and write a new `run.pid` in that window. When that happens, `remove_owned_run_pid_file()` reports `LeaseCleanupPartialFailure`, but that failure now refers to a different owner's fresh pid file, not the old task's leaked resources. Keeping the finished task's old `lease_id` in that case is incorrect and can trigger false orphan-recovery/quarantine later.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

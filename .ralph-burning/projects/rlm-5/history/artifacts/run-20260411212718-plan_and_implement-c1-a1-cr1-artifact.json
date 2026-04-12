@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260411212718-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-11T21:37:28.121837872Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded daemon-side cancellation handoff/finalization so a cancelled daemon-owned run is marked interrupted and has `run.pid` removed before the shutdown grace period expires, then finalized without duplicating terminal journal state. Tightened stale-owner recovery to fail closed when detached worktree or lease cleanup returns `AlreadyAbsent`, preserved durable task/lease state on partial cleanup, added regression coverage for both behaviors, and closed bead `ralph-burning-rlm.5` in `.beads/issues.jsonl`.\n\n## Steps\n\n1. [Completed] Inspected the daemon dispatch cancellation path, stale-owner recovery helpers, and bead context to identify where interrupted state was only persisted after the grace timeout and where partial cleanup outcomes were being ignored.\n2. [Completed] Implemented immediate daemon cancellation handoff/finalization in `daemon_loop.rs`, tightened stale-owner cleanup handling in `cli_writer_lease.rs`, and added/updated regression tests in `daemon_loop.rs`, `cli_writer_lease.rs`, and `cli/run.rs`.\n3. [Completed] Validated the changes with repository checks, updated bead state, and synced bead metadata.\n\n## Validation Evidence\n\n- `cargo test` passed.\n- `cargo clippy` passed (exit 0); it still emits existing repository warnings unrelated to this change.\n- `cargo fmt --check` passed.\n- `br lint` was run and reports only pre-existing unrelated template warnings on other beads.\n- `br close --actor \"${BR_ACTOR:-assistant}\" ralph-burning-rlm.5 --reason \"Implemented daemon SIGTERM handoff cleanup and fail-closed stale-owner cleanup\"` succeeded.\n\n## Outstanding Risks\n\n- `br lint` still reports unrelated pre-existing template warnings on other beads (`ralph-burning-rlm.1`, `ralph-burning-rlm.2`, `ralph-burning-rlm.3`, `ralph-burning-utm`, `ralph-burning-kvc`, `ralph-burning-gsp`, `ralph-burning-p2h`, `ralph-burning-fyj`, `ralph-burning-hg4`).\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

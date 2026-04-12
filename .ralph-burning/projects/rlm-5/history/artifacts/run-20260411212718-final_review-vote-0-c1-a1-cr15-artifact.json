@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-0-c1-a1-cr15-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-0-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T03:00:29.077696854Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real recovery defects. The current code can strand interrupted daemon-cleanup state or contradictory writer-owner state in durable storage, and the existing recovery paths either do not revisit that state automatically or fail open when multiple owners exist.\n\n## Votes\n\n- `fr-15-e3c5ab91`: Accept\n  The daemon shutdown path marks the task Aborted and persists cancellation-handoff state before `finish_cancelled_dispatch()` completes, but the daemon’s normal restart/cycle logic only revisits `label_dirty` tasks and `Pending` tasks. Automatic handoff repair on the daemon side is currently tied to later dispatch loading, while CLI commands can repair only if a human runs them. A crash in that window can therefore strand an aborted task with a missing `run_failed` event and stale backend cleanup that the daemon itself never repairs on restart.\n- `fr-15-ddf1c3b2`: Accept\n  `daemon_handoff_process_death_proven()` currently depends on `read_project_writer_lease_record()`, which first requires the writer lock file to still exist. But `LeaseService::release()` releases the writer lock before removing the lease record, so there is a real partial-cleanup window where `WorktreeLease.cleanup_handoff` remains durable after the lock is gone. In that state interrupted-handoff repair is suppressed even though the detached worktree lease still contains the necessary proof, so recovery should not be coupled to a live writer lock.\n- `fr-15-7981b641`: Accept\n  Detached-owner discovery can already identify ambiguous project-writer state, but `observed_running_attempt_owner()` and `observed_resume_recovery_owner()` short-circuit on `run.pid` or writer-lock owners and do not merge that result with detached-owner discovery. `acquire_recovery_writer_guard()` then reclaims or cleans only that single observed owner, allowing another detached owner to remain silently behind. That is fail-open behavior against contradictory durable state, so recovery should treat multiple distinct owners as ambiguous and block instead.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 15
+}

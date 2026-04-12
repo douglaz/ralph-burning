@@ -151,6 +151,13 @@ pub enum AppError {
         "cannot modify amendments for project '{project_id}': a writer lease is currently held"
     )]
     AmendmentLeaseConflict { project_id: String },
+    #[error(
+        "project '{project_id}' has multiple detached writer owners requiring manual reconciliation: {owners:?}"
+    )]
+    ProjectWriterStateAmbiguous {
+        project_id: String,
+        owners: Vec<String>,
+    },
     #[error("amendment clear partially failed: removed {removed_count} of {total} amendments")]
     AmendmentClearPartial {
         removed: Vec<String>,

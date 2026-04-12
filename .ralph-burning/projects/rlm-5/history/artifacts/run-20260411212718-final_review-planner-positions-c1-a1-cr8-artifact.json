@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr8-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T00:18:42.833447657Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the amendment. The current orphaned-lease repair path can report success after clearing task metadata while leaving a stale daemon-owned `run.pid` behind, because pid cleanup is restricted to the current process id and pid-file read/remove failures are ignored. That is a real partial-cleanup bug, not just a cosmetic issue.\n\n## Votes\n\n- `fr-8-ba484100`: Accept\n  `clear_orphaned_task_lease_reference()` currently clears the durable task lease reference and then calls `remove_owned_run_pid_file()`, but that helper only deletes `run.pid` when the recorded pid equals `std::process::id()` and it suppresses pid-file read/remove errors. In the exact repair scenario described here, a prior daemon can die after removing the lease record but before cleaning task metadata; a later daemon will then clear `task.lease_id`/`label_dirty` while leaving the stale daemon-owned pid file behind. That hides incomplete cleanup and can preserve misleading runtime state. The amendment is technically sound: orphaned cleanup should reclaim dead daemon-owned pid records from earlier daemon processes, still using current-record compare/remove safeguards so a newer live run is not deleted, and unresolved pid cleanup should surface as partial failure instead of success. Implementation should also preserve retryability by not clearing the last retriable metadata before pid cleanup is known to have succeeded.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

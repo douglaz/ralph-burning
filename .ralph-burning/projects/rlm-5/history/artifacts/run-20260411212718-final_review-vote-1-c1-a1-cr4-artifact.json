@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:57:15.685315195Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBoth amendments fix real correctness/safety regressions around daemon failure state transitions. They prevent the daemon from proceeding after terminal consistency violations and ensure recovery/status flows observe the same durable repair behavior as daemon paths, which is necessary to keep run journals and recovery semantics coherent.\n\n## Votes\n\n- `fr-4-5a46212e`: Accept\n  Accept. A partial lease cleanup failure is a daemon-level consistency breach, not a transient per-task error. Continuing the cycle after returning success can dispatch new work against stale/contradictory durable state, so this should bubble out or trip the daemon into a non-running/quarantine state.\n- `fr-4-f664cc70`: Accept\n  Accept. Restricting cancellation-handoff journal repair to daemon-dispatch loading leaves status/resume CLI paths with incomplete repair coverage, causing missing terminal run_failed events after daemon handoff crashes. Moving/merging this into the shared status/resume path restores consistency for user-facing recovery behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}

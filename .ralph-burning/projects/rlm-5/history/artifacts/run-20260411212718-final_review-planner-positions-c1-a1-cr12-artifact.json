@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr12-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T01:52:41.192538064Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real recovery bugs in cancellation/interruption handling: one can strand a task lease after an abort-time cleanup error, and the other can leave orphaned backend processes alive after repairing a daemon-handoff failure. Both defects break core exclusivity/cleanup invariants and can block or corrupt later execution.\n\n## Votes\n\n- `fr-12-515a28ec`: Accept\n  The code path supports this failure mode. In both aborted-task branches, `allow_aborted_dispatch_fast_path(outcome)?` runs before label sync and `release_task_lease(...)`. Since `allow_aborted_dispatch_fast_path` propagates any non-`InvocationCancelled` error, an `Io` or corrupt-state error returned from `finish_cancelled_dispatch()` exits early with the task already durable as `Aborted` and the lease still attached. In multi-repo mode that early return also skips `mark_label_dirty`, so Phase 0 will not pick the task up for repair because it only scans `label_dirty` tasks. That leaves the repo effectively stranded until separate lease-expiry reconciliation intervenes. This is a real robustness bug around exclusive-resource cleanup, not a theoretical edge case.\n- `fr-12-3c65baa1`: Accept\n  This is a real cleanup gap. `finish_cancelled_dispatch()` is the place that normally calls `cleanup_cancelled_dispatch_backend_processes()`, but if the daemon dies after persisting the interrupted handoff and before that cleanup runs, later repair only restores the missing `run_failed` event. `repair_missing_interrupted_handoff_run_failed_event*()` does not invoke `cleanup_stale_backend_process_groups()`, and the repaired snapshot is then consumed by `load_dispatch_run_snapshot()` and `handle_resume()` without backend cleanup. That means a resumed or retried run can proceed while the previous backend process group is still alive, violating single-attempt isolation and risking duplicate backends operating on the same project state. Recovery should re-establish both journal state and backend-process cleanup invariants.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

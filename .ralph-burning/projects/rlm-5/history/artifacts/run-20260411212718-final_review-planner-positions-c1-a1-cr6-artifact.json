@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr6-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T23:37:54.099899522Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments address real fail-closed gaps in lease cleanup. Current code can remove durable lease evidence before task metadata is safely updated, leaving stale `task.lease_id` state that later recovery paths do not reliably rediscover or quarantine.\n\n## Votes\n\n- `fr-6-d8d9e999`: Accept\n  This is a real recovery bug. `cleanup_detached_project_writer_owner` deletes the worktree and lease record before `DaemonTaskService::clear_lease_reference`, but later detached-owner discovery for failed/paused runs comes from `find_detached_project_writer_owner`, which only scans `list_lease_records`, and detached cleanup is only attempted when `observed_owner` is present. If the task-file write fails after lease deletion, the first recovery correctly surfaces partial failure, but the next attempt loses the owner token and leaves a stale `task.lease_id` undiscoverable. Preserving the lease record until the task reference is cleared, or adding task-side orphaned-reference discovery, is the correct fail-closed fix.\n- `fr-6-839cec33`: Accept\n  This is a real misclassification bug. In `release_task_lease`, `LeaseService::release` can successfully remove the worktree, writer lock, and lease file, and then `clear_lease_reference` can fail, leaving contradictory durable state: a terminal task still points at a lease that no longer exists. The current callers only quarantine `LeaseCleanupPartialFailure`, so this raw error path can let single-repo continue scanning and multi-repo skip durable quarantine, while later recovery based on `list_leases` or Phase 0 cannot reliably rediscover the orphan. This branch needs to be surfaced as partial cleanup or otherwise quarantined with an explicit repair path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

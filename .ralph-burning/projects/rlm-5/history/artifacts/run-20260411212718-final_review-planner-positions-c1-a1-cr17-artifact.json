@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr17-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T03:47:18.073465157Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments close real fail-closed gaps in stale daemon-owner recovery. One prevents reacquiring the writer lease while orphaned task metadata still durably claims the old owner, and the other makes daemon-owned `run.pid` cleanup part of successful stale-owner reclamation instead of leaving stale process state behind.\n\n## Votes\n\n- `fr-17-daf1d3bb`: Accept\n  `reclaim_specific_project_writer_owner()` currently treats a missing lease record as success once the writer lock is released, but `cleanup_detached_project_writer_owner()` already treats the same \"lease record gone, task still references lease_id\" shape as partial cleanup. Because `acquire_recovery_writer_guard()` immediately reacquires on that success path, the current code can proceed while a daemon task still durably points at `expected_owner`. That is inconsistent with the existing fail-closed cleanup model and can hide orphaned ownership until later recovery hits ambiguous or corrupted state. Surfacing `LeaseCleanupPartialFailure` here is the correct behavior.\n- `fr-17-b38be574`: Accept\n  The daemon cleanup path already treats owner-aware `run.pid` removal as part of successful worktree-lease release, but the stale-owner reclaim helpers used by CLI recovery do not. As a result, stale daemon-owner recovery can remove the worktree/lock/lease metadata and report success while leaving a dead daemon-owned `run.pid` behind. That leaves durable process state inconsistent with the recovered snapshot and can mislead later liveness/recovery checks or operators. Reusing the existing owner-aware pid cleanup is technically sound because it preserves successor safety while aligning success criteria across cleanup paths.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

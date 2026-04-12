@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411212718-final_review-aggregate-c1-a1-cr7-artifact",
+  "payload_id": "run-20260411212718-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T23:58:47.943889419Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 7/25\n\n## Accepted\n\n- `fr-7-19abe56a`\n- `fr-7-45f8456b`\n- `fr-7-dcb45071`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-7-19abe56a`\n\n`src/contexts/automation_runtime/daemon_loop.rs:3636-3677` now removes `run.pid` via `remove_owned_run_pid_file(base_dir, ...)`, but in multi-repo callers `base_dir` is the per-repo daemon state dir, not the checkout root. `FileSystem::read_pid_file` resolves paths from `base_dir/.git` (`src/adapters/fs.rs:901-941`), so multi-repo cleanup looks under `<data-dir>/.../daemon/.git/ralph-burning-live/...` and never touches the real checkout pid file. That leaves stale `run.pid` files behind after daemon task completion/shutdown in multi-repo mode, which is exactly the stale-state regression this bead is trying to eliminate.\n\n### `fr-7-45f8456b`\n\nThe new detached-owner fallback is only wired into failed/paused recovery (`src/cli/run.rs:1952-1955`). Stale-running recovery still uses `observed_running_attempt_owner()` (`src/cli/run.rs:1653-1668`, `1941-1948`, `3498-3508`), which only consults `run.pid` and the writer lock. If the daemon already released those but failed to clear `task.lease_id`, `run resume` or stale `run stop` on a `RunStatus::Running` snapshot will reacquire the recovery lease and continue without surfacing the contradictory task metadata. The partial-cleanup state is still silently ignored on this path.\n\n### `fr-7-dcb45071`\n\n`src/contexts/automation_runtime/daemon_loop.rs:401-454` treats every `read_lease()` failure as if the lease file were simply missing and immediately clears the task-side lease reference through `clear_orphaned_task_lease_reference()`. But `read_lease()` also fails on corrupt/wrong-type records (`src/adapters/fs.rs:2347-2354`) and other I/O errors. In those cases the repo should stay quarantined; clearing `task.lease_id` hides an unresolved durable-state problem and allows the repo to continue with a still-broken lease record/worktree state.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}

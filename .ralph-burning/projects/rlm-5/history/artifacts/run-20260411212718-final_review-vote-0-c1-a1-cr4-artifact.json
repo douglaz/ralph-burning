@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:58:40.379597416Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments address real consistency bugs. One currently suppresses a hard lease-cleanup inconsistency in the single-repo daemon loop, and the other leaves daemon-handoff journal repair unavailable to the CLI paths that also consume failed snapshots.\n\n## Votes\n\n- `fr-4-5a46212e`: Accept\n  `release_task_lease()` now explicitly treats partial cleanup as a terminal inconsistency by returning `LeaseCleanupPartialFailure` and preserving the durable lease/task linkage. In single-repo mode, `process_cycle()` still swallows every `process_task()` error and keeps dispatching later tasks, which defeats that invariant and allows further mutations after cleanup only partially succeeded; this error needs to escape or trigger quarantine.\n- `fr-4-f664cc70`: Accept\n  The daemon-specific repair recognizes the daemon cancellation summaries, but it only runs through `load_dispatch_run_snapshot()`, which is used before daemon dispatch. `run status`, terminal milestone sync, and `run resume` still use the older signal-only repair helper, so a daemon crash during cancellation handoff can leave a failed snapshot permanently missing its required durable `run_failed` event; that repair belongs in the shared status/resume path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr16-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T03:24:06.940286120Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments address real multi-repo Phase 0 isolation bugs. One lets repo-local recovered-handoff errors escape and abort the whole multi-repo loop, and the other leaves a one-cycle window where a repo with contradictory recovered-terminal state can keep processing other tasks.\n\n## Votes\n\n- `fr-16-2b6c3bab`: Accept\n  `process_cycle_multi_repo` is explicitly supposed to isolate per-repo failures, but the `?` on `phase0_finalize_persisted_cancelled_handoff(...)` turns repo-local handoff/lease/snapshot read failures into a method-level error. Since the caller also propagates that error, one corrupt or ambiguous recovered handoff can stop the whole multi-repo cycle, and in practice the daemon loop, instead of just quarantining that repo. The amendment matches the existing Phase 0 isolation strategy and is technically sound.\n- `fr-16-dd7fc5f6`: Accept\n  The recovered-terminal branch marks the task `label_dirty` only after the initial `tasks` snapshot has already been taken. The later Phase 0 dirty-task repair loop iterates that stale snapshot, so it cannot see the newly dirtied task in the same cycle; Phase 1/2/3 can therefore continue mutating the repo while a recovered terminal task still has failed label sync or incomplete lease cleanup. That contradicts the code’s own quarantine policy for Phase 0 repair failures and should be blocked immediately.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr7-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T23:56:21.497381895Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments describe real correctness issues in stale-state recovery and cleanup. They align with the intended fail-closed handling for leases, task metadata, and run.pid ownership.\n\n## Votes\n\n- `fr-7-19abe56a`: Accept\n  In multi-repo flow the caller passes the per-repo daemon state dir as base_dir, but the pid helpers resolve project paths from base_dir/.git. That points cleanup at the daemon data dir instead of the checkout, so remove_owned_run_pid_file cannot remove the real project run.pid. The result is stale pid state in exactly the cleanup path meant to prevent it.\n- `fr-7-45f8456b`: Accept\n  The stale-Running recovery path only consults run.pid and the writer lock via observed_running_attempt_owner. If those are already gone but task.lease_id still names a detached daemon owner, recovery can acquire a new CLI lease and continue while contradictory daemon task metadata remains unresolved. Failed/paused recovery already uses detached-owner fallback, so omitting it here is an unsafe hole in the recovery logic.\n- `fr-7-dcb45071`: Accept\n  Treating every read_lease failure as equivalent to a missing lease record is too broad. read_lease also fails for corrupt or wrong-type lease records and real I/O problems. Clearing task.lease_id on those errors hides durable corruption and lets the repo proceed without repairing the underlying lease/worktree state; that should remain quarantined instead.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

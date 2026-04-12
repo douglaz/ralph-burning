@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411212718-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260411212718-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T00:42:34.774141331Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 9/25\n\n## Accepted\n\n- `fr-9-7be0c89b`\n- `fr-9-c7a7a336`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-7be0c89b`\n\n`src/contexts/automation_runtime/cli_writer_lease.rs:327-339` collapses \"multiple detached owners found\" to `None`, and the resume/stop paths in `src/cli/run.rs:1658-1670`, `src/cli/run.rs:1835-1853`, and `src/cli/run.rs:1954-1957` treat `None` as \"no stale owner\". If a project has both an orphaned task-side lease reference and another stale CLI/worktree lease, `run resume` / `run stop` can reacquire the writer lock and proceed even though contradictory durable cleanup state still exists. Ambiguous detached-owner state needs to surface as a blocking error, not be silently ignored.\n\n### `fr-9-c7a7a336`\n\n`src/contexts/automation_runtime/daemon_loop.rs:3642-3663` and `src/contexts/automation_runtime/daemon_loop.rs:3698-3728` now require `run.pid` to be reclaimable before clearing `task.lease_id`. On the success path, though, `LeaseService::release()` has already released the writer lock and removed the lease record (`src/contexts/automation_runtime/lease_service.rs:63-77`, `src/contexts/automation_runtime/lease_service.rs:332-422`), so another process can legitimately acquire the project and write a fresh `run.pid` in that gap. In that race, `remove_owned_run_pid_file()` returns `LeaseCleanupPartialFailure`, the finished task keeps its old `lease_id`, and later recovery falsely quarantines a task whose old resources were already fully cleaned up.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}

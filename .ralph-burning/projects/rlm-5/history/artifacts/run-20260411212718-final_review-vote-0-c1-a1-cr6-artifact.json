@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T23:40:12.585778191Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real fail-closed gaps in lease cleanup: current code can erase durable lease evidence before task metadata is repaired, and can misclassify post-release task-write failures so stale task lease references are neither rediscovered nor quarantined reliably.\n\n## Votes\n\n- `fr-6-d8d9e999`: Accept\n  The bug is real. `cleanup_detached_project_writer_owner` removes the worktree and lease record before clearing `task.lease_id`, but later detached-owner discovery for failed or paused recovery comes from `find_detached_project_writer_owner`, which only scans lease records, and cleanup only runs when `observed_owner` is present. If the task write fails after lease deletion, the first recovery attempt surfaces partial failure, but the next attempt loses the owner token and can proceed with a stale task-side `lease_id`. Recovery needs a durable way to rediscover that orphaned ownership until the task reference is actually cleared.\n- `fr-6-839cec33`: Accept\n  This is a real misclassification and quarantine gap. `release_task_lease` calls `clear_lease_reference` only after `LeaseService::release` has already removed the worktree, lock, and lease file, so a write failure leaves contradictory durable state: a terminal task still points at a non-existent lease. Current callers only quarantine `LeaseCleanupPartialFailure`; the raw error path can let single-repo scanning continue and multi-repo skip `label_dirty`, leaving no reliable Phase 0 or reconcile repair path. That branch should be surfaced as partial cleanup or otherwise quarantined explicitly.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

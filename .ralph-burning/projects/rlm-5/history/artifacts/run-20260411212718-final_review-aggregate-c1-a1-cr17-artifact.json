@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411212718-final_review-aggregate-c1-a1-cr17-artifact",
+  "payload_id": "run-20260411212718-final_review-aggregate-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T03:52:16.398312760Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 17/25\n\n## Accepted\n\n- `fr-17-daf1d3bb`\n- `fr-17-b38be574`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-17-daf1d3bb`\n\nFail closed when the writer lock still points at a stale daemon owner whose lease record is already gone but whose task metadata still retains that lease ID. In `src/contexts/automation_runtime/cli_writer_lease.rs:210-217`, `reclaim_specific_project_writer_owner()` treats a missing lease record as success after only releasing the writer lock, and `src/cli/run.rs:1915-1924` immediately reacquires a new CLI writer lease on that success path. That bypasses the new orphan-task detection that only exists in `cleanup_detached_project_writer_owner()` and lets `run resume` / `run stop` continue while a daemon task still durably claims the old lease. Mirror the detached-owner partial-cleanup check here: if any task in the project still references `expected_owner`, surface `LeaseCleanupPartialFailure` and block reacquisition until the stale task metadata is repaired.\n\n### `fr-17-b38be574`\n\nAdd owner-aware `run.pid` cleanup to stale daemon-owner reclaim. The worktree-owner cleanup paths in `src/contexts/automation_runtime/cli_writer_lease.rs:261-286` and `src/contexts/automation_runtime/cli_writer_lease.rs:399-444` remove the worktree / writer-lock / lease metadata but never delete the matching daemon-owned `run.pid`, unlike `src/contexts/automation_runtime/daemon_loop.rs:3906-3918`. `run stop`'s stale-recovery flow in `src/cli/run.rs:3729-3755` relies on those helpers and does not remove the old pid afterward, so it can report the project recovered while leaving the lingering `run.pid` on disk. Reuse the same owner-aware pid-file cleanup before treating stale-owner reclaim as successful.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 17
+}

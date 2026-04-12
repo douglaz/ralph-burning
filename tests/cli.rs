@@ -1173,6 +1173,7 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         },
     );
     write_datadir_daemon_task(
@@ -1351,6 +1352,7 @@ fn daemon_abort_claimed_task_releases_lease() {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         },
     );
     write_datadir_writer_lock(data_dir.path(), "demo-claimed", "lease-claimed");
@@ -1441,6 +1443,7 @@ fn daemon_abort_active_task_releases_lease() {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         },
     );
     write_datadir_writer_lock(data_dir.path(), "demo-active-abort", "lease-active-abort");
@@ -1526,6 +1529,7 @@ fn daemon_reconcile_fails_stale_claimed_task() {
             acquired_at: now - Duration::minutes(10),
             ttl_seconds: 300,
             last_heartbeat: now - Duration::minutes(10),
+            cleanup_handoff: None,
         },
     );
 
@@ -5840,6 +5844,7 @@ fn run_status_keeps_daemon_owned_running_snapshot_active_with_live_pid_file() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-daemon-alpha.json"),
@@ -5912,6 +5917,7 @@ fn run_status_keeps_legacy_daemon_owned_running_snapshot_active_without_pid_file
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-daemon-legacy.json"),
@@ -6034,6 +6040,7 @@ fn run_status_reports_stale_daemon_owned_running_when_legacy_lease_expires() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::seconds(301),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-daemon-stale.json"),
@@ -7530,6 +7537,7 @@ fn run_stop_refuses_daemon_owned_running_snapshot() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-daemon-stop.json"),
@@ -7749,6 +7757,7 @@ fn run_resume_refuses_legacy_daemon_owned_running_without_pid_file() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-daemon-legacy-resume.json"),
@@ -12625,6 +12634,7 @@ fn run_resume_does_not_reclaim_live_worktree_owner_for_failed_snapshot() {
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
+        cleanup_handoff: None,
     };
     write_daemon_task(
         temp_dir.path(),
@@ -12709,8 +12719,7 @@ fn run_resume_does_not_reclaim_live_worktree_owner_for_failed_snapshot() {
 
 #[cfg(feature = "test-stub")]
 #[test]
-#[ignore = "requires real git worktree for lease cleanup; tracked as rlm.5"]
-fn cli_run_resume_recovers_stale_daemon_owned_running_and_reclaims_worktree_lock() {
+fn cli_run_resume_fails_closed_when_stale_daemon_worktree_cleanup_is_partial() {
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "stale-daemon-resume");
     let project_id =
@@ -12776,6 +12785,7 @@ fn cli_run_resume_recovers_stale_daemon_owned_running_and_reclaims_worktree_lock
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::seconds(301),
+        cleanup_handoff: None,
     };
     write_daemon_task(
         temp_dir.path(),
@@ -12828,26 +12838,32 @@ fn cli_run_resume_recovers_stale_daemon_owned_running_and_reclaims_worktree_lock
         .output()
         .expect("run resume");
     assert!(
-        resume.status.success(),
-        "stale daemon resume should recover and succeed: {}",
-        String::from_utf8_lossy(&resume.stderr)
+        !resume.status.success(),
+        "resume must fail closed when stale daemon worktree cleanup is partial"
+    );
+    let stderr = String::from_utf8_lossy(&resume.stderr);
+    assert!(
+        stderr.contains("failed to acquire writer lease for resume")
+            && stderr.contains("lease cleanup partially failed"),
+        "resume should surface partial cleanup instead of continuing: {stderr}"
     );
 
     let final_run_json =
         fs::read_to_string(project_root(temp_dir.path(), "stale-daemon-resume").join("run.json"))
             .expect("read final run.json");
     assert!(
-        final_run_json.contains("\"completed\""),
-        "resume should finish after stale daemon recovery, got: {final_run_json}"
+        final_run_json.contains("\"running\""),
+        "resume must leave the stale running snapshot intact for operator recovery, got: {final_run_json}"
     );
     assert!(
-        !leases_dir.join("writer-stale-daemon-resume.lock").exists(),
-        "stale daemon writer lock should be reclaimed before resume reacquires it"
+        leases_dir.join("writer-stale-daemon-resume.lock").exists(),
+        "fail-closed partial cleanup should leave the observed writer lock intact for operator recovery"
     );
     assert!(
-        !leases_dir.join("lease-stale-daemon-resume.json").exists(),
-        "stale daemon worktree lease should be pruned during resume recovery"
+        leases_dir.join("lease-stale-daemon-resume.json").exists(),
+        "stale daemon worktree lease should remain durable after partial cleanup"
     );
+
     let daemon_task: DaemonTask = serde_json::from_str(
         &fs::read_to_string(
             daemon_root(temp_dir.path())
@@ -12858,9 +12874,33 @@ fn cli_run_resume_recovers_stale_daemon_owned_running_and_reclaims_worktree_lock
     )
     .expect("parse daemon task");
     assert_eq!(daemon_task.status, TaskStatus::Failed);
+    assert_eq!(
+        daemon_task.failure_class.as_deref(),
+        Some("stale_writer_owner_reclaimed"),
+        "partial cleanup should still mark the stale daemon owner failed"
+    );
+    assert_eq!(
+        daemon_task.lease_id.as_deref(),
+        Some("lease-stale-daemon-resume"),
+        "partial cleanup must preserve the daemon task lease reference"
+    );
+
+    let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("cli-") && name.ends_with(".json"))
+        })
+        .collect();
     assert!(
-        daemon_task.lease_id.is_none(),
-        "stale daemon recovery must clear the daemon task lease reference"
+        cli_leases.is_empty(),
+        "resume must not leave behind a new CLI lease after partial cleanup failure: {}",
+        String::from_utf8_lossy(&resume.stderr)
     );
 }
 

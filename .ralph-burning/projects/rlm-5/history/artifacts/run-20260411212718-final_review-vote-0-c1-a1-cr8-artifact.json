@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-0-c1-a1-cr8-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-0-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T00:19:59.008982456Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the amendment. The orphaned-lease repair path can currently report success after clearing task metadata while leaving a stale daemon-owned `run.pid` behind, because pid cleanup is limited to the current process id and read/remove failures are ignored.\n\n## Votes\n\n- `fr-8-ba484100`: Accept\n  `clear_orphaned_task_lease_reference()` clears the durable lease reference first and then calls `remove_owned_run_pid_file()`, but that helper only removes `run.pid` when the recorded pid equals `std::process::id()` and it suppresses pid-file read/remove errors. In the stated recovery case, a prior daemon can die after removing the lease record but before cleaning task metadata, so a later Phase 0 pass will clear `task.lease_id` and then clear `label_dirty` while leaving a stale daemon-owned pid file behind. That is a real correctness issue: the daemon reports cleanup success, stops retrying, and preserves misleading runtime state. Treating unresolved pid cleanup as `LeaseCleanupPartialFailure` and allowing reclamation of dead daemon-owned pid records from prior daemon processes is the safer behavior, as long as deletion still uses compare-and-remove safeguards so a newer live run's pid file is not removed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

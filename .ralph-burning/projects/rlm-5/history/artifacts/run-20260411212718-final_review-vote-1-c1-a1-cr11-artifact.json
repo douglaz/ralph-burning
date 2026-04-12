@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T01:23:21.835247849Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBoth proposed amendments are technically sound and address concrete defect states in durable state transitions and process-liveness handling. They prevent persistent inconsistent metadata and premature terminal-event repair while an old daemon is still live, so both should be accepted.\n\n## Votes\n\n- `fr-11-0c818ed2`: Accept\n  The scenario describes a real partial-cleanup failure window: if `release_task_lease()` succeeds but metadata cleanup fails, the task can retain a stale `lease_id` with no automatic repair path because only `label_dirty` tasks are repaired. Marking the task dirty or adding an equivalent recovery marker is a correct durability fix that closes a persistent reconciliation gap.\n- `fr-11-41cdaf28`: Accept\n  Finalizing interruption summaries based only on missing `run.pid` is unsafe after the daemon path now removes pid early as a handoff step. Without an explicit daemon-owned liveness proof, repair can emit terminal `run_failed` while the orchestrator is still active, creating out-of-order terminal state. Requiring stronger liveness evidence or suppressing this repair until confirmed dead is the right correctness guard.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 11
+}

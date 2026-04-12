@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T21:52:12.673376607Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real recovery defects in daemon cancellation/shutdown handling: one can strand backend process groups past daemon death, and the other suppresses partial lease-cleanup failures that the rest of the recovery model treats as significant.\n\n## Votes\n\n- `fr-1-ab35c795`: Accept\n  The cited paths line up. After the cancellation grace timeout, `finish_cancelled_dispatch()` only reconciles run metadata, while `ProcessBackendAdapter::cancel()` may return before teardown is complete by delegating `force_kill()`/`wait()` to a background reap task. If the daemon is then killed, that reap task dies too, leaving tracked backend processes and `active-processes.json` entries behind. `run resume` only calls `cleanup_stale_backend_process_groups()` when recovering a stale `Running` snapshot, not from `Failed` or `Paused`, so those orphaned backend groups can persist indefinitely. Adding daemon-side forced cleanup before declaring the run resumable is a correct robustness fix.\n- `fr-1-cbc33ab7`: Accept\n  `release_task_lease()` is explicitly designed to surface partial cleanup via `LeaseCleanupPartialFailure` when it released the writer lock but could not fully remove the lease/worktree or clear the task reference. The aborted-shutdown paths currently discard that result or reduce it to logging, which lets the daemon exit as though cleanup succeeded while durable state remains in a condition that other code paths intentionally reject or block on. That is a real correctness issue; the failure should be propagated or otherwise surfaced as an unsuccessful shutdown, not silently swallowed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

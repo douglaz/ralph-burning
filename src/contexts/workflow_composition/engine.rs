@@ -891,6 +891,7 @@ pub fn mark_current_process_running_run_interrupted(
 pub fn finalize_interrupted_run_failure_if_missing(
     context: InterruptedRunContext<'_>,
     expected_attempt: &RunningAttemptIdentity,
+    log_message: &str,
     failure_class: &str,
 ) -> AppResult<bool> {
     let snapshot = context
@@ -915,7 +916,7 @@ pub fn finalize_interrupted_run_failure_if_missing(
             context.base_dir,
             context.project_id,
             &snapshot,
-            "termination signal interrupted the orchestrator before graceful shutdown completed",
+            log_message,
             failure_class,
         )?;
     }

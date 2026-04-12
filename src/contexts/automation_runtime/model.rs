@@ -281,6 +281,8 @@ pub struct WorktreeLease {
     pub acquired_at: DateTime<Utc>,
     pub ttl_seconds: u64,
     pub last_heartbeat: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_handoff: Option<CliWriterCleanupHandoff>,
 }
 
 fn lease_heartbeat_deadline(last_heartbeat: DateTime<Utc>, ttl_seconds: u64) -> DateTime<Utc> {
@@ -471,6 +473,7 @@ impl From<LegacyWorktreeLease> for WorktreeLease {
             acquired_at: value.acquired_at,
             ttl_seconds: value.ttl_seconds,
             last_heartbeat: value.last_heartbeat,
+            cleanup_handoff: None,
         }
     }
 }

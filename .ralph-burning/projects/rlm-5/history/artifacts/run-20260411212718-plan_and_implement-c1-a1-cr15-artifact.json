@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-plan_and_implement-c1-a1-cr15-artifact",
+  "payload_id": "run-20260411212718-plan_and_implement-c1-a1-cr15",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-12T02:44:48.714047703Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `tests/cli.rs` to replace the stale ignored end-to-end resume scenario with an active regression that matches the shipped `ralph-burning-rlm.5` contract: `run resume` now asserts fail-closed behavior when stale daemon worktree cleanup is only partial, verifies the partial-cleanup error is surfaced to the user, and checks that the running snapshot, daemon writer lock, worktree lease, and daemon task lease reference remain durably intact for operator recovery while no new CLI lease is stranded.\n\n## Steps\n\n1. [Completed] Inspected the stale daemon-owned `run resume` CLI coverage in `tests/cli.rs` and confirmed the ignored test still asserted the pre-`rlm.5` success path even though the current implementation intentionally fails closed on partial worktree cleanup.\n2. [Completed] Rewrote the ignored regression in `tests/cli.rs` into an active fail-closed scenario that asserts the partial-cleanup resume error plus preserved durable daemon lease, writer-lock, task, and snapshot state.\n3. [Completed] Ran focused CLI coverage for the updated regression and then reran the required repository validation commands.\n\n## Validation Evidence\n\n- Focused regression passed: `cargo test --features test-stub cli_run_resume_fails_closed_when_stale_daemon_worktree_cleanup_is_partial --test cli -- --exact`.\n- `cargo test` passed.\n- `cargo clippy` passed with only pre-existing unrelated warnings.\n- `cargo fmt --check` passed.\n\n## Outstanding Risks\n\n- `cargo clippy` still emits pre-existing unrelated repository warnings (for example `proc_start_marker_raw` dead code and existing style lints); this change did not introduce new clippy failures.\n- The worktree still has unrelated local changes in `.ralph-burning/projects/rlm-5/journal.ndjson` and `.ralph-burning/projects/rlm-5/run.json`; they were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 15
+}

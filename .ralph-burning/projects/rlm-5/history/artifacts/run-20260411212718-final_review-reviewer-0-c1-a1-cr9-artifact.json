@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr9-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-0-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T00:35:54.666334022Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the modified runtime/CLI implementation files, and spot-checked targeted tests. I found 2 correctness issues.\n\n## Amendments\n\n1. `src/contexts/automation_runtime/cli_writer_lease.rs:327-339` collapses \"multiple detached owners found\" to `None`, and the resume/stop paths in `src/cli/run.rs:1658-1670`, `src/cli/run.rs:1835-1853`, and `src/cli/run.rs:1954-1957` treat `None` as \"no stale owner\". If a project has both an orphaned task-side lease reference and another stale CLI/worktree lease, `run resume` / `run stop` can reacquire the writer lock and proceed even though contradictory durable cleanup state still exists. Ambiguous detached-owner state needs to surface as a blocking error, not be silently ignored.\n   Rationale: The goal of this bead is to block on contradictory durable state before reacquiring the CLI writer lease. Returning `None` on ambiguity bypasses that safeguard in one of the highest-risk residue cases.\n2. `src/contexts/automation_runtime/daemon_loop.rs:3642-3663` and `src/contexts/automation_runtime/daemon_loop.rs:3698-3728` now require `run.pid` to be reclaimable before clearing `task.lease_id`. On the success path, though, `LeaseService::release()` has already released the writer lock and removed the lease record (`src/contexts/automation_runtime/lease_service.rs:63-77`, `src/contexts/automation_runtime/lease_service.rs:332-422`), so another process can legitimately acquire the project and write a fresh `run.pid` in that gap. In that race, `remove_owned_run_pid_file()` returns `LeaseCleanupPartialFailure`, the finished task keeps its old `lease_id`, and later recovery falsely quarantines a task whose old resources were already fully cleaned up.\n   Rationale: This turns a normal post-release handoff race into a false partial-cleanup failure, leaving stale detached-owner metadata behind and blocking future recovery for no real cleanup defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

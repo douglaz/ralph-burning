@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-11T22:11:48.465958899Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted: the amendment correctly targets a real error-handling defect where abort-status short-circuiting can suppress meaningful failures and mask cleanup problems, which is a correctness and maintainability issue.\n\n## Votes\n\n- `fr-2-9025353e`: Accept\n  Exiting on TaskStatus::Aborted before inspecting outcome allows non-cancellation errors from finish_cancelled_dispatch (for example, process cleanup failures) to be dropped. Propagating all outcomes except Ok(()) and Err(AppError::InvocationCancelled) preserves cancellation semantics while ensuring operational errors are not hidden and prevents reporting a clean abort when shutdown/cleanup actually failed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

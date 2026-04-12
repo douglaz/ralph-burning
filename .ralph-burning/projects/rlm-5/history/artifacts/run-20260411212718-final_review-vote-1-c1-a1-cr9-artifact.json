@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T00:39:08.500925787Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBoth amendments identify concrete correctness and safety issues in lease lifecycle handling that can lead to stale ownership being ignored or misattributed after a successful release, so both should be accepted.\n\n## Votes\n\n- `fr-9-7be0c89b`: Accept\n  Collapsing multiple detached owners to None conflates a blocking ambiguity with a legitimate no-owner state. Downstream resume/stop paths currently interpret None as safe and proceed, which can reacquire writer lock while inconsistent durable lease metadata remains. This is a real robustness bug that can cause stale state leaks and incorrect recovery behavior.\n- `fr-9-c7a7a336`: Accept\n  The described ordering is a valid race: release removes lock/record before pid-file cleanup, allowing a new process to create a fresh run.pid before cleanup of the old task resumes. Treating that partial pid cleanup as task-local failure without clearing old lease_id mislabels a cleaned task as still dirty and can trigger false quarantine. This is a robustness and correctness issue, not a benign edge case.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 9
+}
