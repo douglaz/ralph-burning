@@ -13,7 +13,7 @@ use crate::adapters::fs::{
 use crate::adapters::github::GithubPort;
 use crate::cli::run::{
     cleanup_stale_backend_process_groups,
-    repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot,
+    repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_with_dirs,
 };
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
@@ -2636,7 +2636,7 @@ where
                 details: "task has no resolved flow".to_owned(),
             })?;
 
-        let run_snapshot = self.load_dispatch_run_snapshot(workspace_dir, &project_id)?;
+        let run_snapshot = self.load_dispatch_run_snapshot(base_dir, workspace_dir, &project_id)?;
         let dispatch_future = self.dispatch_in_worktree(
             workspace_dir,
             &project_id,
@@ -2729,7 +2729,7 @@ where
                 details: "task has no resolved flow".to_owned(),
             })?;
 
-        let run_snapshot = self.load_dispatch_run_snapshot(workspace_dir, &project_id)?;
+        let run_snapshot = self.load_dispatch_run_snapshot(base_dir, workspace_dir, &project_id)?;
         let dispatch_future = self.dispatch_in_worktree(
             workspace_dir,
             &project_id,
@@ -2943,13 +2943,15 @@ where
 
     fn load_dispatch_run_snapshot(
         &self,
+        daemon_store_dir: &Path,
         workspace_dir: &Path,
         project_id: &ProjectId,
     ) -> AppResult<RunSnapshot> {
         let mut snapshot = self
             .run_snapshot_read
             .read_run_snapshot(workspace_dir, project_id)?;
-        let _ = repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot(
+        let _ = repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_with_dirs(
+            daemon_store_dir,
             workspace_dir,
             project_id,
             &mut snapshot,
@@ -2959,6 +2961,7 @@ where
 
     fn prepare_cancelled_dispatch_handoff(
         &self,
+        daemon_store_dir: &Path,
         workspace_dir: &Path,
         project_id: &ProjectId,
         writer_owner: &str,
@@ -3002,7 +3005,7 @@ where
             });
         }
         self.persist_daemon_cleanup_handoff(
-            workspace_dir,
+            daemon_store_dir,
             project_id,
             writer_owner,
             &expected_attempt,
@@ -3166,6 +3169,7 @@ where
         F: Future<Output = AppResult<()>>,
     {
         let interrupted_handoff = self.prepare_cancelled_dispatch_handoff(
+            base_dir,
             workspace_dir,
             project_id,
             &lease.lease_id,
@@ -4182,7 +4186,7 @@ mod tests {
 
     use super::{
         DaemonLoop, DaemonLoopConfig, DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD,
-        DAEMON_SHUTDOWN_STATUS_SUMMARY,
+        DAEMON_SHUTDOWN_LOG_MESSAGE, DAEMON_SHUTDOWN_STATUS_SUMMARY,
     };
     use crate::adapters::fs::{
         FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
@@ -5234,11 +5238,125 @@ mod tests {
     }
 
     #[test]
+    fn prepare_cancelled_dispatch_handoff_persists_cleanup_proof_in_multi_repo_daemon_store() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let project_id = create_standard_project(&repo_root, "daemon-handoff-persist");
+        let started_at = Utc::now();
+        let run_id = "run-daemon-handoff-persist";
+        let lease_id = "lease-daemon-handoff-persist";
+
+        let snapshot = RunSnapshot {
+            active_run: Some(ActiveRun {
+                run_id: run_id.to_owned(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            interrupted_run: None,
+            status: RunStatus::Running,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "running: implementation".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(&repo_root, &project_id, &snapshot)
+            .expect("write running snapshot");
+        FileSystem::write_pid_file(
+            &repo_root,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some(lease_id),
+            Some(run_id),
+            Some(started_at),
+        )
+        .expect("write repo pid file");
+
+        let lease = crate::contexts::automation_runtime::model::WorktreeLease {
+            lease_id: lease_id.to_owned(),
+            task_id: "task-daemon-handoff-persist".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: repo_root.join("worktrees/daemon-handoff-persist"),
+            branch_name: "rb/daemon-handoff-persist".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: None,
+        };
+        FsDaemonStore
+            .write_lease_record(&daemon_dir, &LeaseRecord::Worktree(lease.clone()))
+            .expect("write daemon-store lease");
+        FsDaemonStore
+            .acquire_writer_lock(&daemon_dir, &project_id, &lease.lease_id)
+            .expect("acquire daemon-store writer lock");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let prepared = daemon
+            .prepare_cancelled_dispatch_handoff(
+                &daemon_dir,
+                &repo_root,
+                &project_id,
+                &lease.lease_id,
+                DAEMON_SHUTDOWN_STATUS_SUMMARY,
+                DAEMON_SHUTDOWN_LOG_MESSAGE,
+            )
+            .expect("prepare cancelled dispatch handoff");
+        assert!(
+            prepared.interrupted_marker_persisted,
+            "multi-repo daemon cancellation should still mark the run interrupted"
+        );
+
+        let persisted = FsDaemonStore
+            .read_lease(&daemon_dir, &lease.lease_id)
+            .expect("read daemon-store lease after handoff");
+        assert!(
+            persisted.cleanup_handoff.is_some(),
+            "cleanup handoff must be persisted to the daemon store root, not the checkout root"
+        );
+    }
+
+    #[test]
     fn load_dispatch_run_snapshot_repairs_missing_run_failed_event_from_daemon_handoff() {
         let temp = tempdir().expect("tempdir");
-        let base = temp.path();
-        initialize_workspace(base, Utc::now()).expect("init workspace");
-        let project_id = create_standard_project(base, "daemon-handoff-repair");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let project_id = create_standard_project(&repo_root, "daemon-handoff-repair");
         let started_at = Utc::now();
 
         let snapshot = RunSnapshot {
@@ -5264,7 +5382,7 @@ mod tests {
             last_stage_resolution_snapshot: None,
         };
         FsRunSnapshotWriteStore
-            .write_run_snapshot(base, &project_id, &snapshot)
+            .write_run_snapshot(&repo_root, &project_id, &snapshot)
             .expect("write interrupted snapshot");
         let dead_handoff = CliWriterCleanupHandoff {
             pid: std::process::id().saturating_add(100_000),
@@ -5277,7 +5395,7 @@ mod tests {
             lease_id: "lease-daemon-handoff-repair".to_owned(),
             task_id: "task-daemon-handoff-repair".to_owned(),
             project_id: project_id.as_str().to_owned(),
-            worktree_path: base.join("worktrees/daemon-handoff-repair"),
+            worktree_path: repo_root.join("worktrees/daemon-handoff-repair"),
             branch_name: "rb/daemon-handoff-repair".to_owned(),
             acquired_at: started_at,
             ttl_seconds: 300,
@@ -5285,13 +5403,13 @@ mod tests {
             cleanup_handoff: Some(dead_handoff),
         };
         FsDaemonStore
-            .write_lease_record(base, &LeaseRecord::Worktree(lease.clone()))
+            .write_lease_record(&daemon_dir, &LeaseRecord::Worktree(lease.clone()))
             .expect("write daemon handoff lease");
         FsDaemonStore
-            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .acquire_writer_lock(&daemon_dir, &project_id, &lease.lease_id)
             .expect("acquire daemon handoff writer lock");
         FileSystem::write_backend_processes(
-            base,
+            &repo_root,
             &project_id,
             &[RunBackendProcessRecord {
                 pid: std::process::id().saturating_add(100_000),
@@ -5305,7 +5423,7 @@ mod tests {
         .expect("write stale daemon backend process record");
 
         std::fs::write(
-            base.join(format!(
+            repo_root.join(format!(
                 ".ralph-burning/projects/{}/journal.ndjson",
                 project_id.as_str()
             )),
@@ -5338,13 +5456,13 @@ mod tests {
         );
 
         let repaired = daemon
-            .load_dispatch_run_snapshot(base, &project_id)
+            .load_dispatch_run_snapshot(&daemon_dir, &repo_root, &project_id)
             .expect("load repaired snapshot");
         assert_eq!(repaired.status, RunStatus::Failed);
         assert!(repaired.interrupted_run.is_some());
 
         let journal = FsJournalStore
-            .read_journal(base, &project_id)
+            .read_journal(&repo_root, &project_id)
             .expect("read repaired journal");
         assert_eq!(
             journal
@@ -5358,7 +5476,7 @@ mod tests {
             "dispatch snapshot load should append the missing daemon run_failed event"
         );
         assert!(
-            FileSystem::read_backend_processes(base, &project_id)
+            FileSystem::read_backend_processes(&repo_root, &project_id)
                 .expect("read backend processes after daemon repair")
                 .is_empty(),
             "dispatch snapshot repair should also prune stale daemon-owned backend records"

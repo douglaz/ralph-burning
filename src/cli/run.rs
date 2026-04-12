@@ -2011,12 +2011,12 @@ fn interrupted_handoff_failure_details(
 }
 
 fn daemon_handoff_process_death_proven(
-    base_dir: &std::path::Path,
+    daemon_store_dir: &std::path::Path,
     project_id: &ProjectId,
     expected_attempt: &engine::RunningAttemptIdentity,
 ) -> AppResult<bool> {
     let Some((_owner, record)) =
-        read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
+        read_project_writer_lease_record(&FsDaemonStore, daemon_store_dir, project_id)?
     else {
         return Ok(false);
     };
@@ -2049,7 +2049,8 @@ fn daemon_handoff_process_death_proven(
 }
 
 fn interrupted_handoff_cleanup_candidate(
-    base_dir: &std::path::Path,
+    daemon_store_dir: &std::path::Path,
+    workspace_dir: &std::path::Path,
     project_id: &ProjectId,
     snapshot: &RunSnapshot,
 ) -> AppResult<Option<(engine::RunningAttemptIdentity, bool)>> {
@@ -2077,12 +2078,12 @@ fn interrupted_handoff_cleanup_candidate(
     // Only repair or cleanup if the orchestrator process is definitively gone.
     // During the SIGTERM or daemon-cancellation grace period the snapshot is
     // already marked interrupted but the engine future is still settling.
-    if let Ok(Some(pid_record)) = FileSystem::read_pid_file(base_dir, project_id) {
+    if let Ok(Some(pid_record)) = FileSystem::read_pid_file(workspace_dir, project_id) {
         if FileSystem::is_pid_alive(&pid_record) {
             return Ok(None);
         }
     } else if daemon_handoff
-        && !daemon_handoff_process_death_proven(base_dir, project_id, &expected_attempt)?
+        && !daemon_handoff_process_death_proven(daemon_store_dir, project_id, &expected_attempt)?
     {
         return Ok(None);
     }
@@ -2090,8 +2091,9 @@ fn interrupted_handoff_cleanup_candidate(
     Ok(Some((expected_attempt, daemon_handoff)))
 }
 
-pub(crate) fn repair_missing_interrupted_handoff_run_failed_event(
-    base_dir: &std::path::Path,
+fn repair_missing_interrupted_handoff_run_failed_event_with_dirs(
+    daemon_store_dir: &std::path::Path,
+    workspace_dir: &std::path::Path,
     project_id: &ProjectId,
     snapshot: &RunSnapshot,
 ) -> AppResult<bool> {
@@ -2101,8 +2103,12 @@ pub(crate) fn repair_missing_interrupted_handoff_run_failed_event(
     let Some((log_message, failure_class)) = interrupted_handoff_failure_details(snapshot) else {
         return Ok(false);
     };
-    let Some((expected_attempt, _)) =
-        interrupted_handoff_cleanup_candidate(base_dir, project_id, snapshot)?
+    let Some((expected_attempt, _)) = interrupted_handoff_cleanup_candidate(
+        daemon_store_dir,
+        workspace_dir,
+        project_id,
+        snapshot,
+    )?
     else {
         return Ok(false);
     };
@@ -2113,7 +2119,7 @@ pub(crate) fn repair_missing_interrupted_handoff_run_failed_event(
             run_snapshot_write: &FsRunSnapshotWriteStore,
             journal_store: &FsJournalStore,
             log_write: &FsRuntimeLogWriteStore,
-            base_dir,
+            base_dir: workspace_dir,
             project_id,
         },
         &expected_attempt,
@@ -2122,21 +2128,52 @@ pub(crate) fn repair_missing_interrupted_handoff_run_failed_event(
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn repair_missing_interrupted_handoff_run_failed_event(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    snapshot: &RunSnapshot,
+) -> AppResult<bool> {
+    repair_missing_interrupted_handoff_run_failed_event_with_dirs(
+        base_dir, base_dir, project_id, snapshot,
+    )
+}
+
+pub(crate) fn repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_with_dirs(
+    daemon_store_dir: &std::path::Path,
+    workspace_dir: &std::path::Path,
+    project_id: &ProjectId,
+    snapshot: &mut RunSnapshot,
+) -> AppResult<bool> {
+    let cleanup_candidate = interrupted_handoff_cleanup_candidate(
+        daemon_store_dir,
+        workspace_dir,
+        project_id,
+        snapshot,
+    )?;
+    let repaired = repair_missing_interrupted_handoff_run_failed_event_with_dirs(
+        daemon_store_dir,
+        workspace_dir,
+        project_id,
+        snapshot,
+    )?;
+    if let Some((expected_attempt, true)) = cleanup_candidate {
+        cleanup_stale_backend_process_groups(workspace_dir, project_id, &expected_attempt)?;
+    }
+    if repaired {
+        *snapshot = FsRunSnapshotStore.read_run_snapshot(workspace_dir, project_id)?;
+    }
+    Ok(repaired)
+}
+
 pub(crate) fn repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
     snapshot: &mut RunSnapshot,
 ) -> AppResult<bool> {
-    let cleanup_candidate = interrupted_handoff_cleanup_candidate(base_dir, project_id, snapshot)?;
-    let repaired =
-        repair_missing_interrupted_handoff_run_failed_event(base_dir, project_id, snapshot)?;
-    if let Some((expected_attempt, true)) = cleanup_candidate {
-        cleanup_stale_backend_process_groups(base_dir, project_id, &expected_attempt)?;
-    }
-    if repaired {
-        *snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
-    }
-    Ok(repaired)
+    repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_with_dirs(
+        base_dir, base_dir, project_id, snapshot,
+    )
 }
 
 fn stale_status_view(project_id: &ProjectId, snapshot: &RunSnapshot) -> RunStatusView {
