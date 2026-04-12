@@ -3650,6 +3650,7 @@ where
         match release_result {
             Ok(ref r) if r.resources_released => {
                 self.remove_owned_run_pid_file(
+                    base_dir,
                     repo_root,
                     &lease.project_id,
                     Some(lease.lease_id.as_str()),
@@ -3682,6 +3683,7 @@ where
         task: &DaemonTask,
     ) -> AppResult<()> {
         self.remove_owned_run_pid_file(
+            base_dir,
             repo_root,
             &task.project_id,
             task.lease_id.as_deref(),
@@ -3697,6 +3699,7 @@ where
 
     fn remove_owned_run_pid_file(
         &self,
+        base_dir: &Path,
         repo_root: &Path,
         project_id: &str,
         expected_writer_owner: Option<&str>,
@@ -3713,6 +3716,16 @@ where
             else {
                 return Ok(());
             };
+            if run_pid_record_belongs_to_successor_owner(
+                base_dir,
+                &project_id,
+                &pid_record,
+                expected_writer_owner,
+            )
+            .map_err(|_| cleanup_failure())?
+            {
+                return Ok(());
+            }
             if !run_pid_record_is_reclaimable(&pid_record, expected_writer_owner) {
                 return Err(cleanup_failure());
             }
@@ -3725,6 +3738,17 @@ where
 
         match FileSystem::read_pid_file(repo_root, &project_id).map_err(|_| cleanup_failure())? {
             None => Ok(()),
+            Some(pid_record)
+                if run_pid_record_belongs_to_successor_owner(
+                    base_dir,
+                    &project_id,
+                    &pid_record,
+                    expected_writer_owner,
+                )
+                .map_err(|_| cleanup_failure())? =>
+            {
+                Ok(())
+            }
             Some(_) => Err(cleanup_failure()),
         }
     }
@@ -3739,6 +3763,31 @@ fn run_pid_record_is_reclaimable(
             || (pid_record.pid == std::process::id()
                 && pid_record.writer_owner.as_deref() == expected_writer_owner
                 && expected_writer_owner.is_some()))
+}
+
+fn run_pid_record_belongs_to_successor_owner(
+    base_dir: &Path,
+    project_id: &ProjectId,
+    pid_record: &RunPidRecord,
+    expected_writer_owner: Option<&str>,
+) -> AppResult<bool> {
+    let Some(expected_writer_owner) = expected_writer_owner else {
+        return Ok(false);
+    };
+    let Some(pid_writer_owner) = pid_record.writer_owner.as_deref() else {
+        return Ok(false);
+    };
+    if pid_writer_owner == expected_writer_owner {
+        return Ok(false);
+    }
+
+    Ok(
+        crate::contexts::automation_runtime::cli_writer_lease::read_project_writer_lock_owner(
+            base_dir, project_id,
+        )?
+        .as_deref()
+            == Some(pid_writer_owner),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4352,6 +4401,31 @@ mod tests {
         }
     }
 
+    struct RewritePidOnLeaseRemoveStore {
+        trigger_lease_id: String,
+        project_id: ProjectId,
+        repo_root: std::path::PathBuf,
+        successor_writer_owner: String,
+        rewrote_pid: AtomicBool,
+    }
+
+    impl RewritePidOnLeaseRemoveStore {
+        fn new(
+            trigger_lease_id: &str,
+            project_id: &ProjectId,
+            repo_root: &std::path::Path,
+            successor_writer_owner: &str,
+        ) -> Self {
+            Self {
+                trigger_lease_id: trigger_lease_id.to_owned(),
+                project_id: project_id.clone(),
+                repo_root: repo_root.to_path_buf(),
+                successor_writer_owner: successor_writer_owner.to_owned(),
+                rewrote_pid: AtomicBool::new(false),
+            }
+        }
+    }
+
     impl DaemonStorePort for FailOnceLeaseReferenceClearStore {
         fn list_tasks(&self, base_dir: &std::path::Path) -> AppResult<Vec<DaemonTask>> {
             FsDaemonStore.list_tasks(base_dir)
@@ -4422,6 +4496,132 @@ mod tests {
             lease_id: &str,
         ) -> AppResult<ResourceCleanupOutcome> {
             FsDaemonStore.remove_lease(base_dir, lease_id)
+        }
+
+        fn read_daemon_journal(
+            &self,
+            base_dir: &std::path::Path,
+        ) -> AppResult<Vec<DaemonJournalEvent>> {
+            FsDaemonStore.read_daemon_journal(base_dir)
+        }
+
+        fn append_daemon_journal_event(
+            &self,
+            base_dir: &std::path::Path,
+            event: &DaemonJournalEvent,
+        ) -> AppResult<()> {
+            FsDaemonStore.append_daemon_journal_event(base_dir, event)
+        }
+
+        fn acquire_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            lease_id: &str,
+        ) -> AppResult<()> {
+            FsDaemonStore.acquire_writer_lock(base_dir, project_id, lease_id)
+        }
+
+        fn release_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            expected_owner: &str,
+        ) -> AppResult<WriterLockReleaseOutcome> {
+            FsDaemonStore.release_writer_lock(base_dir, project_id, expected_owner)
+        }
+    }
+
+    impl DaemonStorePort for RewritePidOnLeaseRemoveStore {
+        fn list_tasks(&self, base_dir: &std::path::Path) -> AppResult<Vec<DaemonTask>> {
+            FsDaemonStore.list_tasks(base_dir)
+        }
+
+        fn read_task(&self, base_dir: &std::path::Path, task_id: &str) -> AppResult<DaemonTask> {
+            FsDaemonStore.read_task(base_dir, task_id)
+        }
+
+        fn create_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            FsDaemonStore.create_task(base_dir, task)
+        }
+
+        fn write_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            FsDaemonStore.write_task(base_dir, task)
+        }
+
+        fn list_leases(&self, base_dir: &std::path::Path) -> AppResult<Vec<WorktreeLease>> {
+            FsDaemonStore.list_leases(base_dir)
+        }
+
+        fn read_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<WorktreeLease> {
+            FsDaemonStore.read_lease(base_dir, lease_id)
+        }
+
+        fn write_lease(&self, base_dir: &std::path::Path, lease: &WorktreeLease) -> AppResult<()> {
+            FsDaemonStore.write_lease(base_dir, lease)
+        }
+
+        fn list_lease_records(&self, base_dir: &std::path::Path) -> AppResult<Vec<LeaseRecord>> {
+            FsDaemonStore.list_lease_records(base_dir)
+        }
+
+        fn read_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<LeaseRecord> {
+            FsDaemonStore.read_lease_record(base_dir, lease_id)
+        }
+
+        fn write_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease: &LeaseRecord,
+        ) -> AppResult<()> {
+            FsDaemonStore.write_lease_record(base_dir, lease)
+        }
+
+        fn remove_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<ResourceCleanupOutcome> {
+            let outcome = FsDaemonStore.remove_lease(base_dir, lease_id)?;
+            if lease_id == self.trigger_lease_id
+                && matches!(outcome, ResourceCleanupOutcome::Removed)
+                && !self.rewrote_pid.swap(true, Ordering::SeqCst)
+            {
+                FsDaemonStore.acquire_writer_lock(
+                    base_dir,
+                    &self.project_id,
+                    &self.successor_writer_owner,
+                )?;
+                FsDaemonStore.write_lease_record(
+                    base_dir,
+                    &LeaseRecord::CliWriter(CliWriterLease {
+                        lease_id: self.successor_writer_owner.clone(),
+                        project_id: self.project_id.to_string(),
+                        owner: "cli".to_owned(),
+                        acquired_at: Utc::now(),
+                        ttl_seconds: 300,
+                        last_heartbeat: Utc::now(),
+                        cleanup_handoff: None,
+                    }),
+                )?;
+                FileSystem::write_pid_file(
+                    &self.repo_root,
+                    &self.project_id,
+                    RunPidOwner::Cli,
+                    Some(&self.successor_writer_owner),
+                    Some("run-successor"),
+                    Some(Utc::now()),
+                )?;
+            }
+            Ok(outcome)
         }
 
         fn read_daemon_journal(
@@ -5295,6 +5495,135 @@ mod tests {
                 .expect("writer lock state after partial cleanup"),
             WriterLockReleaseOutcome::AlreadyAbsent
         ));
+    }
+
+    #[test]
+    fn release_task_lease_allows_successor_run_pid_after_resources_are_released() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-successor-run-pid");
+        let now = Utc::now();
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-successor-run-pid".to_owned(),
+            task_id: "task-daemon-successor-run-pid".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.join(".test-worktrees/task-daemon-successor-run-pid"),
+            branch_name: "rb/task-daemon-successor-run-pid".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        };
+        std::fs::create_dir_all(&lease.worktree_path).expect("create worktree path");
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .expect("acquire writer lock");
+        FsDaemonStore
+            .write_task(
+                base,
+                &DaemonTask {
+                    task_id: lease.task_id.clone(),
+                    issue_ref: "acme/widgets#successor-run-pid".to_owned(),
+                    project_id: project_id.as_str().to_owned(),
+                    project_name: Some("Successor pid race".to_owned()),
+                    prompt: Some("Prompt".to_owned()),
+                    routing_command: None,
+                    routing_labels: vec![],
+                    resolved_flow: Some(FlowPreset::Standard),
+                    routing_source: None,
+                    routing_warnings: vec![],
+                    status: TaskStatus::Completed,
+                    created_at: now,
+                    updated_at: now,
+                    attempt_count: 1,
+                    lease_id: Some(lease.lease_id.clone()),
+                    failure_class: None,
+                    failure_message: None,
+                    dispatch_mode: DispatchMode::Workflow,
+                    source_revision: None,
+                    requirements_run_id: None,
+                    workflow_run_id: None,
+                    repo_slug: None,
+                    issue_number: None,
+                    pr_url: None,
+                    last_seen_comment_id: None,
+                    last_seen_review_id: None,
+                    label_dirty: false,
+                },
+            )
+            .expect("write completed task");
+        FileSystem::write_pid_file(
+            base,
+            &project_id,
+            RunPidOwner::Daemon,
+            Some(&lease.lease_id),
+            Some("run-old"),
+            Some(now),
+        )
+        .expect("write original daemon pid");
+
+        let store = RewritePidOnLeaseRemoveStore::new(
+            &lease.lease_id,
+            &project_id,
+            base,
+            "cli-successor-run-pid",
+        );
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &store,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        daemon
+            .release_task_lease(base, base, &lease.task_id, &lease)
+            .expect("successor pid should not be treated as old-task partial cleanup");
+
+        let task_after = FsDaemonStore
+            .read_task(base, &lease.task_id)
+            .expect("read task after releasing lease");
+        assert!(
+            task_after.lease_id.is_none(),
+            "old task metadata should clear once its lease resources are gone"
+        );
+        assert!(
+            FsDaemonStore.read_lease(base, &lease.lease_id).is_err(),
+            "old worktree lease record should stay removed"
+        );
+        let successor_pid = FileSystem::read_pid_file(base, &project_id)
+            .expect("read successor pid")
+            .expect("successor pid should remain");
+        assert_eq!(successor_pid.owner, RunPidOwner::Cli);
+        assert_eq!(
+            successor_pid.writer_owner.as_deref(),
+            Some("cli-successor-run-pid")
+        );
+        let successor_lock_owner =
+            crate::contexts::automation_runtime::cli_writer_lease::read_project_writer_lock_owner(
+                base,
+                &project_id,
+            )
+            .expect("read successor writer lock owner");
+        assert_eq!(
+            successor_lock_owner.as_deref(),
+            Some("cli-successor-run-pid")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

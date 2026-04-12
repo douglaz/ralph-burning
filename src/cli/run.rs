@@ -43,7 +43,7 @@ use crate::contexts::automation_runtime::cli_writer_lease::{
     cleanup_detached_project_writer_owner, find_detached_project_writer_owner,
     persist_cli_writer_cleanup_handoff, read_project_writer_lease_record,
     read_project_writer_lock_owner, reclaim_specific_project_writer_owner, CliWriterLeaseGuard,
-    CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
+    DetachedProjectWriterOwner, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
 use crate::contexts::automation_runtime::model::CliWriterCleanupHandoff;
 use crate::contexts::automation_runtime::LeaseRecord;
@@ -1665,9 +1665,27 @@ fn observed_running_attempt_owner(
             return Ok(pid_record.writer_owner);
         }
     }
-    Ok(read_project_writer_lock_owner(base_dir, project_id)?.or(
-        find_detached_project_writer_owner(&FsDaemonStore, base_dir, project_id)?,
-    ))
+    if let Some(owner) = read_project_writer_lock_owner(base_dir, project_id)? {
+        return Ok(Some(owner));
+    }
+
+    detached_project_writer_owner_for_recovery(base_dir, project_id)
+}
+
+fn detached_project_writer_owner_for_recovery(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+) -> AppResult<Option<String>> {
+    match find_detached_project_writer_owner(&FsDaemonStore, base_dir, project_id)? {
+        DetachedProjectWriterOwner::None => Ok(None),
+        DetachedProjectWriterOwner::Single(owner) => Ok(Some(owner)),
+        DetachedProjectWriterOwner::Ambiguous(owners) => {
+            Err(AppError::ProjectWriterStateAmbiguous {
+                project_id: project_id.to_string(),
+                owners,
+            })
+        }
+    }
 }
 
 fn stop_target_pid_record_is_unchanged(
@@ -1952,9 +1970,10 @@ fn observed_resume_recovery_owner(
             }
         }
         RunStatus::Failed | RunStatus::Paused => Ok(ResumeRecoveryObservation {
-            observed_owner: read_project_writer_lock_owner(base_dir, project_id)?.or(
-                find_detached_project_writer_owner(&FsDaemonStore, base_dir, project_id)?,
-            ),
+            observed_owner: match read_project_writer_lock_owner(base_dir, project_id)? {
+                Some(owner) => Some(owner),
+                None => detached_project_writer_owner_for_recovery(base_dir, project_id)?,
+            },
             should_reconcile_claimed_running_snapshot: false,
             allow_dead_cli_cleanup_reclaim: true,
         }),
@@ -7657,6 +7676,188 @@ mod tests {
             Some(detached_owner),
             "stale running recovery must surface detached daemon lease owners when pid and writer lock are already gone"
         );
+    }
+
+    #[test]
+    fn observed_running_attempt_owner_blocks_on_ambiguous_detached_owners_without_pid_or_lock() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("ambiguous-stale-running-owner").expect("project id");
+        let now = Utc::now();
+
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::CliWriter(CliWriterLease {
+                lease_id: "cli-ambiguous-stale-running-owner".to_owned(),
+                project_id: project_id.to_string(),
+                owner: "cli".to_owned(),
+                acquired_at: now,
+                ttl_seconds: 1,
+                last_heartbeat: now - chrono::Duration::minutes(10),
+                cleanup_handoff: None,
+            }),
+        )
+        .expect("write stale cli lease");
+
+        let detached_owner = "lease-ambiguous-stale-running-owner";
+        <FsDaemonStore as DaemonStorePort>::write_task(
+            &FsDaemonStore,
+            base_dir,
+            &DaemonTask {
+                task_id: "task-ambiguous-stale-running-owner".to_owned(),
+                issue_ref: "acme/widgets#ambiguous-stale-running-owner".to_owned(),
+                project_id: project_id.as_str().to_owned(),
+                project_name: Some("ambiguous stale running".to_owned()),
+                prompt: Some("Prompt".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::Command),
+                routing_warnings: vec![],
+                status: TaskStatus::Failed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: Some(detached_owner.to_owned()),
+                failure_class: Some("stale_writer_owner_reclaimed".to_owned()),
+                failure_message: Some("partial cleanup preserved lease state".to_owned()),
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                workflow_run_id: None,
+                repo_slug: None,
+                issue_number: None,
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            },
+        )
+        .expect("write orphaned detached task");
+
+        let error = super::observed_running_attempt_owner(
+            base_dir,
+            &project_id,
+            &crate::contexts::workflow_composition::engine::RunningAttemptIdentity {
+                run_id: "run-ambiguous-stale".to_owned(),
+                started_at: now,
+            },
+        )
+        .expect_err("ambiguous detached owners must block stale-running recovery");
+
+        match error {
+            AppError::ProjectWriterStateAmbiguous {
+                project_id: actual,
+                owners,
+            } => {
+                assert_eq!(actual, project_id.to_string());
+                assert_eq!(
+                    owners,
+                    vec![
+                        "cli-ambiguous-stale-running-owner".to_owned(),
+                        detached_owner.to_owned(),
+                    ]
+                );
+            }
+            other => panic!("expected ambiguous writer-state error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn observed_resume_recovery_owner_blocks_failed_snapshot_on_ambiguous_detached_owners() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("ambiguous-failed-resume-owner").expect("project id");
+        let now = Utc::now();
+
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::CliWriter(CliWriterLease {
+                lease_id: "cli-ambiguous-failed-resume-owner".to_owned(),
+                project_id: project_id.to_string(),
+                owner: "cli".to_owned(),
+                acquired_at: now,
+                ttl_seconds: 1,
+                last_heartbeat: now - chrono::Duration::minutes(10),
+                cleanup_handoff: None,
+            }),
+        )
+        .expect("write stale cli lease");
+
+        let detached_owner = "lease-ambiguous-failed-resume-owner";
+        <FsDaemonStore as DaemonStorePort>::write_task(
+            &FsDaemonStore,
+            base_dir,
+            &DaemonTask {
+                task_id: "task-ambiguous-failed-resume-owner".to_owned(),
+                issue_ref: "acme/widgets#ambiguous-failed-resume-owner".to_owned(),
+                project_id: project_id.as_str().to_owned(),
+                project_name: Some("ambiguous failed resume".to_owned()),
+                prompt: Some("Prompt".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::Command),
+                routing_warnings: vec![],
+                status: TaskStatus::Failed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: Some(detached_owner.to_owned()),
+                failure_class: Some("stale_writer_owner_reclaimed".to_owned()),
+                failure_message: Some("partial cleanup preserved lease state".to_owned()),
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                workflow_run_id: None,
+                repo_slug: None,
+                issue_number: None,
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            },
+        )
+        .expect("write orphaned detached task");
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: None,
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let error = match super::observed_resume_recovery_owner(base_dir, &project_id, &snapshot) {
+            Ok(_) => {
+                panic!("ambiguous detached owners must block failed-snapshot resume recovery")
+            }
+            Err(error) => error,
+        };
+
+        match error {
+            AppError::ProjectWriterStateAmbiguous {
+                project_id: actual,
+                owners,
+            } => {
+                assert_eq!(actual, project_id.to_string());
+                assert_eq!(
+                    owners,
+                    vec![
+                        "cli-ambiguous-failed-resume-owner".to_owned(),
+                        detached_owner.to_owned(),
+                    ]
+                );
+            }
+            other => panic!("expected ambiguous writer-state error, got: {other:?}"),
+        }
     }
 
     #[test]

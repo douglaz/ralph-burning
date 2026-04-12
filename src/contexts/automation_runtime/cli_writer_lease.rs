@@ -116,6 +116,13 @@ pub fn read_project_writer_lease_record(
     Ok(read_lease_record_if_present(store, base_dir, &owner)?.map(|record| (owner, record)))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DetachedProjectWriterOwner {
+    None,
+    Single(String),
+    Ambiguous(Vec<String>),
+}
+
 pub fn reclaim_specific_cli_writer_lease(
     store: &dyn DaemonStorePort,
     base_dir: &Path,
@@ -286,7 +293,7 @@ pub fn find_detached_project_writer_owner(
     store: &dyn DaemonStorePort,
     base_dir: &Path,
     project_id: &ProjectId,
-) -> AppResult<Option<String>> {
+) -> AppResult<DetachedProjectWriterOwner> {
     let project_key = project_id.as_str();
     let now = Utc::now();
     let lease_records = store.list_lease_records(base_dir)?;
@@ -335,8 +342,13 @@ pub fn find_detached_project_writer_owner(
     matching_owners.sort();
     matching_owners.dedup();
     Ok(match matching_owners.len() {
-        1 => matching_owners.pop(),
-        _ => None,
+        0 => DetachedProjectWriterOwner::None,
+        1 => DetachedProjectWriterOwner::Single(
+            matching_owners
+                .pop()
+                .expect("single detached project writer owner must exist"),
+        ),
+        _ => DetachedProjectWriterOwner::Ambiguous(matching_owners),
     })
 }
 
@@ -1542,8 +1554,8 @@ mod tests {
             find_detached_project_writer_owner(&FsDaemonStore, temp.path(), &project_id)
                 .expect("find orphaned detached owner");
         assert_eq!(
-            observed_owner.as_deref(),
-            Some(worktree_lease.lease_id.as_str()),
+            observed_owner,
+            DetachedProjectWriterOwner::Single(worktree_lease.lease_id.clone()),
             "task-side orphaned lease references must stay discoverable for follow-up recovery"
         );
 
@@ -1563,6 +1575,86 @@ mod tests {
         assert!(
             matches!(retry_error, AppError::LeaseCleanupPartialFailure { .. }),
             "expected retry to surface partial cleanup, got: {retry_error:?}"
+        );
+    }
+
+    #[test]
+    fn find_detached_project_writer_owner_reports_ambiguous_detached_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project_id = ProjectId::new("ambiguous-detached-owner").expect("project id");
+        let now = Utc::now();
+
+        let stale_cli_lease = CliWriterLease {
+            lease_id: "cli-detached-owner".to_owned(),
+            project_id: project_id.to_string(),
+            owner: "cli".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 1,
+            last_heartbeat: now - chrono::Duration::minutes(10),
+            cleanup_handoff: None,
+        };
+        FsDaemonStore
+            .write_lease_record(
+                temp.path(),
+                &LeaseRecord::CliWriter(stale_cli_lease.clone()),
+            )
+            .expect("write stale cli lease");
+
+        let orphaned_worktree_lease = WorktreeLease {
+            lease_id: "lease-detached-owner".to_owned(),
+            task_id: "task-detached-owner".to_owned(),
+            project_id: project_id.to_string(),
+            worktree_path: temp.path().join("worktrees/orphaned-detached-owner"),
+            branch_name: "task-detached-owner".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        };
+        FsDaemonStore
+            .write_task(
+                temp.path(),
+                &DaemonTask {
+                    task_id: orphaned_worktree_lease.task_id.clone(),
+                    issue_ref: "repo#44".to_owned(),
+                    project_id: project_id.to_string(),
+                    project_name: Some("ambiguous detached owner".to_owned()),
+                    prompt: Some("prompt".to_owned()),
+                    routing_command: None,
+                    routing_labels: vec![],
+                    resolved_flow: Some(FlowPreset::Standard),
+                    routing_source: Some(RoutingSource::DefaultFlow),
+                    routing_warnings: vec![],
+                    status: TaskStatus::Failed,
+                    created_at: now,
+                    updated_at: now,
+                    attempt_count: 0,
+                    lease_id: Some(orphaned_worktree_lease.lease_id.clone()),
+                    failure_class: Some("stale_writer_owner_reclaimed".to_owned()),
+                    failure_message: Some("partial cleanup preserved lease state".to_owned()),
+                    dispatch_mode: DispatchMode::Workflow,
+                    source_revision: None,
+                    requirements_run_id: None,
+                    workflow_run_id: None,
+                    repo_slug: None,
+                    issue_number: None,
+                    pr_url: None,
+                    last_seen_comment_id: None,
+                    last_seen_review_id: None,
+                    label_dirty: false,
+                },
+            )
+            .expect("write orphaned detached task");
+
+        let observed_owner =
+            find_detached_project_writer_owner(&FsDaemonStore, temp.path(), &project_id)
+                .expect("find detached owners");
+        assert_eq!(
+            observed_owner,
+            DetachedProjectWriterOwner::Ambiguous(vec![
+                stale_cli_lease.lease_id,
+                orphaned_worktree_lease.lease_id,
+            ]),
+            "ambiguous detached-owner state must stay visible instead of collapsing to None"
         );
     }
 }
