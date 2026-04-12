@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260412152311-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T15:46:52.821841316Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed the full diff in this run; only `.ralph-burning/projects/kvc/journal.ndjson` and `.ralph-burning/projects/kvc/run.json` changed, and both are review-run metadata records (journal entries/stage resolution snapshot), not implementation code for bootstrap/project-create flow. No correctness/safety/robustness issues were identified in changed functional code paths.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

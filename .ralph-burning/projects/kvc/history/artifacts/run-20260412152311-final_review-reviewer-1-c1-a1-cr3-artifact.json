@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260412152311-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T16:03:32.327440039Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nOne issue found: this is effectively a non-functional, run-artifact-only change and does not implement/modify the requested opt-in review behavior.\n\n## Amendments\n\n1. The changeset is metadata-only and does not modify the bootstrap/project-create implementation requested by this bead. `git diff` only updates `.ralph-burning/projects/kvc/journal.ndjson:39-42` and `.ralph-burning/projects/kvc/run.json:16-37`, so there is no commit-time change to the actual `--enable-review` control flow in the CLI/runtime path (`src/cli/project.rs:527-555`, `src/contexts/automation_runtime/daemon_loop.rs:2160-2188`). This leaves the acceptance criteria unaddressed in this revision.\n   Rationale: Without touching the implementation files for the flow, this patch cannot satisfy the goal that bootstrap defaults to skip review unless the flag is present.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412152311-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T15:38:53.868350906Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted one amendment that identifies a concrete correctness regression in git executable resolution; rejected the other two as not demonstrating a correctness/safety defect in this patch path.\n\n## Votes\n\n- `fr-1-fc2e6e6b`: Accept\n  Pinning a hard-coded absolute git path ahead of PATH resolution is a real behavior regression: it bypasses injected PATH wrappers, breaks testable rollback-failure simulation, and can silently defeat environment-specific git behavior expected by conformance scenarios, so the resolver should preserve PATH-first or explicit executable discovery.\n- `fr-1-68ed9188`: Reject\n  The proposed finding depends on the claim that no effective code-path changes were made and that requested bootstrap gating was missing; the available context suggests the opt-in/ default review gating already exists at the cited control points, so this is not a demonstrated correctness gap from the patch itself.\n- `fr-1-adf22fe0`: Reject\n  The touched `.ralph-burning/projects/kvc/journal.ndjson` and `run.json` entries appear to be part of tracked project state in this repository rather than purely ephemeral scratch data, so their presence in source control is not intrinsically a bug or safety defect absent additional evidence of non-determinism in expected fixtures.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

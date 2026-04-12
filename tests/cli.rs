@@ -5021,6 +5021,83 @@ fn project_bootstrap_from_idea_creates_project_and_selects_it() {
             .expect("read project.toml");
     assert!(project_toml.contains("flow = \"standard\""));
     assert_eq!(requirements_run_ids(temp_dir.path()).len(), 1);
+
+    let run_id = only_requirements_run_id(temp_dir.path());
+    let requirements_run = fs::read_to_string(
+        requirements_root(temp_dir.path())
+            .join(&run_id)
+            .join("run.json"),
+    )
+    .expect("read requirements run.json");
+    let requirements_run_json: serde_json::Value =
+        serde_json::from_str(&requirements_run).expect("parse requirements run.json");
+    assert!(
+        requirements_run_json["latest_review_id"].is_null(),
+        "bootstrap should skip review by default: {requirements_run}"
+    );
+
+    let requirements_journal = fs::read_to_string(
+        requirements_root(temp_dir.path())
+            .join(run_id)
+            .join("journal.ndjson"),
+    )
+    .expect("read requirements journal");
+    assert!(
+        !requirements_journal.contains("\"review_completed\""),
+        "bootstrap should not journal a requirements review by default: {requirements_journal}"
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn project_bootstrap_enable_review_runs_requirements_review() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--idea",
+            "Build a REST API",
+            "--flow",
+            "standard",
+            "--enable-review",
+        ])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap with review enabled");
+
+    assert!(
+        output.status.success(),
+        "bootstrap --enable-review should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let run_id = only_requirements_run_id(temp_dir.path());
+    let requirements_run = fs::read_to_string(
+        requirements_root(temp_dir.path())
+            .join(&run_id)
+            .join("run.json"),
+    )
+    .expect("read requirements run.json");
+    let requirements_run_json: serde_json::Value =
+        serde_json::from_str(&requirements_run).expect("parse requirements run.json");
+    assert!(
+        requirements_run_json["latest_review_id"].is_string(),
+        "bootstrap --enable-review should persist a review payload: {requirements_run}"
+    );
+
+    let requirements_journal = fs::read_to_string(
+        requirements_root(temp_dir.path())
+            .join(run_id)
+            .join("journal.ndjson"),
+    )
+    .expect("read requirements journal");
+    assert!(
+        requirements_journal.contains("\"review_completed\""),
+        "bootstrap --enable-review should journal the review step: {requirements_journal}"
+    );
 }
 
 #[cfg(feature = "test-stub")]
@@ -8422,6 +8499,162 @@ fn run_rollback_hard_failure_keeps_logical_rollback_durable() {
     assert!(!rollback.status.success());
 
     let stderr = String::from_utf8_lossy(&rollback.stderr);
+    assert!(stderr.contains("logical rollback was committed"));
+
+    let run_json = fs::read_to_string(project_root.join("run.json")).expect("read run.json");
+    assert!(run_json.contains("\"status\": \"paused\""));
+    assert!(run_json.contains("\"last_rollback_id\": \"rb-implementation\""));
+    assert!(run_json.contains("\"rollback_count\": 1"));
+
+    let journal = fs::read_to_string(project_root.join("journal.ndjson")).expect("read journal");
+    assert!(journal.contains("\"rollback_performed\""));
+}
+
+#[cfg(unix)]
+#[test]
+fn run_rollback_hard_failure_uses_path_git_wrapper() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let init = Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git init");
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    for (key, value) in [
+        ("user.name", "Test User"),
+        ("user.email", "test@example.com"),
+    ] {
+        let config = Command::new("git")
+            .args(["config", key, value])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git config");
+        assert!(config.status.success(), "git config {key} should succeed");
+    }
+    let add = Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git add");
+    assert!(add.status.success(), "git add should succeed");
+    let commit = Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git commit");
+    assert!(
+        commit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git rev-parse HEAD");
+    assert!(head.status.success(), "git rev-parse HEAD should succeed");
+    let head_sha = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    assert!(!head_sha.is_empty(), "HEAD SHA should not be empty");
+
+    let project_root = project_root(temp_dir.path(), "alpha");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{
+  "active_run": null,
+  "status": "paused",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "paused before hard rollback"
+}"#,
+    )
+    .expect("write paused snapshot");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-03-12T22:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-03-12T22:02:01Z","event_type":"rollback_created","details":{"rollback_id":"rb-implementation","stage_id":"implementation","cycle":1}}"#,
+    )
+    .expect("write journal");
+    fs::write(
+        project_root.join("rollback/rb-implementation.json"),
+        format!(
+            r#"{{
+  "rollback_id": "rb-implementation",
+  "created_at": "2026-03-12T22:02:01Z",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "git_sha": "{head_sha}",
+  "run_snapshot": {{
+    "active_run": {{
+      "run_id": "run-1",
+      "stage_cursor": {{
+        "stage": "qa",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 1
+      }},
+      "started_at": "2026-03-12T22:00:00Z"
+    }},
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 1,
+    "rollback_point_meta": {{ "last_rollback_id": null, "rollback_count": 0 }},
+    "amendment_queue": {{ "pending": [], "processed_count": 0 }},
+    "status_summary": "running: QA"
+  }}
+}}"#
+        ),
+    )
+    .expect("write rollback point");
+
+    let git_path = Command::new("sh")
+        .args(["-lc", "command -v git"])
+        .output()
+        .expect("resolve git path");
+    assert!(git_path.status.success(), "command -v git should succeed");
+    let git_path = String::from_utf8_lossy(&git_path.stdout).trim().to_owned();
+    assert!(!git_path.is_empty(), "git path should not be empty");
+
+    let fake_bin = temp_dir.path().join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("create fake-bin");
+    let fake_git = fake_bin.join("git");
+    fs::write(
+        &fake_git,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"reset\" ] && [ \"$2\" = \"--hard\" ]; then\n  echo 'simulated git reset failure' >&2\n  exit 1\nfi\nexec \"{git_path}\" \"$@\"\n"
+        ),
+    )
+    .expect("write fake git");
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).expect("chmod fake git");
+
+    let inherited_path = std::env::var("PATH").unwrap_or_default();
+    let fake_path = if inherited_path.is_empty() {
+        fake_bin.display().to_string()
+    } else {
+        format!("{}:{inherited_path}", fake_bin.display())
+    };
+
+    let rollback = Command::new(binary())
+        .args(["run", "rollback", "--to", "implementation", "--hard"])
+        .env("PATH", fake_path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run hard rollback");
+    assert!(
+        !rollback.status.success(),
+        "rollback should fail via fake git"
+    );
+
+    let stderr = String::from_utf8_lossy(&rollback.stderr);
+    assert!(stderr.contains("simulated git reset failure"));
     assert!(stderr.contains("logical rollback was committed"));
 
     let run_json = fs::read_to_string(project_root.join("run.json")).expect("read run.json");

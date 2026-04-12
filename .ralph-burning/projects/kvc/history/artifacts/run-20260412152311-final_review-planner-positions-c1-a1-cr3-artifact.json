@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-final_review-planner-positions-c1-a1-cr3-artifact",
+  "payload_id": "run-20260412152311-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T16:16:28.323332323Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the amendment because its premise is incorrect: the reviewed revision contains substantive implementation and test changes for the opt-in review flow, not just metadata updates.\n\n## Votes\n\n- `fr-3-f1de1ac3`: Reject\n  This amendment appears to use the wrong comparison point. The reviewed revision from `c44a2e7c` to `567af42d` includes non-metadata changes in `src/contexts/automation_runtime/daemon_loop.rs`, `src/contexts/automation_runtime/watcher.rs`, and `tests/unit/automation_runtime_test.rs`. In particular, the automation-runtime quick path now resolves `--enable-review`, passes that value into `req_svc.quick(..., enable_review)`, and adds tests covering both the default skip-review behavior and the opt-in review path. Because the changeset is not metadata-only and does modify the relevant runtime control flow, the claim that this revision leaves the acceptance criteria unaddressed is not technically supported.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

@@ -21,6 +21,7 @@ pub trait IssueWatcherPort {
 /// - `/rb requirements` (defaults to `RequirementsDraft`)
 /// - `/rb requirements draft`
 /// - `/rb requirements quick`
+/// - `/rb requirements quick --enable-review`
 /// - `/rb requirements milestone`
 ///
 /// Returns `None` if the text does not contain a requirements command,
@@ -28,35 +29,70 @@ pub trait IssueWatcherPort {
 ///
 /// Returns `Err` for malformed requirements commands (unknown subcommands
 /// or extra tokens).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequirementsCommand {
+    pub dispatch_mode: DispatchMode,
+    pub enable_review: bool,
+}
+
 pub fn parse_requirements_command(text: &str) -> AppResult<Option<DispatchMode>> {
+    Ok(parse_requirements_command_details(text)?.map(|command| command.dispatch_mode))
+}
+
+pub fn parse_requirements_command_details(text: &str) -> AppResult<Option<RequirementsCommand>> {
     for line in text.lines() {
         let trimmed = line.trim();
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
         if tokens.len() >= 2 && matches!(tokens[0], "/rb" | "rb") && tokens[1] == "requirements" {
             if tokens.len() == 2 {
                 // Bare `/rb requirements` defaults to draft
-                return Ok(Some(DispatchMode::RequirementsDraft));
+                return Ok(Some(RequirementsCommand {
+                    dispatch_mode: DispatchMode::RequirementsDraft,
+                    enable_review: false,
+                }));
             }
-            if tokens.len() == 3 {
-                return match tokens[2] {
-                    "draft" => Ok(Some(DispatchMode::RequirementsDraft)),
-                    "quick" => Ok(Some(DispatchMode::RequirementsQuick)),
-                    "milestone" => Ok(Some(DispatchMode::RequirementsMilestone)),
-                    other => Err(AppError::WatcherIngestionFailed {
+
+            let dispatch_mode = match tokens[2] {
+                "draft" => DispatchMode::RequirementsDraft,
+                "quick" => DispatchMode::RequirementsQuick,
+                "milestone" => DispatchMode::RequirementsMilestone,
+                other => {
+                    return Err(AppError::WatcherIngestionFailed {
                         issue_ref: trimmed.to_owned(),
                         details: format!(
                             "unknown requirements subcommand '{}'; expected 'draft', 'quick', or 'milestone'",
                             other
                         ),
-                    }),
-                };
+                    });
+                }
+            };
+
+            if tokens.len() == 3 {
+                return Ok(Some(RequirementsCommand {
+                    dispatch_mode,
+                    enable_review: false,
+                }));
             }
+
+            if tokens.len() == 4 && tokens[3] == "--enable-review" {
+                if dispatch_mode != DispatchMode::RequirementsQuick {
+                    return Err(AppError::WatcherIngestionFailed {
+                        issue_ref: trimmed.to_owned(),
+                        details:
+                            "`--enable-review` is only supported with '/rb requirements quick'"
+                                .to_owned(),
+                    });
+                }
+                return Ok(Some(RequirementsCommand {
+                    dispatch_mode,
+                    enable_review: true,
+                }));
+            }
+
             // Extra tokens are malformed
             return Err(AppError::WatcherIngestionFailed {
                 issue_ref: trimmed.to_owned(),
-                details:
-                    "malformed requirements command; expected '/rb requirements [draft|quick|milestone]'"
-                        .to_owned(),
+                details: "malformed requirements command; expected '/rb requirements [draft|quick|milestone] [--enable-review]'".to_owned(),
             });
         }
     }

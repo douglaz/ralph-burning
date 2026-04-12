@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260412152311-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412152311-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T15:41:49.427954399Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-fc2e6e6b`\n\n## Rejected\n\n- `fr-1-68ed9188`\n- `fr-1-adf22fe0`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-fc2e6e6b`\n\nIn `src/adapters/worktree.rs:48-70` and `src/adapters/worktree.rs:138-140`, stop pinning `WorktreeAdapter` to the first hard-coded absolute git path before consulting `PATH`. On Linux/macOS this will usually select `/usr/bin/git`, which means any `PATH`-injected wrapper is silently ignored for every worktree operation. That is a correctness regression: the existing hard-rollback failure scenario in `src/contexts/conformance_spec/scenarios.rs:5894-5928` now no longer intercepts `git reset --hard`, and `target/debug/ralph-burning conformance run --filter SC-ROLLBACK-008` fails with `expected failure, got success`. Preserve ambient `PATH` resolution (or search `PATH` first with executable checks) so fake/custom git binaries still work.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

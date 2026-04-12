@@ -14,7 +14,9 @@ use ralph_burning::contexts::automation_runtime::routing::RoutingEngine;
 use ralph_burning::contexts::automation_runtime::task_service::{
     CreateTaskInput, DaemonTaskService,
 };
-use ralph_burning::contexts::automation_runtime::watcher::parse_requirements_command;
+use ralph_burning::contexts::automation_runtime::watcher::{
+    parse_requirements_command, parse_requirements_command_details,
+};
 use ralph_burning::contexts::automation_runtime::{DaemonStorePort, WorktreePort};
 #[cfg(feature = "test-stub")]
 use ralph_burning::shared::domain::BackendFamily;
@@ -807,6 +809,15 @@ fn parse_requirements_command_quick() {
 }
 
 #[test]
+fn parse_requirements_command_quick_enable_review() {
+    let result = parse_requirements_command_details("/rb requirements quick --enable-review")
+        .expect("parse requirements quick with review");
+    let command = result.expect("requirements command");
+    assert_eq!(DispatchMode::RequirementsQuick, command.dispatch_mode);
+    assert!(command.enable_review, "review flag should be preserved");
+}
+
+#[test]
 fn parse_requirements_command_milestone() {
     let result = parse_requirements_command("/rb requirements milestone").unwrap();
     assert_eq!(Some(DispatchMode::RequirementsMilestone), result);
@@ -847,6 +858,15 @@ fn parse_requirements_command_extra_tokens_fails() {
     // "/rb requirements draft extra" has too many tokens
     let result = parse_requirements_command("/rb requirements draft extra");
     assert!(result.is_err(), "extra tokens should fail");
+}
+
+#[test]
+fn parse_requirements_command_enable_review_requires_quick() {
+    let result = parse_requirements_command("/rb requirements draft --enable-review");
+    assert!(
+        result.is_err(),
+        "enable-review should be rejected for non-quick requirements commands"
+    );
 }
 
 #[test]

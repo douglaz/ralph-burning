@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260412152311-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-12T15:46:43.597913641Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the pending regression in `WorktreeAdapter` by changing git discovery to honor the explicit test override and ambient `PATH` before falling back to hard-coded absolute git paths, with executable checks to avoid selecting non-runnable files. Added a CLI regression test that sets up a real repository plus a `PATH`-injected fake `git` wrapper, proving hard rollback now routes through the wrapper and still preserves the logical rollback state on reset failure.\n\n## Steps\n\n1. [Completed] Reproduced the pending amendment failure by running `SC-ROLLBACK-008` against the current binary and confirmed hard rollback was incorrectly bypassing the `PATH`-injected fake git wrapper.\n2. [Completed] Updated `src/adapters/worktree.rs` so git resolution checks `RALPH_BURNING_TEST_GIT`, then searches the ambient `PATH` for an executable `git`, and only then falls back to known absolute paths.\n3. [Completed] Added a CLI regression in `tests/cli.rs` that initializes a real git repo, injects a fake `git` via `PATH`, and asserts `run rollback --hard` fails with the wrapped reset error while preserving durable rollback state.\n4. [Completed] Validated the remediation with targeted and repository-wide checks, including the conformance scenario that previously failed.\n\n## Validation Evidence\n\n- Before the patch, `target/debug/ralph-burning conformance run --filter SC-ROLLBACK-008` failed with `expected failure, got success`.\n- `cargo test --test cli run_rollback_hard_failure_uses_path_git_wrapper -- --nocapture` passed.\n- `cargo build --features test-stub` succeeded.\n- `target/debug/ralph-burning conformance run --filter SC-ROLLBACK-008` passed after the fix.\n- `cargo test` passed.\n- `cargo clippy` completed successfully; only existing warnings remain.\n- `cargo fmt --check` passed.\n\n## Outstanding Risks\n\n- The worktree still contains pre-existing runtime file edits in `.ralph-burning/projects/kvc/run.json` and `.ralph-burning/projects/kvc/journal.ndjson`; this remediation left them untouched.\n- `cargo clippy` still emits pre-existing repository warnings unrelated to this fix.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

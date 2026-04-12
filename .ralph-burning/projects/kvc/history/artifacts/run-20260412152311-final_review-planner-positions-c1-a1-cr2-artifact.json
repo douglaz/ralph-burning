@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-final_review-planner-positions-c1-a1-cr2-artifact",
+  "payload_id": "run-20260412152311-final_review-planner-positions-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T15:55:24.112271058Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe amendment identifies a real correctness gap: the daemon-driven bootstrap path still hardcodes requirements review on, so the new opt-in review behavior is only partially implemented and daemon bootstrap cannot use the default draft-to-create fast path.\n\n## Votes\n\n- `fr-2-b502924f`: Accept\n  `RequirementsService::quick` now exposes `enable_review`, and CLI bootstrap wires that through with a default of `false`, but `src/contexts/automation_runtime/daemon_loop.rs` still calls `req_svc.quick(..., true)` for `DispatchMode::RequirementsQuick`. The surrounding comments describe this mode as the path that finishes requirements, derives a seed, and continues into project creation, so forcing `true` here creates a real behavior mismatch between CLI and daemon bootstrap. Because the automation-runtime task model/parser also do not provide an alternate way to disable review, review is effectively mandatory in this path, making the opt-in change incomplete and preserving unnecessary latency/cost. Accept.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
