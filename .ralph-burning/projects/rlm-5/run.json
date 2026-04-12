@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 10
+      "completion_round": 11
     },
     "started_at": "2026-04-11T21:27:18.356800744Z",
     "prompt_hash_at_cycle_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "prompt_hash_at_stage_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 9
+    "final_review_restart_count": 10
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 10,
+  "completion_rounds": 11,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-10-88cddcf4",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 10,
+        "body": "Add an attempt-based fallback in daemon cancellation cleanup for cases where `run.pid` is already gone or no longer matches the current daemon process. `prepare_cancelled_dispatch_handoff()` explicitly preserves `expected_attempt` when the pid file is missing/mismatched (`src/contexts/automation_runtime/daemon_loop.rs:2943-2961`), but both `finish_cancelled_dispatch()` branches only try `reconcile_cancelled_dispatch_run()` when `interrupted_marker_persisted` is false (`src/contexts/automation_runtime/daemon_loop.rs:3124-3143`, `src/contexts/automation_runtime/daemon_loop.rs:3156-3168`). That helper calls `mark_current_process_running_run_interrupted()` (`src/contexts/automation_runtime/daemon_loop.rs:2877-2900`), which immediately returns `false` if `run.pid` is absent or no longer belongs to this process (`src/contexts/workflow_composition/engine.rs:857-889`). The daemon then surfaces `InvocationCancelled`, callers release the task lease, and the project can be left with a stale `run.json` still marked `Running`; on the grace-completed path it also skips `cleanup_cancelled_dispatch_backend_processes()`, so tracked backend groups can survive. Use the saved `expected_attempt` to reconcile/finalize interrupted state and run backend cleanup even when the pid file has already disappeared.",
+        "created_at": "2026-04-12T01:05:26.425807376Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "19ca404d5cc6dc7ac1a50009a827105a0336b4be397868dca64437bfc475633c"
+      }
+    ],
     "processed_count": 16
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 11 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-12T00:29:03.547987258Z",
+    "resolved_at": "2026-04-12T00:52:29.600571824Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

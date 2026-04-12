@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260411212718-final_review-aggregate-c1-a1-cr10-artifact",
+  "payload_id": "run-20260411212718-final_review-aggregate-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T01:05:26.425815501Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 10/25\n\n## Accepted\n\n- `fr-10-88cddcf4`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-10-88cddcf4`\n\nAdd an attempt-based fallback in daemon cancellation cleanup for cases where `run.pid` is already gone or no longer matches the current daemon process. `prepare_cancelled_dispatch_handoff()` explicitly preserves `expected_attempt` when the pid file is missing/mismatched (`src/contexts/automation_runtime/daemon_loop.rs:2943-2961`), but both `finish_cancelled_dispatch()` branches only try `reconcile_cancelled_dispatch_run()` when `interrupted_marker_persisted` is false (`src/contexts/automation_runtime/daemon_loop.rs:3124-3143`, `src/contexts/automation_runtime/daemon_loop.rs:3156-3168`). That helper calls `mark_current_process_running_run_interrupted()` (`src/contexts/automation_runtime/daemon_loop.rs:2877-2900`), which immediately returns `false` if `run.pid` is absent or no longer belongs to this process (`src/contexts/workflow_composition/engine.rs:857-889`). The daemon then surfaces `InvocationCancelled`, callers release the task lease, and the project can be left with a stale `run.json` still marked `Running`; on the grace-completed path it also skips `cleanup_cancelled_dispatch_backend_processes()`, so tracked backend groups can survive. Use the saved `expected_attempt` to reconcile/finalize interrupted state and run backend cleanup even when the pid file has already disappeared.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 10
+}
