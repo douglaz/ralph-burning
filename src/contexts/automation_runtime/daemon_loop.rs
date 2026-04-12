@@ -24,7 +24,8 @@ use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::automation_runtime::lease_service::LeaseService;
 use crate::contexts::automation_runtime::model::{
-    DaemonTask, DispatchMode, RebaseFailureClassification, RebaseOutcome, TaskStatus,
+    CliWriterCleanupHandoff, DaemonTask, DispatchMode, LeaseRecord, RebaseFailureClassification,
+    RebaseOutcome, TaskStatus,
 };
 use crate::contexts::automation_runtime::pr_review::PrReviewIngestionService;
 use crate::contexts::automation_runtime::pr_runtime::PrRuntimeService;
@@ -2974,6 +2975,12 @@ where
                 interrupted_marker_persisted: false,
             });
         }
+        self.persist_daemon_cleanup_handoff(
+            workspace_dir,
+            project_id,
+            writer_owner,
+            &expected_attempt,
+        )?;
 
         let interrupted_marker_persisted = engine::mark_running_run_interrupted(
             engine::InterruptedRunContext {
@@ -2995,6 +3002,45 @@ where
             expected_attempt: Some(expected_attempt),
             interrupted_marker_persisted,
         })
+    }
+
+    fn persist_daemon_cleanup_handoff(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        writer_owner: &str,
+        expected_attempt: &engine::RunningAttemptIdentity,
+    ) -> AppResult<()> {
+        let record = self.store.read_lease_record(base_dir, writer_owner)?;
+        let LeaseRecord::Worktree(mut lease) = record else {
+            return Err(AppError::CorruptRecord {
+                file: "lease".to_owned(),
+                details: format!(
+                    "expected worktree lease '{writer_owner}' while persisting daemon cleanup handoff"
+                ),
+            });
+        };
+        if lease.project_id != project_id.as_str() {
+            return Err(AppError::CorruptRecord {
+                file: "lease".to_owned(),
+                details: format!(
+                    "worktree lease '{writer_owner}' belongs to '{}' instead of '{}'",
+                    lease.project_id,
+                    project_id.as_str()
+                ),
+            });
+        }
+
+        let pid = std::process::id();
+        lease.cleanup_handoff = Some(CliWriterCleanupHandoff {
+            pid,
+            run_id: Some(expected_attempt.run_id.clone()),
+            run_started_at: Some(expected_attempt.started_at),
+            proc_start_ticks: FileSystem::proc_start_ticks_for_pid(pid),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(pid),
+        });
+        self.store
+            .write_lease_record(base_dir, &LeaseRecord::Worktree(lease))
     }
 
     fn finalize_cancelled_dispatch_handoff(
@@ -3226,6 +3272,10 @@ where
             }
             let _ = DaemonTaskService::mark_aborted(self.store, store_dir, &lease.task_id);
             if let Err(e) = self.release_task_lease(store_dir, repo_root, &lease.task_id, lease) {
+                if matches!(e, AppError::LeaseCleanupPartialFailure { .. }) {
+                    let _ =
+                        DaemonTaskService::mark_label_dirty(self.store, store_dir, &lease.task_id);
+                }
                 eprintln!(
                     "daemon: cleanup failed for lease '{}' (task '{}'): {}",
                     lease.lease_id, lease.task_id, e
@@ -5052,7 +5102,14 @@ mod tests {
             acquired_at: Utc::now(),
             ttl_seconds: 300,
             last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
         };
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .expect("acquire writer lock");
 
         let agent_service = AgentExecutionService::new(
             StubBackendAdapter::default(),
@@ -5111,6 +5168,14 @@ mod tests {
                 .expect("read pid file")
                 .is_none(),
             "daemon cancellation handoff should remove run.pid before the grace period expires"
+        );
+        let persisted_handoff = FsDaemonStore
+            .read_lease(base, &lease.lease_id)
+            .expect("read lease after daemon handoff")
+            .cleanup_handoff;
+        assert!(
+            persisted_handoff.is_some(),
+            "daemon handoff should persist process liveness proof while the grace period is active"
         );
 
         tokio::time::advance(DAEMON_DISPATCH_SHUTDOWN_GRACE_PERIOD + Duration::from_millis(1))
@@ -5174,6 +5239,30 @@ mod tests {
         FsRunSnapshotWriteStore
             .write_run_snapshot(base, &project_id, &snapshot)
             .expect("write interrupted snapshot");
+        let dead_handoff = CliWriterCleanupHandoff {
+            pid: std::process::id().saturating_add(100_000),
+            run_id: Some("run-daemon-handoff-repair".to_owned()),
+            run_started_at: Some(started_at),
+            proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+        let lease = crate::contexts::automation_runtime::model::WorktreeLease {
+            lease_id: "lease-daemon-handoff-repair".to_owned(),
+            task_id: "task-daemon-handoff-repair".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.join("worktrees/daemon-handoff-repair"),
+            branch_name: "rb/daemon-handoff-repair".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: Some(dead_handoff),
+        };
+        FsDaemonStore
+            .write_lease_record(base, &LeaseRecord::Worktree(lease.clone()))
+            .expect("write daemon handoff lease");
+        FsDaemonStore
+            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .expect("acquire daemon handoff writer lock");
 
         std::fs::write(
             base.join(format!(
@@ -5335,7 +5424,14 @@ mod tests {
             acquired_at: Utc::now(),
             ttl_seconds: 300,
             last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
         };
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .expect("acquire writer lock");
 
         let agent_service = AgentExecutionService::new(
             StubBackendAdapter::default(),
@@ -5514,6 +5610,7 @@ mod tests {
             acquired_at: Utc::now(),
             ttl_seconds: 300,
             last_heartbeat: Utc::now(),
+            cleanup_handoff: None,
         };
 
         let agent_service = AgentExecutionService::new(
@@ -5608,6 +5705,7 @@ mod tests {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         FsDaemonStore
             .write_lease(base, &lease)
@@ -5697,6 +5795,112 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_active_leases_marks_shutdown_metadata_partial_failures_dirty() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        initialize_workspace(base, Utc::now()).expect("init workspace");
+        let project_id = create_standard_project(base, "daemon-cleanup-metadata-partial");
+        let now = Utc::now();
+
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-cleanup-metadata-partial".to_owned(),
+            task_id: "task-daemon-cleanup-metadata-partial".to_owned(),
+            project_id: project_id.as_str().to_owned(),
+            worktree_path: base.join("worktrees/daemon-cleanup-metadata-partial"),
+            branch_name: "rb/test".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+            cleanup_handoff: None,
+        };
+        std::fs::create_dir_all(&lease.worktree_path).expect("create worktree path");
+        FsDaemonStore
+            .write_lease(base, &lease)
+            .expect("write worktree lease");
+        FsDaemonStore
+            .acquire_writer_lock(base, &project_id, &lease.lease_id)
+            .expect("acquire writer lock");
+        FsDaemonStore
+            .write_task(
+                base,
+                &DaemonTask {
+                    task_id: lease.task_id.clone(),
+                    issue_ref: "acme/widgets#metadata-partial".to_owned(),
+                    project_id: project_id.as_str().to_owned(),
+                    project_name: Some("Metadata partial cleanup".to_owned()),
+                    prompt: Some("Prompt".to_owned()),
+                    routing_command: None,
+                    routing_labels: vec![],
+                    resolved_flow: Some(FlowPreset::Standard),
+                    routing_source: None,
+                    routing_warnings: vec![],
+                    status: TaskStatus::Active,
+                    created_at: now,
+                    updated_at: now,
+                    attempt_count: 0,
+                    lease_id: Some(lease.lease_id.clone()),
+                    failure_class: None,
+                    failure_message: None,
+                    dispatch_mode: DispatchMode::Workflow,
+                    source_revision: None,
+                    requirements_run_id: None,
+                    workflow_run_id: None,
+                    repo_slug: None,
+                    issue_number: None,
+                    pr_url: None,
+                    last_seen_comment_id: None,
+                    last_seen_review_id: None,
+                    label_dirty: false,
+                },
+            )
+            .expect("write daemon task");
+
+        let store = FailOnceLeaseReferenceClearStore::new(&lease.task_id);
+        let worktree = TestWorktreeAdapter::removing_as(WorktreeCleanupOutcome::Removed);
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &store,
+            &worktree,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .cleanup_active_leases(base, base)
+            .expect_err("metadata cleanup failure should surface partial cleanup");
+        assert!(
+            matches!(error, AppError::LeaseCleanupPartialFailure { .. }),
+            "unexpected cleanup error: {error:?}"
+        );
+
+        let task = FsDaemonStore
+            .read_task(base, &lease.task_id)
+            .expect("read daemon task after metadata cleanup failure");
+        assert_eq!(task.status, TaskStatus::Aborted);
+        assert!(task.label_dirty);
+        assert_eq!(
+            task.lease_id.as_deref(),
+            Some(lease.lease_id.as_str()),
+            "shutdown cleanup must preserve the orphaned task lease reference"
+        );
+        assert!(
+            FsDaemonStore.read_lease(base, &lease.lease_id).is_err(),
+            "physical lease cleanup should already have completed before the metadata write failed"
+        );
+    }
+
+    #[test]
     fn release_task_lease_allows_successor_run_pid_after_resources_are_released() {
         let temp = tempdir().expect("tempdir");
         let base = temp.path();
@@ -5712,6 +5916,7 @@ mod tests {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         std::fs::create_dir_all(&lease.worktree_path).expect("create worktree path");
         FsDaemonStore

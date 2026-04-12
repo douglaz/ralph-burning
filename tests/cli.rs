@@ -1173,6 +1173,7 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         },
     );
     write_datadir_daemon_task(
@@ -1351,6 +1352,7 @@ fn daemon_abort_claimed_task_releases_lease() {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         },
     );
     write_datadir_writer_lock(data_dir.path(), "demo-claimed", "lease-claimed");
@@ -1441,6 +1443,7 @@ fn daemon_abort_active_task_releases_lease() {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         },
     );
     write_datadir_writer_lock(data_dir.path(), "demo-active-abort", "lease-active-abort");
@@ -1526,6 +1529,7 @@ fn daemon_reconcile_fails_stale_claimed_task() {
             acquired_at: now - Duration::minutes(10),
             ttl_seconds: 300,
             last_heartbeat: now - Duration::minutes(10),
+            cleanup_handoff: None,
         },
     );
 
@@ -5840,6 +5844,7 @@ fn run_status_keeps_daemon_owned_running_snapshot_active_with_live_pid_file() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-daemon-alpha.json"),
@@ -5912,6 +5917,7 @@ fn run_status_keeps_legacy_daemon_owned_running_snapshot_active_without_pid_file
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-daemon-legacy.json"),
@@ -6034,6 +6040,7 @@ fn run_status_reports_stale_daemon_owned_running_when_legacy_lease_expires() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::seconds(301),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-daemon-stale.json"),
@@ -7530,6 +7537,7 @@ fn run_stop_refuses_daemon_owned_running_snapshot() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-daemon-stop.json"),
@@ -7749,6 +7757,7 @@ fn run_resume_refuses_legacy_daemon_owned_running_without_pid_file() {
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
     fs::write(
         leases_dir.join("lease-daemon-legacy-resume.json"),
@@ -12625,6 +12634,7 @@ fn run_resume_does_not_reclaim_live_worktree_owner_for_failed_snapshot() {
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
+        cleanup_handoff: None,
     };
     write_daemon_task(
         temp_dir.path(),
@@ -12776,6 +12786,7 @@ fn cli_run_resume_recovers_stale_daemon_owned_running_and_reclaims_worktree_lock
         acquired_at: Utc::now(),
         ttl_seconds: 300,
         last_heartbeat: Utc::now() - Duration::seconds(301),
+        cleanup_handoff: None,
     };
     write_daemon_task(
         temp_dir.path(),

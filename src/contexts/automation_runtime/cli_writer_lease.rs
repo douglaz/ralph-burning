@@ -1208,6 +1208,7 @@ mod tests {
             acquired_at: now,
             ttl_seconds: CLI_LEASE_TTL_SECONDS,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         FsDaemonStore
             .write_task(
@@ -1301,6 +1302,7 @@ mod tests {
             acquired_at: now,
             ttl_seconds: CLI_LEASE_TTL_SECONDS,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         FsDaemonStore
             .write_task(
@@ -1399,6 +1401,7 @@ mod tests {
             acquired_at: now,
             ttl_seconds: CLI_LEASE_TTL_SECONDS,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         FsDaemonStore
             .write_task(
@@ -1488,6 +1491,7 @@ mod tests {
             acquired_at: now,
             ttl_seconds: CLI_LEASE_TTL_SECONDS,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         FsDaemonStore
             .write_task(
@@ -1609,6 +1613,7 @@ mod tests {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         FsDaemonStore
             .write_task(

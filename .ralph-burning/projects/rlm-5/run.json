@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 12
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-11-0c818ed2",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 11,
-        "body": "Handle post-release metadata failures during daemon shutdown cleanup. In `src/contexts/automation_runtime/daemon_loop.rs:3216-3233`, `cleanup_active_leases()` only marks the task `Aborted` and logs the error. If `release_task_lease()` fails after physical cleanup succeeded but before `clear_lease_reference()` completes (`src/contexts/automation_runtime/daemon_loop.rs:3667-3680`), the task is left with an orphaned `lease_id` while the lease record and `run.pid` are already gone. The only automatic repair path for that state is Phase 0, but it only scans `label_dirty` tasks (`src/contexts/automation_runtime/daemon_loop.rs:401-452`), so shutdown cleanup failures are never repaired on the next daemon start. Mark the affected task dirty, or persist an equivalent recovery marker, before returning the partial-cleanup error.",
-        "created_at": "2026-04-12T01:27:10.342686341Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "ba84e29f12885047b365044dfe004137de1ed90a60416836bca8f0d86290274c"
-      },
-      {
-        "amendment_id": "fr-11-41cdaf28",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 11,
-        "body": "Do not finalize daemon interruption handoffs solely because `run.pid` is missing. The new daemon handoff path removes `run.pid` as soon as it persists the interrupted snapshot (`src/contexts/automation_runtime/daemon_loop.rs:2933-2997`), but it does not persist any daemon-owned liveness handoff. `repair_missing_interrupted_handoff_run_failed_event()` was expanded to daemon summaries (`src/cli/run.rs:1993-2037`), and `run status` invokes that repair path on every read (`src/cli/run.rs:8334-8347`). During the 5-second daemon grace window, a status/sync/read can therefore append `run_failed` while the old daemon-owned orchestrator is still alive, publishing terminal state out of order. Add a daemon-owned handoff/liveness proof, or suppress repair for daemon-owned interruption summaries until process death is proven.",
-        "created_at": "2026-04-12T01:27:10.342689216Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "97da95e9fecf1e807c4c73716dde9171b0acb13ac416baa71f1a1f35bc5556a8"
-      }
-    ],
-    "processed_count": 17
+    "pending": [],
+    "processed_count": 19
   },
-  "status_summary": "running: final review restart round 12 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-12T01:10:38.730893295Z",

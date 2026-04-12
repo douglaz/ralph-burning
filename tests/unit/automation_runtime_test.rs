@@ -195,6 +195,7 @@ fn lease_ttl_detects_staleness() {
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
+        cleanup_handoff: None,
     };
 
     assert!(!lease.is_stale_at(now + Duration::seconds(299)));
@@ -270,6 +271,7 @@ fn cli_writer_lease_staleness_matches_worktree_lease() {
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
+        cleanup_handoff: None,
     };
     let cli = CliWriterLease {
         lease_id: "lease-cli-1".to_owned(),
@@ -306,6 +308,7 @@ fn fs_daemon_store_lists_worktree_and_cli_lease_records_from_same_directory() {
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
+        cleanup_handoff: None,
     };
     let cli = CliWriterLease {
         lease_id: "lease-cli-1".to_owned(),
@@ -1168,6 +1171,7 @@ fn reconcile_reports_only_successful_releases() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -1352,6 +1356,7 @@ fn reconcile_partial_cleanup_failure_keeps_lease_durable() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2000,6 +2005,7 @@ fn reconcile_lease_file_absent_reports_cleanup_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2073,6 +2079,7 @@ fn reconcile_writer_lock_absent_reports_cleanup_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2134,6 +2141,7 @@ fn reconcile_both_substeps_absent_reports_writer_lock_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2343,6 +2351,7 @@ fn reconcile_lease_file_delete_error_reports_specific_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2415,6 +2424,7 @@ fn reconcile_writer_lock_release_error_reports_specific_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2489,6 +2499,7 @@ fn reconcile_both_substep_errors_reports_writer_lock_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2549,6 +2560,7 @@ fn release_with_lease_file_error_sets_resources_released_false() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2616,6 +2628,7 @@ fn release_with_writer_lock_error_sets_resources_released_false() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2680,6 +2693,7 @@ fn release_full_success_sets_resources_released_true_and_emits_journal() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2745,6 +2759,7 @@ fn abort_cleanup_preserves_lease_reference_on_partial_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2817,6 +2832,7 @@ fn daemon_loop_cleanup_preserves_lease_reference_on_partial_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2893,6 +2909,7 @@ fn release_idempotent_mode_missing_worktree_returns_partial() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -2963,6 +2980,7 @@ fn release_with_absent_worktree_preserves_lease_file_for_subsequent_lookups() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -3051,6 +3069,7 @@ fn abort_cleanup_with_missing_worktree_returns_partial_in_idempotent_mode() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -3384,6 +3403,7 @@ fn reconcile_worktree_race_reports_cleanup_failure() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -4899,6 +4919,7 @@ fn release_writer_lock_failure_after_worktree_removal_preserves_lease_file() {
         acquired_at: Utc::now() - Duration::hours(1),
         ttl_seconds: 60,
         last_heartbeat: Utc::now() - Duration::hours(1),
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
@@ -6074,6 +6095,7 @@ fn reconcile_oversized_ttl_override_does_not_reclaim_fresh_worktree_or_cli_lease
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
+        cleanup_handoff: None,
     };
     store
         .write_lease(temp.path(), &wt_lease)
@@ -6290,6 +6312,7 @@ fn try_preserve_failed_branch_force_pushes_when_checkpoints_present() {
         acquired_at: Utc::now(),
         ttl_seconds: 3600,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
 
     // The centralized try_preserve_failed_branch should force_push when
@@ -6319,6 +6342,7 @@ fn try_preserve_failed_branch_skips_push_without_checkpoints() {
         acquired_at: Utc::now(),
         ttl_seconds: 3600,
         last_heartbeat: Utc::now(),
+        cleanup_handoff: None,
     };
 
     // No implementation-stage checkpoints → no push
@@ -6365,6 +6389,7 @@ fn reconcile_stale_failed_task_preserves_branch_before_cleanup() {
         acquired_at: stale_time,
         ttl_seconds: 60,
         last_heartbeat: stale_time,
+        cleanup_handoff: None,
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 

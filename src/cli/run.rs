@@ -2010,6 +2010,44 @@ fn interrupted_handoff_failure_details(
     }
 }
 
+fn daemon_handoff_process_death_proven(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    expected_attempt: &engine::RunningAttemptIdentity,
+) -> AppResult<bool> {
+    let Some((_owner, record)) =
+        read_project_writer_lease_record(&FsDaemonStore, base_dir, project_id)?
+    else {
+        return Ok(false);
+    };
+    let LeaseRecord::Worktree(lease) = record else {
+        return Ok(false);
+    };
+    if lease.project_id != project_id.as_str() {
+        return Ok(false);
+    }
+    let Some(handoff) = lease.cleanup_handoff.as_ref() else {
+        return Ok(false);
+    };
+    if handoff.run_id.as_deref() != Some(expected_attempt.run_id.as_str())
+        || handoff.run_started_at != Some(expected_attempt.started_at)
+    {
+        return Ok(false);
+    }
+    if !FileSystem::process_identity_is_authoritative(
+        handoff.proc_start_ticks,
+        handoff.proc_start_marker.as_deref(),
+    ) {
+        return Ok(false);
+    }
+
+    Ok(!FileSystem::process_identity_matches_live_process(
+        handoff.pid,
+        handoff.proc_start_ticks,
+        handoff.proc_start_marker.as_deref(),
+    ))
+}
+
 pub(crate) fn repair_missing_interrupted_handoff_run_failed_event(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
@@ -2026,14 +2064,26 @@ pub(crate) fn repair_missing_interrupted_handoff_run_failed_event(
         return Ok(false);
     };
 
+    let expected_attempt = engine::RunningAttemptIdentity {
+        run_id: interrupted_run.run_id.clone(),
+        started_at: interrupted_run.started_at,
+    };
+
     // Only repair if the orchestrator process is definitively gone.
-    // During the SIGTERM grace period the snapshot is already marked
-    // interrupted but the engine future is still settling — repairing
-    // now would race with the orchestrator's own terminal event.
+    // During the SIGTERM or daemon-cancellation grace period the snapshot is
+    // already marked interrupted but the engine future is still settling —
+    // repairing now would race with the orchestrator's own terminal event.
     if let Ok(Some(pid_record)) = FileSystem::read_pid_file(base_dir, project_id) {
         if FileSystem::is_pid_alive(&pid_record) {
             return Ok(false);
         }
+    } else if matches!(
+        snapshot.status_summary.as_str(),
+        "failed (interrupted by daemon task cancellation)"
+            | "failed (interrupted by daemon shutdown)"
+    ) && !daemon_handoff_process_death_proven(base_dir, project_id, &expected_attempt)?
+    {
+        return Ok(false);
     }
 
     engine::finalize_interrupted_run_failure_if_missing(
@@ -2045,10 +2095,7 @@ pub(crate) fn repair_missing_interrupted_handoff_run_failed_event(
             base_dir,
             project_id,
         },
-        &engine::RunningAttemptIdentity {
-            run_id: interrupted_run.run_id.clone(),
-            started_at: interrupted_run.started_at,
-        },
+        &expected_attempt,
         log_message,
         failure_class,
     )
@@ -3902,9 +3949,10 @@ async fn handle_sync_milestone() -> AppResult<()> {
 mod tests {
     use super::{
         persist_next_step_recommendation, prepare_milestone_controller_for_execution,
-        resume_attempt_has_exact_lineage, run_with_termination_signal_waiter,
-        select_next_milestone_bead, select_next_milestone_bead_from_recommendation,
-        sync_terminal_milestone_task, sync_terminal_milestone_task_and_continue_selection,
+        repair_missing_interrupted_handoff_run_failed_event, resume_attempt_has_exact_lineage,
+        run_with_termination_signal_waiter, select_next_milestone_bead,
+        select_next_milestone_bead_from_recommendation, sync_terminal_milestone_task,
+        sync_terminal_milestone_task_and_continue_selection,
         sync_terminal_milestone_task_with_options, MilestoneControllerExecutionOrigin,
         ProjectMilestoneControllerRuntime, RunSignalCleanupContext, RunSignalCleanupOrigin,
     };
@@ -7025,6 +7073,37 @@ mod tests {
         FsRunSnapshotWriteStore
             .write_run_snapshot(base_dir, &project_id, &final_snapshot)
             .expect("write interrupted run snapshot");
+        let dead_handoff = CliWriterCleanupHandoff {
+            pid: std::process::id().saturating_add(100_000),
+            run_id: Some("run-1".to_owned()),
+            run_started_at: Some(started_at),
+            proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+        let worktree_lease = WorktreeLease {
+            lease_id: "lease-daemon-handoff".to_owned(),
+            task_id: "task-daemon-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            worktree_path: base_dir.join("worktrees/daemon-handoff"),
+            branch_name: "rb/daemon-handoff".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: Some(dead_handoff),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::Worktree(worktree_lease.clone()),
+        )
+        .expect("write daemon handoff lease");
+        <FsDaemonStore as DaemonStorePort>::acquire_writer_lock(
+            &FsDaemonStore,
+            base_dir,
+            &project_id,
+            &worktree_lease.lease_id,
+        )
+        .expect("acquire daemon handoff writer lock");
 
         let synced =
             sync_terminal_milestone_task(base_dir, &project_id, &project_record, &final_snapshot)
@@ -7050,6 +7129,102 @@ mod tests {
         assert_eq!(
             task_runs[0].outcome_detail.as_deref(),
             Some("failed (interrupted by daemon shutdown)")
+        );
+    }
+
+    #[test]
+    fn repair_missing_interrupted_handoff_run_failed_event_waits_for_live_daemon_handoff() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/daemon-live-handoff"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/daemon-live-handoff/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"daemon-live-handoff","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-live","first_stage":"implementation","max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let project_id = ProjectId::new("daemon-live-handoff").expect("project id");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-live".to_owned(),
+                stage_cursor: StageCursor::new(StageId::Implementation, 1, 1, 1)
+                    .expect("stage cursor"),
+                started_at,
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed (interrupted by daemon shutdown)".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base_dir, &project_id, &snapshot)
+            .expect("write interrupted run snapshot");
+
+        let live_handoff = CliWriterCleanupHandoff {
+            pid: std::process::id(),
+            run_id: Some("run-live".to_owned()),
+            run_started_at: Some(started_at),
+            proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+        let worktree_lease = WorktreeLease {
+            lease_id: "lease-live-daemon-handoff".to_owned(),
+            task_id: "task-live-daemon-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            worktree_path: base_dir.join("worktrees/live-daemon-handoff"),
+            branch_name: "rb/live-daemon-handoff".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: Some(live_handoff),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::Worktree(worktree_lease.clone()),
+        )
+        .expect("write live daemon handoff lease");
+        <FsDaemonStore as DaemonStorePort>::acquire_writer_lock(
+            &FsDaemonStore,
+            base_dir,
+            &project_id,
+            &worktree_lease.lease_id,
+        )
+        .expect("acquire live daemon handoff writer lock");
+
+        let repaired =
+            repair_missing_interrupted_handoff_run_failed_event(base_dir, &project_id, &snapshot)
+                .expect("attempt daemon handoff repair");
+        assert!(
+            !repaired,
+            "repair must stay suppressed while the daemon cleanup handoff proves the process is alive"
+        );
+
+        let journal_events = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("read project journal");
+        assert!(
+            !journal_events
+                .iter()
+                .any(|event| event.event_type == JournalEventType::RunFailed),
+            "repair must not append run_failed while the daemon handoff process is still alive"
         );
     }
 
@@ -7421,6 +7596,7 @@ mod tests {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         <FsDaemonStore as DaemonStorePort>::write_lease_record(
             &FsDaemonStore,
@@ -7535,6 +7711,7 @@ mod tests {
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
+            cleanup_handoff: None,
         };
         <FsDaemonStore as DaemonStorePort>::write_lease_record(
             &FsDaemonStore,
