@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260412172012-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T18:16:10.543232524Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the changed config/policy/diagnostics paths and related tests end-to-end, ran `cargo test`, and spot-checked the CLI in a fresh temp workspace. The default implementer/reviewer resolution itself looks sound, but the backend diagnostics still misreport final-review reviewers after the new `final_review.backends` default.\n\n## Amendments\n\n1. Fix the final-review diagnostics to report the new reviewer defaults from `final_review.backends`. The compiled default panel now comes from `src/contexts/workspace_governance/config.rs:266-270`, but `src/contexts/agent_execution/diagnostics.rs:785-824` still renders the `final_reviewer` row by calling `resolve_role_target(FinalReviewer, 1)`, and `src/contexts/agent_execution/policy.rs:60-76` resolves that role through the planner-family fallback instead of the explicit final-review panel. In a clean workspace this produces a contradictory result: `backend show-effective --json` reports only `final_reviewer = claude/claude-opus-4-6`, while `backend probe --role final_review_panel --flow standard --json` correctly resolves the panel as `codex/gpt-5.4-xhigh` plus `claude/claude-opus-4-6`. Update `show-effective` (and singular `final_reviewer` probes if they remain supported via `src/contexts/agent_execution/diagnostics.rs:870-884`) to surface the actual `final_review.backends` members, or stop exposing a generic `final_reviewer` role that no longer matches runtime behavior.\n   Rationale: This is a user-visible correctness gap in the diagnostics surface after the default change: operators checking effective config are shown the wrong final-review reviewer set, which makes the new cross-model default look absent or misconfigured.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

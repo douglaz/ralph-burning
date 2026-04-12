@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-vote-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260412172012-final_review-vote-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T18:22:38.432496956Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real defects: final-review diagnostics currently misreport reviewer resolution, the tracked patch does not implement the requested backend-default changes in source code, and the checked-in run state persists a reviewer panel that does not match the project’s stated default review configuration.\n\n## Votes\n\n- `fr-3-9c6f07f2`: Accept\n  `src/contexts/agent_execution/diagnostics.rs` builds `show-effective` by iterating `BackendPolicyRole::ALL` and calling `resolve_role_target(...)` for `final_reviewer`, while `src/contexts/agent_execution/policy.rs` resolves the actual final-review panel through `resolve_final_review_panel()` and `final_review.backends`. Those paths diverge. In this checkout, `backend show-effective --json` reports a single `final_reviewer` target of `claude/claude-opus-4-6`, but `backend probe --role final_review_panel --flow standard --json` resolves a different reviewer set. That makes the diagnostics materially misleading.\n- `fr-3-9c639dfb`: Accept\n  The current tracked diff changes only `.ralph-burning/projects/utm/journal.ndjson` and `.ralph-burning/projects/utm/run.json`; there is no diff in `src/contexts/workspace_governance/config.rs` or `src/contexts/agent_execution/policy.rs`. Updating run-state artifacts does not implement the requested default-backend behavior in code, so the amendment is correct.\n- `fr-3-87665d73`: Accept\n  The checked-in run state records final-review reviewers as `codex/gpt-5.4-xhigh` and `codex/gpt-5.3-codex-spark-xhigh` in `.ralph-burning/projects/utm/run.json`, and the matching journal entries show the same pair. The tracked project prompt says the reviewer defaults should be `Codex gpt-5.4 xhigh + Opus 4.6`, and `.ralph-burning/projects/utm/config.toml` does not declare a project-level `final_review.backends` override. Because `RunSnapshot` is the canonical persisted resume state and final-review reviewer snapshots participate in drift detection, committing this snapshot can cause resumed runs to inherit a reviewer panel that does not match the project defaults.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

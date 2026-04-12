@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260412172012",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-12T17:20:12.938262947Z",
     "prompt_hash_at_cycle_start": "6bccd9b3258d12c7a620603fba3fb79ee952815459aa6d4ffdff50d80c66b94f",
     "prompt_hash_at_stage_start": "6bccd9b3258d12c7a620603fba3fb79ee952815459aa6d4ffdff50d80c66b94f",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-9c6f07f2",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "Fix the final-review diagnostics to report the new reviewer defaults from `final_review.backends`. The compiled default panel now comes from `src/contexts/workspace_governance/config.rs:266-270`, but `src/contexts/agent_execution/diagnostics.rs:785-824` still renders the `final_reviewer` row by calling `resolve_role_target(FinalReviewer, 1)`, and `src/contexts/agent_execution/policy.rs:60-76` resolves that role through the planner-family fallback instead of the explicit final-review panel. In a clean workspace this produces a contradictory result: `backend show-effective --json` reports only `final_reviewer = claude/claude-opus-4-6`, while `backend probe --role final_review_panel --flow standard --json` correctly resolves the panel as `codex/gpt-5.4-xhigh` plus `claude/claude-opus-4-6`. Update `show-effective` (and singular `final_reviewer` probes if they remain supported via `src/contexts/agent_execution/diagnostics.rs:870-884`) to surface the actual `final_review.backends` members, or stop exposing a generic `final_reviewer` role that no longer matches runtime behavior.",
+        "created_at": "2026-04-12T18:22:38.446348968Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "7fa21af1c217d52b4e22d263043274b7be7bf695a0b574d78ff4519b37812ce5"
+      },
+      {
+        "amendment_id": "fr-3-9c639dfb",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "High: The current patch does not change backend-default implementation logic at all—it only updates live run state files, so the requested default-behavior changes are not actually implemented in code (`src/contexts/workspace_governance/config.rs` and `src/contexts/agent_execution/policy.rs` are unchanged). The diff adds only `.ralph-burning/projects/utm/journal.ndjson:35-43` and `.ralph-burning/projects/utm/run.json:16-73`.",
+        "created_at": "2026-04-12T18:22:38.446350811Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "d21353fad9a1127c5cfd183bf503f7f02bac4c62cdac0d1f1a2e4c90912f41da"
+      },
+      {
+        "amendment_id": "fr-3-87665d73",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "High: The persisted final-review snapshot in tracked run state now hardcodes both reviewers as Codex backends (`gpt-5.4-xhigh` and `gpt-5.3-codex-spark-xhigh`) in `.ralph-burning/projects/utm/run.json:19-27` and again in `:52-63`, while journal entries show the same pair during proposal (`.ralph-burning/projects/utm/journal.ndjson:42-43`). This conflicts with the required default reviewer pair (Codex xhigh + Opus 4.6) and can cause resumed runs to inherit an unintended noncompliant reviewer set from checked-in state.",
+        "created_at": "2026-04-12T18:22:38.446352745Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "b20882de03c3f8a2f89751702b59c5f55e5853cffb870586a50c84f5bbf8d145"
+      }
+    ],
     "processed_count": 3
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-12T17:49:04.925568850Z",
+    "resolved_at": "2026-04-12T18:06:35.492413901Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
