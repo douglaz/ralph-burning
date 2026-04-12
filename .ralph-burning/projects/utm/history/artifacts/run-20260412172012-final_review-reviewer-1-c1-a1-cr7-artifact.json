@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T19:37:54.086240089Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI found one blocking issue: the patch does not implement the backend-default change at the canonical configuration layer and instead persists run-specific final-review reviewer state.\n\n## Amendments\n\n1. The change set only writes runtime artifacts and does not update canonical default-policy code, while it persists a run-specific final-review resolution that currently uses `gpt-5.4-xhigh` + `gpt-5.3-codex-spark-xhigh` (`.ralph-burning/projects/utm/run.json:16-27`, `.ralph-burning/projects/utm/journal.ndjson:115-116`). Because resume paths load and compare `last_stage_resolution_snapshot` (`src/contexts/workflow_composition/engine.rs:1775-1785`, `8211-8230`), checked-in run state can replay stale/reviewer-overridden targets and make default behavior non-deterministic versus the canonical default definitions in `src/contexts/workspace_governance/config.rs` (`1504-1510`, `1542-1547`). The fix should be made in the default-policy sources, not by recording a specific in-progress run snapshot.\n   Rationale: This is a correctness and reproducibility issue: run snapshots are environment-specific, and committing them as the patch for default changes risks resuming from stale reviewer resolution instead of the checked-in defaults.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 7
+}
