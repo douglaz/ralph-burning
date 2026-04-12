@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-reviewer-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260411212718-final_review-reviewer-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T02:44:57.686465206Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed the diff (`.ralph-burning/projects/rlm-5/journal.ndjson` and `.ralph-burning/projects/rlm-5/run.json`); the changes are limited to run tracking metadata/events for final-review proposal entry (new `stage_resolution_snapshot` and two reviewer start events). No code or implementation logic was modified, so no correctness/safety/robustness issues were introduced in this patch.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 15
+}

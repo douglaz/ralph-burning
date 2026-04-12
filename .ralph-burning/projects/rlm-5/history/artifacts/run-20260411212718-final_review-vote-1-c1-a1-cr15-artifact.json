@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T02:57:40.776451550Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll three amendments address concrete failure windows in shutdown/recovery state handling and ownership resolution. Each is technically sound, improves crash safety, and reduces silent data-corruption-like states by making recovery deterministic and fail-closed where ambiguities currently exist.\n\n## Votes\n\n- `fr-15-e3c5ab91`: Accept\n  This is a real restart hole: aborted tasks can carry persisted cleanup handoff state that is only consumed in dispatch paths, while startup scanners only revisit label_dirty and Pending work. A daemon SIGKILL during shutdown can therefore leave stale cleanup state and missing failure events unreconciled indefinitely until manual recovery. A dedicated daemon-side Phase-0 pass is the correct repair mechanism and aligns with idempotent startup recovery semantics.\n- `fr-15-ddf1c3b2`: Accept\n  The current proof path is too tightly coupled to an existing writer lease record; because lock release can happen before lease deletion, there is a real partial-cleanup window where durable handoff proof exists but lookup via read_project_writer_lease_record fails. Expanding lookup to detached/orphaned leases preserves recovery in that exact crash window and avoids leaving stale backend cleanup and missing run_failed artifacts.\n- `fr-15-7981b641`: Accept\n  Fail-open behavior is unsafe here: treating a single run.pid/lock owner as definitive while detached owners also exist can leak orphaned ownership and leave partial-cleanup artifacts behind. Merging pid/lock and detached-owner discovery and returning ambiguity when multiple distinct owners are present closes a correctness gap in run resume/stop recovery paths and is consistent with strong single-owner invariants.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 15
+}
