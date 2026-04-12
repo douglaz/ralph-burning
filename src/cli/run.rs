@@ -8155,6 +8155,89 @@ mod tests {
     }
 
     #[test]
+    fn acquire_recovery_writer_guard_blocks_when_writer_lock_owner_lease_record_is_missing_but_task_still_references_it(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id =
+            ProjectId::new("missing-lease-recovery-owner-blocked").expect("project id");
+        let now = Utc::now();
+        let stale_owner = "lease-missing-recovery-owner-blocked";
+        <FsDaemonStore as DaemonStorePort>::acquire_writer_lock(
+            &FsDaemonStore,
+            base_dir,
+            &project_id,
+            stale_owner,
+        )
+        .expect("acquire stale writer lock");
+        <FsDaemonStore as DaemonStorePort>::write_task(
+            &FsDaemonStore,
+            base_dir,
+            &DaemonTask {
+                task_id: "task-missing-recovery-owner-blocked".to_owned(),
+                issue_ref: "repo#44".to_owned(),
+                project_id: project_id.to_string(),
+                project_name: Some("missing lease blocked".to_owned()),
+                prompt: Some("prompt".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Failed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: Some(stale_owner.to_owned()),
+                failure_class: Some("stale_writer_owner_reclaimed".to_owned()),
+                failure_message: Some("cleanup metadata write failed".to_owned()),
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                workflow_run_id: None,
+                repo_slug: None,
+                issue_number: None,
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            },
+        )
+        .expect("write orphaned daemon task");
+
+        let result = super::acquire_recovery_writer_guard(
+            base_dir,
+            base_dir,
+            &project_id,
+            Some(stale_owner),
+            None,
+            true,
+            false,
+        );
+        assert!(
+            matches!(result, Err(AppError::LeaseCleanupPartialFailure { .. })),
+            "orphaned task metadata must block recovery guard acquisition"
+        );
+        assert!(
+            super::read_project_writer_lock_owner(base_dir, &project_id)
+                .expect("read writer owner")
+                .is_none(),
+            "recovery should release the stale writer lock before surfacing the partial cleanup"
+        );
+        let task = <FsDaemonStore as DaemonStorePort>::read_task(
+            &FsDaemonStore,
+            base_dir,
+            "task-missing-recovery-owner-blocked",
+        )
+        .expect("read daemon task");
+        assert_eq!(
+            task.lease_id.as_deref(),
+            Some(stale_owner),
+            "recovery must preserve the orphaned task lease reference"
+        );
+    }
+
+    #[test]
     fn observed_running_attempt_owner_falls_back_to_detached_owner_without_pid_or_lock() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();

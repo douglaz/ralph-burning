@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::adapters::fs::{
     FileSystem, FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
-    FsMilestoneStore, FsTaskRunLineageStore, RunPidOwner, RunPidRecord,
+    FsMilestoneStore, FsTaskRunLineageStore,
 };
 use crate::adapters::github::GithubPort;
 use crate::cli::run::{
@@ -25,6 +25,7 @@ use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     cleanup_detached_project_writer_owner, read_project_writer_lock_owner,
+    remove_owned_run_pid_file,
 };
 use crate::contexts::automation_runtime::lease_service::LeaseService;
 use crate::contexts::automation_runtime::model::{
@@ -3768,7 +3769,7 @@ where
             if read_project_writer_lock_owner(base_dir, &project_id)?.as_deref()
                 != Some(lease_id.as_str())
             {
-                self.remove_owned_run_pid_file(
+                remove_owned_run_pid_file(
                     base_dir,
                     repo_root,
                     &task.project_id,
@@ -3903,7 +3904,7 @@ where
         );
         match release_result {
             Ok(ref r) if r.resources_released => {
-                self.remove_owned_run_pid_file(
+                remove_owned_run_pid_file(
                     base_dir,
                     repo_root,
                     &lease.project_id,
@@ -3936,7 +3937,7 @@ where
         repo_root: &Path,
         task: &DaemonTask,
     ) -> AppResult<()> {
-        self.remove_owned_run_pid_file(
+        remove_owned_run_pid_file(
             base_dir,
             repo_root,
             &task.project_id,
@@ -3950,98 +3951,6 @@ where
         )?;
         Ok(())
     }
-
-    fn remove_owned_run_pid_file(
-        &self,
-        base_dir: &Path,
-        repo_root: &Path,
-        project_id: &str,
-        expected_writer_owner: Option<&str>,
-        task_id: &str,
-    ) -> AppResult<()> {
-        let cleanup_failure = || AppError::LeaseCleanupPartialFailure {
-            task_id: task_id.to_owned(),
-        };
-        let project_id = ProjectId::new(project_id.to_owned()).map_err(|_| cleanup_failure())?;
-
-        for _ in 0..2 {
-            let Some(pid_record) =
-                FileSystem::read_pid_file(repo_root, &project_id).map_err(|_| cleanup_failure())?
-            else {
-                return Ok(());
-            };
-            if run_pid_record_belongs_to_successor_owner(
-                base_dir,
-                &project_id,
-                &pid_record,
-                expected_writer_owner,
-            )
-            .map_err(|_| cleanup_failure())?
-            {
-                return Ok(());
-            }
-            if !run_pid_record_is_reclaimable(&pid_record, expected_writer_owner) {
-                return Err(cleanup_failure());
-            }
-            if FileSystem::remove_pid_file_if_matches(repo_root, &project_id, &pid_record)
-                .map_err(|_| cleanup_failure())?
-            {
-                return Ok(());
-            }
-        }
-
-        match FileSystem::read_pid_file(repo_root, &project_id).map_err(|_| cleanup_failure())? {
-            None => Ok(()),
-            Some(pid_record)
-                if run_pid_record_belongs_to_successor_owner(
-                    base_dir,
-                    &project_id,
-                    &pid_record,
-                    expected_writer_owner,
-                )
-                .map_err(|_| cleanup_failure())? =>
-            {
-                Ok(())
-            }
-            Some(_) => Err(cleanup_failure()),
-        }
-    }
-}
-
-fn run_pid_record_is_reclaimable(
-    pid_record: &RunPidRecord,
-    expected_writer_owner: Option<&str>,
-) -> bool {
-    pid_record.owner == RunPidOwner::Daemon
-        && (!FileSystem::pid_record_matches_live_process(pid_record)
-            || (pid_record.pid == std::process::id()
-                && pid_record.writer_owner.as_deref() == expected_writer_owner
-                && expected_writer_owner.is_some()))
-}
-
-fn run_pid_record_belongs_to_successor_owner(
-    base_dir: &Path,
-    project_id: &ProjectId,
-    pid_record: &RunPidRecord,
-    expected_writer_owner: Option<&str>,
-) -> AppResult<bool> {
-    let Some(expected_writer_owner) = expected_writer_owner else {
-        return Ok(false);
-    };
-    let Some(pid_writer_owner) = pid_record.writer_owner.as_deref() else {
-        return Ok(false);
-    };
-    if pid_writer_owner == expected_writer_owner {
-        return Ok(false);
-    }
-
-    Ok(
-        crate::contexts::automation_runtime::cli_writer_lease::read_project_writer_lock_owner(
-            base_dir, project_id,
-        )?
-        .as_deref()
-            == Some(pid_writer_owner),
-    )
 }
 
 #[allow(clippy::too_many_arguments)]
