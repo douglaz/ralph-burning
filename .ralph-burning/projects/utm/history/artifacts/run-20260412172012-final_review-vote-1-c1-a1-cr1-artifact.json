@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412172012-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T17:41:39.966411269Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed each amendment independently. The first two identify concrete config-resolution regressions where explicit default backend selections now mask family role-model overrides, so they should be accepted. The third is evidence of an explicit live override in project config rather than a violation of compiled defaults, so it should be rejected.\n\n## Votes\n\n- `fr-1-1fd974ab`: Accept\n  This is a real behavior change: seeding `workflow.implementer_backend` with an explicit model-bearing selection causes `target_for_family` to prefer that model over role-model fallbacks, making workspace/project `role_models.implementer` ineffective unless full backend config is duplicated.\n- `fr-1-f01fbc0a`: Accept\n  The default final-review panel now carries explicit model selections and those are resolved before `role_models.final_reviewer`, so role-model overrides for final reviewers no longer apply on default path. That is a concrete regression in configurability and should be fixed.\n- `fr-1-ef96210d`: Reject\n  The reported two-Codex reviewers and `reviewer-2` model are consistent with an explicit `final_review.backends` override in project/workspace config, not proof of default-set corruption. This does not demonstrate a default-resolution bug by itself.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

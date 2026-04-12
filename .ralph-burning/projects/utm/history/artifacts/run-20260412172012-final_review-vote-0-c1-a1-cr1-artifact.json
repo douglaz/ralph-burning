@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412172012-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T17:44:54.504982981Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo amendments identify real precedence regressions caused by turning defaults into explicit model-bearing selections. The third does not show a default-resolution defect, because the observed two-Codex final-review panel matches an explicit live project override.\n\n## Votes\n\n- `fr-1-1fd974ab`: Accept\n  `default_implementer_backend()` now injects an explicit `BackendSelection` with model `gpt-5.4-high`, and `BackendPolicyService::target_for_family()` prefers that explicit model before consulting `backends.<family>.role_models.implementer`. Before this change, the default path did not pin an implementer model in `workflow.implementer_backend`, so family-level role-model overrides could take effect. Requiring users to duplicate the whole `workflow.implementer_backend` setting just to change the model is a real configurability regression.\n- `fr-1-f01fbc0a`: Accept\n  `default_final_review_backends()` used to be family-only, but now seeds the default panel with model-bearing selections. `resolve_panel_backends()` passes those selections straight through `selection_to_target()`, so `selection.model` wins before `backends.<family>.role_models.final_reviewer` is considered. That means explicit user-configured panel entries still behave correctly, but the compiled default panel now silently disables workspace/project reviewer-model overrides, which is a real precedence regression.\n- `fr-1-ef96210d`: Reject\n  The cited `.ralph-burning/projects/utm/run.json` and `journal.ndjson` show the effective reviewers for that run, but they do not prove the compiled defaults are wrong. `FileSystem::read_project_config()` prefers the live project root when it exists, and `.git/ralph-burning-live/projects/utm/config.toml` explicitly sets `final_review.backends = [\"codex/gpt-5.4-xhigh\", \"codex/gpt-5.3-codex-spark-xhigh\"]`. The observed two-Codex panel is therefore consistent with an explicit live override, not evidence that the default resolver replaced Claude or removed cross-model diversity on its own.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

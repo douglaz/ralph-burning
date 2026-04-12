@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260412172012-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412172012-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T17:44:54.518969911Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-1fd974ab`\n- `fr-1-f01fbc0a`\n\n## Rejected\n\n- `fr-1-ef96210d`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-1fd974ab`\n\nPreserve `backends.<family>.role_models.implementer` overrides when the new Codex implementer default is in effect. `src/contexts/workspace_governance/config.rs:427-435` now injects `default_implementer_backend()` (`src/contexts/workspace_governance/config.rs:1500-1501`) as an explicit `BackendSelection` with model `gpt-5.4-high`. Because `BackendPolicyService::target_for_family()` gives `selection.model` precedence over role-model fallbacks (`src/contexts/agent_execution/policy.rs:289-324`), a workspace/project override like `backends.codex.role_models.implementer = \"...\"` no longer changes the implementer model unless the user also duplicates the whole `workflow.implementer_backend` setting. That regresses the promised workspace/project configurability for implementers.\n\n### `fr-1-f01fbc0a`\n\nPreserve `backends.<family>.role_models.final_reviewer` overrides for the default final-review panel. `src/contexts/workspace_governance/config.rs:266-270` now seeds `final_review.backends` from `default_final_review_backends()` (`src/contexts/workspace_governance/config.rs:1504-1514`), and those defaults are explicit model-bearing panel specs (`codex/gpt-5.4-xhigh`, `claude/claude-opus-4-6`). `resolve_panel_backends()` forwards each spec straight into `selection_to_target()` (`src/contexts/agent_execution/policy.rs:257-303`), so the explicit model wins before `backends.<family>.role_models.final_reviewer` is considered (`src/contexts/agent_execution/policy.rs:319-324`). As a result, workspace/project reviewer-model overrides are ignored unless the user rewrites `final_review.backends` too.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

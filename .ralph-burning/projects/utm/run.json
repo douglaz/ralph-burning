@@ -2,29 +2,74 @@
   "active_run": {
     "run_id": "run-20260412172012",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-12T17:20:12.938262947Z",
     "prompt_hash_at_cycle_start": "6bccd9b3258d12c7a620603fba3fb79ee952815459aa6d4ffdff50d80c66b94f",
     "prompt_hash_at_stage_start": "6bccd9b3258d12c7a620603fba3fb79ee952815459aa6d4ffdff50d80c66b94f",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-1fd974ab",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Preserve `backends.<family>.role_models.implementer` overrides when the new Codex implementer default is in effect. `src/contexts/workspace_governance/config.rs:427-435` now injects `default_implementer_backend()` (`src/contexts/workspace_governance/config.rs:1500-1501`) as an explicit `BackendSelection` with model `gpt-5.4-high`. Because `BackendPolicyService::target_for_family()` gives `selection.model` precedence over role-model fallbacks (`src/contexts/agent_execution/policy.rs:289-324`), a workspace/project override like `backends.codex.role_models.implementer = \"...\"` no longer changes the implementer model unless the user also duplicates the whole `workflow.implementer_backend` setting. That regresses the promised workspace/project configurability for implementers.",
+        "created_at": "2026-04-12T17:44:54.518963008Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "d88aac36fb588f7ff4dd204a8db4555ea201dad7dcd875164d6f7e82a5c6b419"
+      },
+      {
+        "amendment_id": "fr-1-f01fbc0a",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Preserve `backends.<family>.role_models.final_reviewer` overrides for the default final-review panel. `src/contexts/workspace_governance/config.rs:266-270` now seeds `final_review.backends` from `default_final_review_backends()` (`src/contexts/workspace_governance/config.rs:1504-1514`), and those defaults are explicit model-bearing panel specs (`codex/gpt-5.4-xhigh`, `claude/claude-opus-4-6`). `resolve_panel_backends()` forwards each spec straight into `selection_to_target()` (`src/contexts/agent_execution/policy.rs:257-303`), so the explicit model wins before `backends.<family>.role_models.final_reviewer` is considered (`src/contexts/agent_execution/policy.rs:319-324`). As a result, workspace/project reviewer-model overrides are ignored unless the user rewrites `final_review.backends` too.",
+        "created_at": "2026-04-12T17:44:54.518965272Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "f4b9c9042f360c877692a7fc864d8ca43c2851d8da2bc92835be93ab117787f0"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-12T17:28:01.117692396Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    },
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
 }
