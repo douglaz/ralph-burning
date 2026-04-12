@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260412172012",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
     "started_at": "2026-04-12T17:20:12.938262947Z",
     "prompt_hash_at_cycle_start": "6bccd9b3258d12c7a620603fba3fb79ee952815459aa6d4ffdff50d80c66b94f",
     "prompt_hash_at_stage_start": "6bccd9b3258d12c7a620603fba3fb79ee952815459aa6d4ffdff50d80c66b94f",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-f924f41e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "Fix the implementer source-attribution regression in backend diagnostics. `src/contexts/workspace_governance/config.rs:427-435` now injects a compiled-default `workflow.implementer_backend` selection (`codex`) even when the user never set that key, and `src/contexts/agent_execution/diagnostics.rs:1482-1497` already treats that role as an explicit override for `backend check`/`probe`. But `src/contexts/agent_execution/diagnostics.rs:1526-1552` still collapses any default-sourced `workflow.implementer_backend` entry to `default_backend (...)`. In a fresh workspace, `backend show-effective --json` therefore reports the implementer as `codex/gpt-5.4-high` with `override_source = \"default_backend (default)\"`, even though changing `default_backend` no longer changes that role. Update `show-effective` to attribute the implementer to `workflow.implementer_backend` (or another explicit implementer-default label) whenever the role is resolved via the compiled implementer default, and add a regression test in `tests/unit/backend_diagnostics_test.rs`.",
+        "created_at": "2026-04-12T18:03:17.292072534Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "969eb9430e4352689059c8e141a3b0c94a22db8197154707cf1a951425f695d6"
+      }
+    ],
     "processed_count": 2
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-12T17:28:01.117692396Z",
+    "resolved_at": "2026-04-12T17:49:04.925568850Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

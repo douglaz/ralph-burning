@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr2-artifact",
+  "payload_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T18:00:31.791715790Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the implementer diagnostics attribution fix: the current show-effective source reporting is inconsistent with the actual runtime resolution path. Reject the runtime-state/default-reviewer complaint: the implemented code already changes the compiled defaults in source and tests, and the cited run snapshot is not authoritative evidence that the repo default resolution is wrong.\n\n## Votes\n\n- `fr-2-f924f41e`: Accept\n  `src/contexts/workspace_governance/config.rs` now injects a compiled default `workflow.implementer_backend` selection via `default_implementer_backend()`, so the implementer no longer inherits from `default_backend` in the no-user-config case. But `override_source_for_role()` in `src/contexts/agent_execution/diagnostics.rs` still rewrites any default-sourced `workflow.implementer_backend` entry to `default_backend (...)`, which misattributes the effective source in `show-effective` and can mislead operators because changing `default_backend` no longer controls that role. Aligning `show-effective` with the real resolution semantics and adding a regression test is correct and low-risk.\n- `fr-2-31ecf408`: Reject\n  The objection is aimed at the wrong evidence. The actual implementation change between the relevant checkpoints modifies `src/contexts/workspace_governance/config.rs` to keep the compiled final-review defaults as family-only `[codex, claude]` and moves the Codex default reviewer model into backend role-model defaults, with regression coverage in `tests/unit/backend_policy_test.rs` and `tests/unit/config_test.rs`. The cited `.ralph-burning/projects/utm/run.json` and `journal.ndjson` entries are runtime state for one workflow run and can reflect the active review harness/models rather than the repo’s compiled backend-default source paths, so they do not establish a defect in the delivered default-resolution logic.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

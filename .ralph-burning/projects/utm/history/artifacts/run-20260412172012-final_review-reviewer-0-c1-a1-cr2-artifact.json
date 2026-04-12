@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260412172012-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T17:57:41.667137785Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the diff against `origin/master...HEAD`, read the changed config/policy paths and related tests, ran the new focused unit tests for default resolution/override precedence, and checked `backend show-effective --json` in a fresh workspace. The resolver changes look sound, but I found one diagnostics regression: `show-effective` still claims the implementer inherits from `default_backend` even though the new compiled default makes it an explicit `workflow.implementer_backend` selection.\n\n## Amendments\n\n1. Fix the implementer source-attribution regression in backend diagnostics. `src/contexts/workspace_governance/config.rs:427-435` now injects a compiled-default `workflow.implementer_backend` selection (`codex`) even when the user never set that key, and `src/contexts/agent_execution/diagnostics.rs:1482-1497` already treats that role as an explicit override for `backend check`/`probe`. But `src/contexts/agent_execution/diagnostics.rs:1526-1552` still collapses any default-sourced `workflow.implementer_backend` entry to `default_backend (...)`. In a fresh workspace, `backend show-effective --json` therefore reports the implementer as `codex/gpt-5.4-high` with `override_source = \"default_backend (default)\"`, even though changing `default_backend` no longer changes that role. Update `show-effective` to attribute the implementer to `workflow.implementer_backend` (or another explicit implementer-default label) whenever the role is resolved via the compiled implementer default, and add a regression test in `tests/unit/backend_diagnostics_test.rs`.\n   Rationale: This is a real correctness/operability regression: the main diagnostics surface now points users at the wrong config knob for the implementer, so debugging or overriding backend selection becomes misleading even though runtime resolution changed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
