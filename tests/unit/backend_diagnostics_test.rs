@@ -263,6 +263,31 @@ fn show_effective_reports_source_precedence() {
 }
 
 #[test]
+fn show_effective_reports_compiled_implementer_default_source() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    let implementer = view
+        .roles
+        .iter()
+        .find(|r| r.role == "implementer")
+        .expect("implementer row should exist");
+    assert_eq!("codex", implementer.backend_family);
+    assert_eq!("gpt-5.4-high", implementer.model_id);
+    assert_eq!(
+        "workflow.implementer_backend (default)", implementer.override_source,
+        "compiled implementer default should be attributed to workflow.implementer_backend"
+    );
+}
+
+#[test]
 fn show_effective_cli_override_source() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());

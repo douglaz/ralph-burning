@@ -1547,9 +1547,15 @@ impl<'a> BackendDiagnosticsService<'a> {
                 if entry.source
                     == crate::contexts::workspace_governance::config::ConfigValueSource::Default
                 {
-                    // No explicit override set — role inherits from default_backend
-                    let base_source = self.source_for_base_backend();
-                    format!("default_backend ({})", base_source)
+                    if self.policy.has_explicit_override(role) {
+                        // Some roles can resolve via a compiled per-role default
+                        // even when the config key itself was never set.
+                        format!("{key} (default)")
+                    } else {
+                        // No explicit override set — role inherits from default_backend
+                        let base_source = self.source_for_base_backend();
+                        format!("default_backend ({})", base_source)
+                    }
                 } else {
                     entry.source.to_string()
                 }
