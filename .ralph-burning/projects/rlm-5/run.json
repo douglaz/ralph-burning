@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 16
+      "completion_round": 17
     },
     "started_at": "2026-04-11T21:27:18.356800744Z",
     "prompt_hash_at_cycle_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "prompt_hash_at_stage_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 15
+    "final_review_restart_count": 16
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 16,
+  "completion_rounds": 17,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-16-2b6c3bab",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 16,
+        "body": "Quarantine recovered handoff-finalization errors per repo instead of propagating them out of `process_cycle_multi_repo`. In `src/contexts/automation_runtime/daemon_loop.rs:428-432`, `phase0_finalize_persisted_cancelled_handoff(...)` is called with `?`, but that helper can return real runtime errors from lease/snapshot/handoff reads (`src/contexts/automation_runtime/daemon_loop.rs:3802-3844`). In multi-repo mode that means one repo with a corrupt or ambiguous recovered handoff now aborts the entire cycle for every registered repo, instead of isolating the bad repo the way the rest of Phase 0 does.",
+        "created_at": "2026-04-12T03:25:14.891262283Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "ebb8fb0682c5a776518c197fde6a30c0d1478288b818c903edef5a247245aaf6"
+      },
+      {
+        "amendment_id": "fr-16-dd7fc5f6",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 16,
+        "body": "Block the repo when the new recovered-terminal Phase 0 path hits label-sync or lease-cleanup failure. In `src/contexts/automation_runtime/daemon_loop.rs:436-464`, failures only mark `label_dirty` and `continue`. But `tasks` was snapshotted before that at `src/contexts/automation_runtime/daemon_loop.rs:416-422`, so the later dirty-task quarantine loop (`src/contexts/automation_runtime/daemon_loop.rs:485-562`) never sees the just-dirtied task in the same cycle. The daemon can therefore keep processing other pending tasks even though `phase0_release_terminal_task_lease` already failed and the recovered task still has contradictory durable state.",
+        "created_at": "2026-04-12T03:25:14.891264999Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "58a0b401c1b640b30894f55da4c20cd01b90a32a0d61795a15bc101a8fabac31"
+      }
+    ],
     "processed_count": 27
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 17 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-12T02:44:48.830708028Z",
+    "resolved_at": "2026-04-12T03:15:39.150928820Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
