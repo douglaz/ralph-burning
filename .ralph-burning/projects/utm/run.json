@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260412172012",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
     "started_at": "2026-04-12T17:20:12.938262947Z",
     "prompt_hash_at_cycle_start": "6bccd9b3258d12c7a620603fba3fb79ee952815459aa6d4ffdff50d80c66b94f",
     "prompt_hash_at_stage_start": "6bccd9b3258d12c7a620603fba3fb79ee952815459aa6d4ffdff50d80c66b94f",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-e6fe4b51",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "Restore backward compatibility for the stable `backend show-effective` / `backend probe` contracts. `src/contexts/agent_execution/diagnostics.rs:76-109,785-792,830-835,1712-1765` removes the stable `role == \"final_reviewer\"` entry, replaces it with `final_review_panel.reviewer[i]`, and rejects `--role final_reviewer`. This bead only changes backend defaults, so existing consumers that key off the documented stable DTO or probe that role will now break. Keep a compatibility `final_reviewer` row/probe path (or version the DTO/CLI) and add the per-member reviewer rows as an additive change instead of a replacement.",
+        "created_at": "2026-04-12T18:47:42.258392477Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "c2a139053c7a078e290bac738d92cedd5a8e10ddf72458a6b599f9f1ccdeb802"
+      },
+      {
+        "amendment_id": "fr-4-0a3c4ba5",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "Fix `backend show-effective` model-source attribution for the new compiled Codex defaults. `src/contexts/workspace_governance/config.rs:1542-1546` now supplies the implementer and final-review defaults through `backends.codex.role_models.{implementer,final_reviewer}`, but `src/contexts/agent_execution/diagnostics.rs:1572-1630,1712-1745` suppresses role-model entries when their source is `Default` and falls back to the generic `\"default\"` label. On a fresh workspace that makes `implementer` (`gpt-5.4-high`) and `final_review_panel.reviewer[0]` (`gpt-5.4-xhigh`) report `model_source: \"default\"`, which points operators at the wrong control point. Return a role-model-specific default source string when the resolved model comes from a compiled `backends.<family>.role_models.<role>` default.",
+        "created_at": "2026-04-12T18:47:42.258394912Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "8e2c7246397fea9370a80711fd7a5767fb9de5ec587d62a5a616ae3350bcaa84"
+      },
+      {
+        "amendment_id": "fr-4-0b4daea6",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "Unify the legacy `BackendResolver` path with the new implementer default. `src/shared/domain.rs:252-256` changes the implementer default target to `codex/gpt-5.4-high`, but `src/contexts/agent_execution/service.rs:43-92` still resets models with `ModelSpec::default_for_backend()` whenever a backend family changes. A simple `BackendResolver::resolve(Implementer, None, project=codex, workspace=claude)` now resolves to `codex/gpt-5.4`, silently dropping the required `-high` suffix. Any caller that still uses `BackendResolver` instead of `BackendPolicyService` can therefore see a different implementer default than the main workflow engine. Either teach `apply_selection` about role-specific defaults or route those callers through `BackendPolicyService`.",
+        "created_at": "2026-04-12T18:47:42.258397206Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "45f237fdc68c7e497f2f6c610cb5f0e3f64c9f0399045269e364aaa75c77a629"
+      }
+    ],
     "processed_count": 6
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-12T18:06:35.492413901Z",
+    "resolved_at": "2026-04-12T18:29:49.023430315Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
