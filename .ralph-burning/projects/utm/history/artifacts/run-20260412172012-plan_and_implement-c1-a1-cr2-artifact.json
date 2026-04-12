@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260412172012-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-12T17:49:04.807904935Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nReworked backend default resolution so the implementer and final-review defaults stay on Codex/Opus while preserving workspace and project `backends.<family>.role_models.*` overrides. The compiled defaults now use family-only selections (`workflow.implementer_backend = codex`, `final_review.backends = [codex, claude]`), and the Codex runtime defaults supply `implementer = gpt-5.4-high` plus `final_reviewer = gpt-5.4-xhigh`, allowing project/workspace role-model overrides to win again without duplicating full backend selections.\n\n## Steps\n\n1. [Completed] Inspect the effective-config and backend-policy resolution paths to confirm that explicit model-bearing compiled defaults were bypassing `backends.<family>.role_models` overrides for implementers and final reviewers.\n2. [Completed] Patch the compiled defaults so implementer and final-review panels default by backend family while moving the Codex default models into backend runtime role-model defaults, preserving workspace/project override precedence.\n3. [Completed] Update regression coverage for compiled defaults and workspace/project role-model overrides, then run the required validation commands.\n\n## Validation Evidence\n\n- `cargo test` passed.\n- `cargo clippy` passed.\n- `cargo fmt --check` passed.\n- Added regression tests proving the compiled default implementer now honors workspace/project `backends.codex.role_models.implementer` overrides and the compiled default final-review panel honors `backends.<family>.role_models.final_reviewer` overrides while keeping the default reviewers at Codex `gpt-5.4-xhigh` and Claude Opus 4.6 when no override is set.\n- Updated effective-config assertions now verify the compiled defaults expose family-only selections plus the Codex default role models (`backends.codex.role_models.implementer = gpt-5.4-high`, `backends.codex.role_models.final_reviewer = gpt-5.4-xhigh`).\n\n## Outstanding Risks\n\n- The worktree still contains pre-existing unrelated modifications in `.ralph-burning/projects/utm/journal.ndjson` and `.ralph-burning/projects/utm/run.json`, which I left untouched.\n- `cargo clippy` still reports existing warning-level findings outside this change set (for example `src/adapters/fs.rs:1122`); the command succeeded.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

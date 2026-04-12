@@ -1498,19 +1498,13 @@ fn default_completion_backends() -> Vec<PanelBackendSpec> {
 }
 
 fn default_implementer_backend() -> BackendSelection {
-    BackendSelection::new(BackendFamily::Codex, Some("gpt-5.4-high".to_owned()))
+    BackendSelection::new(BackendFamily::Codex, None)
 }
 
 fn default_final_review_backends() -> Vec<PanelBackendSpec> {
     vec![
-        PanelBackendSpec::required_selection(BackendSelection::new(
-            BackendFamily::Codex,
-            Some("gpt-5.4-xhigh".to_owned()),
-        )),
-        PanelBackendSpec::required_selection(BackendSelection::new(
-            BackendFamily::Claude,
-            Some("claude-opus-4-6".to_owned()),
-        )),
+        PanelBackendSpec::required(BackendFamily::Codex),
+        PanelBackendSpec::required(BackendFamily::Claude),
     ]
 }
 
@@ -1545,7 +1539,14 @@ fn default_backend_runtime_settings(backend_name: &str) -> AppResult<BackendRunt
         command: Some(command.to_owned()),
         args: Some(Vec::new()),
         timeout_seconds: None,
-        role_models: BackendRoleModels::default(),
+        role_models: match backend_name {
+            "codex" => BackendRoleModels {
+                implementer: Some("gpt-5.4-high".to_owned()),
+                final_reviewer: Some("gpt-5.4-xhigh".to_owned()),
+                ..Default::default()
+            },
+            _ => BackendRoleModels::default(),
+        },
         role_timeouts: BackendRoleTimeouts::default(),
         extra: toml::Table::new(),
     })
