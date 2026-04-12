@@ -610,10 +610,12 @@ fn show_effective_reports_per_role_session_policy() {
         assert_eq!("new_session", completer.session_policy);
     }
 
-    let final_reviewer = view.roles.iter().find(|r| r.role == "final_reviewer");
-    if let Some(fr) = final_reviewer {
-        assert_eq!("new_session", fr.session_policy);
-    }
+    let final_reviewer = view
+        .roles
+        .iter()
+        .find(|r| r.role == "final_review_panel.reviewer[0]")
+        .expect("final-review reviewer row should exist");
+    assert_eq!("new_session", final_reviewer.session_policy);
 }
 
 // ── show-effective source precedence for inherited roles ─────────────────────
@@ -729,6 +731,62 @@ fn probe_final_review_panel_includes_arbiter() {
     assert!(!arbiter.backend_family.is_empty());
     assert!(!arbiter.model_id.is_empty());
     assert!(arbiter.required);
+}
+
+#[test]
+fn show_effective_reports_final_review_panel_members() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    assert!(
+        !view.roles.iter().any(|r| r.role == "final_reviewer"),
+        "generic final_reviewer row should not be shown once final-review reviewers are panel-scoped"
+    );
+
+    let reviewer0 = view
+        .roles
+        .iter()
+        .find(|r| r.role == "final_review_panel.reviewer[0]")
+        .expect("first final-review reviewer row should exist");
+    assert_eq!("codex", reviewer0.backend_family);
+    assert_eq!("gpt-5.4-xhigh", reviewer0.model_id);
+    assert_eq!("final_review.backends (default)", reviewer0.override_source);
+
+    let reviewer1 = view
+        .roles
+        .iter()
+        .find(|r| r.role == "final_review_panel.reviewer[1]")
+        .expect("second final-review reviewer row should exist");
+    assert_eq!("claude", reviewer1.backend_family);
+    assert_eq!("claude-opus-4-6", reviewer1.model_id);
+    assert_eq!("final_review.backends (default)", reviewer1.override_source);
+}
+
+#[test]
+fn probe_singular_final_reviewer_is_rejected() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let error = service
+        .probe("final_reviewer", FlowPreset::Standard, 1)
+        .expect_err("singular final_reviewer probe should be rejected");
+
+    assert!(
+        error.to_string().contains("use 'final_review_panel'"),
+        "error should direct operators to the panel probe: {error}"
+    );
 }
 
 // ── structured panel failure tests ───────────────────────────────────────────

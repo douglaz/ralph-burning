@@ -784,46 +784,9 @@ impl<'a> BackendDiagnosticsService<'a> {
 
         let mut roles = BackendPolicyRole::ALL
             .iter()
-            .map(|role| {
-                let override_source = self.override_source_for_role(*role);
-                let session_policy = session_policy_for_role(*role);
-
-                match self.policy.resolve_role_target(*role, 1) {
-                    Ok(target) => {
-                        let family = target.backend.family;
-                        let timeout = self.policy.timeout_for_role(family, *role);
-                        let model_source = self.model_source_for_role(*role, family);
-                        let timeout_source = self.timeout_source_for_role(*role, family);
-                        RoleEffectiveView {
-                            role: role.as_str().to_owned(),
-                            backend_family: family.as_str().to_owned(),
-                            model_id: target.model.model_id.clone(),
-                            timeout_seconds: timeout.as_secs(),
-                            session_policy,
-                            override_source,
-                            model_source,
-                            timeout_source,
-                            resolution_error: None,
-                        }
-                    }
-                    Err(err) => {
-                        // Surface the configured backend family even though
-                        // resolution failed, so operators can see the broken
-                        // selection and its source.
-                        let configured_family = self.family_for_role(*role);
-                        RoleEffectiveView {
-                            role: role.as_str().to_owned(),
-                            backend_family: configured_family,
-                            model_id: "unresolved".to_owned(),
-                            timeout_seconds: 0,
-                            session_policy,
-                            override_source,
-                            model_source: "unresolved".to_owned(),
-                            timeout_source: "unresolved".to_owned(),
-                            resolution_error: Some(err.to_string()),
-                        }
-                    }
-                }
+            .flat_map(|role| match role {
+                BackendPolicyRole::FinalReviewer => self.final_review_reviewer_effective_views(),
+                _ => vec![self.role_effective_view(*role)],
             })
             .collect::<Vec<_>>();
         roles.push(self.final_review_planner_effective_view());
@@ -863,6 +826,13 @@ impl<'a> BackendDiagnosticsService<'a> {
             "prompt_review_panel" => {
                 validate_flow_has_stage(flow_def, StageId::PromptReview)?;
                 return self.probe_prompt_review_panel(flow, cycle);
+            }
+            "final_reviewer" => {
+                return Err(AppError::InvalidConfigValue {
+                    key: "role".to_owned(),
+                    value: role_str.to_owned(),
+                    reason: "final_reviewer is panel-scoped; use 'final_review_panel' to inspect configured final-review reviewers".to_owned(),
+                });
             }
             _ => {}
         }
@@ -1592,6 +1562,13 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
     }
 
+    fn final_review_reviewers_override_source(&self) -> String {
+        match self.config.get("final_review.backends") {
+            Ok(entry) => format!("final_review.backends ({})", entry.source),
+            Err(_) => "final_review.backends".to_owned(),
+        }
+    }
+
     /// Determine the source precedence for a role's resolved model_id.
     ///
     /// Model resolution order (matching `BackendPolicyService::target_for_family`):
@@ -1691,6 +1668,101 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
 
         self.model_source_for_role(BackendPolicyRole::Planner, family)
+    }
+
+    fn role_effective_view(&self, role: BackendPolicyRole) -> RoleEffectiveView {
+        let override_source = self.override_source_for_role(role);
+        let session_policy = session_policy_for_role(role);
+
+        match self.policy.resolve_role_target(role, 1) {
+            Ok(target) => {
+                let family = target.backend.family;
+                let timeout = self.policy.timeout_for_role(family, role);
+                let model_source = self.model_source_for_role(role, family);
+                let timeout_source = self.timeout_source_for_role(role, family);
+                RoleEffectiveView {
+                    role: role.as_str().to_owned(),
+                    backend_family: family.as_str().to_owned(),
+                    model_id: target.model.model_id.clone(),
+                    timeout_seconds: timeout.as_secs(),
+                    session_policy,
+                    override_source,
+                    model_source,
+                    timeout_source,
+                    resolution_error: None,
+                }
+            }
+            Err(err) => {
+                let configured_family = self.family_for_role(role);
+                RoleEffectiveView {
+                    role: role.as_str().to_owned(),
+                    backend_family: configured_family,
+                    model_id: "unresolved".to_owned(),
+                    timeout_seconds: 0,
+                    session_policy,
+                    override_source,
+                    model_source: "unresolved".to_owned(),
+                    timeout_source: "unresolved".to_owned(),
+                    resolution_error: Some(err.to_string()),
+                }
+            }
+        }
+    }
+
+    fn final_review_reviewer_effective_views(&self) -> Vec<RoleEffectiveView> {
+        let override_source = self.final_review_reviewers_override_source();
+
+        self.config
+            .final_review_policy()
+            .backends
+            .iter()
+            .enumerate()
+            .map(|(idx, spec)| {
+                let selection = spec.selection();
+                match self
+                    .policy
+                    .resolve_selection_target(BackendPolicyRole::FinalReviewer, selection)
+                {
+                    Ok(target) => {
+                        let family = target.backend.family;
+                        let timeout = self
+                            .policy
+                            .timeout_for_role(family, BackendPolicyRole::FinalReviewer);
+                        let model_source = if selection.model.is_some() {
+                            override_source.clone()
+                        } else {
+                            self.model_source_for_role(BackendPolicyRole::FinalReviewer, family)
+                        };
+                        RoleEffectiveView {
+                            role: format!("final_review_panel.reviewer[{idx}]"),
+                            backend_family: family.as_str().to_owned(),
+                            model_id: target.model.model_id,
+                            timeout_seconds: timeout.as_secs(),
+                            session_policy: "new_session".to_owned(),
+                            override_source: override_source.clone(),
+                            model_source,
+                            timeout_source: self
+                                .timeout_source_for_role(BackendPolicyRole::FinalReviewer, family),
+                            resolution_error: None,
+                        }
+                    }
+                    Err(err) => RoleEffectiveView {
+                        role: format!("final_review_panel.reviewer[{idx}]"),
+                        backend_family: selection.family.as_str().to_owned(),
+                        model_id: selection
+                            .model
+                            .clone()
+                            .unwrap_or_else(|| "unresolved".to_owned()),
+                        timeout_seconds: 0,
+                        session_policy: "new_session".to_owned(),
+                        override_source: override_source.clone(),
+                        model_source: "unresolved".to_owned(),
+                        timeout_source: "unresolved".to_owned(),
+                        resolution_error: Some(err.to_string()),
+                    },
+                }
+            })
+            .collect()
     }
 
     /// Determine the source precedence for a role's resolved timeout_seconds.

@@ -158,6 +158,14 @@ impl<'a> BackendPolicyService<'a> {
         )
     }
 
+    pub fn resolve_selection_target(
+        &self,
+        role: BackendPolicyRole,
+        selection: &BackendSelection,
+    ) -> AppResult<ResolvedBackendTarget> {
+        self.selection_to_target(role, selection)
+    }
+
     /// Resolve only the prompt-review validator panel members (no refiner).
     /// Used by preflight to assemble the panel with member-specific error wrapping.
     pub fn resolve_prompt_review_validators(&self) -> AppResult<Vec<ResolvedPanelMember>> {
