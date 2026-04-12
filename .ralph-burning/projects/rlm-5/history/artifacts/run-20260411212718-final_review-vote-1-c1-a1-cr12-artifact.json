@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T01:52:45.111811188Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBoth amendments should be accepted. Each addresses a concrete recovery-time correctness defect in cancellation/interruption handling that can leave active leases or backend processes uncleared, violating exclusivity and making later scheduling/replay behavior unreliable.\n\n## Votes\n\n- `fr-12-515a28ec`: Accept\n  The proposed fix is correct in principle: the existing flow can return early on non-cancel errors from `allow_aborted_dispatch_fast_path` after marking state as `Aborted`, which skips downstream `mark_label_dirty`/lease release in task-local abort branches. That can strand work in a blocked state until TTL reconciliation. Ensuring cleanup and lease release even on backend/interrupted-state errors materially improves robustness and prevents deadlock-like backlog buildup.\n- `fr-12-3c65baa1`: Accept\n  This is a valid cleanup gap: when a handoff persists but shutdown interrupts before normal backend process cleanup, repair currently restores event history without re-running stale backend-group cleanup. Replaying via `load_dispatch_run_snapshot`/`handle_resume` can then coexist with orphaned backend processes, breaking single-run isolation and resource hygiene. Incorporating stale backend cleanup in the repair path is necessary to restore full recovery invariants.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 12
+}
