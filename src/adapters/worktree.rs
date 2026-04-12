@@ -84,6 +84,11 @@ impl WorktreeAdapter {
                     .into_iter()
                     .flatten()
                     .find(|path| Self::is_executable(path))
+                    .map(|p| {
+                        // Absolutize so the cached path works regardless of
+                        // the child process's current_dir().
+                        std::fs::canonicalize(&p).unwrap_or(p)
+                    })
                     .unwrap_or_else(|| PathBuf::from("git"))
             })
             .as_path()
