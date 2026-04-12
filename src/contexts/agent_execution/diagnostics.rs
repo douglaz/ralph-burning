@@ -1011,8 +1011,9 @@ impl<'a> BackendDiagnosticsService<'a> {
 
     fn probe_final_reviewer(&self, flow: FlowPreset, cycle: u32) -> AppResult<BackendProbeResult> {
         let configured_specs = &self.config.final_review_policy().backends;
-        let selection = configured_specs
-            .first()
+        let selection = self
+            .primary_final_review_reviewer_configured_index()
+            .and_then(|idx| configured_specs.get(idx))
             .ok_or_else(|| AppError::InvalidConfigValue {
                 key: "final_review.backends".to_owned(),
                 value: "[]".to_owned(),
@@ -1340,6 +1341,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         match role_str {
             "completion_panel" => "planner",
             "final_review_panel" => "planner",
+            "final_reviewer" => "reviewer[0]",
             "prompt_review_panel" => "refiner",
             _ => role_str,
         }
@@ -1352,6 +1354,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             // Completion and final-review panels use the planner as primary target
             "completion_panel" => self.config_source_for_role(BackendPolicyRole::Planner),
             "final_review_panel" => self.final_review_planner_config_source(),
+            "final_reviewer" => "final_review.backends".to_owned(),
             // Prompt-review panel uses the refiner as primary target
             "prompt_review_panel" => self.config_source_for_role(BackendPolicyRole::PromptReviewer),
             // Singular role probe — parse to get the actual role's config source
@@ -1431,6 +1434,22 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
 
         (members, omitted)
+    }
+
+    fn primary_final_review_reviewer_configured_index(&self) -> Option<usize> {
+        self.config
+            .final_review_policy()
+            .backends
+            .iter()
+            .enumerate()
+            .find_map(|(idx, spec)| {
+                let backend = spec.backend();
+                if spec.is_optional() && !self.policy.backend_enabled_public(backend) {
+                    None
+                } else {
+                    Some(idx)
+                }
+            })
     }
 
     // ── Helper methods ──────────────────────────────────────────────────
@@ -1801,7 +1820,11 @@ impl<'a> BackendDiagnosticsService<'a> {
 
         let mut views =
             Vec::with_capacity(member_views.len() + usize::from(!member_views.is_empty()));
-        if let Some(first_member) = member_views.first().cloned() {
+        if let Some(first_member) = self
+            .primary_final_review_reviewer_configured_index()
+            .and_then(|idx| member_views.get(idx).cloned())
+            .or_else(|| member_views.first().cloned())
+        {
             views.push(RoleEffectiveView {
                 role: "final_reviewer".to_owned(),
                 ..first_member

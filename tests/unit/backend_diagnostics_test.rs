@@ -806,6 +806,89 @@ fn probe_singular_final_reviewer_returns_first_panel_member() {
     assert_eq!("gpt-5.4-xhigh", target.model_id);
 }
 
+#[test]
+fn show_effective_final_reviewer_skips_optional_disabled_first_member() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(true),
+        backends: Some(vec![
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+            PanelBackendSpec::required(BackendFamily::Claude),
+        ]),
+        min_reviewers: Some(1),
+        ..Default::default()
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    let final_reviewer = view
+        .roles
+        .iter()
+        .find(|r| r.role == "final_reviewer")
+        .expect("compatibility final_reviewer row should exist");
+    assert_eq!("claude", final_reviewer.backend_family);
+    assert_eq!("claude-opus-4-6", final_reviewer.model_id);
+    assert!(
+        final_reviewer.resolution_error.is_none(),
+        "optional disabled reviewer should be skipped for final_reviewer alias: {:?}",
+        final_reviewer
+    );
+
+    let configured_first = view
+        .roles
+        .iter()
+        .find(|r| r.role == "final_review_panel.reviewer[0]")
+        .expect("configured first reviewer row should exist");
+    assert_eq!("openrouter", configured_first.backend_family);
+    assert!(
+        configured_first.resolution_error.is_some(),
+        "configured optional reviewer should remain unresolved in its own row"
+    );
+}
+
+#[test]
+fn probe_singular_final_reviewer_skips_optional_disabled_first_member() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(true),
+        backends: Some(vec![
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+            PanelBackendSpec::required(BackendFamily::Claude),
+        ]),
+        min_reviewers: Some(1),
+        ..Default::default()
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service
+        .probe("final_reviewer", FlowPreset::Standard, 1)
+        .expect("singular final_reviewer probe should skip optional disabled members");
+
+    assert_eq!("final_reviewer", result.role);
+    let target = result
+        .target
+        .expect("singular role probe should return a target");
+    assert_eq!("claude", target.backend_family);
+    assert_eq!("claude-opus-4-6", target.model_id);
+}
+
 // ── structured panel failure tests ───────────────────────────────────────────
 
 #[test]
@@ -3385,6 +3468,94 @@ async fn probe_with_availability_reports_correct_configured_index_after_optional
     assert!(
         !err_msg.contains("[0]"),
         "error must NOT reference filtered index 0 for spec-index-1 member: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+async fn probe_with_availability_final_reviewer_reports_panel_slot_and_source() {
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    struct OpenRouterUnavailableAdapter;
+    impl AgentExecutionPort for OpenRouterUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::OpenRouter {
+                Err(AppError::BackendUnavailable {
+                    backend: "openrouter".to_owned(),
+                    details: "OPENROUTER_API_KEY not set".to_owned(),
+                    failure_class: None,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(true),
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::OpenRouter),
+            PanelBackendSpec::required(BackendFamily::Claude),
+        ]),
+        min_reviewers: Some(1),
+        ..Default::default()
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = OpenRouterUnavailableAdapter;
+
+    let result = service
+        .probe_with_availability("final_reviewer", FlowPreset::Standard, 1, &adapter)
+        .await;
+
+    assert!(result.is_err(), "openrouter availability should fail");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("required target 'final_reviewer' (reviewer[0]) unavailable"),
+        "availability failure should identify final_review reviewer slot 0: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("[source: final_review.backends]"),
+        "availability failure should identify final_review.backends as source: {}",
+        err_msg
+    );
+    assert!(
+        !err_msg.contains("default_backend"),
+        "availability failure should not fall back to default_backend: {}",
         err_msg
     );
 }
