@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 9
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-8-ba484100",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "`src/contexts/automation_runtime/daemon_loop.rs:440-451` now treats missing-worktree-lease repair as successful as soon as `clear_orphaned_task_lease_reference()` returns, but `src/contexts/automation_runtime/daemon_loop.rs:3673-3695` only removes `run.pid` when the pid record belongs to the current daemon PID and suppresses all pid-file read/remove errors. In the real partial-cleanup case this branch is meant to repair, a previous daemon process can already have removed the lease record and died before clearing task metadata; when a later daemon runs Phase 0, it will clear `task.lease_id` and `label_dirty` but leave the stale daemon-owned `run.pid` behind because `pid_record.pid != std::process::id()`. The same code also reports success if pid-file deletion itself fails. Please make orphaned cleanup treat unresolved pid cleanup as a partial failure and reclaim dead daemon-owned pid records from prior daemon processes instead of only the current PID.",
-        "created_at": "2026-04-12T00:19:59.044591411Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "ee437d34930b7933f24460ceff12df23aa279f9c366fb6be28dc153ced57f83e"
-      }
-    ],
-    "processed_count": 13
+    "pending": [],
+    "processed_count": 14
   },
-  "status_summary": "running: final review restart round 9 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-12T00:07:12.964933450Z",

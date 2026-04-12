@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::adapters::fs::{
     FileSystem, FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
-    FsMilestoneStore, FsTaskRunLineageStore,
+    FsMilestoneStore, FsTaskRunLineageStore, RunPidOwner, RunPidRecord,
 };
 use crate::adapters::github::GithubPort;
 use crate::cli::run::{
@@ -3649,13 +3649,18 @@ where
         );
         match release_result {
             Ok(ref r) if r.resources_released => {
+                self.remove_owned_run_pid_file(
+                    repo_root,
+                    &lease.project_id,
+                    Some(lease.lease_id.as_str()),
+                    task_id,
+                )?;
                 // All sub-steps succeeded — safe to clear durable lease reference.
                 DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id).map_err(
                     |_| AppError::LeaseCleanupPartialFailure {
                         task_id: task_id.to_owned(),
                     },
                 )?;
-                self.remove_owned_run_pid_file(repo_root, &lease.project_id);
                 Ok(())
             }
             Ok(_) => {
@@ -3676,27 +3681,64 @@ where
         repo_root: &Path,
         task: &DaemonTask,
     ) -> AppResult<()> {
+        self.remove_owned_run_pid_file(
+            repo_root,
+            &task.project_id,
+            task.lease_id.as_deref(),
+            &task.task_id,
+        )?;
         DaemonTaskService::clear_lease_reference(self.store, base_dir, &task.task_id).map_err(
             |_| AppError::LeaseCleanupPartialFailure {
                 task_id: task.task_id.clone(),
             },
         )?;
-        self.remove_owned_run_pid_file(repo_root, &task.project_id);
         Ok(())
     }
 
-    fn remove_owned_run_pid_file(&self, repo_root: &Path, project_id: &str) {
-        if let Ok(project_id) = ProjectId::new(project_id.to_owned()) {
-            // Only remove the pid file if it still belongs to this daemon's
-            // run. A fresh run may have claimed the project after cleanup.
-            if let Ok(Some(pid_record)) = FileSystem::read_pid_file(repo_root, &project_id) {
-                if pid_record.pid == std::process::id() {
-                    let _ =
-                        FileSystem::remove_pid_file_if_matches(repo_root, &project_id, &pid_record);
-                }
+    fn remove_owned_run_pid_file(
+        &self,
+        repo_root: &Path,
+        project_id: &str,
+        expected_writer_owner: Option<&str>,
+        task_id: &str,
+    ) -> AppResult<()> {
+        let cleanup_failure = || AppError::LeaseCleanupPartialFailure {
+            task_id: task_id.to_owned(),
+        };
+        let project_id = ProjectId::new(project_id.to_owned()).map_err(|_| cleanup_failure())?;
+
+        for _ in 0..2 {
+            let Some(pid_record) =
+                FileSystem::read_pid_file(repo_root, &project_id).map_err(|_| cleanup_failure())?
+            else {
+                return Ok(());
+            };
+            if !run_pid_record_is_reclaimable(&pid_record, expected_writer_owner) {
+                return Err(cleanup_failure());
+            }
+            if FileSystem::remove_pid_file_if_matches(repo_root, &project_id, &pid_record)
+                .map_err(|_| cleanup_failure())?
+            {
+                return Ok(());
             }
         }
+
+        match FileSystem::read_pid_file(repo_root, &project_id).map_err(|_| cleanup_failure())? {
+            None => Ok(()),
+            Some(_) => Err(cleanup_failure()),
+        }
     }
+}
+
+fn run_pid_record_is_reclaimable(
+    pid_record: &RunPidRecord,
+    expected_writer_owner: Option<&str>,
+) -> bool {
+    pid_record.owner == RunPidOwner::Daemon
+        && (!FileSystem::pid_record_matches_live_process(pid_record)
+            || (pid_record.pid == std::process::id()
+                && pid_record.writer_owner.as_deref() == expected_writer_owner
+                && expected_writer_owner.is_some()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4006,7 +4048,7 @@ mod tests {
         FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
         FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRequirementsStore,
         FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
-        RunPidOwner,
+        RunPidOwner, RunPidRecord,
     };
     use crate::adapters::github::InMemoryGithubClient;
     use crate::adapters::stub_backend::StubBackendAdapter;
@@ -5633,6 +5675,209 @@ mod tests {
             second_after_second.status,
             TaskStatus::Completed,
             "the repo should resume processing once the orphaned lease reference is repaired"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_reclaims_dead_daemon_pid_record_during_orphaned_repair() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let first_project_id = create_standard_project(&repo_root, "multi-repo-stale-daemon-pid");
+        let mut repaired_task =
+            sample_pending_task("task-multi-repo-stale-daemon-pid", &first_project_id);
+        repaired_task.issue_ref = format!("{repo_slug}#41");
+        repaired_task.repo_slug = Some(repo_slug.to_owned());
+        repaired_task.issue_number = Some(41);
+        repaired_task.status = TaskStatus::Completed;
+        repaired_task.lease_id = Some("lease-stale-daemon-pid".to_owned());
+        repaired_task.label_dirty = true;
+        FsDaemonStore
+            .create_task(&daemon_dir, &repaired_task)
+            .expect("create dirty task");
+
+        let stale_pid_record = RunPidRecord {
+            pid: 999_999,
+            started_at: Utc::now(),
+            owner: RunPidOwner::Daemon,
+            writer_owner: repaired_task.lease_id.clone(),
+            run_id: Some("run-stale-daemon-pid".to_owned()),
+            run_started_at: Some(Utc::now()),
+            proc_start_ticks: Some(1),
+            proc_start_marker: None,
+        };
+        let stale_pid_path =
+            FileSystem::live_project_root(&repo_root, &first_project_id).join("run.pid");
+        std::fs::write(
+            &stale_pid_path,
+            serde_json::to_vec(&stale_pid_record).expect("serialize stale pid record"),
+        )
+        .expect("write stale pid record");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                &[registration],
+            )
+            .await
+            .expect("cycle should repair stale daemon pid");
+
+        let repaired_after = FsDaemonStore
+            .read_task(&daemon_dir, &repaired_task.task_id)
+            .expect("read repaired task");
+        assert!(!repaired_after.label_dirty);
+        assert!(
+            repaired_after.lease_id.is_none(),
+            "Phase 0 should clear the orphaned lease metadata after stale pid cleanup"
+        );
+        assert!(
+            FileSystem::read_pid_file(&repo_root, &first_project_id)
+                .expect("read stale pid after repair")
+                .is_none(),
+            "Phase 0 should reclaim dead daemon-owned pid files from prior daemon processes"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_cycle_multi_repo_quarantines_unreclaimable_orphaned_pid_records() {
+        let temp = tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        initialize_workspace(&repo_root, Utc::now()).expect("init repo workspace");
+
+        let repo_slug = "acme/widgets";
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let registration = RepoRegistration {
+            repo_slug: repo_slug.to_owned(),
+            repo_root: repo_root.clone(),
+            workspace_root: repo_root.join(".ralph-burning"),
+        };
+
+        let first_project_id =
+            create_standard_project(&repo_root, "multi-repo-live-daemon-pid-blocked");
+        let second_project_id =
+            create_standard_project(&repo_root, "multi-repo-live-daemon-pid-next");
+
+        let mut dirty_task =
+            sample_pending_task("task-multi-repo-live-daemon-pid-blocked", &first_project_id);
+        dirty_task.issue_ref = format!("{repo_slug}#51");
+        dirty_task.repo_slug = Some(repo_slug.to_owned());
+        dirty_task.issue_number = Some(51);
+        dirty_task.status = TaskStatus::Completed;
+        dirty_task.lease_id = Some("lease-live-daemon-pid".to_owned());
+        dirty_task.label_dirty = true;
+        FsDaemonStore
+            .create_task(&daemon_dir, &dirty_task)
+            .expect("create dirty task");
+
+        let mut blocked_task =
+            sample_pending_task("task-multi-repo-live-daemon-pid-next", &second_project_id);
+        blocked_task.issue_ref = format!("{repo_slug}#52");
+        blocked_task.repo_slug = Some(repo_slug.to_owned());
+        blocked_task.issue_number = Some(52);
+        FsDaemonStore
+            .create_task(&daemon_dir, &blocked_task)
+            .expect("create blocked task");
+
+        FileSystem::write_pid_file(
+            &repo_root,
+            &first_project_id,
+            RunPidOwner::Daemon,
+            Some("lease-fresh-daemon-pid"),
+            Some("run-live-daemon-pid"),
+            Some(Utc::now()),
+        )
+        .expect("write live daemon pid file");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+        let github = InMemoryGithubClient::new();
+
+        daemon
+            .process_cycle_multi_repo(
+                &data_dir,
+                &DaemonLoopConfig::default(),
+                &github,
+                CancellationToken::new(),
+                std::slice::from_ref(&registration),
+            )
+            .await
+            .expect("unreclaimable pid should quarantine repo without crashing");
+
+        let dirty_after = FsDaemonStore
+            .read_task(&daemon_dir, &dirty_task.task_id)
+            .expect("read dirty task after failed orphaned cleanup");
+        assert!(dirty_after.label_dirty);
+        assert_eq!(
+            dirty_after.lease_id.as_deref(),
+            Some("lease-live-daemon-pid"),
+            "the orphaned lease reference must remain visible when pid cleanup is unresolved"
+        );
+        assert!(
+            FileSystem::read_pid_file(&repo_root, &first_project_id)
+                .expect("read live pid after failed cleanup")
+                .is_some(),
+            "the daemon must not remove a live pid file owned by a different run"
+        );
+
+        let blocked_after = FsDaemonStore
+            .read_task(&daemon_dir, &blocked_task.task_id)
+            .expect("read blocked task after failed cleanup");
+        assert_eq!(
+            blocked_after.status,
+            TaskStatus::Pending,
+            "Phase 0 should keep the repo quarantined until the orphaned pid record can be reconciled"
         );
     }
 
