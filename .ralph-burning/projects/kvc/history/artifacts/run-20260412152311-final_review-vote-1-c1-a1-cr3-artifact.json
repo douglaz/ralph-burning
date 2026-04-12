@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412152311-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260412152311-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T16:16:38.406690858Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nThe proposed amendment is incorrect and should not be accepted; it mischaracterizes a revision as metadata-only when the cited changes include functional runtime and test updates relevant to review enablement.\n\n## Votes\n\n- `fr-3-f1de1ac3`: Reject\n  The claim that only `.ralph-burning/projects/kvc/journal.ndjson` and `run.json` were changed is not technically supported. The revision includes non-metadata updates in `src/contexts/automation_runtime/daemon_loop.rs` (and related watcher/runtime test paths) that wire `--enable-review` into quick request handling and add coverage for default and opt-in review behavior, so acceptance criteria are addressed at the implementation level.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}
