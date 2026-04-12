@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-vote-0-c1-a1-cr14-artifact",
+  "payload_id": "run-20260411212718-final_review-vote-0-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T02:42:21.645660658Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the amendment. The ignored CLI scenario encodes behavior that the current recovery code no longer guarantees and now explicitly rejects on partial cleanup, so the test is stale and misleading.\n\n## Votes\n\n- `fr-14-355cf877`: Accept\n  `tests/cli.rs:12722-12859` still expects `run resume` to succeed after reclaiming a stale daemon-owned worktree lease, but the current implementation now fails closed when cleanup cannot be fully proven. `reclaim_specific_project_writer_owner` returns `LeaseCleanupPartialFailure` on cleanup failures, and the unit coverage in `src/contexts/automation_runtime/cli_writer_lease.rs` already codifies that partial-cleanup contract. Because the ignored CLI test uses a synthetic worktree setup that does not positively prove full cleanup, it now contradicts the shipped behavior and provides stale end-to-end coverage. Rewriting it to assert the failure mode, or replacing it with a real-worktree success case, improves correctness, safety, and maintainability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}

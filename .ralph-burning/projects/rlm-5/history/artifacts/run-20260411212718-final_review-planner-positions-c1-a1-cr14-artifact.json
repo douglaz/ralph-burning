@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr14-artifact",
+  "payload_id": "run-20260411212718-final_review-planner-positions-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T02:41:38.098177157Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the amendment. The ignored CLI test currently encodes behavior the implementation intentionally no longer guarantees, so it is stale and misleading.\n\n## Votes\n\n- `fr-14-355cf877`: Accept\n  The current ignored test asserts successful stale daemon worktree-lease reclamation even when cleanup cannot be positively proven, but the implementation now explicitly returns `LeaseCleanupPartialFailure` in that case. That makes the test contradict the shipped fail-closed contract and weakens regression coverage by leaving the only CLI end-to-end stale-daemon recovery scenario stale. Rewriting it to match the current failure behavior, or converting it into a real-worktree success case where cleanup can actually be proven, is technically correct and improves correctness, safety, and maintainability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}
