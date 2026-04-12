@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260411212718",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 9
+      "completion_round": 10
     },
     "started_at": "2026-04-11T21:27:18.356800744Z",
     "prompt_hash_at_cycle_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "prompt_hash_at_stage_start": "93f78392c00988b8da9f6df257f371244fcbc15e3b8159fdcdfb1f777c052104",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 8
+    "final_review_restart_count": 9
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 9,
+  "completion_rounds": 10,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-9-7be0c89b",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "`src/contexts/automation_runtime/cli_writer_lease.rs:327-339` collapses \"multiple detached owners found\" to `None`, and the resume/stop paths in `src/cli/run.rs:1658-1670`, `src/cli/run.rs:1835-1853`, and `src/cli/run.rs:1954-1957` treat `None` as \"no stale owner\". If a project has both an orphaned task-side lease reference and another stale CLI/worktree lease, `run resume` / `run stop` can reacquire the writer lock and proceed even though contradictory durable cleanup state still exists. Ambiguous detached-owner state needs to surface as a blocking error, not be silently ignored.",
+        "created_at": "2026-04-12T00:42:34.774134127Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "9c2b8d7244bf15e4bd5a475f2f814faf7e68f70cc9b1beefba3bfbfac249bb8a"
+      },
+      {
+        "amendment_id": "fr-9-c7a7a336",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "`src/contexts/automation_runtime/daemon_loop.rs:3642-3663` and `src/contexts/automation_runtime/daemon_loop.rs:3698-3728` now require `run.pid` to be reclaimable before clearing `task.lease_id`. On the success path, though, `LeaseService::release()` has already released the writer lock and removed the lease record (`src/contexts/automation_runtime/lease_service.rs:63-77`, `src/contexts/automation_runtime/lease_service.rs:332-422`), so another process can legitimately acquire the project and write a fresh `run.pid` in that gap. In that race, `remove_owned_run_pid_file()` returns `LeaseCleanupPartialFailure`, the finished task keeps its old `lease_id`, and later recovery falsely quarantines a task whose old resources were already fully cleaned up.",
+        "created_at": "2026-04-12T00:42:34.774136472Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "e59e37461c887ea7c76931d6db759cc591b9b476f929b9fa23e893c78f9aed29"
+      }
+    ],
     "processed_count": 14
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 10 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-12T00:07:12.964933450Z",
+    "resolved_at": "2026-04-12T00:29:03.547987258Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
