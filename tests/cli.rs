@@ -11063,13 +11063,13 @@ fn run_start_persists_payload_and_artifact_records() {
 
     assert_eq!(
         payload_files.len(),
-        15,
-        "expected 15 payload files for standard flow, got {}",
+        16,
+        "expected 16 payload files for standard flow (3 reviewers), got {}",
         payload_files.len()
     );
     assert_eq!(
         artifact_files.len(),
-        15,
+        16,
         "expected 15 artifact files for standard flow, got {}",
         artifact_files.len()
     );
@@ -11129,7 +11129,7 @@ fn run_start_completes_quick_dev_flow_end_to_end() {
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
             .collect();
     // ApplyFixes is skipped when Review approves with no findings (stub default).
-    assert_eq!(payload_files.len(), 5);
+    assert_eq!(payload_files.len(), 6);
 
     let journal =
         fs::read_to_string(project_root(temp_dir.path(), "qd-run").join("journal.ndjson"))
@@ -11167,7 +11167,7 @@ fn run_start_completes_minimal_flow_end_to_end() {
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
             .collect();
-    assert_eq!(payload_files.len(), 4);
+    assert_eq!(payload_files.len(), 5);
 
     let journal =
         fs::read_to_string(project_root(temp_dir.path(), "minimal-run").join("journal.ndjson"))
@@ -11368,8 +11368,8 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
         .count();
     assert_eq!(
-        payload_count, 11,
-        "expected 11 payloads without prompt_review, got {payload_count}"
+        payload_count, 12,
+        "expected 12 payloads without prompt_review (3 reviewers), got {payload_count}"
     );
 
     // Verify no prompt_review stage in journal

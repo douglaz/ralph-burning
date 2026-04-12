@@ -13034,11 +13034,19 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                             "amendments": [],
                         }),
                         serde_json::json!({
+                            "summary": "Reviewer 3 has no amendments.",
+                            "amendments": [],
+                        }),
+                        serde_json::json!({
                             "summary": "Reviewer 1 has no further amendments.",
                             "amendments": [],
                         }),
                         serde_json::json!({
                             "summary": "Reviewer 2 has no further amendments.",
+                            "amendments": [],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 3 has no further amendments.",
                             "amendments": [],
                         }),
                     ],
@@ -13056,6 +13064,10 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                         }),
                         serde_json::json!({
                             "summary": "Reviewer 2 vote.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 3 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
                     ],
@@ -13186,11 +13198,19 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                             "amendments": [],
                         }),
                         serde_json::json!({
+                            "summary": "Reviewer 3 has no amendments.",
+                            "amendments": [],
+                        }),
+                        serde_json::json!({
                             "summary": "Reviewer 1 proposes the amendment again.",
                             "amendments": [{"body": amendment_body}],
                         }),
                         serde_json::json!({
                             "summary": "Reviewer 2 still has no amendments.",
+                            "amendments": [],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 3 still has no amendments.",
                             "amendments": [],
                         }),
                     ],
@@ -13211,6 +13231,10 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
                         serde_json::json!({
+                            "summary": "Reviewer 3 vote.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
+                        }),
+                        serde_json::json!({
                             "summary": "Planner position.",
                             "votes": [{"amendment_id": second_round_amendment_id, "decision": "accept", "rationale": "Required again."}],
                         }),
@@ -13220,6 +13244,10 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                         }),
                         serde_json::json!({
                             "summary": "Reviewer 2 vote.",
+                            "votes": [{"amendment_id": second_round_amendment_id, "decision": "accept", "rationale": "Still agree."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 3 vote.",
                             "votes": [{"amendment_id": second_round_amendment_id, "decision": "accept", "rationale": "Still agree."}],
                         }),
                     ],
