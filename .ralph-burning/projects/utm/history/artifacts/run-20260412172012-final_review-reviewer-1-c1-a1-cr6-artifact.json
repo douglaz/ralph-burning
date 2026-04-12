@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T19:16:56.667238452Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nOne blocking correctness issue: the patch's resulting configuration path still defaults final review to a Codex-only reviewer panel, failing the requested backend mix and independent cross-model review requirement.\n\n## Amendments\n\n1. The active resolution snapshot still records and drives a second final-review reviewer of `codex/gpt-5.3-codex-spark-xhigh` instead of the required `claude/claude-opus-4-6`. This is visible in the persisted stage snapshot (`.ralph-burning/projects/utm/run.json:20-27`) and the latest invocation log (`.ralph-burning/projects/utm/journal.ndjson:98-99`). It means the change did not actually implement the requested Codex+Opus reviewer default and also violates the cross-model review requirement (currently both reviewers are Codex-family). Update the default final-review backend resolution so unspecified `final_review.backends` resolves to Codex xhigh plus Opus 4.6, and ensure any snapshot/probe output reflects that.\n   Rationale: Acceptance criterion explicitly requires final reviewers to be `gpt-5.4 xhigh` plus `claude-opus-4-6`; current default path is still two Codex models.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 6
+}

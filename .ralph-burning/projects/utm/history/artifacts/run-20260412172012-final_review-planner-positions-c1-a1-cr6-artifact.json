@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr6-artifact",
+  "payload_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T19:29:30.660332598Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the `default_model` precedence regression amendment. Reject the final-review panel amendment because the cited run state is driven by an explicit live project override, while the current default-resolution code and tests already resolve unspecified final-review backends to Codex xhigh plus Claude Opus 4.6.\n\n## Votes\n\n- `fr-6-0736c40d`: Accept\n  This is a real correctness regression. `EffectiveConfig::load` now always seeds an explicit Codex implementer selection, and `target_for_family()` prefers `role_models` before `base_backend.model`/`default_model`, so an explicit user override like `default_backend = \"codex\"` plus `default_model = \"override-model\"` no longer changes the implementer or the default Codex final-review reviewer. Compiled role defaults should not silently outrank the user-facing `default_model` override path.\n- `fr-6-013a5281`: Reject\n  The conclusion is not supported by the actual resolution source. Unspecified defaults in source are already `final_review.backends = [codex, claude]`, with tests asserting Codex `gpt-5.4-xhigh` plus Claude `claude-opus-4-6`; the cited `run.json` and `journal.ndjson` entries instead match the explicit live project override in `.git/ralph-burning-live/projects/utm/config.toml` (`final_review.backends = [\"codex/gpt-5.4-xhigh\", \"codex/gpt-5.3-codex-spark-xhigh\"]`). Changing default resolution on that basis would be the wrong fix and would break legitimate project-specific overrides.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}
