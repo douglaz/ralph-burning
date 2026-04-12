@@ -3237,7 +3237,11 @@ where
                             // InvocationCancelled when the dispatch itself
                             // succeeded or was already a cancellation.
                             match result {
-                                Err(ref e) if !matches!(e, AppError::InvocationCancelled { .. }) => result,
+                                Err(ref e)
+                                    if !matches!(e, AppError::InvocationCancelled { .. }) =>
+                                {
+                                    result
+                                }
                                 _ => Err(AppError::InvocationCancelled {
                                     backend: "daemon".to_owned(),
                                     contract_id: task.task_id.clone(),
@@ -3263,7 +3267,11 @@ where
                                 interrupted_handoff.expected_attempt.as_ref(),
                             )?;
                             match result {
-                                Err(ref e) if !matches!(e, AppError::InvocationCancelled { .. }) => result,
+                                Err(ref e)
+                                    if !matches!(e, AppError::InvocationCancelled { .. }) =>
+                                {
+                                    result
+                                }
                                 _ => Err(AppError::InvocationCancelled {
                                     backend: "daemon".to_owned(),
                                     contract_id: task.task_id.clone(),

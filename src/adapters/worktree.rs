@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
 use uuid::Uuid;
 
@@ -44,6 +45,33 @@ impl Drop for TemporaryGitIndex {
 }
 
 impl WorktreeAdapter {
+    fn git_binary() -> &'static Path {
+        static GIT_BINARY: OnceLock<PathBuf> = OnceLock::new();
+        GIT_BINARY
+            .get_or_init(|| {
+                let candidates = [
+                    std::env::var_os("RALPH_BURNING_TEST_GIT").map(PathBuf::from),
+                    Some(PathBuf::from("/run/current-system/sw/bin/git")),
+                    Some(PathBuf::from("/usr/bin/git")),
+                    Some(PathBuf::from("/usr/local/bin/git")),
+                    Some(PathBuf::from("/opt/homebrew/bin/git")),
+                ];
+                candidates
+                    .into_iter()
+                    .flatten()
+                    .find(|path| path.is_file())
+                    .or_else(|| {
+                        std::env::var_os("PATH").and_then(|paths| {
+                            std::env::split_paths(&paths)
+                                .map(|dir| dir.join("git"))
+                                .find(|path| path.is_file())
+                        })
+                    })
+                    .unwrap_or_else(|| PathBuf::from("git"))
+            })
+            .as_path()
+    }
+
     fn git_error(output: &Output) -> AppError {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
@@ -108,7 +136,7 @@ impl WorktreeAdapter {
     }
 
     fn git_command(dir: &Path) -> Command {
-        let mut command = Command::new("git");
+        let mut command = Command::new(Self::git_binary());
         command
             .current_dir(dir)
             .env("GIT_EDITOR", "true")

@@ -5021,6 +5021,83 @@ fn project_bootstrap_from_idea_creates_project_and_selects_it() {
             .expect("read project.toml");
     assert!(project_toml.contains("flow = \"standard\""));
     assert_eq!(requirements_run_ids(temp_dir.path()).len(), 1);
+
+    let run_id = only_requirements_run_id(temp_dir.path());
+    let requirements_run = fs::read_to_string(
+        requirements_root(temp_dir.path())
+            .join(&run_id)
+            .join("run.json"),
+    )
+    .expect("read requirements run.json");
+    let requirements_run_json: serde_json::Value =
+        serde_json::from_str(&requirements_run).expect("parse requirements run.json");
+    assert!(
+        requirements_run_json["latest_review_id"].is_null(),
+        "bootstrap should skip review by default: {requirements_run}"
+    );
+
+    let requirements_journal = fs::read_to_string(
+        requirements_root(temp_dir.path())
+            .join(run_id)
+            .join("journal.ndjson"),
+    )
+    .expect("read requirements journal");
+    assert!(
+        !requirements_journal.contains("\"review_completed\""),
+        "bootstrap should not journal a requirements review by default: {requirements_journal}"
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn project_bootstrap_enable_review_runs_requirements_review() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--idea",
+            "Build a REST API",
+            "--flow",
+            "standard",
+            "--enable-review",
+        ])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap with review enabled");
+
+    assert!(
+        output.status.success(),
+        "bootstrap --enable-review should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let run_id = only_requirements_run_id(temp_dir.path());
+    let requirements_run = fs::read_to_string(
+        requirements_root(temp_dir.path())
+            .join(&run_id)
+            .join("run.json"),
+    )
+    .expect("read requirements run.json");
+    let requirements_run_json: serde_json::Value =
+        serde_json::from_str(&requirements_run).expect("parse requirements run.json");
+    assert!(
+        requirements_run_json["latest_review_id"].is_string(),
+        "bootstrap --enable-review should persist a review payload: {requirements_run}"
+    );
+
+    let requirements_journal = fs::read_to_string(
+        requirements_root(temp_dir.path())
+            .join(run_id)
+            .join("journal.ndjson"),
+    )
+    .expect("read requirements journal");
+    assert!(
+        requirements_journal.contains("\"review_completed\""),
+        "bootstrap --enable-review should journal the review step: {requirements_journal}"
+    );
 }
 
 #[cfg(feature = "test-stub")]

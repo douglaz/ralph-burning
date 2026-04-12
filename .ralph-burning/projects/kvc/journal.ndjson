@@ -1,3 +1,4 @@
-{"sequence":1,"timestamp":"2026-04-09T22:10:54.154584730Z","event_type":"project_created","details":{"flow":"minimal","project_id":"kvc"}}
-{"sequence":2,"timestamp":"2026-04-09T22:11:00.273781408Z","event_type":"run_started","details":{"first_stage":"plan_and_implement","max_completion_rounds":25,"run_id":"run-20260409221100"}}
-{"sequence":3,"timestamp":"2026-04-09T22:11:00.294842612Z","event_type":"stage_entered","details":{"attempt":1,"cycle":1,"run_id":"run-20260409221100","stage_id":"plan_and_implement"}}
+{"sequence":1,"timestamp":"2026-04-12T05:25:05.288010850Z","event_type":"project_created","details":{"flow":"minimal","project_id":"kvc"}}
+{"sequence":2,"timestamp":"2026-04-12T15:23:11.472431288Z","event_type":"run_started","details":{"first_stage":"plan_and_implement","max_completion_rounds":25,"run_id":"run-20260412152311"}}
+{"sequence":3,"timestamp":"2026-04-12T15:23:11.501626613Z","event_type":"stage_entered","details":{"attempt":1,"cycle":1,"run_id":"run-20260412152311","stage_id":"plan_and_implement"}}
+{"sequence":4,"timestamp":"2026-04-12T15:29:14.939058032Z","event_type":"stage_completed","details":{"artifact_id":"run-20260412152311-plan_and_implement-c1-a1-cr1-artifact","attempt":1,"cycle":1,"payload_id":"run-20260412152311-plan_and_implement-c1-a1-cr1","run_id":"run-20260412152311","stage_id":"plan_and_implement"}}
