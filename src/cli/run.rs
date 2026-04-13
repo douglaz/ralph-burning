@@ -120,6 +120,9 @@ pub enum RunSubcommand {
         /// Test-only: delay in ms before follow-mode baseline snapshot.
         #[arg(long, hide = true, env = "RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS")]
         follow_baseline_delay_ms: Option<u64>,
+        /// Test-only: override follow-mode poll interval in ms.
+        #[arg(long, hide = true, env = "RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS")]
+        follow_poll_interval_ms: Option<u64>,
     },
     /// Show or perform run rollback operations.
     Rollback {
@@ -176,7 +179,17 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
             last,
             follow,
             follow_baseline_delay_ms,
-        } => handle_tail(logs, last, follow, follow_baseline_delay_ms).await,
+            follow_poll_interval_ms,
+        } => {
+            handle_tail(
+                logs,
+                last,
+                follow,
+                follow_baseline_delay_ms,
+                follow_poll_interval_ms,
+            )
+            .await
+        }
         RunSubcommand::Start(args) => handle_start(args).await,
         RunSubcommand::Resume(args) => handle_resume(args).await,
         RunSubcommand::Stop => handle_stop().await,
@@ -9228,6 +9241,7 @@ async fn handle_tail(
     last: Option<usize>,
     follow: bool,
     follow_baseline_delay_ms: Option<u64>,
+    follow_poll_interval_ms: Option<u64>,
 ) -> AppResult<()> {
     let (current_dir, project_id) = load_active_project_context()?;
     let effective_config = EffectiveConfig::load_for_project(
@@ -9243,6 +9257,7 @@ async fn handle_tail(
             include_logs,
             effective_config.effective_stream_output(),
             follow_baseline_delay_ms,
+            follow_poll_interval_ms,
         )
         .await;
     }
@@ -9285,6 +9300,7 @@ async fn handle_tail_follow(
     include_logs: bool,
     stream_output: bool,
     follow_baseline_delay_ms: Option<u64>,
+    follow_poll_interval_ms: Option<u64>,
 ) -> AppResult<()> {
     let mut follow_state = load_follow_baseline(
         current_dir,
@@ -9292,6 +9308,9 @@ async fn handle_tail_follow(
         include_logs,
         follow_baseline_delay_ms,
     )?;
+    let follow_poll_interval = follow_poll_interval_ms
+        .map(Duration::from_millis)
+        .unwrap_or(FOLLOW_POLL_INTERVAL);
 
     println!(
         "Following project '{}' for new durable history{}; press Ctrl-C to stop.",
@@ -9303,7 +9322,7 @@ async fn handle_tail_follow(
         }
     );
 
-    let mut watcher = if include_logs && stream_output {
+    let mut watcher = if !include_logs || stream_output {
         build_follow_watcher(current_dir, project_id)?
     } else {
         None
@@ -9337,7 +9356,7 @@ async fn handle_tail_follow(
                     &mut follow_state,
                 )?;
             }
-            _ = tokio::time::sleep(FOLLOW_POLL_INTERVAL) => {
+            _ = tokio::time::sleep(next_follow_poll_delay(&follow_state, follow_poll_interval)) => {
                 render_follow_delta(
                     current_dir,
                     project_id,
@@ -9347,6 +9366,19 @@ async fn handle_tail_follow(
             }
         }
     }
+}
+
+fn next_follow_poll_delay(follow_state: &FollowState, default_poll_interval: Duration) -> Duration {
+    let mut next_delay = default_poll_interval;
+    let now = Instant::now();
+    for seen_at in follow_state.transient_partial_history_files.values() {
+        let elapsed = now.saturating_duration_since(*seen_at);
+        if elapsed >= FOLLOW_TRANSIENT_PARTIAL_PAIR_GRACE_PERIOD {
+            return Duration::ZERO;
+        }
+        next_delay = next_delay.min(FOLLOW_TRANSIENT_PARTIAL_PAIR_GRACE_PERIOD - elapsed);
+    }
+    next_delay
 }
 
 struct FollowState {

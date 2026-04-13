@@ -3920,15 +3920,23 @@ async fn cli_lease_guard_heartbeat_advances_last_heartbeat() {
         _ => panic!("expected CliWriter"),
     };
 
-    // Wait for heartbeat to tick
-    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-
-    let record_after = FsDaemonStore
-        .read_lease_record(temp.path(), &lease_id)
-        .expect("read after");
-    let hb_after = match &record_after {
-        LeaseRecord::CliWriter(cli) => cli.last_heartbeat,
-        _ => panic!("expected CliWriter"),
+    let deadline = std::time::Instant::now() + tokio::time::Duration::from_millis(1300);
+    let hb_after = loop {
+        let record_after = FsDaemonStore
+            .read_lease_record(temp.path(), &lease_id)
+            .expect("read after");
+        let hb_after = match &record_after {
+            LeaseRecord::CliWriter(cli) => cli.last_heartbeat,
+            _ => panic!("expected CliWriter"),
+        };
+        if hb_after > hb_before {
+            break hb_after;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "heartbeat should advance within 1300ms"
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     };
 
     assert!(

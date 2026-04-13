@@ -1,0 +1,7 @@
+id = "0d1-1"
+name = "speed-up-tests"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "7ae4183e7f55dfe00651eb06caeeee75f9f2d90393244c4cf41d03a8eac73418"
+created_at = "2026-04-13T20:24:52.195473657Z"
+status_summary = "created"

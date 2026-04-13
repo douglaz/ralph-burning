@@ -389,7 +389,7 @@ fn wait_for_child_output(
             let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGKILL);
             panic!("child did not exit within {:?}", timeout);
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(25));
     }
 }
 
@@ -9071,13 +9071,14 @@ fn run_tail_follow_starts_and_interrupts_cleanly() {
 
     let child = Command::new(binary())
         .args(["run", "tail", "--follow"])
+        .env("RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS", "100")
         .current_dir(temp_dir.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn run tail --follow");
 
-    std::thread::sleep(std::time::Duration::from_millis(750));
+    std::thread::sleep(std::time::Duration::from_millis(250));
     kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
     let output = child.wait_with_output().expect("wait for follow output");
 
@@ -9096,20 +9097,21 @@ fn run_tail_follow_surfaces_new_supporting_records_without_journal_events() {
 
     let child = Command::new(binary())
         .args(["run", "tail", "--follow"])
-        .env("RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS", "1200")
+        .env("RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS", "250")
+        .env("RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS", "100")
         .current_dir(temp_dir.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn run tail --follow");
 
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     let project_root = project_root(temp_dir.path(), "alpha");
     write_supporting_payload(&project_root);
     write_supporting_artifact(&project_root);
 
-    std::thread::sleep(std::time::Duration::from_millis(3800));
+    std::thread::sleep(std::time::Duration::from_millis(400));
     kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
     let output = child.wait_with_output().expect("wait for follow output");
 
@@ -9131,13 +9133,14 @@ fn run_tail_follow_fails_on_durable_orphan_supporting_payload() {
 
     let child = Command::new(binary())
         .args(["run", "tail", "--follow"])
+        .env("RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS", "100")
         .current_dir(temp_dir.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn run tail --follow");
 
-    let output = wait_for_child_output(child, std::time::Duration::from_millis(4500));
+    let output = wait_for_child_output(child, std::time::Duration::from_millis(3000));
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -9157,16 +9160,17 @@ fn run_tail_follow_tolerates_startup_partial_supporting_pair() {
 
     let child = Command::new(binary())
         .args(["run", "tail", "--follow"])
+        .env("RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS", "100")
         .current_dir(temp_dir.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn run tail --follow");
 
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::thread::sleep(std::time::Duration::from_millis(100));
     write_supporting_artifact(&project_root);
 
-    std::thread::sleep(std::time::Duration::from_millis(3200));
+    std::thread::sleep(std::time::Duration::from_millis(500));
     kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
     let output = child.wait_with_output().expect("wait for follow output");
 
@@ -9187,20 +9191,21 @@ fn run_tail_follow_logs_keeps_streaming_after_new_partial_supporting_pair() {
     let project_root = project_root(temp_dir.path(), "alpha");
     let child = Command::new(binary())
         .args(["run", "tail", "--follow", "--logs"])
+        .env("RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS", "100")
         .current_dir(temp_dir.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn run tail --follow --logs");
 
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::thread::sleep(std::time::Duration::from_millis(100));
     write_supporting_payload(&project_root);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::thread::sleep(std::time::Duration::from_millis(150));
     write_follow_runtime_log(&project_root, "follow log after partial pair");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::thread::sleep(std::time::Duration::from_millis(150));
     write_supporting_artifact(&project_root);
 
-    std::thread::sleep(std::time::Duration::from_millis(3200));
+    std::thread::sleep(std::time::Duration::from_millis(500));
     kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
     let output = child
         .wait_with_output()
