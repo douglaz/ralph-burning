@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413185711-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413185711-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T19:17:44.320732013Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nOne fix-now finding: current diff is a no-op relative to the stated problem. It only mutates run metadata and leaves the build/test dependency issue unresolved.\n\n## Amendments\n\n1. [severity: high] The change set does not implement the requested nix fix at all: diff only updates orchestration metadata (`.ralph-burning/projects/xyz-1/journal.ndjson` lines 5-9) and run state (`.ralph-burning/projects/xyz-1/run.json` lines 16-41). No build/test file (`flake.nix` or test code) is modified, so the missing-`ps` sandbox failure is not addressed by this patch.\n   Rationale: This bead’s scope is to make `nix build` and the listed 5 tests pass by fixing build inputs. With no implementation change, the acceptance criteria cannot be met; process must halt and add the required dependency changes in `flake.nix`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

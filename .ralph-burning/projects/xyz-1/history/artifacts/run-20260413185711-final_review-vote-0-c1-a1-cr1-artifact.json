@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413185711-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413185711-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T19:27:53.543176459Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRepository evidence does not support the amendment. The substantive change set at `ce04dcc7` includes a `flake.nix` fix adding `procps` and `util-linux`; the metadata-only diff is just the post-checkpoint working-tree state, not the full implementation under review.\n\n## Votes\n\n- `fr-1-c26197c2`: Reject\n  `git show ce04dcc7` and `git diff 1c9b3311..ce04dcc7 -- flake.nix` show that the reviewed change set modified `flake.nix` to add `pkgs.procps` and `pkgs.util-linux` to `nativeCheckInputs` and `procps`/`util-linux` to the dev shell. The amendment's claim is based on inspecting only the later uncommitted metadata changes in `.ralph-burning/projects/xyz-1/*`, not the actual implementation commit. Since the nix fix is present in the change set, the amendment is factually incorrect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
