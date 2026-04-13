@@ -2742,6 +2742,7 @@ mod tests {
                     body: body.to_owned(),
                     rationale: None,
                     mapped_to_bead_id: None,
+                    classification: None,
                 }],
             },
         }
@@ -2831,6 +2832,7 @@ mod tests {
                             body: " tighten wording ".to_owned(),
                             rationale: None,
                             mapped_to_bead_id: None,
+                            classification: None,
                         }],
                     },
                 },
@@ -2850,6 +2852,7 @@ mod tests {
                             body: "tighten wording".to_owned(),
                             rationale: None,
                             mapped_to_bead_id: None,
+                            classification: None,
                         }],
                     },
                 },
@@ -2889,6 +2892,7 @@ mod tests {
                     body: body.to_owned(),
                     rationale: None,
                     mapped_to_bead_id: mapped_to_bead_id.map(|s| s.to_owned()),
+                    classification: None,
                 }],
             },
         }
