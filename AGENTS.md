@@ -15,6 +15,8 @@ Repository-specific guidance for agents lives in this section. Keep workflow and
 - For tasks and spikes, keep the required `## Acceptance Criteria` heading in the description only as an empty template marker for `br lint`; do not repeat bullets or pointer text there.
 - Treat structured tracing/logging as part of the deliverable for scientific-core work. Reuse shared regression/e2e harness conventions rather than inventing one-off scenario runners per bead.
 - Keep tests deterministic and add right-sized coverage for any code change: unit tests for local logic, integration tests for cross-system behavior, and scenario/e2e coverage when long-horizon behavior changes.
+- Treat `nix build` as the authoritative verification gate. Do not claim "all tests pass" unless `nix build` succeeds on the current tree.
+- Before approving a change in review, run `nix build` and require it to pass cleanly; if it fails, flakes, or is skipped, do not approve.
 - Prefer explicit, inspectable behavior over hidden tuning. If diagnostics or tracing are needed, wire them in cleanly rather than relying on ad hoc prints.
 - If a change affects persisted state or action semantics, update save/migration handling and the relevant bead context.
 

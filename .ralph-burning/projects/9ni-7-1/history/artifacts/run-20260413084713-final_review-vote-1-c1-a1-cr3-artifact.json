@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260413084713-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T15:52:41.443878569Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed amendment fr-3-bfd4b428 by examining the source code directly. The finding is verified: render_scope_guidance() at review_classification.rs:478 gates on prompt_uses_contract() which returns true for any prompt with a top-level contract marker (task_prompt_contract.rs:123-124), confirmed by the test at line 410-416. This means marker-only prompts without actual bead scope sections (Must-Do Scope, Explicit Non-Goals, Acceptance Criteria) will receive a ## Scope Guidance block that references those absent sections. The function's own docstring (lines 476-477) states guidance should be empty for non-bead prompts. The existing validate_canonical_prompt_shape() at line 168 provides a ready-made tighter check. The fix is small and well-scoped. Agreeing with planner position to accept.\n\n## Votes\n\n- `fr-3-bfd4b428`: Accept\n  Verified in source: render_scope_guidance() (review_classification.rs:478) uses prompt_uses_contract() as its sole guard, but prompt_uses_contract() (task_prompt_contract.rs:123) returns true for any prompt with a top-level contract marker — including marker-only prompts that lack the canonical bead scope sections (Must-Do Scope, Explicit Non-Goals, Acceptance Criteria). The test at task_prompt_contract.rs:410-416 explicitly confirms this behavior. This causes the function to emit a ## Scope Guidance block referencing sections that don't exist, contradicting its own docstring (lines 476-477) which states guidance should be empty for non-bead prompts. The remediation is straightforward: validate_canonical_prompt_shape() already exists at line 168 and checks for actual section headings, or a simpler presence check for at least one canonical heading would suffice. A regression test for the marker-only case is also warranted — the existing test at line 1573 only covers the fully-generic (no marker) case. While the practical severity is low (Planning/PlanAndImplement stages almost always receive full bead prompts), the defect is real, the fix is small, and it closes a gap that could cause confusion if marker-only prompts reach these stages through future workflow changes.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}
