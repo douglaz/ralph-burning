@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260413084713-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T16:04:08.303987288Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nVerified the amendment by reading inject_scope_guidance() in engine.rs, escape_canonical_heading_lines() in service.rs, and BEAD_TASK_PROMPT_SECTION_TITLES in task_prompt_contract.rs. The bug is confirmed: .find() matches the first occurrence, 'Authoritative JSON Schema' is not escaped by the canonical heading escaper, and legacy template overrides without {{classification_guidance}} trigger the vulnerable fallback path. Accepting the amendment.\n\n## Votes\n\n- `fr-4-9bf4eb27`: Accept\n  Code inspection confirms all three conditions for the bug: (1) inject_scope_guidance() at engine.rs:216 uses .find() which returns the first match of '\\n## Authoritative JSON Schema' in the fully rendered prompt; (2) BEAD_TASK_PROMPT_SECTION_TITLES in task_prompt_contract.rs:36-45 does not include 'Authoritative JSON Schema', so escape_canonical_heading_lines() at service.rs:769-803 will not indent-escape that heading when it appears in bead repo guidance content; (3) the fallback path at engine.rs:194-206 only fires for legacy template overrides missing {{classification_guidance}}. If a project's AGENTS.md or repo guidance documents JSON schema sections (which is plausible — ralph-burning's own prompts contain this heading), the injection point lands inside {{project_prompt}} instead of before the template's actual schema section, corrupting prompt structure. Using rfind() or anchoring to a unique structural marker (e.g., a template sentinel placed before rendering) would fix this. A regression test with the heading embedded in repo guidance should accompany the fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

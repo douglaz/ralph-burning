@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260413084713-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260413084713-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T16:04:22.002295236Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 3\n**Unique Amendments:** 1\n**Final Review Restarts:** 4/25\n\n## Accepted\n\n- `fr-4-9bf4eb27`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-9bf4eb27`\n\nfinding_summary: The legacy fallback for planning/plan-and-implement scope guidance can splice `## Scope Guidance` into the middle of `{{project_prompt}}` instead of before the stage schema. `inject_scope_guidance()` searches the fully rendered prompt for the first `\\n## Authoritative JSON Schema` and inserts there (src/contexts/workflow_composition/engine.rs:209-224). A bead prompt can legitimately contain that same heading inside `AGENTS / Repo Guidance`, because `render_bead_task_prompt()` only escapes canonical contract headings and leaves other `## ...` headings untouched (src/contexts/project_run_record/service.rs:769-798). On a supported legacy override that omits `{{classification_guidance}}`, this corrupts the prompt structure and weakens the new scope-boundary instructions.\nseverity: medium\naffected_files:\n- src/contexts/workflow_composition/engine.rs\n- src/contexts/project_run_record/service.rs\nremediation_hint: Inject relative to template structure instead of searching the rendered prompt text, or at minimum make the fallback target the final schema section unambiguously and add a regression test with `## Authoritative JSON Schema` inside repo guidance.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

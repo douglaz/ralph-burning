@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T16:02:17.557411330Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 fix-now issue: the new scope-guidance fallback for legacy planning templates is positionally brittle and can inject into the bead prompt body when repo guidance contains the schema heading text.\n\n## Amendments\n\n1. finding_summary: The legacy fallback for planning/plan-and-implement scope guidance can splice `## Scope Guidance` into the middle of `{{project_prompt}}` instead of before the stage schema. `inject_scope_guidance()` searches the fully rendered prompt for the first `\\n## Authoritative JSON Schema` and inserts there (src/contexts/workflow_composition/engine.rs:209-224). A bead prompt can legitimately contain that same heading inside `AGENTS / Repo Guidance`, because `render_bead_task_prompt()` only escapes canonical contract headings and leaves other `## ...` headings untouched (src/contexts/project_run_record/service.rs:769-798). On a supported legacy override that omits `{{classification_guidance}}`, this corrupts the prompt structure and weakens the new scope-boundary instructions.\nseverity: medium\naffected_files:\n- src/contexts/workflow_composition/engine.rs\n- src/contexts/project_run_record/service.rs\nremediation_hint: Inject relative to template structure instead of searching the rendered prompt text, or at minimum make the fallback target the final schema section unambiguously and add a regression test with `## Authoritative JSON Schema` inside repo guidance.\n   Rationale: This is a real prompt-construction bug in the new legacy-override path. The current implementation assumes the first schema heading in the final string belongs to the stage template, but supported bead prompts can contain the same heading text in free-form AGENTS guidance, so scope guidance can be inserted in the wrong place.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

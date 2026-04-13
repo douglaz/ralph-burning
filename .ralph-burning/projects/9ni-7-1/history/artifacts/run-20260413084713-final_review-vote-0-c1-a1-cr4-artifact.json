@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-vote-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260413084713-final_review-vote-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T16:04:21.987837392Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment. The reported prompt-composition bug is real: the legacy fallback inserts scope guidance by searching the rendered prompt for the first \"## Authoritative JSON Schema\", and bead repo guidance can legally contain that same heading because only canonical contract headings are escaped.\n\n## Votes\n\n- `fr-4-9bf4eb27`: Accept\n  `inject_scope_guidance()` in `src/contexts/workflow_composition/engine.rs` uses `find(\"\\n## Authoritative JSON Schema\")`, so it inserts before the first matching heading in the fully rendered prompt. In `render_bead_task_prompt()`, `escape_canonical_heading_lines()` only indents headings listed in `BEAD_TASK_PROMPT_SECTION_TITLES`, and that list in `src/contexts/project_run_record/task_prompt_contract.rs` does not include `Authoritative JSON Schema`. As a result, a repo-guidance snippet containing that heading can survive inside `{{project_prompt}}`, causing the legacy fallback path for planning/plan-and-implement templates without `{{classification_guidance}}` to splice `## Scope Guidance` into the middle of embedded guidance instead of before the actual stage schema. That is a real prompt-structure defect and can weaken the scope-boundary instructions. The suggested fix direction is sound: anchor insertion to template structure or at least target the final schema heading unambiguously, with a regression test covering this embedded-heading case.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
