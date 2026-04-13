@@ -6974,6 +6974,8 @@ struct FinalReviewQueuedAmendment {
     /// When set, this amendment is planned-elsewhere and should be routed to
     /// the mapping handler instead of the amendment queue.
     mapped_to_bead_id: Option<String>,
+    /// Three-way classification for downstream routing.
+    classification: crate::contexts::workflow_composition::panel_contracts::AmendmentClassification,
 }
 
 enum FinalReviewPanelOutcome {
@@ -7773,6 +7775,7 @@ where
                 },
                 reviewer_sources: amendment.sources.clone(),
                 mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
+                classification: amendment.classification,
             }
         })
         .collect::<Vec<_>>();

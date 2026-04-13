@@ -133,6 +133,37 @@ pub struct CompletionAggregatePayload {
 
 // ── Final-Review Contracts ─────────────────────────────────────────────────
 
+/// Classification category for a final-review amendment proposal.
+///
+/// Determines how the orchestration layer routes accepted amendments:
+/// - **fix-now**: triggers a completion restart to apply the fix
+/// - **planned-elsewhere**: recorded as a mapping, no restart
+/// - **propose-new-bead**: recorded for downstream bead creation, no restart
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum AmendmentClassification {
+    FixNow,
+    PlannedElsewhere,
+    ProposeNewBead,
+}
+
+impl std::fmt::Display for AmendmentClassification {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FixNow => f.write_str("fix-now"),
+            Self::PlannedElsewhere => f.write_str("planned-elsewhere"),
+            Self::ProposeNewBead => f.write_str("propose-new-bead"),
+        }
+    }
+}
+
+impl AmendmentClassification {
+    /// Whether this classification triggers a completion restart.
+    pub fn triggers_restart(self) -> bool {
+        matches!(self, Self::FixNow)
+    }
+}
+
 /// A raw amendment proposal returned by a final-review reviewer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FinalReviewProposal {
@@ -146,8 +177,15 @@ pub struct FinalReviewProposal {
     /// is valid but already covered by the referenced bead. Accepted
     /// planned-elsewhere proposals are routed to the mapping handler instead of
     /// the amendment queue, allowing the active bead to proceed without restart.
+    ///
+    /// Deprecated in favor of `classification` + `mapped_to_bead_id` together,
+    /// but still honored for backward compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mapped_to_bead_id: Option<String>,
+    /// Three-way classification for this amendment. When absent, inferred from
+    /// `mapped_to_bead_id`: present → planned-elsewhere, absent → fix-now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classification: Option<AmendmentClassification>,
 }
 
 /// Payload returned by each final-review reviewer during proposal collection.
@@ -224,6 +262,13 @@ pub struct FinalReviewCanonicalAmendment {
     /// be routed to the mapping handler instead of the amendment queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mapped_to_bead_id: Option<String>,
+    /// Three-way classification for routing and inspectability.
+    #[serde(default = "default_fix_now")]
+    pub classification: AmendmentClassification,
+}
+
+fn default_fix_now() -> AmendmentClassification {
+    AmendmentClassification::FixNow
 }
 
 /// Canonical aggregate record for the final-review panel.

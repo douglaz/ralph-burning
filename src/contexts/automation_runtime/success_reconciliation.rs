@@ -3097,6 +3097,7 @@ mod tests {
                     normalized_body: body.to_owned(),
                     sources: vec![],
                     mapped_to_bead_id: Some(mapped_to.to_owned()),
+                    classification: crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::PlannedElsewhere,
                 }],
                 final_review_restart_count: 0,
                 max_restarts: 3,
