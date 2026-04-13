@@ -38,9 +38,9 @@ use crate::contexts::project_run_record::service::{
 };
 use crate::contexts::project_run_record::task_prompt_contract;
 use crate::contexts::workflow_composition::panel_contracts::{
-    FinalReviewAggregatePayload, FinalReviewAmendmentSource, FinalReviewArbiterPayload,
-    FinalReviewCanonicalAmendment, FinalReviewProposalPayload, FinalReviewVoteDecision,
-    FinalReviewVotePayload, RecordKind, RecordProducer,
+    AmendmentClassification, FinalReviewAggregatePayload, FinalReviewAmendmentSource,
+    FinalReviewArbiterPayload, FinalReviewCanonicalAmendment, FinalReviewProposalPayload,
+    FinalReviewVoteDecision, FinalReviewVotePayload, RecordKind, RecordProducer,
 };
 use crate::contexts::workflow_composition::renderers;
 use crate::contexts::workflow_composition::review_classification;
@@ -58,6 +58,8 @@ pub struct CanonicalAmendment {
     pub sources: Vec<FinalReviewAmendmentSource>,
     /// When set, this amendment is a planned-elsewhere finding.
     pub mapped_to_bead_id: Option<String>,
+    /// Three-way classification for routing.
+    pub classification: AmendmentClassification,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +84,8 @@ pub struct FinalReviewAcceptedAmendment {
     pub sources: Vec<FinalReviewAmendmentSource>,
     /// When set, this amendment is classified as "planned-elsewhere".
     pub mapped_to_bead_id: Option<String>,
+    /// Three-way classification for routing.
+    pub classification: AmendmentClassification,
 }
 
 struct ReviewerProposalRecord {
@@ -166,6 +170,22 @@ fn normalize_mapped_to_bead_id(id: Option<&String>) -> Option<String> {
     })
 }
 
+/// Infer classification from proposal fields. When an explicit `classification`
+/// is set, use it. Otherwise fall back to the legacy `mapped_to_bead_id`
+/// heuristic: present → planned-elsewhere, absent → fix-now.
+fn infer_classification(
+    proposal: &super::panel_contracts::FinalReviewProposal,
+) -> AmendmentClassification {
+    if let Some(c) = proposal.classification {
+        return c;
+    }
+    if proposal.mapped_to_bead_id.is_some() {
+        AmendmentClassification::PlannedElsewhere
+    } else {
+        AmendmentClassification::FixNow
+    }
+}
+
 fn merge_final_review_amendments(
     completion_round: u32,
     proposals: &[ReviewerProposalRecord],
@@ -188,29 +208,35 @@ fn merge_final_review_amendments(
             };
 
             let incoming_mapped = normalize_mapped_to_bead_id(amendment.mapped_to_bead_id.as_ref());
+            let incoming_classification = infer_classification(amendment);
 
             match by_body.get_mut(&normalized_body) {
                 Some(existing) => {
                     if !existing.sources.contains(&source) {
                         existing.sources.push(source);
                     }
-                    // Conservative merge for planned-elsewhere classification:
+                    // Conservative merge for classification:
+                    // - If reviewers disagree on classification, fall back to
+                    //   fix-now (the most conservative option).
+                    if existing.classification != incoming_classification {
+                        existing.classification = AmendmentClassification::FixNow;
+                        existing.mapped_to_bead_id = None;
+                    }
+                    // Conservative merge for planned-elsewhere target:
                     // - If ANY reviewer says "not planned-elsewhere" (None),
                     //   clear the field so the amendment is treated as regular.
                     // - If reviewers disagree on WHICH bead owns it, clear the
                     //   field (conflicting targets → treat as regular).
                     match (&existing.mapped_to_bead_id, &incoming_mapped) {
                         (Some(_), None) | (None, Some(_)) => {
-                            // Reviewers disagree on whether this is
-                            // planned-elsewhere. Conservative: treat as
-                            // regular amendment.
                             existing.mapped_to_bead_id = None;
+                            existing.classification = AmendmentClassification::FixNow;
                         }
                         (Some(existing_target), Some(new_target))
                             if existing_target != new_target =>
                         {
-                            // Conflicting targets — treat as regular amendment.
                             existing.mapped_to_bead_id = None;
+                            existing.classification = AmendmentClassification::FixNow;
                         }
                         _ => {
                             // Agreement: both None or both same Some.
@@ -226,6 +252,7 @@ fn merge_final_review_amendments(
                             normalized_body,
                             sources: vec![source],
                             mapped_to_bead_id: incoming_mapped,
+                            classification: incoming_classification,
                         },
                     );
                 }
@@ -1663,6 +1690,11 @@ where
             let valid = !allowed_pe_ids.is_empty() && allowed_pe_ids.contains(mapped_to.trim());
             if !valid {
                 amendment.mapped_to_bead_id = None;
+                // If the mapped bead ID was invalid, downgrade to fix-now
+                // since we can't route a planned-elsewhere without a target.
+                if amendment.classification == AmendmentClassification::PlannedElsewhere {
+                    amendment.classification = AmendmentClassification::FixNow;
+                }
             }
         }
     }
@@ -1673,10 +1705,10 @@ where
         .min(reviewer_records.len().saturating_sub(vote_total_exhausted))
         .max(1);
 
-    let has_non_pe_for_force_check = final_accepted_amendments
+    let has_restart_triggering = final_accepted_amendments
         .iter()
-        .any(|a| a.mapped_to_bead_id.is_none());
-    if has_non_pe_for_force_check && final_review_restart_count >= max_restarts {
+        .any(|a| a.classification.triggers_restart());
+    if has_restart_triggering && final_review_restart_count >= max_restarts {
         let aggregate = FinalReviewAggregatePayload {
             restart_required: false,
             force_completed: true,
@@ -1717,6 +1749,7 @@ where
                     normalized_body: amendment.normalized_body,
                     sources: amendment.sources,
                     mapped_to_bead_id: amendment.mapped_to_bead_id,
+                    classification: amendment.classification,
                 })
                 .collect(),
             restart_required: false,
@@ -1724,11 +1757,11 @@ where
         });
     }
 
-    let has_non_planned_elsewhere = final_accepted_amendments
+    let needs_restart = final_accepted_amendments
         .iter()
-        .any(|a| a.mapped_to_bead_id.is_none());
+        .any(|a| a.classification.triggers_restart());
     let aggregate = FinalReviewAggregatePayload {
-        restart_required: has_non_planned_elsewhere,
+        restart_required: needs_restart,
         force_completed: false,
         total_reviewers: reviewer_votes.len(),
         total_proposed_amendments: reviewer_records
@@ -1744,7 +1777,7 @@ where
             .iter()
             .map(canonical_to_payload)
             .collect(),
-        final_review_restart_count: if has_non_planned_elsewhere {
+        final_review_restart_count: if needs_restart {
             final_review_restart_count.saturating_add(1)
         } else {
             final_review_restart_count
@@ -1752,14 +1785,14 @@ where
         max_restarts,
         summary: if final_accepted_amendments.is_empty() {
             "Final review accepted no amendments.".to_owned()
-        } else if has_non_planned_elsewhere {
+        } else if needs_restart {
             format!(
                 "Final review accepted {} amendment(s); restart required.",
                 final_accepted_amendments.len()
             )
         } else {
             format!(
-                "Final review accepted {} amendment(s), all planned-elsewhere; no restart required.",
+                "Final review accepted {} amendment(s), none require restart; no restart required.",
                 final_accepted_amendments.len()
             )
         },
@@ -1780,9 +1813,10 @@ where
                 normalized_body: amendment.normalized_body,
                 sources: amendment.sources,
                 mapped_to_bead_id: amendment.mapped_to_bead_id,
+                classification: amendment.classification,
             })
             .collect(),
-        restart_required: has_non_planned_elsewhere,
+        restart_required: needs_restart,
         force_completed: false,
     })
 }
@@ -1990,6 +2024,7 @@ fn canonical_to_payload(amendment: &CanonicalAmendment) -> FinalReviewCanonicalA
         normalized_body: amendment.normalized_body.clone(),
         sources: amendment.sources.clone(),
         mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
+        classification: amendment.classification,
     }
 }
 

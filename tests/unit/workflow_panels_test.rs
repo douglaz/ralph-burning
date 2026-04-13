@@ -2,11 +2,12 @@
 
 use ralph_burning::contexts::workflow_composition::completion::compute_completion_verdict;
 use ralph_burning::contexts::workflow_composition::panel_contracts::{
-    panel_json_schema, CompletionAggregatePayload, CompletionVerdict, CompletionVotePayload,
-    FinalReviewAggregatePayload, FinalReviewArbiterPayload, FinalReviewCanonicalAmendment,
-    FinalReviewProposal, FinalReviewProposalPayload, FinalReviewVote, FinalReviewVoteDecision,
-    FinalReviewVotePayload, PromptRefinementPayload, PromptReviewDecision,
-    PromptReviewPrimaryPayload, PromptValidationPayload, RecordKind, RecordProducer,
+    panel_json_schema, AmendmentClassification, CompletionAggregatePayload, CompletionVerdict,
+    CompletionVotePayload, FinalReviewAggregatePayload, FinalReviewArbiterPayload,
+    FinalReviewCanonicalAmendment, FinalReviewProposal, FinalReviewProposalPayload,
+    FinalReviewVote, FinalReviewVoteDecision, FinalReviewVotePayload, PromptRefinementPayload,
+    PromptReviewDecision, PromptReviewPrimaryPayload, PromptValidationPayload, RecordKind,
+    RecordProducer,
 };
 use ralph_burning::shared::domain::StageId;
 
@@ -138,6 +139,7 @@ fn final_review_proposal_payload_round_trips() {
             body: "Tighten the final wording.".to_string(),
             rationale: Some("Clarifies the edge case.".to_string()),
             mapped_to_bead_id: None,
+            classification: None,
         }],
     };
     let json = serde_json::to_string(&payload).expect("serializes");
@@ -182,6 +184,7 @@ fn final_review_aggregate_payload_round_trips() {
         normalized_body: "Tighten the final wording.".to_string(),
         sources: vec![],
         mapped_to_bead_id: None,
+        classification: AmendmentClassification::FixNow,
     };
     let payload = FinalReviewAggregatePayload {
         restart_required: true,
@@ -215,6 +218,7 @@ fn final_review_aggregate_planned_elsewhere_no_restart() {
         normalized_body: "Tighten the final wording.".to_string(),
         sources: vec![],
         mapped_to_bead_id: Some("other-bead-42".to_string()),
+        classification: AmendmentClassification::PlannedElsewhere,
     };
     let payload = FinalReviewAggregatePayload {
         restart_required: false,
