@@ -653,7 +653,7 @@ fn build_stage_prompt_injects_scope_guidance_for_planning_and_omits_it_for_gener
 }
 
 #[test]
-fn build_stage_prompt_allows_legacy_override_without_task_prompt_contract_placeholder() {
+fn build_stage_prompt_injects_scope_guidance_into_legacy_plan_and_implement_override() {
     let temp_dir = tempdir().expect("create temp dir");
     let base_dir = temp_dir.path();
     let project_id = ProjectId::new("prompt-builder-legacy-override").unwrap();
@@ -701,6 +701,61 @@ fn build_stage_prompt_allows_legacy_override_without_task_prompt_contract_placeh
 
     assert!(prompt.starts_with("LEGACY STAGE"));
     assert!(prompt.contains("Ralph Task Prompt"));
+    assert!(prompt.contains("## Scope Guidance"));
+    assert!(prompt.contains(
+        "Only include work that is required by `Must-Do Scope` and `Acceptance Criteria`."
+    ));
+}
+
+#[test]
+fn build_stage_prompt_keeps_generic_legacy_override_without_scope_guidance() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-builder-generic-legacy-override").unwrap();
+    let run_id = RunId::new("run-20260314193209").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::Planning, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::Planning);
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
+    ];
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        "Build a calculator.",
+        &events,
+    );
+
+    let ws_templates = base_dir.join(".ralph-burning").join("templates");
+    fs::create_dir_all(&ws_templates).expect("create templates dir");
+    fs::write(
+        ws_templates.join("planning.md"),
+        "LEGACY STAGE\n\n{{role_instruction}}\n\n{{project_prompt}}\n\n{{json_schema}}",
+    )
+    .expect("write override");
+
+    let artifact_store = InMemoryArtifactStore { payloads: vec![] };
+    let prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendFamily::Claude,
+        BackendRole::Planner,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("generic legacy override should still render");
+
+    assert!(prompt.starts_with("LEGACY STAGE"));
+    assert!(!prompt.contains("## Scope Guidance"));
 }
 
 #[test]

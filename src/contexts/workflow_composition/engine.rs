@@ -174,10 +174,12 @@ pub fn build_stage_prompt(
         _ => String::new(),
     };
 
-    template_catalog::resolve_and_render(
-        template_id,
-        base_dir,
-        Some(project_id),
+    let resolved_template = template_catalog::resolve(template_id, base_dir, Some(project_id))?;
+    let template_has_classification_guidance =
+        template_catalog::extract_placeholders(&resolved_template.content)
+            .contains("classification_guidance");
+    let rendered = template_catalog::render(
+        &resolved_template,
         &[
             ("role_instruction", &role_instruction),
             ("task_prompt_contract", &task_prompt_contract_block),
@@ -187,7 +189,40 @@ pub fn build_stage_prompt(
             ("remediation", &remediation_block),
             ("classification_guidance", &classification_guidance_block),
         ],
-    )
+    )?;
+
+    if matches!(
+        contract.stage_id,
+        StageId::Planning | StageId::PlanAndImplement
+    ) && !classification_guidance_block.is_empty()
+        && !template_has_classification_guidance
+    {
+        Ok(inject_scope_guidance(
+            &rendered,
+            &classification_guidance_block,
+        ))
+    } else {
+        Ok(rendered)
+    }
+}
+
+fn inject_scope_guidance(rendered_prompt: &str, scope_guidance: &str) -> String {
+    let scope_guidance = scope_guidance.trim_end();
+    if scope_guidance.is_empty() || rendered_prompt.contains(scope_guidance) {
+        return rendered_prompt.to_owned();
+    }
+
+    const SCHEMA_HEADING: &str = "\n## Authoritative JSON Schema";
+    if let Some(index) = rendered_prompt.find(SCHEMA_HEADING) {
+        let mut injected = String::with_capacity(rendered_prompt.len() + scope_guidance.len() + 2);
+        injected.push_str(rendered_prompt[..index].trim_end());
+        injected.push_str("\n\n");
+        injected.push_str(scope_guidance);
+        injected.push_str(&rendered_prompt[index..]);
+        injected
+    } else {
+        format!("{}\n\n{}", rendered_prompt.trim_end(), scope_guidance)
+    }
 }
 
 /// Resolved target per stage for preflight.

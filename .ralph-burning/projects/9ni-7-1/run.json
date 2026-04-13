@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260413084713",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-73a64a77",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: Planning and `plan_and_implement` stage overrides can still silently drop the new scope guidance. `build_stage_prompt()` only computes the guidance block for those stages (`src/contexts/workflow_composition/engine.rs:166-174`), but stage templates still treat `classification_guidance` as optional (`src/contexts/workspace_governance/template_catalog.rs:406-413,766-774`). The new regression test explicitly accepts a `plan_and_implement.md` override that omits the placeholder (`tests/unit/prompt_builder_test.rs:655-704`), so any existing workspace/project override will continue generating scope-unaware prompts even when the bead task prompt contract is present. That misses the acceptance criterion that these stages receive scope-aware guidance whenever bead scope sections exist. severity: medium. affected_files: src/contexts/workflow_composition/engine.rs, src/contexts/workspace_governance/template_catalog.rs, tests/unit/prompt_builder_test.rs. remediation_hint: require `{{classification_guidance}}` for planning-oriented overrides when the bead contract is active, or inject the scope guidance outside template-controlled content so overrides cannot suppress it.",
-        "created_at": "2026-04-13T08:58:15.203256130Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "bf890d58c3ebb8cea179e1c228f12cef330f44048dd97cb2903b031d6a0da0e8"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-13T08:49:57.241318197Z",

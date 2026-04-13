@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260413084713-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-13T09:00:38.560223355Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated planning-stage prompt rendering so scope guidance cannot be silently dropped by workspace or project template overrides: `build_stage_prompt()` now resolves/renders the template directly, detects when a `Planning` or `PlanAndImplement` override omits `{{classification_guidance}}`, and injects the computed scope guidance before the schema section as a fallback. Added regression coverage showing scoped legacy overrides still receive `## Scope Guidance` while generic non-contract prompts remain unchanged.\n\n## Steps\n\n1. [Completed] Inspected `build_stage_prompt()` and template override behavior to confirm that milestone-mode planning overrides without `{{classification_guidance}}` were suppressing the new scope instructions.\n2. [Completed] Modified `src/contexts/workflow_composition/engine.rs` so planning-oriented prompts resolve and render the template explicitly, then inject scope guidance when the bead contract is active and the override omitted the placeholder.\n3. [Completed] Updated prompt-builder regression tests to require scope guidance for scoped legacy overrides and to preserve backward-compatible behavior for generic legacy overrides without bead scope sections.\n\n## Validation Evidence\n\n- `cargo fmt -- src/contexts/workflow_composition/engine.rs tests/unit/prompt_builder_test.rs`\n- `cargo test build_stage_prompt_injects_scope_guidance -- --nocapture` passed\n- `cargo test build_stage_prompt_keeps_generic_legacy_override_without_scope_guidance -- --nocapture` passed\n- `cargo test --test unit prompt_builder_test -- --nocapture` passed (13 prompt-builder tests)\n\n## Outstanding Risks\n\n- Full repository test suite was not run; validation covered formatting plus targeted prompt-builder tests for the changed rendering path.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}
