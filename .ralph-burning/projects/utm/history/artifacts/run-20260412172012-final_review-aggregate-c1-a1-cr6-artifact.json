@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260412172012-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260412172012-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T19:31:50.804807665Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 6/25\n\n## Accepted\n\n- `fr-6-0736c40d`\n\n## Rejected\n\n- `fr-6-013a5281`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-0736c40d`\n\nPreserve `default_model` overrides for the new Codex defaults. `default_backend_runtime_settings()` now hardcodes `backends.codex.role_models.implementer = gpt-5.4-high` and `backends.codex.role_models.final_reviewer = gpt-5.4-xhigh` ([src/contexts/workspace_governance/config.rs:1542-1547]), `EffectiveConfig::load` makes the implementer backend selection explicit by default ([src/contexts/workspace_governance/config.rs:427-435]), and `target_for_family()` always prefers `role_models` over `base_backend.model/default_model` ([src/contexts/agent_execution/policy.rs:327-340]). As a result, a workspace/project override like `default_backend = \"codex\"` plus `default_model = \"override-model\"` no longer changes the implementer or first final-review reviewer: `backend probe --role implementer` / `final_reviewer` still resolve to `gpt-5.4-high` / `gpt-5.4-xhigh`. That regresses the existing workspace/project override path the bead explicitly says must keep working.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}

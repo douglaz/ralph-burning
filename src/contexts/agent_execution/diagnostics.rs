@@ -784,46 +784,9 @@ impl<'a> BackendDiagnosticsService<'a> {
 
         let mut roles = BackendPolicyRole::ALL
             .iter()
-            .map(|role| {
-                let override_source = self.override_source_for_role(*role);
-                let session_policy = session_policy_for_role(*role);
-
-                match self.policy.resolve_role_target(*role, 1) {
-                    Ok(target) => {
-                        let family = target.backend.family;
-                        let timeout = self.policy.timeout_for_role(family, *role);
-                        let model_source = self.model_source_for_role(*role, family);
-                        let timeout_source = self.timeout_source_for_role(*role, family);
-                        RoleEffectiveView {
-                            role: role.as_str().to_owned(),
-                            backend_family: family.as_str().to_owned(),
-                            model_id: target.model.model_id.clone(),
-                            timeout_seconds: timeout.as_secs(),
-                            session_policy,
-                            override_source,
-                            model_source,
-                            timeout_source,
-                            resolution_error: None,
-                        }
-                    }
-                    Err(err) => {
-                        // Surface the configured backend family even though
-                        // resolution failed, so operators can see the broken
-                        // selection and its source.
-                        let configured_family = self.family_for_role(*role);
-                        RoleEffectiveView {
-                            role: role.as_str().to_owned(),
-                            backend_family: configured_family,
-                            model_id: "unresolved".to_owned(),
-                            timeout_seconds: 0,
-                            session_policy,
-                            override_source,
-                            model_source: "unresolved".to_owned(),
-                            timeout_source: "unresolved".to_owned(),
-                            resolution_error: Some(err.to_string()),
-                        }
-                    }
-                }
+            .flat_map(|role| match role {
+                BackendPolicyRole::FinalReviewer => self.final_review_reviewer_effective_views(),
+                _ => vec![self.role_effective_view(*role)],
             })
             .collect::<Vec<_>>();
         roles.push(self.final_review_planner_effective_view());
@@ -863,6 +826,10 @@ impl<'a> BackendDiagnosticsService<'a> {
             "prompt_review_panel" => {
                 validate_flow_has_stage(flow_def, StageId::PromptReview)?;
                 return self.probe_prompt_review_panel(flow, cycle);
+            }
+            "final_reviewer" => {
+                validate_flow_has_stage(flow_def, StageId::FinalReview)?;
+                return self.probe_final_reviewer(flow, cycle);
             }
             _ => {}
         }
@@ -1039,6 +1006,46 @@ impl<'a> BackendDiagnosticsService<'a> {
                 omitted,
                 arbiter: Some(arbiter),
             }),
+        })
+    }
+
+    fn probe_final_reviewer(&self, flow: FlowPreset, cycle: u32) -> AppResult<BackendProbeResult> {
+        let configured_specs = &self.config.final_review_policy().backends;
+        let selection = self
+            .primary_final_review_reviewer_configured_index()
+            .and_then(|idx| configured_specs.get(idx))
+            .ok_or_else(|| AppError::InvalidConfigValue {
+                key: "final_review.backends".to_owned(),
+                value: "[]".to_owned(),
+                reason: "must configure at least one final-review reviewer".to_owned(),
+            })?;
+        let selection = selection.selection();
+        let target = self
+            .policy
+            .resolve_selection_target(BackendPolicyRole::FinalReviewer, selection)
+            .map_err(|err| {
+                self.make_probe_target_error(
+                    "final_reviewer",
+                    "reviewer[0]",
+                    selection.family.as_str(),
+                    "final_review.backends",
+                    &err,
+                )
+            })?;
+        let timeout = self
+            .policy
+            .timeout_for_role(target.backend.family, BackendPolicyRole::FinalReviewer);
+
+        Ok(BackendProbeResult {
+            role: "final_reviewer".to_owned(),
+            flow: flow.as_str().to_owned(),
+            cycle,
+            target: Some(ProbeTargetView {
+                backend_family: target.backend.family.as_str().to_owned(),
+                model_id: target.model.model_id,
+                timeout_seconds: timeout.as_secs(),
+            }),
+            panel: None,
         })
     }
 
@@ -1334,6 +1341,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         match role_str {
             "completion_panel" => "planner",
             "final_review_panel" => "planner",
+            "final_reviewer" => "reviewer[0]",
             "prompt_review_panel" => "refiner",
             _ => role_str,
         }
@@ -1346,6 +1354,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             // Completion and final-review panels use the planner as primary target
             "completion_panel" => self.config_source_for_role(BackendPolicyRole::Planner),
             "final_review_panel" => self.final_review_planner_config_source(),
+            "final_reviewer" => "final_review.backends".to_owned(),
             // Prompt-review panel uses the refiner as primary target
             "prompt_review_panel" => self.config_source_for_role(BackendPolicyRole::PromptReviewer),
             // Singular role probe — parse to get the actual role's config source
@@ -1425,6 +1434,22 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
 
         (members, omitted)
+    }
+
+    fn primary_final_review_reviewer_configured_index(&self) -> Option<usize> {
+        self.config
+            .final_review_policy()
+            .backends
+            .iter()
+            .enumerate()
+            .find_map(|(idx, spec)| {
+                let backend = spec.backend();
+                if spec.is_optional() && !self.policy.backend_enabled_public(backend) {
+                    None
+                } else {
+                    Some(idx)
+                }
+            })
     }
 
     // ── Helper methods ──────────────────────────────────────────────────
@@ -1547,9 +1572,15 @@ impl<'a> BackendDiagnosticsService<'a> {
                 if entry.source
                     == crate::contexts::workspace_governance::config::ConfigValueSource::Default
                 {
-                    // No explicit override set — role inherits from default_backend
-                    let base_source = self.source_for_base_backend();
-                    format!("default_backend ({})", base_source)
+                    if self.policy.has_explicit_override(role) {
+                        // Some roles can resolve via a compiled per-role default
+                        // even when the config key itself was never set.
+                        format!("{key} (default)")
+                    } else {
+                        // No explicit override set — role inherits from default_backend
+                        let base_source = self.source_for_base_backend();
+                        format!("default_backend ({})", base_source)
+                    }
                 } else {
                     entry.source.to_string()
                 }
@@ -1586,13 +1617,52 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
     }
 
+    fn final_review_reviewers_override_source(&self) -> String {
+        match self.config.get("final_review.backends") {
+            Ok(entry) => format!("final_review.backends ({})", entry.source),
+            Err(_) => "final_review.backends".to_owned(),
+        }
+    }
+
+    fn role_model_source_for_role(
+        &self,
+        role: BackendPolicyRole,
+        family: BackendFamily,
+        include_defaults: bool,
+    ) -> Option<String> {
+        let key = format!("backends.{}.role_models.{}", family.as_str(), role.as_str());
+        let entry = self.config.get(&key).ok()?;
+        if matches!(
+            entry.value,
+            crate::contexts::workspace_governance::config::ConfigValue::String(None)
+        ) {
+            return None;
+        }
+
+        if !include_defaults
+            && entry.source
+                == crate::contexts::workspace_governance::config::ConfigValueSource::Default
+        {
+            return None;
+        }
+
+        Some(match entry.source {
+            crate::contexts::workspace_governance::config::ConfigValueSource::Default => {
+                format!("{key} (default)")
+            }
+            source => source.to_string(),
+        })
+    }
+
     /// Determine the source precedence for a role's resolved model_id.
     ///
     /// Model resolution order (matching `BackendPolicyService::target_for_family`):
     /// 1. Explicit model from the role's backend selection override
-    /// 2. Role-specific model from `backends.<family>.role_models.<role>`
+    /// 2. Explicit role-specific model from `backends.<family>.role_models.<role>`
     /// 3. Base backend embedded model from `default_backend = "family(model)"`
-    /// 4. Family default model
+    ///    or `settings.default_model` when it applies to the resolved family
+    /// 4. Compiled role-specific default model
+    /// 5. Family default model
     fn model_source_for_role(&self, role: BackendPolicyRole, family: BackendFamily) -> String {
         let bp = self.config.backend_policy();
 
@@ -1613,28 +1683,12 @@ impl<'a> BackendDiagnosticsService<'a> {
             }
         }
 
-        // 2. Check role-specific model from runtime settings
-        let key = format!("backends.{}.role_models.{}", family.as_str(), role.as_str());
-        if let Ok(entry) = self.config.get(&key) {
-            if !matches!(
-                entry.value,
-                crate::contexts::workspace_governance::config::ConfigValue::String(None)
-            ) {
-                let source = entry.source;
-                if source
-                    != crate::contexts::workspace_governance::config::ConfigValueSource::Default
-                {
-                    return source.to_string();
-                }
-            }
+        // 2. Check explicit role-specific models from workspace/project config.
+        if let Some(source) = self.role_model_source_for_role(role, family, false) {
+            return source;
         }
 
-        // 3. Check base backend model — `target_for_family` resolves from
-        //    `base_backend.model` before falling through to the compile-time
-        //    family default. The model in `base_backend` may have been set
-        //    from `default_backend = "family(model)"` or merged from
-        //    `settings.default_model`. Distinguish the two sources by
-        //    comparing with `bp.default_model`.
+        // 3. Check explicit base backend model overrides.
         if family == bp.base_backend.family && bp.base_backend.model.is_some() {
             if bp.default_model.as_ref() == bp.base_backend.model.as_ref() {
                 return self.source_for_default_model();
@@ -1643,7 +1697,12 @@ impl<'a> BackendDiagnosticsService<'a> {
             }
         }
 
-        // 4. Family default
+        // 4. Check compiled role-specific defaults.
+        if let Some(source) = self.role_model_source_for_role(role, family, true) {
+            return source;
+        }
+
+        // 5. Family default
         "default".to_owned()
     }
 
@@ -1654,23 +1713,10 @@ impl<'a> BackendDiagnosticsService<'a> {
                 return self.override_source_for_final_review_planner();
             }
 
-            let key = format!(
-                "backends.{}.role_models.{}",
-                family.as_str(),
-                BackendPolicyRole::Planner.as_str()
-            );
-            if let Ok(entry) = self.config.get(&key) {
-                if !matches!(
-                    entry.value,
-                    crate::contexts::workspace_governance::config::ConfigValue::String(None)
-                ) {
-                    let source = entry.source;
-                    if source
-                        != crate::contexts::workspace_governance::config::ConfigValueSource::Default
-                    {
-                        return source.to_string();
-                    }
-                }
+            if let Some(source) =
+                self.role_model_source_for_role(BackendPolicyRole::Planner, family, false)
+            {
+                return source;
             }
 
             if family == bp.base_backend.family && bp.base_backend.model.is_some() {
@@ -1681,10 +1727,127 @@ impl<'a> BackendDiagnosticsService<'a> {
                 }
             }
 
+            if let Some(source) =
+                self.role_model_source_for_role(BackendPolicyRole::Planner, family, true)
+            {
+                return source;
+            }
+
             return "default".to_owned();
         }
 
         self.model_source_for_role(BackendPolicyRole::Planner, family)
+    }
+
+    fn role_effective_view(&self, role: BackendPolicyRole) -> RoleEffectiveView {
+        let override_source = self.override_source_for_role(role);
+        let session_policy = session_policy_for_role(role);
+
+        match self.policy.resolve_role_target(role, 1) {
+            Ok(target) => {
+                let family = target.backend.family;
+                let timeout = self.policy.timeout_for_role(family, role);
+                let model_source = self.model_source_for_role(role, family);
+                let timeout_source = self.timeout_source_for_role(role, family);
+                RoleEffectiveView {
+                    role: role.as_str().to_owned(),
+                    backend_family: family.as_str().to_owned(),
+                    model_id: target.model.model_id.clone(),
+                    timeout_seconds: timeout.as_secs(),
+                    session_policy,
+                    override_source,
+                    model_source,
+                    timeout_source,
+                    resolution_error: None,
+                }
+            }
+            Err(err) => {
+                let configured_family = self.family_for_role(role);
+                RoleEffectiveView {
+                    role: role.as_str().to_owned(),
+                    backend_family: configured_family,
+                    model_id: "unresolved".to_owned(),
+                    timeout_seconds: 0,
+                    session_policy,
+                    override_source,
+                    model_source: "unresolved".to_owned(),
+                    timeout_source: "unresolved".to_owned(),
+                    resolution_error: Some(err.to_string()),
+                }
+            }
+        }
+    }
+
+    fn final_review_reviewer_effective_views(&self) -> Vec<RoleEffectiveView> {
+        let override_source = self.final_review_reviewers_override_source();
+
+        let member_views = self
+            .config
+            .final_review_policy()
+            .backends
+            .iter()
+            .enumerate()
+            .map(|(idx, spec)| {
+                let selection = spec.selection();
+                match self
+                    .policy
+                    .resolve_selection_target(BackendPolicyRole::FinalReviewer, selection)
+                {
+                    Ok(target) => {
+                        let family = target.backend.family;
+                        let timeout = self
+                            .policy
+                            .timeout_for_role(family, BackendPolicyRole::FinalReviewer);
+                        let model_source = if selection.model.is_some() {
+                            override_source.clone()
+                        } else {
+                            self.model_source_for_role(BackendPolicyRole::FinalReviewer, family)
+                        };
+                        RoleEffectiveView {
+                            role: format!("final_review_panel.reviewer[{idx}]"),
+                            backend_family: family.as_str().to_owned(),
+                            model_id: target.model.model_id,
+                            timeout_seconds: timeout.as_secs(),
+                            session_policy: "new_session".to_owned(),
+                            override_source: override_source.clone(),
+                            model_source,
+                            timeout_source: self
+                                .timeout_source_for_role(BackendPolicyRole::FinalReviewer, family),
+                            resolution_error: None,
+                        }
+                    }
+                    Err(err) => RoleEffectiveView {
+                        role: format!("final_review_panel.reviewer[{idx}]"),
+                        backend_family: selection.family.as_str().to_owned(),
+                        model_id: selection
+                            .model
+                            .clone()
+                            .unwrap_or_else(|| "unresolved".to_owned()),
+                        timeout_seconds: 0,
+                        session_policy: "new_session".to_owned(),
+                        override_source: override_source.clone(),
+                        model_source: "unresolved".to_owned(),
+                        timeout_source: "unresolved".to_owned(),
+                        resolution_error: Some(err.to_string()),
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut views =
+            Vec::with_capacity(member_views.len() + usize::from(!member_views.is_empty()));
+        if let Some(first_member) = self
+            .primary_final_review_reviewer_configured_index()
+            .and_then(|idx| member_views.get(idx).cloned())
+            .or_else(|| member_views.first().cloned())
+        {
+            views.push(RoleEffectiveView {
+                role: "final_reviewer".to_owned(),
+                ..first_member
+            });
+        }
+        views.extend(member_views);
+        views
     }
 
     /// Determine the source precedence for a role's resolved timeout_seconds.

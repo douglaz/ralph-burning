@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr4-artifact",
+  "payload_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T18:44:25.626766350Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThree amendments identify real compatibility/diagnostics/resolver defects in source. The two run-state/resume amendments do not hold up because the cited reviewer pair matches the authoritative live project override, and resume drift detection already compares full reviewer identities before the minimum-count checks.\n\n## Votes\n\n- `fr-4-e6fe4b51`: Accept\n  `backend show-effective` is documented as a stable DTO, and `final_reviewer` remains a named policy role in shared domain code, but diagnostics now remove that role from `roles` and `backend probe --role final_reviewer` now hard-fails. Replacing an existing role key/CLI target with only `final_review_panel.reviewer[i]` is a backward-incompatible contract break unless the surface is versioned or the old alias is preserved as compatibility output.\n- `fr-4-0a3c4ba5`: Accept\n  The new compiled Codex defaults are supplied through `backends.codex.role_models.implementer` and `backends.codex.role_models.final_reviewer`, but `model_source_for_role` suppresses role-model entries when their source is `Default` and falls through to generic `\"default\"`. On a fresh workspace that makes `implementer` and the Codex final-review reviewer report the wrong control point, which is a real diagnostics correctness issue.\n- `fr-4-0b4daea6`: Accept\n  `BackendResolver::apply_selection` resets the model with `ModelSpec::default_for_backend()` whenever the backend family changes, so layered selections can erase the role-specific implementer default from `BackendRole::Implementer.default_target()`. That leaves `BackendResolver` able to resolve `codex/gpt-5.4` where `BackendPolicyService` resolves `codex/gpt-5.4-high`, which is an avoidable correctness and maintenance split even if only legacy callers hit it today.\n- `fr-4-837d9207`: Reject\n  The cited `codex + codex-spark` reviewer pair is explained by the authoritative live project config at `.git/ralph-burning-live/projects/utm/config.toml`, which explicitly sets `final_review.backends = [\"codex/gpt-5.4-xhigh\", \"codex/gpt-5.3-codex-spark-xhigh\"]`. That is project-specific runtime state, not evidence that the compiled default reviewer pair or backend-default implementation is wrong.\n- `fr-4-c605f8ed`: Reject\n  The amendment focuses on `drift_still_satisfies_requirements`, but the resume path first calls `resolution_has_drifted()`, which compares the full `final_review_reviewers` vectors, including backend and model IDs, before the minimum-count/planner/arbiter checks run. A changed reviewer pair is therefore detected as drift; the cited snapshot is only reused because it matches the active live override, not because reviewer identity changes are ignored.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

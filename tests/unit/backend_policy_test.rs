@@ -52,6 +52,206 @@ fn empty_backend_settings(enabled: bool) -> BackendRuntimeSettings {
 }
 
 #[test]
+fn compiled_defaults_use_codex_high_implementer_and_cross_model_final_review_panel() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let policy = BackendPolicyService::new(&effective);
+
+    let implementer = policy
+        .resolve_role_target(BackendPolicyRole::Implementer, 1)
+        .expect("resolve implementer");
+    assert_eq!(BackendFamily::Codex, implementer.backend.family);
+    assert_eq!("gpt-5.4-high", implementer.model.model_id);
+
+    let panel = policy
+        .resolve_final_review_panel(1)
+        .expect("resolve final review panel");
+    assert_eq!(3, panel.reviewers.len());
+    assert_eq!(
+        BackendFamily::Codex,
+        panel.reviewers[0].target.backend.family
+    );
+    assert_eq!("gpt-5.4-xhigh", panel.reviewers[0].target.model.model_id);
+    assert_eq!(
+        BackendFamily::Claude,
+        panel.reviewers[1].target.backend.family
+    );
+    assert_eq!("claude-opus-4-6", panel.reviewers[1].target.model.model_id);
+    assert_eq!(
+        BackendFamily::Codex,
+        panel.reviewers[2].target.backend.family
+    );
+    assert_eq!(
+        "gpt-5.3-codex-spark-xhigh",
+        panel.reviewers[2].target.model.model_id
+    );
+}
+
+#[test]
+fn compiled_default_implementer_honors_codex_role_model_overrides() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.backends.insert(
+        "codex".to_owned(),
+        BackendRuntimeSettings {
+            role_models: BackendRoleModels {
+                implementer: Some("workspace-implementer-model".to_owned()),
+                ..Default::default()
+            },
+            ..empty_backend_settings(true)
+        },
+    );
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let project_id = ProjectId::new("alpha").expect("project id");
+    let mut project = ProjectConfig::default();
+    project.backends.insert(
+        "codex".to_owned(),
+        BackendRuntimeSettings {
+            role_models: BackendRoleModels {
+                implementer: Some("project-implementer-model".to_owned()),
+                ..Default::default()
+            },
+            ..empty_backend_settings(true)
+        },
+    );
+    write_project_config(temp_dir.path(), &project_id, &project);
+
+    let effective = EffectiveConfig::load_for_project(
+        temp_dir.path(),
+        Some(&project_id),
+        CliBackendOverrides::default(),
+    )
+    .expect("load config");
+    let implementer = BackendPolicyService::new(&effective)
+        .resolve_role_target(BackendPolicyRole::Implementer, 1)
+        .expect("resolve implementer");
+
+    assert_eq!(BackendFamily::Codex, implementer.backend.family);
+    assert_eq!("project-implementer-model", implementer.model.model_id);
+}
+
+#[test]
+fn compiled_default_final_review_panel_honors_role_model_overrides() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.backends.insert(
+        "codex".to_owned(),
+        BackendRuntimeSettings {
+            role_models: BackendRoleModels {
+                final_reviewer: Some("workspace-codex-reviewer".to_owned()),
+                ..Default::default()
+            },
+            ..empty_backend_settings(true)
+        },
+    );
+    workspace.backends.insert(
+        "claude".to_owned(),
+        BackendRuntimeSettings {
+            role_models: BackendRoleModels {
+                final_reviewer: Some("workspace-claude-reviewer".to_owned()),
+                ..Default::default()
+            },
+            ..empty_backend_settings(true)
+        },
+    );
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let project_id = ProjectId::new("alpha").expect("project id");
+    let mut project = ProjectConfig::default();
+    project.backends.insert(
+        "codex".to_owned(),
+        BackendRuntimeSettings {
+            role_models: BackendRoleModels {
+                final_reviewer: Some("project-codex-reviewer".to_owned()),
+                ..Default::default()
+            },
+            ..empty_backend_settings(true)
+        },
+    );
+    write_project_config(temp_dir.path(), &project_id, &project);
+
+    let effective = EffectiveConfig::load_for_project(
+        temp_dir.path(),
+        Some(&project_id),
+        CliBackendOverrides::default(),
+    )
+    .expect("load config");
+    let panel = BackendPolicyService::new(&effective)
+        .resolve_final_review_panel(1)
+        .expect("resolve final review panel");
+
+    assert_eq!(3, panel.reviewers.len());
+    assert_eq!(
+        BackendFamily::Codex,
+        panel.reviewers[0].target.backend.family
+    );
+    assert_eq!(
+        "project-codex-reviewer",
+        panel.reviewers[0].target.model.model_id
+    );
+    assert_eq!(
+        BackendFamily::Claude,
+        panel.reviewers[1].target.backend.family
+    );
+    assert_eq!(
+        "workspace-claude-reviewer",
+        panel.reviewers[1].target.model.model_id
+    );
+    // Third reviewer has an inline model override that is not affected by
+    // role_models overrides.
+    assert_eq!(
+        BackendFamily::Codex,
+        panel.reviewers[2].target.backend.family
+    );
+    assert_eq!(
+        "gpt-5.3-codex-spark-xhigh",
+        panel.reviewers[2].target.model.model_id
+    );
+}
+
+#[test]
+fn explicit_default_model_overrides_compiled_codex_role_defaults() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("codex".to_owned());
+    workspace.settings.default_model = Some("workspace-default-model".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let policy = BackendPolicyService::new(&effective);
+
+    let implementer = policy
+        .resolve_role_target(BackendPolicyRole::Implementer, 1)
+        .expect("resolve implementer");
+    assert_eq!(BackendFamily::Codex, implementer.backend.family);
+    assert_eq!("workspace-default-model", implementer.model.model_id);
+
+    let panel = policy
+        .resolve_final_review_panel(1)
+        .expect("resolve final review panel");
+    assert_eq!(3, panel.reviewers.len());
+    assert_eq!(
+        "workspace-default-model",
+        panel.reviewers[0].target.model.model_id
+    );
+    assert_eq!("claude-opus-4-6", panel.reviewers[1].target.model.model_id);
+    // Third reviewer has an inline model override, unaffected by default_model.
+    assert_eq!(
+        "gpt-5.3-codex-spark-xhigh",
+        panel.reviewers[2].target.model.model_id
+    );
+}
+
+#[test]
 fn project_config_round_trips_role_timeouts_and_sections() {
     let mut config = ProjectConfig::default();
     config.settings.default_flow = Some(FlowPreset::Standard);
@@ -296,8 +496,9 @@ fn final_review_panel_resolution_includes_planner_target() {
         .expect("resolve final review panel");
 
     assert_eq!(BackendFamily::Claude, panel.planner.backend.family);
-    assert!(
-        !panel.reviewers.is_empty(),
+    assert_eq!(
+        3,
+        panel.reviewers.len(),
         "final-review reviewers should resolve"
     );
     assert_eq!(BackendFamily::Claude, panel.arbiter.backend.family);
@@ -437,10 +638,10 @@ fn opposite_family_uses_fallback_chain_and_cycle_alternates() {
             .expect("even cycle planner family")
     );
 
-    let implementer = policy
-        .resolve_role_target(BackendPolicyRole::Implementer, 1)
-        .expect("implementer target");
-    assert_eq!(BackendFamily::Claude, implementer.backend.family);
+    let reviewer = policy
+        .resolve_role_target(BackendPolicyRole::Reviewer, 1)
+        .expect("reviewer target");
+    assert_eq!(BackendFamily::OpenRouter, reviewer.backend.family);
 }
 
 #[test]

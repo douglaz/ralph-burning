@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-vote-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260412172012-final_review-vote-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T18:03:17.279596428Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the implementer diagnostics fix because `show-effective` currently misattributes a compiled implementer default to `default_backend`; reject the reviewer-default complaint because source and tests already encode the Codex+Claude defaults, and the cited run snapshot comes from an explicit live-project override.\n\n## Votes\n\n- `fr-2-f924f41e`: Accept\n  `EffectiveConfig` now injects `default_implementer_backend()` into `backend_policy.implementer_backend` when the user leaves that key unset, so runtime resolution treats the implementer as coming from `workflow.implementer_backend`. `backend check`/`probe` already follow that path, but `BackendDiagnosticsService::override_source_for_role()` still rewrites a default-sourced `workflow.implementer_backend` entry to `default_backend (...)`. That makes `backend show-effective` report the wrong governing source for the implementer, which is a real diagnostics correctness defect. Updating the attribution and adding a regression test in `tests/unit/backend_diagnostics_test.rs` is warranted.\n- `fr-2-31ecf408`: Reject\n  The amendment relies on the wrong evidence. The backend-default source paths were already changed in code: `default_final_review_backends()` now resolves by family (`codex`, `claude`), `default_backend_runtime_settings()` supplies the Codex `final_reviewer` default, and `tests/unit/backend_policy_test.rs` asserts that the compiled default final-review panel resolves to `gpt-5.4-xhigh` plus `claude-opus-4-6`. The cited `.ralph-burning/projects/utm/run.json` and `journal.ndjson` entries are runtime state for one live project, and that project has an explicit override in `.git/ralph-burning-live/projects/utm/config.toml` setting `final_review.backends = [\"codex/gpt-5.4-xhigh\", \"codex/gpt-5.3-codex-spark-xhigh\"]`. That snapshot therefore does not demonstrate a defect in the delivered default-resolution logic.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

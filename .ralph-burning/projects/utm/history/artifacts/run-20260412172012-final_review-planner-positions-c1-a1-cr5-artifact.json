@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr5-artifact",
+  "payload_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T19:07:47.201014086Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo amendments identify real diagnostics bugs in the restored `final_reviewer` compatibility path. The runtime-state/default-behavior amendments do not hold against the current code and resume logic.\n\n## Votes\n\n- `fr-5-41af9e2b`: Accept\n  `probe_final_reviewer()` resolves `configured_specs.first()`, and the `final_reviewer` compatibility row is built from `member_views.first()`. Both therefore bind to the raw first configured `final_review.backends` slot, not the first reviewer that actually survives panel resolution. In optional-first configurations, `final_review_panel` can resolve successfully while `final_reviewer` becomes unresolved or fails. The alias should mirror effective panel resolution.\n- `fr-5-0ee611a2`: Accept\n  The availability-error path is inconsistent with the restored alias. `probe_with_availability()` derives the primary label/source from `probe_primary_target_label()` and `probe_primary_config_source()`, but for `final_reviewer` those fall back to generic role metadata (`final_reviewer` / `default_backend`) instead of the panel-member selection that `probe_final_reviewer()` actually uses. That misreports both the failing target identity and the governing config source.\n- `fr-5-e913f0f4`: Reject\n  This is not accurate for the current implementation. The branch includes source changes in `src/contexts/workspace_governance/config.rs` and `src/contexts/agent_execution/policy.rs` that add the compiled Codex implementer default, reorder the default final-review panel to Codex then Claude, and expose that behavior through policy/tests. The requested backend-default behavior change is implemented in code, not only in runtime state files.\n- `fr-5-d4d82a65`: Reject\n  The cited `codex/gpt-5.4-xhigh` plus `codex/gpt-5.3-codex-spark-xhigh` pair matches the authoritative live project override in `.git/ralph-burning-live/projects/utm/config.toml`, which is the project config/runtime root the code prefers. Resume also does not blindly reuse the stored reviewer set: it re-resolves the current final-review panel and `resolution_has_drifted()` compares the full reviewer vector before continuing. That makes the claim that this snapshot propagates a non-default panel into resumed execution unsupported.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

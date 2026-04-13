@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260412172012-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-12T19:37:21.321855045Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdjusted backend target resolution so the new compiled Codex defaults remain in place for implementers and final reviewers, but explicit top-level `default_backend`/`default_model` overrides now win over those compiled role-model defaults when they apply to the resolved family. Updated diagnostics to report the same precedence order, and added regressions covering implementer/final-review `show-effective` and `probe` behavior for the restored override path.\n\n## Steps\n\n1. [Completed] Inspect the backend policy and diagnostics resolution order to confirm that merged compiled `backends.codex.role_models.*` defaults were incorrectly outranking explicit `default_model` overrides for implementer and final-review targets.\n2. [Completed] Patch `src/contexts/agent_execution/policy.rs` so explicit workspace/project role-model overrides still win first, explicit base-backend/default-model overrides win next for the matching family, and compiled role defaults only apply as fallback after those explicit settings.\n3. [Completed] Patch diagnostics source attribution to mirror the new precedence order, add regression coverage for policy resolution plus `show-effective`/`probe`, and rerun the required validation suite.\n\n## Validation Evidence\n\n- `cargo test` passed.\n- `cargo clippy` passed.\n- `cargo fmt --check` passed.\n- New policy coverage now asserts that `default_backend = \"codex\"` plus `default_model = \"workspace-default-model\"` resolves the default implementer and first final-review reviewer to `workspace-default-model` instead of the compiled Codex role defaults.\n- New diagnostics coverage now asserts that `show-effective` reports `workspace.toml` as the model source for implementer and final-review Codex defaults when an explicit top-level default model overrides them, and that `backend probe --role implementer` / `final_reviewer` resolve the same overridden model.\n\n## Outstanding Risks\n\n- The worktree still contains pre-existing unrelated modifications in `.ralph-burning/projects/utm/journal.ndjson` and `.ralph-burning/projects/utm/run.json`, which I left untouched.\n- `cargo clippy` still reports existing warning-level findings outside this change set (for example `src/adapters/fs.rs:1122`), but the command completed successfully.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 7
+}

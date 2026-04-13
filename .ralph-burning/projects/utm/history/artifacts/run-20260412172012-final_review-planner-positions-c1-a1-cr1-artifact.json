@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T17:41:34.527942147Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo amendments identify real configurability regressions introduced by turning defaults into explicit model-bearing selections. The third is not supported by the runtime evidence, which reflects an explicit live-project override rather than the compiled default reviewer set.\n\n## Votes\n\n- `fr-1-1fd974ab`: Accept\n  `default_implementer_backend()` is injected as an explicit `BackendSelection` with model `gpt-5.4-high`, and `target_for_family()` gives that explicit model precedence over `backends.<family>.role_models.implementer`. That means a workspace/project role-model override no longer changes the default implementer unless the user also rewrites `workflow.implementer_backend`, which is a real regression in the promised configurability.\n- `fr-1-f01fbc0a`: Accept\n  `default_final_review_backends()` now seeds the default panel with explicit model-bearing specs, and panel resolution forwards those specs into `selection_to_target()`, where the explicit model wins before `backends.<family>.role_models.final_reviewer` is consulted. Explicit user-configured panel entries should pin models, but the compiled default panel should not silently disable workspace/project reviewer-model overrides. This is a real configurability regression for the default final-review path.\n- `fr-1-ef96210d`: Reject\n  The cited run/journal snapshot does show two Codex reviewers, but that does not demonstrate a default-resolution bug. Runtime project config is read from the live workspace, and `.git/ralph-burning-live/projects/utm/config.toml` explicitly sets `final_review.backends = [\"codex/gpt-5.4-xhigh\", \"codex/gpt-5.3-codex-spark-xhigh\"]`. The observed panel is therefore consistent with an explicit live override, not evidence that the new compiled defaults or resolver replaced Claude with Spark.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260412172012-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T19:29:56.243836995Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccept amendment fr-6-0736c40d: it identifies a real precedence regression in backend resolution. Reject amendment fr-6-013a5281: code paths for default final-review panel resolution already default to Codex xhigh + Claude opus, and the cited run/journal snapshot is driven by an explicit project override, not unspecified defaults.\n\n## Votes\n\n- `fr-6-0736c40d`: Accept\n  `default_backend_runtime_settings` now seeds Codex role-models for `implementer` and `final_reviewer`, and `resolve_backend_selection` for implementer falls back to `default_implementer_backend()` (Codex) while `target_for_family` prioritizes role model maps before base model. This makes `default_model` on `default_backend = \"codex\"` no longer affect implementer/final reviewer resolution, so explicit `default_model` overrides regress as described.\n- `fr-6-013a5281`: Reject\n  Current defaults already specify `default_final_review_backends = [codex, claude]` and resolution uses role models (`final_reviewer` from Codex role model, Claudes default model id). The provided `run.json`/`journal.ndjson` entries show `codex/gpt-5.3-codex-spark-xhigh`, matching explicit project settings in `.git/ralph-burning-live/projects/utm/config.toml` (`final_review.backends = [\"codex/gpt-5.4-xhigh\", \"codex/gpt-5.3-codex-spark-xhigh\"]`), not unspecified-default behavior, so this is not a default-resolution defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 6
+}

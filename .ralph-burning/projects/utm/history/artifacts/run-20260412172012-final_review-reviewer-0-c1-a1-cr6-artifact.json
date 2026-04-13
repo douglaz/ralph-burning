@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-reviewer-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260412172012-final_review-reviewer-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T19:26:22.290148541Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 correctness regression. The new synthetic Codex defaults pin implementer/final-review reviewer models above `settings.default_model`, so an existing workspace/project override path no longer works. `cargo test`, `cargo fmt --check`, and `cargo clippy -q` all passed.\n\n## Amendments\n\n1. Preserve `default_model` overrides for the new Codex defaults. `default_backend_runtime_settings()` now hardcodes `backends.codex.role_models.implementer = gpt-5.4-high` and `backends.codex.role_models.final_reviewer = gpt-5.4-xhigh` ([src/contexts/workspace_governance/config.rs:1542-1547]), `EffectiveConfig::load` makes the implementer backend selection explicit by default ([src/contexts/workspace_governance/config.rs:427-435]), and `target_for_family()` always prefers `role_models` over `base_backend.model/default_model` ([src/contexts/agent_execution/policy.rs:327-340]). As a result, a workspace/project override like `default_backend = \"codex\"` plus `default_model = \"override-model\"` no longer changes the implementer or first final-review reviewer: `backend probe --role implementer` / `final_reviewer` still resolve to `gpt-5.4-high` / `gpt-5.4-xhigh`. That regresses the existing workspace/project override path the bead explicitly says must keep working.\n   Rationale: The new defaults are encoded at a higher precedence than `settings.default_model`, so an established workspace/project config override silently stops working for the affected Codex roles. This is a behavioral regression, not just a diagnostics mismatch.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

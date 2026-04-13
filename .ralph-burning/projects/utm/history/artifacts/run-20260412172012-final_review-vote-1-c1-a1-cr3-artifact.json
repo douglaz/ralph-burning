@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260412172012-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T18:21:08.015937430Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll three amendments raise concrete correctness and state-consistency defects in final-review behavior and persisted workflow state, with clear risk of misleading diagnostics and unsafe resume semantics. I accept all proposed amendments.\n\n## Votes\n\n- `fr-3-9c6f07f2`: Accept\n  The amendment correctly identifies a real diagnostics divergence: effective config reporting still uses a legacy `FinalReviewer` role path that does not reflect the explicit final-review panel defaults, producing contradictory outputs versus `backend probe final_review_panel`. That mismatch can hide actual runtime reviewer resolution and is a correctness defect.\n- `fr-3-9c639dfb`: Accept\n  The reported patch scope change is non-implementation at code level if only run-state artifacts changed; behavior-critical defaults remain unchanged in source. Updating state without modifying resolution logic creates a drift between intended default behavior and executable policy and is therefore a real implementation gap.\n- `fr-3-87665d73`: Accept\n  Persisted run/journal state hardcodes two Codex backends in a place used for resume/drift continuity, conflicting with required default reviewer policy and tracked project expectations. This can cause noncompliant resumed runs and is a safety/state integrity issue even before runtime re-resolution.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

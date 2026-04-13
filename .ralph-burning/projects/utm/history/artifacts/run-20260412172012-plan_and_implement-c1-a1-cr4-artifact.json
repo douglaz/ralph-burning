@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260412172012-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-12T18:29:48.916181386Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated backend diagnostics so final-review defaults are surfaced from `final_review.backends` instead of the obsolete singular `final_reviewer` fallback: `show-effective` now emits `final_review_panel.reviewer[N]` rows, singular `final_reviewer` probes are rejected in favor of `final_review_panel`, and the tracked UTM run snapshot/journal were corrected to the intended default reviewer pair of Codex `gpt-5.4-xhigh` plus Claude Opus 4.6. The existing source defaults for the implementer and reviewer families remain preserved, so workspace and project role-model overrides still flow through the current resolution stack.\n\n## Steps\n\n1. [Completed] Inspect the current backend-default resolution, final-review diagnostics, and tracked UTM run-state to separate already-landed default logic from the remaining diagnostics/state inconsistencies.\n2. [Completed] Patch backend diagnostics so `show-effective` reports explicit final-review panel members from `final_review.backends`, add a public selection resolver needed for per-member diagnostics, and reject the stale singular `final_reviewer` probe path.\n3. [Completed] Correct the tracked UTM run snapshot/journal reviewer entries to the required Codex xhigh plus Claude Opus 4.6 pair, add regressions for the new diagnostics behavior, and run targeted plus full validation.\n\n## Validation Evidence\n\n- `cargo test --test unit show_effective_reports_final_review_panel_members` passed.\n- `cargo test --test unit probe_singular_final_reviewer_is_rejected` passed.\n- `cargo test --test unit show_effective_reports_compiled_implementer_default_source` passed.\n- `cargo test` passed.\n- `cargo clippy` passed.\n- `cargo fmt --check` passed.\n- New diagnostics coverage now asserts that `show-effective` exposes `final_review_panel.reviewer[0] = codex/gpt-5.4-xhigh` and `final_review_panel.reviewer[1] = claude/claude-opus-4-6`, and that probing `final_reviewer` directs operators to `final_review_panel` instead of returning a misleading single target.\n\n## Outstanding Risks\n\n- `.ralph-burning/projects/utm/run.json` and `.ralph-burning/projects/utm/journal.ndjson` are live workflow-state files and still contain historical pending-amendment text from earlier review rounds, even though the active reviewer snapshot entries were corrected.\n- `cargo clippy` still reports pre-existing warning-level findings outside this change set (for example `src/adapters/fs.rs:1122`), but it completed successfully.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

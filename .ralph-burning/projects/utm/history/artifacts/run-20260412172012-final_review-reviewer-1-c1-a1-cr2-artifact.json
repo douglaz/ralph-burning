@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T17:50:04.480231233Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound a correctness gap: the only committed changes are run-state artifacts, and they capture a final-review reviewer default that contradicts the requested cross-model defaults (Codex + Opus). No source-level update to backend-default logic is present in this diff.\n\n## Amendments\n\n1. The diff only updates runtime state files and does not modify the backend-default source paths. In the new `final_review` snapshot, the reviewer pair is now stored as `codex/gpt-5.4-xhigh` plus `codex/gpt-5.3-codex-spark-xhigh` (`.ralph-burning/projects/utm/run.json:19-27`), while the journal shows the same active `reviewer_started` models (`.ralph-burning/projects/utm/journal.ndjson:25-26`). This violates the bead requirement for default final reviewers to be Codex gpt-5.4 xhigh and Opus 4.6, so the requested default change is not actually reflected in the tracked deliverable.\n   Rationale: Acceptance criteria explicitly require cross-model defaults; this patch currently records a single-family duplicate reviewer default in persisted run metadata with no corresponding source change to enforce the Opus default.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

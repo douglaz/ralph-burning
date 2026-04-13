@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T18:07:30.885129165Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nThe change set is incomplete and likely incorrect for the requested backend-default migration: it does not touch default-resolution code and introduces committed run-state artifacts that encode a noncompliant final-review reviewer pair.\n\n## Amendments\n\n1. High: The current patch does not change backend-default implementation logic at all—it only updates live run state files, so the requested default-behavior changes are not actually implemented in code (`src/contexts/workspace_governance/config.rs` and `src/contexts/agent_execution/policy.rs` are unchanged). The diff adds only `.ralph-burning/projects/utm/journal.ndjson:35-43` and `.ralph-burning/projects/utm/run.json:16-73`.\n   Rationale: Acceptance criteria require code-path changes for implementer/reviewer defaults; this patch updates only serialized runtime artifacts.\n2. High: The persisted final-review snapshot in tracked run state now hardcodes both reviewers as Codex backends (`gpt-5.4-xhigh` and `gpt-5.3-codex-spark-xhigh`) in `.ralph-burning/projects/utm/run.json:19-27` and again in `:52-63`, while journal entries show the same pair during proposal (`.ralph-burning/projects/utm/journal.ndjson:42-43`). This conflicts with the required default reviewer pair (Codex xhigh + Opus 4.6) and can cause resumed runs to inherit an unintended noncompliant reviewer set from checked-in state.\n   Rationale: Persisted stage-resolution snapshots are authoritative for resume/drift behavior; committing this state can reintroduce default-regression behavior and violate the bead’s acceptance criteria.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

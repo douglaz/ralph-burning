@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T17:28:42.105606714Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound one high-confidence correctness issue: the updated run/journal defaults now hardcode a second Codex final-review backend (`gpt-5.3-codex-spark-xhigh`) instead of Opus, breaking the requested default reviewer cross-model setup.\n\n## Amendments\n\n1. `.ralph-burning/projects/utm/run.json` now records the final-review panel as two Codex members (`gpt-5.4-xhigh` and `gpt-5.3-codex-spark-xhigh`) at lines 19-27, and `.ralph-burning/projects/utm/journal.ndjson` records a `reviewer_started` event for `reviewer-2` on `gpt-5.3-codex-spark-xhigh` at line 8. This violates the requested default reviewer set (`gpt-5.4-xhigh` + `claude-opus-4-6`) and removes cross-model diversity for default final review.\n   Rationale: This is a correctness/regression risk: the run metadata and effective backend snapshot no longer reflect the mandated Opus default reviewer, so the implementation can run final review without exercising the second independent backend path that the goal requires.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

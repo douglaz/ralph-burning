@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260412172012-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260412172012-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T18:03:17.292077153Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 2/25\n\n## Accepted\n\n- `fr-2-f924f41e`\n\n## Rejected\n\n- `fr-2-31ecf408`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-f924f41e`\n\nFix the implementer source-attribution regression in backend diagnostics. `src/contexts/workspace_governance/config.rs:427-435` now injects a compiled-default `workflow.implementer_backend` selection (`codex`) even when the user never set that key, and `src/contexts/agent_execution/diagnostics.rs:1482-1497` already treats that role as an explicit override for `backend check`/`probe`. But `src/contexts/agent_execution/diagnostics.rs:1526-1552` still collapses any default-sourced `workflow.implementer_backend` entry to `default_backend (...)`. In a fresh workspace, `backend show-effective --json` therefore reports the implementer as `codex/gpt-5.4-high` with `override_source = \"default_backend (default)\"`, even though changing `default_backend` no longer changes that role. Update `show-effective` to attribute the implementer to `workflow.implementer_backend` (or another explicit implementer-default label) whenever the role is resolved via the compiled implementer default, and add a regression test in `tests/unit/backend_diagnostics_test.rs`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::contexts::workspace_governance::config::{
-    EffectiveConfig, DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS,
+    ConfigValue, ConfigValueSource, EffectiveConfig, DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS,
 };
 use crate::shared::domain::{
     BackendFamily, BackendPolicyRole, BackendSelection, PanelBackendSpec, ResolvedBackendTarget,
@@ -156,6 +156,14 @@ impl<'a> BackendPolicyService<'a> {
             self.config.final_review_policy().min_reviewers,
             BackendPolicyRole::FinalReviewer,
         )
+    }
+
+    pub fn resolve_selection_target(
+        &self,
+        role: BackendPolicyRole,
+        selection: &BackendSelection,
+    ) -> AppResult<ResolvedBackendTarget> {
+        self.selection_to_target(role, selection)
     }
 
     /// Resolve only the prompt-review validator panel members (no refiner).
@@ -316,17 +324,27 @@ impl<'a> BackendPolicyService<'a> {
             });
         }
 
+        let (role_model, role_model_is_explicit) = self.role_model_for(family, role);
         let model_id = explicit_model
             .or_else(|| {
-                self.runtime_settings(family)
-                    .and_then(|settings| settings.role_models.model_for(role))
-                    .map(str::to_owned)
+                if role_model_is_explicit {
+                    role_model.clone()
+                } else {
+                    None
+                }
             })
             .or_else(|| {
                 if family == self.config.backend_policy().base_backend.family {
                     self.config.backend_policy().base_backend.model.clone()
                 } else {
                     None
+                }
+            })
+            .or({
+                if role_model_is_explicit {
+                    None
+                } else {
+                    role_model
                 }
             })
             .unwrap_or_else(|| family.default_model_id().to_owned());
@@ -364,6 +382,22 @@ impl<'a> BackendPolicyService<'a> {
             | BackendPolicyRole::FinalReviewer
             | BackendPolicyRole::PromptValidator => None,
         }
+    }
+
+    fn role_model_for(
+        &self,
+        family: BackendFamily,
+        role: BackendPolicyRole,
+    ) -> (Option<String>, bool) {
+        let key = format!("backends.{}.role_models.{}", family.as_str(), role.as_str());
+        let Ok(entry) = self.config.get(&key) else {
+            return (None, false);
+        };
+        let ConfigValue::String(model_id) = entry.value else {
+            return (None, false);
+        };
+        let is_explicit = entry.source != ConfigValueSource::Default;
+        (model_id, is_explicit)
     }
 
     fn runtime_settings(

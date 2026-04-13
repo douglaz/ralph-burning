@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-vote-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260412172012-final_review-vote-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T19:11:02.310501115Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo amendments identify real defects in the restored `final_reviewer` diagnostics compatibility path. The other two do not hold against the current code: backend-default behavior is implemented in source, and resume re-resolves final-review targets instead of replaying the stored reviewer snapshot.\n\n## Votes\n\n- `fr-5-41af9e2b`: Accept\n  `probe_final_reviewer()` still binds `final_reviewer` to `final_review.backends.first()` and the `show_effective` compatibility row is still built from `member_views.first()`. Both operate on the raw configured order, not the effective reviewer set returned after `resolve_panel_backends()` omits optional unavailable members. In an optional-first configuration, `final_review_panel` can resolve while `final_reviewer` incorrectly fails or shows unresolved, so this is a real correctness bug.\n- `fr-5-0ee611a2`: Accept\n  The availability-error path for `final_reviewer` is misattributed. `probe_with_availability()` formats failures from `probe_primary_target_label()` and `probe_primary_config_source()`, but `final_reviewer` falls through to the generic role path, yielding `final_reviewer` / `default_backend`. That does not match how `probe_final_reviewer()` actually resolves reviewer slot 0 from `final_review.backends`, so the reported target label and config source are wrong.\n- `fr-5-e913f0f4`: Reject\n  The claim is inaccurate against the current implementation. `src/contexts/workspace_governance/config.rs` now defaults the implementer to Codex, reorders default `final_review.backends` to Codex then Claude, and supplies Codex role-model defaults; `src/contexts/agent_execution/policy.rs` resolves the final-review panel from that policy; and the unit tests assert the new defaults. This is implemented in source, not only in runtime-state files.\n- `fr-5-d4d82a65`: Reject\n  The snapshot does persist the resolved reviewers, but resume does not reuse that vector as execution input. The engine re-resolves the current final-review panel with `resolve_final_review_panel(...)`, checks availability, builds a fresh snapshot, and compares it with `resolution_has_drifted()` before continuing. In this workspace the stored pair also matches the authoritative live project config under `.git/ralph-burning-live/projects/utm/config.toml`, so the amendment's claim that the committed snapshot propagates a non-default reviewer panel into resumed execution is not supported.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

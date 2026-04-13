@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260412172012-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T18:44:30.926993900Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccept the first three amendments: they fix genuine backward-compatibility and model-resolution correctness issues. Reject the two run-state/resume amendments because the cited state appears to be project-specific runtime configuration and resume drift detection is already comparing full reviewer identities before weaker checks.\n\n## Votes\n\n- `fr-4-e6fe4b51`: Accept\n  Removing the stable `final_reviewer` role output and disallowing `--role final_reviewer` breaks a documented stable diagnostics/probe contract and will break existing consumers that rely on that role key. Compatibility should be preserved via alias or versioned contract migration.\n- `fr-4-0a3c4ba5`: Accept\n  Role-specific compiled defaults under `backends.<family>.role_models` should be reported with role-specific attribution; collapsing to generic `default` loses precise control-point information and can mislead operators on fresh workspaces.\n- `fr-4-0b4daea6`: Accept\n  `BackendResolver::apply_selection` can fall back to `ModelSpec::default_for_backend()` when family changes, which can drop role-specific suffixes and diverge from `BackendPolicyService` defaults. This introduces inconsistent model resolution across caller paths and is a maintainability and correctness defect.\n- `fr-4-837d9207`: Reject\n  The cited non-compliant pair is consistent with explicit live project override data, not evidence that compiled defaults or selection logic are incorrect. As written, this is a state/config issue for that project, not necessarily a code-level defect in defaults.\n- `fr-4-c605f8ed`: Reject\n  The claimed resume blind spot is contradicted by the described full-vector comparison in `resolution_has_drifted()`, which checks actual final review reviewer identities (including backend/model IDs) before fallback checks. Changed reviewer identities should be detected as drift.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}

@@ -3,7 +3,7 @@ use std::fs;
 use chrono::TimeZone;
 use ralph_burning::adapters::fs::FileSystem;
 use ralph_burning::contexts::workspace_governance::{
-    EffectiveConfig, DEFAULT_FLOW_PRESET, DEFAULT_PROMPT_REVIEW_ENABLED,
+    ConfigValue, EffectiveConfig, DEFAULT_FLOW_PRESET, DEFAULT_PROMPT_REVIEW_ENABLED,
 };
 use ralph_burning::shared::domain::{
     FlowPreset, PromptReviewSettings, WorkspaceConfig, WorkspaceSettings,
@@ -35,6 +35,54 @@ fn effective_config_loads_compiled_defaults() {
             .value
         {
             ralph_burning::contexts::workspace_governance::ConfigValue::String(value) => value,
+            other => panic!("expected string config value, got {other:?}"),
+        }
+    );
+    assert_eq!(
+        Some("codex".to_owned()),
+        match config
+            .get("workflow.implementer_backend")
+            .expect("implementer backend")
+            .value
+        {
+            ConfigValue::String(value) => value,
+            other => panic!("expected string config value, got {other:?}"),
+        }
+    );
+    assert_eq!(
+        vec![
+            "codex".to_owned(),
+            "claude".to_owned(),
+            "codex/gpt-5.3-codex-spark-xhigh".to_owned(),
+        ],
+        match config
+            .get("final_review.backends")
+            .expect("final review backends")
+            .value
+        {
+            ConfigValue::StringList(values) => values,
+            other => panic!("expected string list config value, got {other:?}"),
+        }
+    );
+    assert_eq!(
+        Some("gpt-5.4-high".to_owned()),
+        match config
+            .get("backends.codex.role_models.implementer")
+            .expect("codex implementer role model")
+            .value
+        {
+            ConfigValue::String(value) => value,
+            other => panic!("expected string config value, got {other:?}"),
+        }
+    );
+    assert_eq!(
+        Some("gpt-5.4-xhigh".to_owned()),
+        match config
+            .get("backends.codex.role_models.final_reviewer")
+            .expect("codex final reviewer role model")
+            .value
+        {
+            ConfigValue::String(value) => value,
             other => panic!("expected string config value, got {other:?}"),
         }
     );

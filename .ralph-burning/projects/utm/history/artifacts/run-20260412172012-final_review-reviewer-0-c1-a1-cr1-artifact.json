@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260412172012-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T17:36:12.252449469Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the backend-default change against `origin/master...HEAD`. The new defaults are wired in, but I found two correctness/configurability regressions: explicit model-bearing defaults now bypass workspace/project role-model overrides for both the implementer and the default final-review reviewers.\n\n## Amendments\n\n1. Preserve `backends.<family>.role_models.implementer` overrides when the new Codex implementer default is in effect. `src/contexts/workspace_governance/config.rs:427-435` now injects `default_implementer_backend()` (`src/contexts/workspace_governance/config.rs:1500-1501`) as an explicit `BackendSelection` with model `gpt-5.4-high`. Because `BackendPolicyService::target_for_family()` gives `selection.model` precedence over role-model fallbacks (`src/contexts/agent_execution/policy.rs:289-324`), a workspace/project override like `backends.codex.role_models.implementer = \"...\"` no longer changes the implementer model unless the user also duplicates the whole `workflow.implementer_backend` setting. That regresses the promised workspace/project configurability for implementers.\n   Rationale: This change makes one of the existing config override mechanisms stop working for the implementer path, violating the acceptance criterion that workspace/project overrides still work.\n2. Preserve `backends.<family>.role_models.final_reviewer` overrides for the default final-review panel. `src/contexts/workspace_governance/config.rs:266-270` now seeds `final_review.backends` from `default_final_review_backends()` (`src/contexts/workspace_governance/config.rs:1504-1514`), and those defaults are explicit model-bearing panel specs (`codex/gpt-5.4-xhigh`, `claude/claude-opus-4-6`). `resolve_panel_backends()` forwards each spec straight into `selection_to_target()` (`src/contexts/agent_execution/policy.rs:257-303`), so the explicit model wins before `backends.<family>.role_models.final_reviewer` is considered (`src/contexts/agent_execution/policy.rs:319-324`). As a result, workspace/project reviewer-model overrides are ignored unless the user rewrites `final_review.backends` too.\n   Rationale: This is the same configurability regression on the reviewer side: previously users could swap reviewer models through per-backend role-model config, but the new compiled defaults silently bypass that path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

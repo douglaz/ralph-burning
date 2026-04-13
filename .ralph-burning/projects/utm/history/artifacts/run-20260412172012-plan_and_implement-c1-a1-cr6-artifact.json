@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260412172012-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-12T19:16:36.863270051Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nPatched backend diagnostics so the legacy `final_reviewer` alias now skips optional disabled reviewers and resolves to the first effective final-review reviewer instead of the raw first configured slot. I also corrected availability-error metadata for `final_reviewer` so probe failures point to `reviewer[0]` and `final_review.backends`, and added regressions covering both the optional-first alias path and the restored availability labeling.\n\n## Steps\n\n1. [Completed] Inspect the `final_reviewer` compatibility alias paths in backend diagnostics to confirm why optional-first final-review panels were still binding the alias to the raw first configured reviewer and why availability probes were attributing failures to generic role metadata.\n2. [Completed] Patch `src/contexts/agent_execution/diagnostics.rs` so `probe_final_reviewer()` and `show-effective` both derive the singular alias from the first non-omitted final-review reviewer, and update probe source/target labeling so `final_reviewer` availability failures report `reviewer[0]` from `final_review.backends`.\n3. [Completed] Add regression coverage for optional-first final-review reviewer omission and corrected availability labeling, then run the required validation suite.\n\n## Validation Evidence\n\n- `cargo test --test unit show_effective_final_reviewer_skips_optional_disabled_first_member` passed.\n- `cargo test --test unit probe_singular_final_reviewer_skips_optional_disabled_first_member` passed.\n- `cargo test --test unit probe_with_availability_final_reviewer_reports_panel_slot_and_source` passed.\n- `cargo test` passed.\n- `cargo clippy` passed.\n- `cargo fmt --check` passed.\n- New regression coverage now asserts that `show-effective` and `backend probe --role final_reviewer` both skip an optional disabled first reviewer and resolve the alias to the first effective reviewer, and that availability failures for `final_reviewer` identify `reviewer[0]` with `[source: final_review.backends]` instead of falling back to `default_backend`.\n\n## Outstanding Risks\n\n- The worktree still contains pre-existing unrelated modifications in `.ralph-burning/projects/utm/journal.ndjson` and `.ralph-burning/projects/utm/run.json`, which I left untouched.\n- `cargo clippy` still reports existing warning-level findings outside this change set (for example `src/adapters/fs.rs:1122`), but the command completed successfully.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 6
+}

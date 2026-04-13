@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr7-artifact",
+  "payload_id": "run-20260412172012-final_review-planner-positions-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T19:46:02.563059108Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReject the amendment. Its core premise does not match the reviewed change set or the active configuration path.\n\n## Votes\n\n- `fr-7-714ee05a`: Reject\n  The amendment misdiagnoses the issue. Relative to the review base, this change set is not limited to runtime artifacts; it includes source changes in the backend policy/diagnostics code plus regression tests. Separately, the cited `gpt-5.4-xhigh` + `gpt-5.3-codex-spark-xhigh` final-review panel is explained by the live project override, not by canonical defaults being silently replaced: project config resolution prefers the live project root when present, and that live `utm` config explicitly sets a two-Codex final-review panel. The resume path also re-resolves against current config and only uses the persisted snapshot for drift detection/update, so the checked-in snapshot is recording the configured run state, not acting as the fix for default-policy behavior. Because the amendment's factual premise is wrong, it should be rejected.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

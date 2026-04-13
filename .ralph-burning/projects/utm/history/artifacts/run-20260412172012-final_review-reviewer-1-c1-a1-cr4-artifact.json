@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260412172012-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-12T18:30:31.201295531Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nTwo blocking issues found: the diff introduces a persisted/ongoing final-review reviewer configuration that does not match the requested defaults, and the current resume drift checks do not catch that mismatch, allowing the wrong reviewer set to persist through reruns.\n\n## Amendments\n\n1. High: `.ralph-burning/projects/utm/run.json:19-27` persists `final_review_reviewers` as `codex/gpt-5.4-xhigh` + `codex/gpt-5.3-codex-spark-xhigh`, and `.ralph-burning/projects/utm/journal.ndjson:61-62` logs `reviewer-2` as `codex/gpt-5.3-codex-spark-xhigh`. This hardcodes a non-compliant reviewer pair (single-family + wrong model) and breaks the acceptance criterion that defaults must be Codex xhigh + Opus 4.6.\n   Rationale: The patch updates only run telemetry, not behavior, and now stores an incorrect resumed/default reviewer assignment that changes execution behavior for this project.\n2. High: `src/contexts/workflow_composition/engine.rs:8274-8283` validates final-review resume state mostly by cardinality and planner/arbiter presence, so the incorrect snapshot in `.ralph-burning/projects/utm/run.json:19-27` (`codex` + `codex-spark`) can be accepted and reused on resume without detection. This makes the wrong default reviewer panel sticky across resume/retry flows.\n   Rationale: Resume drift checking does not compare resolved reviewer identities/models, so malformed/stale snapshot data is silently treated as valid and can silently alter review topology.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}
