@@ -4430,6 +4430,27 @@ where
                     }
 
                     let follow_ups = validation_follow_ups(&bundle.payload);
+
+                    // Record non-fix-now classified findings for downstream
+                    // reconciliation (8.5.x). These are not queued as amendments
+                    // but are logged with their classification intact.
+                    if let StagePayload::Validation(ref validation) = bundle.payload {
+                        let deferred: Vec<_> = validation
+                            .classified_findings
+                            .iter()
+                            .filter(|f| !f.classification.triggers_restart())
+                            .collect();
+                        for finding in &deferred {
+                            tracing::info!(
+                                stage = %stage_id,
+                                classification = %finding.classification,
+                                mapped_to_bead_id = ?finding.mapped_to_bead_id,
+                                "deferred finding (not queued for remediation): {}",
+                                finding.body
+                            );
+                        }
+                    }
+
                     let amendments = build_queued_amendments(
                         &follow_ups,
                         stage_id,
