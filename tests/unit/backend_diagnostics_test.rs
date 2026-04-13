@@ -803,7 +803,7 @@ fn show_effective_reports_final_review_panel_members() {
         .find(|r| r.role == "final_review_panel.reviewer[1]")
         .expect("second final-review reviewer row should exist");
     assert_eq!("claude", reviewer1.backend_family);
-    assert_eq!("claude-opus-4-6", reviewer1.model_id);
+    assert_eq!("claude-opus-4-6-max", reviewer1.model_id);
     assert_eq!("final_review.backends (default)", reviewer1.override_source);
 }
 
@@ -919,7 +919,7 @@ fn show_effective_final_reviewer_skips_optional_disabled_first_member() {
         .find(|r| r.role == "final_reviewer")
         .expect("compatibility final_reviewer row should exist");
     assert_eq!("claude", final_reviewer.backend_family);
-    assert_eq!("claude-opus-4-6", final_reviewer.model_id);
+    assert_eq!("claude-opus-4-6-max", final_reviewer.model_id);
     assert!(
         final_reviewer.resolution_error.is_none(),
         "optional disabled reviewer should be skipped for final_reviewer alias: {:?}",
@@ -969,7 +969,7 @@ fn probe_singular_final_reviewer_skips_optional_disabled_first_member() {
         .target
         .expect("singular role probe should return a target");
     assert_eq!("claude", target.backend_family);
-    assert_eq!("claude-opus-4-6", target.model_id);
+    assert_eq!("claude-opus-4-6-max", target.model_id);
 }
 
 // ── structured panel failure tests ───────────────────────────────────────────

@@ -1556,7 +1556,7 @@ fn default_backend_runtime_settings(backend_name: &str) -> AppResult<BackendRunt
                 ..Default::default()
             },
             "claude" => BackendRoleModels {
-                final_reviewer: Some("claude-opus-4-6".to_owned()),
+                final_reviewer: Some("claude-opus-4-6-max".to_owned()),
                 ..Default::default()
             },
             _ => BackendRoleModels::default(),

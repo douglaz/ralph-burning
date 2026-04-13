@@ -811,7 +811,9 @@ impl ProcessBackendAdapter {
     ) -> AppResult<PreparedCommand> {
         match request.resolved_target.backend.family {
             BackendFamily::Claude => {
-                let model_id = &request.resolved_target.model.model_id;
+                let (base_model_id, reasoning_effort) = Self::claude_model_and_reasoning_effort(
+                    &request.resolved_target.model.model_id,
+                );
                 let schema_value = Self::contract_schema_for_backend(request);
                 let schema_json =
                     serde_json::to_string(&schema_value).unwrap_or_else(|_| "{}".to_owned());
@@ -824,7 +826,7 @@ impl ProcessBackendAdapter {
                     "--output-format".to_owned(),
                     "json".to_owned(),
                     "--model".to_owned(),
-                    model_id.clone(),
+                    base_model_id.to_owned(),
                     "--permission-mode".to_owned(),
                     "acceptEdits".to_owned(),
                     "--allowedTools".to_owned(),
@@ -832,6 +834,11 @@ impl ProcessBackendAdapter {
                     "--json-schema".to_owned(),
                     schema_json,
                 ];
+
+                if let Some(reasoning_effort) = reasoning_effort {
+                    args.push("--effort".to_owned());
+                    args.push(reasoning_effort.to_owned());
+                }
 
                 if session_resuming {
                     if let Some(ref session) = request.prior_session {
@@ -1311,6 +1318,19 @@ impl ProcessBackendAdapter {
 
     fn codex_model_and_reasoning_effort(model_id: &str) -> (&str, Option<&str>) {
         for effort in ["xhigh", "high", "medium", "low"] {
+            let suffix = format!("-{effort}");
+            if let Some(base_model) = model_id.strip_suffix(&suffix) {
+                if !base_model.is_empty() {
+                    return (base_model, Some(effort));
+                }
+            }
+        }
+
+        (model_id, None)
+    }
+
+    fn claude_model_and_reasoning_effort(model_id: &str) -> (&str, Option<&str>) {
+        for effort in ["max", "high", "medium", "low"] {
             let suffix = format!("-{effort}");
             if let Some(base_model) = model_id.strip_suffix(&suffix) {
                 if !base_model.is_empty() {

@@ -1,0 +1,7 @@
+id = "5xn-1"
+name = "claude-effort-config"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "12433c65c3ee95a0dc5af919df42c1f82855ae58897f23790d543321fe4e8477"
+created_at = "2026-04-13T21:31:45.539479509Z"
+status_summary = "created"
