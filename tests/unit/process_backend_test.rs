@@ -615,6 +615,46 @@ async fn claude_command_construction_and_double_parse() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn claude_suffix_model_adds_reasoning_effort_flag() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, mut request) = request_fixture(BackendFamily::Claude);
+    request.resolved_target =
+        ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6-max");
+
+    let envelope_file = request.working_dir.join("claude-envelope.json");
+    write_claude_envelope(
+        &envelope_file,
+        &planning_payload(),
+        Some("ses-claude-effort"),
+    );
+    write_fake_claude(bin_dir.path(), &envelope_file);
+
+    let adapter = ProcessBackendAdapter::new();
+    adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke should succeed");
+
+    let args_text =
+        fs::read_to_string(request.working_dir.join("claude-args.txt")).expect("read args");
+    assert!(
+        args_text.contains("--model claude-opus-4-6"),
+        "should strip the effort suffix from --model: {args_text}"
+    );
+    assert!(
+        !args_text.contains("--model claude-opus-4-6-max"),
+        "should not pass the suffixed model id through to the CLI: {args_text}"
+    );
+    assert!(
+        args_text.contains("--effort max"),
+        "should pass Claude effort as a dedicated flag: {args_text}"
+    );
+}
+
 // ── Claude resume flag ──────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
@@ -656,6 +696,52 @@ async fn claude_resume_flag_added_when_session_available() {
     assert!(
         args_text.contains("--resume ses-prior-123"),
         "should have --resume with session id: {args_text}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn claude_resume_suffix_model_adds_reasoning_effort_flag() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, mut request) = request_fixture(BackendFamily::Claude);
+    request.resolved_target =
+        ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6-max");
+    request.session_policy = SessionPolicy::ReuseIfAllowed;
+    request.prior_session = Some(SessionMetadata {
+        role: BackendRole::Planner,
+        backend_family: BackendFamily::Claude,
+        model_id: "claude-opus-4-6-max".to_owned(),
+        session_id: "ses-prior-123".to_owned(),
+        created_at: Utc::now(),
+        last_used_at: Utc::now(),
+        invocation_count: 1,
+    });
+
+    let envelope_file = request.working_dir.join("claude-envelope.json");
+    write_claude_envelope(&envelope_file, &planning_payload(), Some("ses-resumed"));
+    write_fake_claude(bin_dir.path(), &envelope_file);
+
+    let adapter = ProcessBackendAdapter::new();
+    adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke should succeed");
+
+    let args_text =
+        fs::read_to_string(request.working_dir.join("claude-args.txt")).expect("read args");
+    assert!(
+        args_text.contains("--model claude-opus-4-6"),
+        "should strip the effort suffix from --model on resume: {args_text}"
+    );
+    assert!(
+        args_text.contains("--effort max"),
+        "should keep the Claude effort flag on resume: {args_text}"
+    );
+    assert!(
+        args_text.contains("--resume ses-prior-123"),
+        "should still resume the prior session: {args_text}"
     );
 }
 
