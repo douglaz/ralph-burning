@@ -1,0 +1,7 @@
+id = "xyz-1"
+name = "fix-nix-build-ps"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "b0010f9d5f5c1558a9067e623421f3ded0bc2ba1249b61d2c4645a16cd7cad9e"
+created_at = "2026-04-13T18:56:40.029849421Z"
+status_summary = "created"

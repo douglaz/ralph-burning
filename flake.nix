@@ -27,6 +27,8 @@
 
           nativeCheckInputs = [
             pkgs.bash
+            pkgs.procps
+            pkgs.util-linux
             pkgs.rustfmt
             pkgs.clippy
           ];
@@ -86,6 +88,8 @@
             git
             gh
             jq
+            procps
+            util-linux
           ];
 
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
