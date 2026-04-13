@@ -382,11 +382,11 @@ async fn happy_path_standard_run_completes() {
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     // prompt_review: 4 records (1 refiner + 2 validators + 1 primary)
     // completion_panel: 3 records (2 completers + 1 aggregate)
-    // final_review: 3 records (2 reviewer proposals + 1 aggregate)
+    // final_review: 4 records (3 reviewer proposals + 1 aggregate)
     // other 5 stages: 1 each = 5
-    // total = 15
-    assert_eq!(payload_count, 15, "expected 15 payloads");
-    assert_eq!(artifact_count, 15, "expected 15 artifacts");
+    // total = 16
+    assert_eq!(payload_count, 16, "expected 16 payloads");
+    assert_eq!(artifact_count, 16, "expected 16 artifacts");
 }
 
 #[tokio::test]
@@ -426,12 +426,12 @@ async fn happy_path_prompt_review_disabled() {
     let payloads_dir = project_root(base_dir, "no-pr-test").join("history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     // completion_panel: 3 records (2 completers + 1 aggregate)
-    // final_review: 3 records (2 reviewers + 1 aggregate)
+    // final_review: 4 records (3 reviewers + 1 aggregate)
     // other 5 stages: 1 each = 5
-    // total = 11 (no prompt_review)
+    // total = 12 (no prompt_review)
     assert_eq!(
-        payload_count, 11,
-        "expected 11 payloads without prompt_review"
+        payload_count, 12,
+        "expected 12 payloads without prompt_review"
     );
 
     // Verify no prompt_review stage_entered in journal
@@ -684,12 +684,12 @@ async fn resume_after_rollback_preserves_abandoned_payload_artifacts_on_disk() {
     // and the abandoned implementation payload remains on disk.
     assert_eq!(
         payload_files.len(),
-        17,
+        18,
         "old branch payload files should remain on disk alongside the resumed branch"
     );
     assert_eq!(
         history.payloads.len(),
-        15,
+        16,
         "run history should hide rolled-back stages"
     );
 }
@@ -1317,8 +1317,8 @@ async fn happy_path_quick_dev_run_completes() {
         .unwrap()
         .count();
     // One fewer payload/artifact pair since ApplyFixes was skipped.
-    assert_eq!(payload_count, 5);
-    assert_eq!(artifact_count, 5);
+    assert_eq!(payload_count, 6);
+    assert_eq!(artifact_count, 6);
 }
 
 #[tokio::test]
@@ -5286,7 +5286,7 @@ async fn final_review_conditionally_approved_triggers_completion_round_advanceme
     );
     assert_eq!(
         amendment_events[0].details["reviewer_sources"][0]["backend_family"],
-        "claude"
+        "codex"
     );
 
     let reviewer_completed_events: Vec<_> = events

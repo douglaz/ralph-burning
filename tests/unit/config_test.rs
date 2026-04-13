@@ -50,7 +50,11 @@ fn effective_config_loads_compiled_defaults() {
         }
     );
     assert_eq!(
-        vec!["codex".to_owned(), "claude".to_owned(),],
+        vec![
+            "codex".to_owned(),
+            "claude".to_owned(),
+            "codex/gpt-5.3-codex-spark-xhigh".to_owned(),
+        ],
         match config
             .get("final_review.backends")
             .expect("final review backends")

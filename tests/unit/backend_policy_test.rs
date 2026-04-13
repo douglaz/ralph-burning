@@ -68,7 +68,7 @@ fn compiled_defaults_use_codex_high_implementer_and_cross_model_final_review_pan
     let panel = policy
         .resolve_final_review_panel(1)
         .expect("resolve final review panel");
-    assert_eq!(2, panel.reviewers.len());
+    assert_eq!(3, panel.reviewers.len());
     assert_eq!(
         BackendFamily::Codex,
         panel.reviewers[0].target.backend.family
@@ -79,6 +79,14 @@ fn compiled_defaults_use_codex_high_implementer_and_cross_model_final_review_pan
         panel.reviewers[1].target.backend.family
     );
     assert_eq!("claude-opus-4-6", panel.reviewers[1].target.model.model_id);
+    assert_eq!(
+        BackendFamily::Codex,
+        panel.reviewers[2].target.backend.family
+    );
+    assert_eq!(
+        "gpt-5.3-codex-spark-xhigh",
+        panel.reviewers[2].target.model.model_id
+    );
 }
 
 #[test]
@@ -179,7 +187,7 @@ fn compiled_default_final_review_panel_honors_role_model_overrides() {
         .resolve_final_review_panel(1)
         .expect("resolve final review panel");
 
-    assert_eq!(2, panel.reviewers.len());
+    assert_eq!(3, panel.reviewers.len());
     assert_eq!(
         BackendFamily::Codex,
         panel.reviewers[0].target.backend.family
@@ -195,6 +203,16 @@ fn compiled_default_final_review_panel_honors_role_model_overrides() {
     assert_eq!(
         "workspace-claude-reviewer",
         panel.reviewers[1].target.model.model_id
+    );
+    // Third reviewer has an inline model override that is not affected by
+    // role_models overrides.
+    assert_eq!(
+        BackendFamily::Codex,
+        panel.reviewers[2].target.backend.family
+    );
+    assert_eq!(
+        "gpt-5.3-codex-spark-xhigh",
+        panel.reviewers[2].target.model.model_id
     );
 }
 
@@ -220,12 +238,17 @@ fn explicit_default_model_overrides_compiled_codex_role_defaults() {
     let panel = policy
         .resolve_final_review_panel(1)
         .expect("resolve final review panel");
-    assert_eq!(2, panel.reviewers.len());
+    assert_eq!(3, panel.reviewers.len());
     assert_eq!(
         "workspace-default-model",
         panel.reviewers[0].target.model.model_id
     );
     assert_eq!("claude-opus-4-6", panel.reviewers[1].target.model.model_id);
+    // Third reviewer has an inline model override, unaffected by default_model.
+    assert_eq!(
+        "gpt-5.3-codex-spark-xhigh",
+        panel.reviewers[2].target.model.model_id
+    );
 }
 
 #[test]
@@ -474,7 +497,7 @@ fn final_review_panel_resolution_includes_planner_target() {
 
     assert_eq!(BackendFamily::Claude, panel.planner.backend.family);
     assert_eq!(
-        2,
+        3,
         panel.reviewers.len(),
         "final-review reviewers should resolve"
     );
