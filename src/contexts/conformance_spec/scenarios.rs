@@ -719,7 +719,7 @@ fn wait_for_child_output(
                 timeout.as_millis()
             ));
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(25));
     }
 }
 
@@ -2990,12 +2990,13 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "rq-follow", "standard")?;
         let child = Command::new(binary_path())
             .args(["run", "tail", "--follow"])
+            .env("RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS", "100")
             .current_dir(ws.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("spawn follow: {e}"))?;
-        std::thread::sleep(std::time::Duration::from_millis(750));
+        std::thread::sleep(std::time::Duration::from_millis(250));
         kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
             .map_err(|e| format!("send SIGINT: {e}"))?;
         let output = child
@@ -3126,6 +3127,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "rq-follow-logs", "standard")?;
         let child = Command::new(binary_path())
             .args(["run", "tail", "--follow", "--logs"])
+            .env("RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS", "100")
             .current_dir(ws.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -3165,17 +3167,18 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         write_run_query_history_fixture(&ws, "rq-follow-supporting")?;
         let child = Command::new(binary_path())
             .args(["run", "tail", "--follow"])
-            .env("RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS", "1200")
+            .env("RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS", "250")
+            .env("RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS", "100")
             .current_dir(ws.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("spawn follow: {e}"))?;
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::thread::sleep(std::time::Duration::from_millis(100));
         let project_root = conformance_project_root(&ws, "rq-follow-supporting");
         write_supporting_payload(&project_root)?;
         write_supporting_artifact(&project_root)?;
-        std::thread::sleep(std::time::Duration::from_millis(3200));
+        std::thread::sleep(std::time::Duration::from_millis(400));
         kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
             .map_err(|e| format!("send SIGINT: {e}"))?;
         let output = child
@@ -3205,14 +3208,15 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let child = Command::new(binary_path())
             .args(["run", "tail", "--follow"])
+            .env("RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS", "100")
             .current_dir(ws.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("spawn follow: {e}"))?;
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::thread::sleep(std::time::Duration::from_millis(100));
         write_supporting_artifact(&project_root)?;
-        std::thread::sleep(std::time::Duration::from_millis(3200));
+        std::thread::sleep(std::time::Duration::from_millis(500));
         kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
             .map_err(|e| format!("send SIGINT: {e}"))?;
         let output = child
@@ -3242,18 +3246,19 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let child = Command::new(binary_path())
             .args(["run", "tail", "--follow", "--logs"])
+            .env("RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS", "100")
             .current_dir(ws.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("spawn follow --logs: {e}"))?;
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::thread::sleep(std::time::Duration::from_millis(100));
         write_supporting_payload(&project_root)?;
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(150));
         write_follow_runtime_log(&project_root, "follow log after partial pair")?;
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(150));
         write_supporting_artifact(&project_root)?;
-        std::thread::sleep(std::time::Duration::from_millis(3200));
+        std::thread::sleep(std::time::Duration::from_millis(500));
         kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
             .map_err(|e| format!("send SIGINT: {e}"))?;
         let output = child
@@ -3290,12 +3295,13 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let child = Command::new(binary_path())
             .args(["run", "tail", "--follow"])
+            .env("RALPH_BURNING_TEST_FOLLOW_POLL_INTERVAL_MS", "100")
             .current_dir(ws.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("spawn follow: {e}"))?;
-        let output = wait_for_child_output(child, std::time::Duration::from_millis(4500))?;
+        let output = wait_for_child_output(child, std::time::Duration::from_millis(3000))?;
         if output.status.success() {
             return Err("follow should fail on durable orphaned supporting payload".into());
         }

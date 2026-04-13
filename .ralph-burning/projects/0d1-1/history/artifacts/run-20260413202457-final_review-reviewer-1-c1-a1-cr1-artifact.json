@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413202457-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413202457-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T20:49:02.825412359Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed changes for test speedup and follow-mode improvements. The changes include: (1) `[profile.test] debug = 0` to speed up test compilation, (2) a configurable `follow_poll_interval_ms` test knob, (3) replacement of fixed sleeps with polling-based `wait_for_condition` helpers, (4) a watcher condition fix from `include_logs && stream_output` to `!include_logs || stream_output` enabling file watchers for default follow mode, and (5) a new `next_follow_poll_delay` function for adaptive polling. All tests pass (787 pass, 0 fail). Clippy has 17 errors but all are pre-existing. The watcher condition change is a behavioral improvement (not just a test speedup) — it enables file watchers for the default `--follow` mode which previously relied solely on 2-second polling. This is correct and makes the follow mode more responsive in production, not just tests. No real bugs or safety issues found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

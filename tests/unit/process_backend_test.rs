@@ -113,6 +113,25 @@ fn process_is_running(pid: u32) -> bool {
     !rest.starts_with('Z')
 }
 
+async fn wait_for_condition(
+    timeout: Duration,
+    poll_interval: Duration,
+    mut condition: impl FnMut() -> bool,
+) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if condition() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "condition was not met within {:?}",
+            timeout
+        );
+        tokio::time::sleep(poll_interval).await;
+    }
+}
+
 /// Write a fake claude script that outputs an envelope file and logs args/stdin.
 /// Also extracts the `--json-schema` argument value to `claude-json-schema.json`.
 fn write_fake_claude(bin_dir: &std::path::Path, envelope_file: &std::path::Path) {
@@ -1835,7 +1854,14 @@ async fn cancellation_during_stdin_blocks_still_delivers_sigterm() {
 
     // Wait for child to be registered (it should be registered immediately
     // after spawn, before stdin writing starts)
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_for_condition(Duration::from_secs(1), Duration::from_millis(25), || {
+        adapter
+            .active_children
+            .try_lock()
+            .map(|children| children.contains_key(&invocation_id))
+            .unwrap_or(false)
+    })
+    .await;
 
     {
         let children = adapter.active_children.lock().await;
@@ -2465,9 +2491,6 @@ sleep 99999
 
     let _error = adapter.invoke(request).await.expect_err("should timeout");
 
-    // Give OS a moment to reap the killed processes.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     // Read the background child's PID and verify it's no longer running.
     let child_pid_str = std::fs::read_to_string(&child_pid_file)
         .expect("child PID file should exist — background child was spawned");
@@ -2475,6 +2498,15 @@ sleep 99999
         .trim()
         .parse()
         .expect("child PID file should contain an integer");
+
+    wait_for_condition(Duration::from_secs(1), Duration::from_millis(25), || {
+        !nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(child_pid),
+            None, // signal 0
+        )
+        .is_ok()
+    })
+    .await;
 
     // signal 0 checks existence without actually signaling.
     let child_alive = nix::sys::signal::kill(
