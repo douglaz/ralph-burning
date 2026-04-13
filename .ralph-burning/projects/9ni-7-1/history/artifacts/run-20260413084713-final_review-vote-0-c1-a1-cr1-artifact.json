@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413084713-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T08:58:15.196457867Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the referenced engine, template catalog, task-prompt contract, and regression test. The amendment is technically valid: planning-stage overrides can silently suppress the newly added scope-guidance block, so the fix is not reliably enforced for customized templates.\n\n## Votes\n\n- `fr-1-73a64a77`: Accept\n  build_stage_prompt() computes a non-empty classification_guidance block for Planning and PlanAndImplement, but stage templates still declare classification_guidance as optional. In the renderer, an optional placeholder that is absent from an override simply disappears, so a workspace/project override can drop the new guidance with no error. The new prompt_builder test explicitly locks in that behavior by accepting a plan_and_implement override that omits the placeholder. It is true that such prompts may still contain the raw project prompt and sometimes generic task-contract guidance, but that is the pre-fix behavior the change was meant to improve; the dedicated scope-enforcement instructions are still silently lost. That means the acceptance criterion is not reliably met for overridden templates, so this is a real correctness/robustness gap.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

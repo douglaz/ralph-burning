@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260413084713-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413084713-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T08:58:15.203261581Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 3\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-73a64a77`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-73a64a77`\n\nfinding_summary: Planning and `plan_and_implement` stage overrides can still silently drop the new scope guidance. `build_stage_prompt()` only computes the guidance block for those stages (`src/contexts/workflow_composition/engine.rs:166-174`), but stage templates still treat `classification_guidance` as optional (`src/contexts/workspace_governance/template_catalog.rs:406-413,766-774`). The new regression test explicitly accepts a `plan_and_implement.md` override that omits the placeholder (`tests/unit/prompt_builder_test.rs:655-704`), so any existing workspace/project override will continue generating scope-unaware prompts even when the bead task prompt contract is present. That misses the acceptance criterion that these stages receive scope-aware guidance whenever bead scope sections exist. severity: medium. affected_files: src/contexts/workflow_composition/engine.rs, src/contexts/workspace_governance/template_catalog.rs, tests/unit/prompt_builder_test.rs. remediation_hint: require `{{classification_guidance}}` for planning-oriented overrides when the bead contract is active, or inject the scope guidance outside template-controlled content so overrides cannot suppress it.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T08:55:07.731217006Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the committed diff for the scope-guidance change. One fix-now gap remains: legacy planning-stage template overrides can still bypass the new guidance entirely, so bead-backed prompts are not guaranteed to receive the scope instructions this bead is meant to add.\n\n## Amendments\n\n1. finding_summary: Planning and `plan_and_implement` stage overrides can still silently drop the new scope guidance. `build_stage_prompt()` only computes the guidance block for those stages (`src/contexts/workflow_composition/engine.rs:166-174`), but stage templates still treat `classification_guidance` as optional (`src/contexts/workspace_governance/template_catalog.rs:406-413,766-774`). The new regression test explicitly accepts a `plan_and_implement.md` override that omits the placeholder (`tests/unit/prompt_builder_test.rs:655-704`), so any existing workspace/project override will continue generating scope-unaware prompts even when the bead task prompt contract is present. That misses the acceptance criterion that these stages receive scope-aware guidance whenever bead scope sections exist. severity: medium. affected_files: src/contexts/workflow_composition/engine.rs, src/contexts/workspace_governance/template_catalog.rs, tests/unit/prompt_builder_test.rs. remediation_hint: require `{{classification_guidance}}` for planning-oriented overrides when the bead contract is active, or inject the scope guidance outside template-controlled content so overrides cannot suppress it.\n   Rationale: The feature works on the built-in template path, but customized installations silently retain the old behavior, so the scope-boundary fix is incomplete.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413084713-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T08:56:14.357210127Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nEvaluated amendment fr-1-73a64a77 regarding scope guidance being silently dropped by template overrides in planning stages. The finding is technically valid: the default template includes {{classification_guidance}} but overrides treat it as optional, so any workspace/project override that omits the placeholder will silently discard computed scope guidance. The test at lines 655-704 explicitly validates this lossy behavior. This creates a real gap where plan_and_implement and planning stages can produce scope-unaware plans even when bead scope sections are present in the task prompt contract.\n\n## Votes\n\n- `fr-1-73a64a77`: Accept\n  The finding is correct and represents a real defect. The code in engine.rs (lines 166-174) computes scope guidance for Planning and PlanAndImplement stages via render_scope_guidance(), and the default template (line 112) includes {{classification_guidance}}. However, template_catalog.rs (line 408-413) marks classification_guidance as optional, so any workspace/project template override that omits {{classification_guidance}} will silently discard the guidance — the render() function (line 857) simply expands unknown optional placeholders to empty. The regression test (lines 655-704) explicitly codifies this lossy behavior by asserting a legacy override without the placeholder renders successfully, while the scope guidance is quietly lost. This means existing customized templates for planning stages will produce scope-unaware prompts even when bead scope sections exist, violating the acceptance criterion. The fix should either require the placeholder in planning-oriented overrides when the bead contract is active, or inject scope guidance outside template-controlled content (e.g., appended after rendering) so overrides cannot suppress it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

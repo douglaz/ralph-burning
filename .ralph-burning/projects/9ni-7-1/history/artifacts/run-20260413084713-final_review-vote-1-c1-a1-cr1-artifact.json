@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413084713-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T08:57:03.775120605Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed amendment fr-1-73a64a77 regarding scope guidance being silently dropped by workspace/project template overrides in planning stages. Verified the code paths in engine.rs, template_catalog.rs, and the regression test. The finding is technically accurate: the render pipeline computes scope guidance for Planning/PlanAndImplement stages but classification_guidance is declared optional, so any override template omitting the placeholder will silently lose the guidance. The test at lines 655-704 explicitly codifies this lossy behavior. This is a real defect that undermines the acceptance criterion for scope-aware planning prompts.\n\n## Votes\n\n- `fr-1-73a64a77`: Accept\n  Verified in code: engine.rs:166-174 computes scope guidance via render_scope_guidance() for Planning and PlanAndImplement stages and passes it as the 'classification_guidance' value. However, template_catalog.rs:408-412 declares classification_guidance as optional, and line 857-858 shows that optional placeholders absent from the template expand to empty string — the guidance is silently discarded. The default template (line 112) includes {{classification_guidance}}, but any workspace or project override that omits it (as the test at line 679-683 demonstrates with a plan_and_implement.md override containing only role_instruction, project_prompt, and json_schema) will produce scope-unaware prompts even when bead scope sections are present. The test at lines 655-704 explicitly validates and codifies this lossy behavior. This is a real defect: the system computes scope guidance but the template layer can silently suppress it, violating the intent that planning stages receive scope-aware guidance when bead scope data exists. The remediation hint is sound — either require the placeholder in planning-stage overrides when the bead contract is active, or inject the guidance outside template-controlled content.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

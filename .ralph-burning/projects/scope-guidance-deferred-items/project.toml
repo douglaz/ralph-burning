@@ -1,0 +1,7 @@
+id = "scope-guidance-deferred-items"
+name = "Add deferred-items output and enabling-work allowance to plan_and_implement scope guidance"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "9709bf4b3ee54e204e633bd292e004a8dcccfeef7cef0b5a9a34597770667f3e"
+created_at = "2026-04-13T08:51:06.615136585Z"
+status_summary = "created"

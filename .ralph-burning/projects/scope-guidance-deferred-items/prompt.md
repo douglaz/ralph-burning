@@ -1,0 +1,49 @@
+## Context
+
+The `render_scope_guidance()` function in `src/contexts/workflow_composition/review_classification.rs` (lines 478-515) already provides basic scope-enforcement guidance for the PlanAndImplement and Planning stages. It is injected in `engine.rs` lines 171-172 via the `classification_guidance` placeholder, conditional on the bead task prompt contract marker being present. This was added alongside the review/final_review classification guidance in commits #123-#126.
+
+However, the current guidance has three gaps compared to the requirements:
+
+1. **No structured deferred-items output instruction**: Lines 491-497 say "record them as deferred work" and "Reference that work as deferred or related follow-up" but do NOT tell the LLM to place deferred items in the `outstanding_risks` field (defined in `payloads.rs` line 54 as `Vec<String>`) with a `DEFERRED:` prefix. The LLM has no structured mechanism to capture out-of-scope discoveries.
+
+2. **No enabling-work allowance**: The guidance provides no escape hatch for strictly necessary prerequisite work (e.g., a refactor required to implement the scoped feature). Too-rigid scope enforcement may cause the LLM to skip genuinely needed enabling work.
+
+3. **Milestone boundary language could be stronger**: Line 494 says "Do not expand the plan beyond the active bead based on milestone context alone" but the acceptance criteria require explicitly stating that milestone context "must not expand the implementation boundary beyond the current bead."
+
+## What to change
+
+### 1. Enhance `render_scope_guidance()` in `review_classification.rs` (lines 484-497)
+
+Add two new bullets to the guidance string and strengthen the milestone bullet:
+
+- **After the existing four scope bullets (before the planned_elsewhere_ids block)**, add a new paragraph/bullet instructing the LLM to record any out-of-scope discoveries (bugs, improvements, related work found during planning or implementation) as entries in the `outstanding_risks` array with a `DEFERRED:` prefix. Example format: `DEFERRED: <brief description of out-of-scope item and why it was deferred>`.
+
+- **Add a bullet about enabling work**: If strictly necessary prerequisite work falls outside the declared Must-Do Scope (e.g., a small refactor needed to implement the scoped feature), it is acceptable to include it, but it must be called out explicitly in the plan steps with a rationale for why it's required.
+
+- **Strengthen milestone boundary bullet** (line 493-495): Change "Do not expand the plan beyond the active bead based on milestone context alone" to something like "This context must not expand the implementation boundary beyond the current bead's Must-Do Scope."
+
+### 2. Update tests in `review_classification.rs` (lines 1578-1604)
+
+Update the existing `render_scope_guidance_includes_scope_rules_and_sorted_planned_elsewhere_ids` test to also assert:
+- The guidance contains text about `outstanding_risks` and `DEFERRED:` prefix
+- The guidance contains text about strictly necessary enabling work
+- The strengthened milestone boundary language is present
+
+Optionally add a focused test for the deferred-items instruction.
+
+### 3. No changes needed to:
+- `engine.rs` — the injection point at lines 166-175 already handles PlanAndImplement correctly
+- `payloads.rs` — `outstanding_risks: Vec<String>` already supports free-form strings with a DEFERRED: prefix convention
+- `task_prompt_contract.rs` — no contract format changes needed
+- `template_catalog.rs` — the `classification_guidance` placeholder is already optional and present in all stage templates
+
+## Files to modify
+- `src/contexts/workflow_composition/review_classification.rs` — enhance `render_scope_guidance()` function body and update tests
+
+## Acceptance criteria
+1. When a project prompt contains the bead contract marker, the PlanAndImplement stage prompt includes explicit instruction to record deferred items in `outstanding_risks` with `DEFERRED:` prefix
+2. The guidance includes an allowance for strictly necessary enabling work with rationale requirement
+3. The milestone boundary language explicitly states context must not expand the implementation boundary
+4. When no contract marker is present, the guidance remains empty (backward compatible — already works, verify not broken)
+5. All existing tests pass; new/updated tests verify the enhanced guidance text
+6. Run `cargo test` and `cargo clippy` to verify

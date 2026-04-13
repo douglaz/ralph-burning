@@ -2,29 +2,67 @@
   "active_run": {
     "run_id": "run-20260413084713",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-13T08:47:13.195035387Z",
     "prompt_hash_at_cycle_start": "78332acc37d92c750d493ca3fde950fcff1c232df62f358739b94c4ad0060025",
     "prompt_hash_at_stage_start": "78332acc37d92c750d493ca3fde950fcff1c232df62f358739b94c4ad0060025",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-73a64a77",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: Planning and `plan_and_implement` stage overrides can still silently drop the new scope guidance. `build_stage_prompt()` only computes the guidance block for those stages (`src/contexts/workflow_composition/engine.rs:166-174`), but stage templates still treat `classification_guidance` as optional (`src/contexts/workspace_governance/template_catalog.rs:406-413,766-774`). The new regression test explicitly accepts a `plan_and_implement.md` override that omits the placeholder (`tests/unit/prompt_builder_test.rs:655-704`), so any existing workspace/project override will continue generating scope-unaware prompts even when the bead task prompt contract is present. That misses the acceptance criterion that these stages receive scope-aware guidance whenever bead scope sections exist. severity: medium. affected_files: src/contexts/workflow_composition/engine.rs, src/contexts/workspace_governance/template_catalog.rs, tests/unit/prompt_builder_test.rs. remediation_hint: require `{{classification_guidance}}` for planning-oriented overrides when the bead contract is active, or inject the scope guidance outside template-controlled content so overrides cannot suppress it.",
+        "created_at": "2026-04-13T08:58:15.203256130Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "bf890d58c3ebb8cea179e1c228f12cef330f44048dd97cb2903b031d6a0da0e8"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-13T08:49:57.241318197Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
 }

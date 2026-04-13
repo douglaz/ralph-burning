@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413084713-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T08:56:17.804859721Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted. The amendment identifies a real regression: computed scope guidance for planning stages can be omitted by custom templates that leave {{classification_guidance}} out, because the template renderer treats that placeholder as optional, resulting in scope-unaware planning prompts despite active bead scope contract.\n\n## Votes\n\n- `fr-1-73a64a77`: Accept\n  The finding is correct: guidance is computed for Planning/PlanAndImplement in the engine, but template optionality allows overrides to drop the placeholder and silently lose the content. This is a correctness and safety/robustness issue (not merely cosmetic), and existing tests already codify the lossy behavior, confirming the gap against the acceptance expectation that planning prompts remain scope-aware when scope sections exist.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}
