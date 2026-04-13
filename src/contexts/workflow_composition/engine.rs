@@ -4431,7 +4431,7 @@ where
 
                     let follow_ups = validation_follow_ups(&bundle.payload);
                     let amendments = build_queued_amendments(
-                        follow_ups,
+                        &follow_ups,
                         stage_id,
                         cursor.cycle,
                         cursor.completion_round,
@@ -4701,8 +4701,9 @@ where
                 ReviewOutcome::ConditionallyApproved if semantics.late_stages.is_empty() => {
                     // Docs/CI flows do not enter completion rounds, but their follow-ups
                     // still need to be preserved in canonical snapshot state.
+                    let follow_ups = validation_follow_ups(&bundle.payload);
                     let recorded_follow_ups = build_recorded_follow_ups(
-                        validation_follow_ups(&bundle.payload),
+                        &follow_ups,
                         stage_id,
                         cursor.cycle,
                         cursor.completion_round,
@@ -6166,10 +6167,37 @@ fn validation_outcome(payload: &StagePayload) -> Option<ReviewOutcome> {
     }
 }
 
-fn validation_follow_ups(payload: &StagePayload) -> &[String] {
+/// Returns the follow-up/amendment strings that should be queued for
+/// remediation. When the payload has classified findings, only fix-now items
+/// are returned. Planned-elsewhere and propose-new-bead findings are logged
+/// and excluded from the remediation queue.
+fn validation_follow_ups(payload: &StagePayload) -> Vec<String> {
     match payload {
-        StagePayload::Validation(validation) => &validation.follow_up_or_amendments,
-        _ => &[],
+        StagePayload::Validation(validation) => {
+            if validation.classified_findings.is_empty() {
+                // Non-milestone mode or LLM didn't produce classified output:
+                // treat all follow-ups as fix-now for backward compat.
+                validation.follow_up_or_amendments.clone()
+            } else {
+                // Milestone-aware mode: only fix-now findings become amendments.
+                let fix_now: Vec<String> = validation
+                    .classified_findings
+                    .iter()
+                    .filter(|f| f.classification.triggers_restart())
+                    .map(|f| f.body.clone())
+                    .collect();
+                let skipped = validation.classified_findings.len() - fix_now.len();
+                if skipped > 0 {
+                    tracing::info!(
+                        fix_now_count = fix_now.len(),
+                        skipped_count = skipped,
+                        "review classification: routing only fix-now findings to amendment queue"
+                    );
+                }
+                fix_now
+            }
+        }
+        _ => Vec::new(),
     }
 }
 

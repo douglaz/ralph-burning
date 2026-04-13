@@ -80,6 +80,7 @@ pub async fn run_local_validation(
         evidence,
         findings_or_gaps,
         follow_up_or_amendments,
+        classified_findings: Vec::new(),
     };
 
     (payload, group_result)

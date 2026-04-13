@@ -11,6 +11,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::contexts::workflow_composition::panel_contracts::AmendmentClassification;
+
 // ── Planning family ─────────────────────────────────────────────────────────
 
 /// Payload for planning-style stages.
@@ -79,6 +81,18 @@ impl std::fmt::Display for StepStatus {
 
 // ── Validation / Review family ──────────────────────────────────────────────
 
+/// A finding with an explicit classification for milestone-aware routing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClassifiedFinding {
+    /// The finding body (equivalent to an item in `follow_up_or_amendments`).
+    pub body: String,
+    /// How this finding should be routed.
+    pub classification: AmendmentClassification,
+    /// Bead ID when classification is planned-elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapped_to_bead_id: Option<String>,
+}
+
 /// Payload for validation/review stages.
 ///
 /// Requires an explicit outcome/decision enum plus evidence, findings or gaps,
@@ -89,6 +103,14 @@ pub struct ValidationPayload {
     pub evidence: Vec<String>,
     pub findings_or_gaps: Vec<String>,
     pub follow_up_or_amendments: Vec<String>,
+    /// Classified findings for milestone-aware review stages. When present,
+    /// only fix-now findings are routed to the amendment queue; planned-elsewhere
+    /// findings are logged and passed to the reconciliation layer.
+    ///
+    /// When absent (non-milestone mode or older LLM output), all items in
+    /// `follow_up_or_amendments` are treated as fix-now for backward compat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub classified_findings: Vec<ClassifiedFinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
