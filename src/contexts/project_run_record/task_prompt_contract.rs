@@ -268,17 +268,10 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
     }
 }
 
-/// Extract bead IDs from the "Already Planned Elsewhere" section of a
-/// canonical bead execution prompt.  Returns the set of bead IDs that
-/// reviewers may reference as `mapped_to_bead_id`.
-///
-/// Each bullet line in the section starts with `- {bead_id} (...)`.
-/// The bead ID is the first whitespace-delimited token after `- `.
-///
-/// For each canonical (qualified) bead ID like `milestone.short_id`, the
-/// short-form alias `short_id` is also included so reviewers can reference
-/// either form.  This mirrors `planned_bead_membership_refs` in bundle.rs.
-pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
+fn extract_pe_bead_ids_internal(
+    prompt: &str,
+    include_short_form_aliases: bool,
+) -> std::collections::HashSet<String> {
     let mut result = std::collections::HashSet::new();
     let section_header = format!("## {SECTION_ALREADY_PLANNED_ELSEWHERE}");
     let mut in_section = false;
@@ -299,10 +292,13 @@ pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
                     .trim();
                 if !id.is_empty() {
                     result.insert(id.to_owned());
-                    // Also accept the short-form alias: strip the milestone
-                    // prefix (everything up to and including the first dot).
-                    if let Some(short) = strip_milestone_prefix(id) {
-                        result.insert(short.to_owned());
+                    // Review-time matching accepts a short-form alias by
+                    // stripping the milestone prefix (everything up to and
+                    // including the first dot).
+                    if include_short_form_aliases {
+                        if let Some(short) = strip_milestone_prefix(id) {
+                            result.insert(short.to_owned());
+                        }
                     }
                 }
             }
@@ -312,6 +308,27 @@ pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
     }
 
     result
+}
+
+/// Extract the canonical bead IDs from the "Already Planned Elsewhere"
+/// section of a canonical bead execution prompt.
+///
+/// Each bullet line in the section starts with `- {bead_id} (...)`.
+/// The bead ID is the first whitespace-delimited token after `- `.
+pub fn extract_pe_canonical_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
+    extract_pe_bead_ids_internal(prompt, false)
+}
+
+/// Extract bead IDs from the "Already Planned Elsewhere" section of a
+/// canonical bead execution prompt. Returns the set of bead IDs that reviewers
+/// may reference as `mapped_to_bead_id`.
+///
+/// In addition to canonical (qualified) bead IDs like `milestone.short_id`,
+/// this helper also includes the short-form alias `short_id` so review-stage
+/// matching can accept either form. This mirrors
+/// `planned_bead_membership_refs` in bundle.rs.
+pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
+    extract_pe_bead_ids_internal(prompt, true)
 }
 
 /// Strip the milestone-id prefix from a canonical bead ID.
@@ -647,6 +664,17 @@ mod tests {
         assert!(ids.contains("9ni.8.5.3"));
         assert!(ids.contains("8.5.3"));
         assert!(ids.contains("plain-id"));
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn extract_pe_canonical_bead_ids_preserves_only_canonical_ids() {
+        let prompt = "## Already Planned Elsewhere\n\n- ms-alpha.alpha (Alpha) - downstream\n- ms-beta.alpha (Also Alpha) - adjacent\n- plain-id (No prefix) - adjacent\n";
+        let ids = extract_pe_canonical_bead_ids(prompt);
+        assert!(ids.contains("ms-alpha.alpha"));
+        assert!(ids.contains("ms-beta.alpha"));
+        assert!(ids.contains("plain-id"));
+        assert!(!ids.contains("alpha"));
         assert_eq!(ids.len(), 3);
     }
 

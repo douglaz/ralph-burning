@@ -480,7 +480,7 @@ pub fn render_scope_guidance(project_prompt: &str) -> String {
         return String::new();
     }
 
-    let planned_elsewhere_ids = task_prompt_contract::extract_pe_bead_ids(project_prompt);
+    let planned_elsewhere_ids = task_prompt_contract::extract_pe_canonical_bead_ids(project_prompt);
     let mut guidance = String::from(
         "## Scope Guidance\n\
          \n\
@@ -1576,9 +1576,9 @@ mod tests {
     }
 
     #[test]
-    fn render_scope_guidance_includes_scope_rules_and_sorted_planned_elsewhere_ids() {
+    fn render_scope_guidance_includes_scope_rules_and_canonical_planned_elsewhere_ids() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\n- ms-alpha.zeta (Zeta) - later work\n- ms-alpha.alpha (Alpha) - adjacent work\n\n## Review Policy\n\nF\n\n## AGENTS / Repo Guidance\n\nG",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\n- ms-alpha.zeta (Zeta) - later work\n- ms-alpha.alpha (Alpha) - adjacent work\n- ms-beta.alpha (Another Alpha) - parallel work\n\n## Review Policy\n\nF\n\n## AGENTS / Repo Guidance\n\nG",
             task_prompt_contract::contract_marker()
         );
 
@@ -1594,9 +1594,10 @@ mod tests {
             "Use `Milestone Summary` and other milestone context as read-only background"
         ));
         assert!(guidance.contains("Do not absorb work owned by `Already Planned Elsewhere`."));
-        assert!(guidance.contains("- `alpha`"));
         assert!(guidance.contains("- `ms-alpha.alpha`"));
+        assert!(guidance.contains("- `ms-beta.alpha`"));
         assert!(guidance.contains("- `ms-alpha.zeta`"));
+        assert!(!guidance.contains("- `alpha`"));
 
         let alpha_pos = guidance.find("ms-alpha.alpha").unwrap();
         let zeta_pos = guidance.find("ms-alpha.zeta").unwrap();
