@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-vote-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260413084713-final_review-vote-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T15:30:13.951851491Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nI verified fr-2-01747c85 against the cited code. The amendment is technically sound: planner-facing scope guidance currently renders the reviewer-only alias set from `extract_pe_bead_ids()`, and the added test locks that behavior in.\n\n## Votes\n\n- `fr-2-01747c85`: Accept\n  `extract_pe_bead_ids()` is explicitly documented for reviewer `mapped_to_bead_id` matching and deliberately adds short-form aliases. `render_scope_guidance()` reuses that set verbatim and prints every entry as planner-facing 'Bead IDs already planned elsewhere', so synthetic aliases like `alpha` are presented as if they were authoritative planned-elsewhere identifiers. Because the helper stores results in a `HashSet`, duplicate short aliases from different canonical beads collapse into one ambiguous alias entry. The test in `review_classification.rs` asserting `- `alpha`` confirms this behavior is currently being baked in. Planner scope guidance should render only the canonical IDs from the prompt, or clearly separate reviewer-only aliases from planner-facing output.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
