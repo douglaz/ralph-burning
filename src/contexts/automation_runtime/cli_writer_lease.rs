@@ -128,6 +128,9 @@ pub(crate) fn remove_owned_run_pid_file(
     let project_id = ProjectId::new(project_id.to_owned()).map_err(|_| cleanup_failure())?;
 
     for _ in 0..2 {
+        // Remove the matching PID record while this writer owner still holds
+        // the project lock; releasing first lets a successor rewrite
+        // `run.pid` in the compare/unlink window.
         let Some(pid_record) =
             FileSystem::read_pid_file(repo_root, &project_id).map_err(|_| cleanup_failure())?
         else {
@@ -360,6 +363,14 @@ pub fn reclaim_specific_project_writer_owner(
                 }
             }
 
+            remove_owned_run_pid_file(
+                base_dir,
+                repo_root,
+                &lease.project_id,
+                Some(lease.lease_id.as_str()),
+                &lease.task_id,
+            )?;
+
             let release_result = LeaseService::release(
                 store,
                 worktree,
@@ -376,13 +387,6 @@ pub fn reclaim_specific_project_writer_owner(
                     task_id: lease.task_id.clone(),
                 });
             }
-            remove_owned_run_pid_file(
-                base_dir,
-                repo_root,
-                &lease.project_id,
-                Some(lease.lease_id.as_str()),
-                &lease.task_id,
-            )?;
 
             if store
                 .read_task(base_dir, &lease.task_id)
@@ -527,6 +531,14 @@ pub fn cleanup_detached_project_writer_owner(
                 }
             }
 
+            remove_owned_run_pid_file(
+                base_dir,
+                repo_root,
+                &lease.project_id,
+                Some(lease.lease_id.as_str()),
+                &lease.task_id,
+            )?;
+
             let worktree_outcome = worktree
                 .remove_worktree(repo_root, &lease.worktree_path, &lease.task_id)
                 .map_err(|_| strict_lease_cleanup_failure(&lease.task_id))?;
@@ -535,13 +547,6 @@ pub fn cleanup_detached_project_writer_owner(
                 .remove_lease(base_dir, &lease.lease_id)
                 .map_err(|_| strict_lease_cleanup_failure(&lease.task_id))?;
             require_removed_lease_record(lease_outcome, &lease.task_id)?;
-            remove_owned_run_pid_file(
-                base_dir,
-                repo_root,
-                &lease.project_id,
-                Some(lease.lease_id.as_str()),
-                &lease.task_id,
-            )?;
 
             if store
                 .read_task(base_dir, &lease.task_id)

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -340,18 +340,23 @@ impl FileSystem {
             .join(ACTIVE_BACKEND_PROCESSES_LOCK_FILE)
     }
 
-    fn read_pid_file_from_project_root(project_root: &Path) -> AppResult<Option<RunPidRecord>> {
-        let path = project_root.join(PID_FILE);
-        match fs::read_to_string(&path) {
-            Ok(raw) => Ok(Some(serde_json::from_str(&raw).map_err(|error| {
-                AppError::CorruptRecord {
-                    file: format!("{PID_FILE} ({})", project_root.display()),
-                    details: error.to_string(),
-                }
-            })?)),
+    fn parse_pid_file(raw: &str, path: &Path) -> AppResult<RunPidRecord> {
+        serde_json::from_str(raw).map_err(|error| AppError::CorruptRecord {
+            file: format!("{PID_FILE} ({})", path.display()),
+            details: error.to_string(),
+        })
+    }
+
+    fn read_pid_record_from_path(path: &Path) -> AppResult<Option<RunPidRecord>> {
+        match fs::read_to_string(path) {
+            Ok(raw) => Ok(Some(Self::parse_pid_file(&raw, path)?)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
+    }
+
+    fn read_pid_file_from_project_root(project_root: &Path) -> AppResult<Option<RunPidRecord>> {
+        Self::read_pid_record_from_path(&project_root.join(PID_FILE))
     }
 
     fn read_backend_process_set_from_project_root(
@@ -637,14 +642,75 @@ impl FileSystem {
         project_id: &ProjectId,
         expected_record: &RunPidRecord,
     ) -> AppResult<bool> {
-        let Some(current_record) = Self::read_pid_file(base_dir, project_id)? else {
-            return Ok(false);
+        let path = Self::live_project_root(base_dir, project_id).join(PID_FILE);
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error.into()),
         };
+        let mut raw = String::new();
+        file.read_to_string(&mut raw)?;
+        let current_record = Self::parse_pid_file(&raw, &path)?;
         if &current_record != expected_record {
             return Ok(false);
         }
-        Self::remove_pid_file(base_dir, project_id)?;
-        Ok(true)
+
+        let staging = path.with_extension(format!(
+            "pid.removing.{}.{}",
+            expected_record.pid,
+            uuid::Uuid::new_v4()
+        ));
+        match fs::rename(&path, &staging) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error.into()),
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            let fd_meta = file.metadata()?;
+            let staged_meta = fs::metadata(&staging)?;
+            if fd_meta.dev() != staged_meta.dev() || fd_meta.ino() != staged_meta.ino() {
+                match fs::hard_link(&staging, &path) {
+                    Ok(()) => {
+                        let _ = fs::remove_file(&staging);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+                return Ok(false);
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let Some(staged_record) = Self::read_pid_record_from_path(&staging)? else {
+                return Ok(false);
+            };
+            if &staged_record != expected_record {
+                if !path.exists() {
+                    match fs::rename(&staging, &path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                return Ok(false);
+            }
+        }
+
+        match fs::remove_file(&staging) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn pid_record_matches_attempt(

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260413224245",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-8655d1c3",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: `run.pid` cleanup is racy after the writer lease is released, so an exiting run can delete a successor run's PID file.\nseverity: high\naffected_files: [\"src/adapters/fs.rs\", \"src/cli/run.rs\", \"src/contexts/automation_runtime/cli_writer_lease.rs\"]\nline_refs: [\"src/adapters/fs.rs:635-647\", \"src/cli/run.rs:3439-3443\", \"src/cli/run.rs:3673-3680\", \"src/cli/run.rs:4055-4061\", \"src/contexts/automation_runtime/cli_writer_lease.rs:130-153\"]\nremediation_hint: Remove `run.pid` while the caller still owns the writer lock, or move PID-file cleanup into the same critical section as lease release; a read-then-`remove_file` on the path is not safe once another owner can acquire the project.\nexplanation: `remove_pid_file_if_matches()` rereads `run.pid` and then unlinks the path. Every caller in this bead does that after `lock_guard.close()` / lease release, so a new start or resume can acquire the writer lock and rewrite `run.pid` between the compare and the unlink. The old process then deletes the successor's PID record, which makes a live run look stale and can trigger incorrect stop/resume recovery against an active orchestrator.",
-        "created_at": "2026-04-13T22:57:53.602274607Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "9de6c13831c0762260b36aa7765e193949bc3d50a8c580e0e8d5c0844f115475"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-13T22:45:35.013669735Z",

@@ -3434,15 +3434,16 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
         let _ = std::fs::remove_file(&lock_path);
     }
 
+    // Remove the matching PID record before releasing the writer lease so an
+    // immediately succeeding run cannot rewrite `run.pid` in the narrow window
+    // between the compare and the unlink.
+    if let Some(pid_record) = FileSystem::read_pid_file(&current_dir, &project_id)?.as_ref() {
+        let _ = FileSystem::remove_pid_file_if_matches(&current_dir, &project_id, pid_record);
+    }
+
     // Explicit guard shutdown before printing success — surfaces cleanup
     // failures as non-zero exit instead of silently succeeding.
-    let pid_record_before_close = FileSystem::read_pid_file(&current_dir, &project_id)?;
     let close_result = lock_guard.close();
-    if close_result.is_ok() {
-        if let Some(pid_record) = pid_record_before_close.as_ref() {
-            let _ = FileSystem::remove_pid_file_if_matches(&current_dir, &project_id, pid_record);
-        }
-    }
     match (run_result, milestone_sync_result) {
         (Err(run_error), Err(sync_error)) => {
             return Err(combine_run_and_sync_error(run_error, sync_error, false));
@@ -3668,18 +3669,19 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     .await
     .map_err(|error| decorate_sync_error(error, true));
 
+    // Remove the matching PID record before releasing the writer lease so an
+    // immediately succeeding run cannot rewrite `run.pid` in the narrow window
+    // between the compare and the unlink.
+    if let Some(pid_record) = FileSystem::read_pid_file(&current_dir, &project_id)?.as_ref() {
+        let _ = FileSystem::remove_pid_file_if_matches(&current_dir, &project_id, pid_record);
+    }
+
     // Explicit guard shutdown before printing success — surfaces cleanup
     // failures as non-zero exit instead of silently succeeding.
-    let pid_record_before_close = FileSystem::read_pid_file(&current_dir, &project_id)?;
     let close_result = lock_guard
         .take()
         .expect("writer guard should still be held before final close")
         .close();
-    if close_result.is_ok() {
-        if let Some(pid_record) = pid_record_before_close.as_ref() {
-            let _ = FileSystem::remove_pid_file_if_matches(&current_dir, &project_id, pid_record);
-        }
-    }
     match (run_result, milestone_sync_result) {
         (Err(run_error), Err(sync_error)) => {
             return Err(combine_run_and_sync_error(run_error, sync_error, true));
@@ -4052,14 +4054,14 @@ async fn handle_stop() -> AppResult<()> {
                         project_id, final_snapshot.status
                     )
                 };
-                let close_result = guard.close();
-                if close_result.is_ok() && should_remove_pid_after_close {
+                if should_remove_pid_after_close {
                     let _ = FileSystem::remove_pid_file_if_matches(
                         &current_dir,
                         &project_id,
                         &pid_record,
                     );
                 }
+                let close_result = guard.close();
                 close_result.map_err(|error| AppError::RunStopFailed {
                     reason: format!("failed to release recovery writer lease after stop: {error}"),
                 })?;
