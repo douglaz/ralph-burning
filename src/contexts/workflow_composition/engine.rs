@@ -8341,9 +8341,10 @@ pub fn resolution_has_drifted(
 /// and minimum-count constraints.
 ///
 /// When `effective_min_override` is `Some`, it replaces the configured minimum
-/// for the current stage's panel (completion or final-review). This is used on
-/// the resume path when `BackendExhausted` members were already skipped and the
-/// effective quorum was reduced.
+/// for completion/final-review panels. This is used on the resume path when
+/// `BackendExhausted` members were already skipped and the effective quorum was
+/// reduced. Prompt-review does not support quorum degradation and rejects any
+/// override.
 pub fn drift_still_satisfies_requirements(
     new_snapshot: &StageResolutionSnapshot,
     stage_id: StageId,
@@ -8352,8 +8353,15 @@ pub fn drift_still_satisfies_requirements(
 ) -> AppResult<()> {
     match stage_id {
         StageId::PromptReview => {
-            let min = effective_min_override
-                .unwrap_or_else(|| effective_config.prompt_review_policy().min_reviewers);
+            if let Some(override_min) = effective_min_override {
+                return Err(AppError::ResumeDriftFailure {
+                    stage_id,
+                    details: format!(
+                        "prompt-review does not support effective_min_override ({override_min})"
+                    ),
+                });
+            }
+            let min = effective_config.prompt_review_policy().min_reviewers;
             if new_snapshot.prompt_review_validators.len() < min {
                 return Err(AppError::ResumeDriftFailure {
                     stage_id,
@@ -8542,10 +8550,11 @@ mod tests {
     use crate::shared::error::{AppError, AppResult};
 
     use super::{
-        build_final_review_snapshot, complete_run, drift_still_satisfies_requirements,
-        mark_running_run_interrupted, milestone_lineage_plan_hash, pause_run,
-        resolution_has_drifted, resume_run_with_retry, sync_milestone_bead_start,
-        InterruptedRunContext, InterruptedRunUpdate, RunningAttemptIdentity,
+        build_final_review_snapshot, build_prompt_review_snapshot, complete_run,
+        drift_still_satisfies_requirements, mark_running_run_interrupted,
+        milestone_lineage_plan_hash, pause_run, resolution_has_drifted, resume_run_with_retry,
+        sync_milestone_bead_start, InterruptedRunContext, InterruptedRunUpdate,
+        RunningAttemptIdentity,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -8680,6 +8689,31 @@ mod tests {
                 stage_id: StageId::FinalReview,
                 details,
             } if details == "re-resolved final-review panel has no planner"
+        ));
+    }
+
+    #[test]
+    fn prompt_review_drift_requirements_reject_effective_min_override() {
+        let config = final_review_effective_config();
+        let panel = crate::contexts::agent_execution::policy::PromptReviewPanelResolution {
+            refiner: ResolvedBackendTarget::new(BackendFamily::Claude, "refiner-model"),
+            validators: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "validator-0-model"),
+                required: true,
+                configured_index: 0,
+            }],
+        };
+        let snapshot = build_prompt_review_snapshot(StageId::PromptReview, &panel);
+
+        let error =
+            drift_still_satisfies_requirements(&snapshot, StageId::PromptReview, &config, Some(1))
+                .expect_err("prompt-review should reject effective_min_override");
+        assert!(matches!(
+            error,
+            AppError::ResumeDriftFailure {
+                stage_id: StageId::PromptReview,
+                details,
+            } if details == "prompt-review does not support effective_min_override (1)"
         ));
     }
 
