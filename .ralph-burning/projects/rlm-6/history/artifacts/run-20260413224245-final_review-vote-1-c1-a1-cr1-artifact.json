@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413224245-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413224245-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T22:57:53.589016732Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nVerified the TOCTOU race in run.pid cleanup across all four call sites. The race is real but narrower than the amendment implies: the re-read inside remove_pid_file_if_matches() catches most practical interleaving scenarios (a successor's PID record will differ in started_at/writer_owner/run_id). The true vulnerable window is only between the struct comparison returning true (fs.rs:643) and the unlink call (fs.rs:646) — if a successor acquires the freed lock and overwrites run.pid in that microsecond gap, the old process deletes the successor's file. While this window is extremely tight, it IS a real TOCTOU race, the consequences are severe (live run appears stale, triggering incorrect recovery), and the fix is trivial and safe. Accept.\n\n## Votes\n\n- `fr-1-8655d1c3`: Accept\n  Verified all four call sites: (1) run.rs:3439-3444 — read_pid, lock_guard.close(), then remove_pid_file_if_matches; (2) run.rs:3673-3680 — same pattern with lock_guard.take().close(); (3) run.rs:4055-4061 — guard.close() then remove_pid_file_if_matches; (4) cli_writer_lease.rs:363-385 — LeaseService::release() then remove_owned_run_pid_file(). All perform PID cleanup AFTER the writer lock/lease is released. The pid_record_before_close pre-read at sites 1 and 2 is irrelevant because remove_pid_file_if_matches re-reads the file independently (fs.rs:640). The re-read comparison at line 643 does catch the common case where a successor writes a completely different PID record. However, the TOCTOU window between the comparison passing (line 643) and the unlink (line 646) is real: if Process A is preempted after the comparison succeeds but before remove_file executes, Process B can acquire the now-free lock and write a new PID file, which Process A then deletes. While this requires unfortunate scheduling (microsecond window), on loaded systems with aggressive preemption it is plausible, and the consequence — a live orchestrator's PID file is deleted, making it look stale to recovery logic — is severe enough to warrant fixing. The remediation (move PID cleanup before lock_guard.close() / LeaseService::release()) is straightforward, introduces no new failure modes, and eliminates the race entirely since no successor can acquire the lock while cleanup is in progress.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

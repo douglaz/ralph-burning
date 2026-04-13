@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413224245-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413224245-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T22:56:22.299833699Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nThe amendment correctly identifies a concrete TOCTOU race in PID-file cleanup that can delete a successor run’s `run.pid` after lock release, which is a correctness and safety regression risk. I would accept it as written.\n\n## Votes\n\n- `fr-1-8655d1c3`: Accept\n  `remove_pid_file_if_matches()` performs a read/compare followed by unlink outside the writer lease window, and the cited call sites release the writer lease before calling it. A successor can acquire the lock and recreate `run.pid` in that gap, allowing the exiting process to unlink an active run’s PID file. This is a real race condition with real operational impact (stale-orphaned run state and incorrect recovery/stop behavior), and moving deletion into the locked critical section directly addresses it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

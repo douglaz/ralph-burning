@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413224245-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413224245-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T22:45:55.400946411Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed `git diff` (only `.ralph-burning/projects/rlm-6/journal.ndjson` and `.ralph-burning/projects/rlm-6/run.json` changes) and read the relevant run-liveness/stop/status/recovery/signal-handling implementation paths (`src/cli/run.rs`, `src/adapters/fs.rs`, `src/contexts/project_run_record/model.rs`). No new correctness, safety, or robustness regressions were introduced by this patch; the diff is limited to run state metadata updates and event logging.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

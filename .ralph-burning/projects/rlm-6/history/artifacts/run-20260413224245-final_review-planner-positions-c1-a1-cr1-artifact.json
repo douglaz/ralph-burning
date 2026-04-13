@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413224245-final_review-planner-positions-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413224245-final_review-planner-positions-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T22:56:18.188751097Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed amendment fr-1-8655d1c3 concerning a TOCTOU race in run.pid cleanup. The finding is technically correct: all three call sites (run.rs:3439-3444, run.rs:3673-3680, run.rs:4055-4061) and the cli_writer_lease.rs:379 path call remove_pid_file_if_matches() AFTER the writer lock has been released. Inside that function (fs.rs:635-648), the read-compare-delete sequence is not atomic — a successor process can acquire the freed lock and write a new PID file between the comparison passing (line 643) and the unlink (line 646). The consequence (deleting a live run's PID, making it appear stale to recovery logic) is a genuine safety concern. The suggested fix — moving PID cleanup before lock release — is straightforward and eliminates the race entirely.\n\n## Votes\n\n- `fr-1-8655d1c3`: Accept\n  The TOCTOU race is real and verified in the code. All callers release the writer lock (via lock_guard.close() / LeaseService::release()) before calling remove_pid_file_if_matches(). The function's read-compare-delete at fs.rs:640-646 is not atomic: after the compare passes (line 643) but before the unlink (line 646), a successor can acquire the now-free lock and overwrite run.pid. The old process then deletes the successor's PID record. While the race window is narrow (microseconds between a struct comparison and a filesystem unlink), the consequences are severe: a live orchestrator run appears stale, which can trigger incorrect stop/resume recovery. The fix is clean — remove the PID file while still holding the writer lock, before calling close(). The pid_record_before_close pre-read pattern in run.rs was likely intended to mitigate this, but it only protects against a successor writing between close() and the re-read inside remove_pid_file_if_matches, not between the re-read and the unlink.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}
