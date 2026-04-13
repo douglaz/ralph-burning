@@ -759,6 +759,53 @@ fn build_stage_prompt_keeps_generic_legacy_override_without_scope_guidance() {
 }
 
 #[test]
+fn build_stage_prompt_skips_scope_guidance_for_marker_only_drifted_prompt() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-builder-marker-only-scope").unwrap();
+    let run_id = RunId::new("run-20260314193212").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::Planning, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::Planning);
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
+    ];
+    let marker_only_prompt = format!(
+        "# Drifted Prompt\n\n{}\n\n## Acceptance Criteria\n\nLater sections only.",
+        task_prompt_contract::contract_marker()
+    );
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        &marker_only_prompt,
+        &events,
+    );
+
+    let artifact_store = InMemoryArtifactStore { payloads: vec![] };
+    let prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendFamily::Claude,
+        BackendRole::Planner,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("marker-only prompt should still render");
+
+    assert!(prompt.contains("## Task Prompt Contract"));
+    assert!(!prompt.contains("## Scope Guidance"));
+}
+
+#[test]
 fn build_stage_prompt_excludes_rolled_back_prior_outputs() {
     let temp_dir = tempdir().expect("create temp dir");
     let base_dir = temp_dir.path();

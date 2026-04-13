@@ -476,7 +476,7 @@ pub fn render_classification_guidance(
 /// The guidance is intentionally empty for generic prompts so non-milestone
 /// workflows remain backward compatible.
 pub fn render_scope_guidance(project_prompt: &str) -> String {
-    if !task_prompt_contract::prompt_uses_contract(project_prompt) {
+    if !prompt_has_canonical_scope_sections(project_prompt) {
         return String::new();
     }
 
@@ -512,6 +512,11 @@ pub fn render_scope_guidance(project_prompt: &str) -> String {
     }
 
     guidance
+}
+
+fn prompt_has_canonical_scope_sections(project_prompt: &str) -> bool {
+    task_prompt_contract::prompt_uses_contract(project_prompt)
+        && task_prompt_contract::validate_canonical_prompt_shape(project_prompt).is_ok()
 }
 
 /// Validates a list of classifications, returning all errors with their
@@ -1572,6 +1577,18 @@ mod tests {
     #[test]
     fn render_scope_guidance_returns_empty_for_generic_prompt() {
         let guidance = render_scope_guidance("# Prompt\n\nShip the feature.");
+        assert!(guidance.is_empty());
+    }
+
+    #[test]
+    fn render_scope_guidance_returns_empty_for_marker_only_drifted_prompt() {
+        let prompt = format!(
+            "# Drifted Prompt\n\n{}\n\n## Acceptance Criteria\n\nLater sections only.",
+            task_prompt_contract::contract_marker()
+        );
+
+        let guidance = render_scope_guidance(&prompt);
+
         assert!(guidance.is_empty());
     }
 

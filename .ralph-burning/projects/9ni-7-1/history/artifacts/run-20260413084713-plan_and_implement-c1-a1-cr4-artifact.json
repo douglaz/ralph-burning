@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260413084713-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-13T15:56:47.483103278Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nTightened planning-stage scope guidance so it is emitted only when the project prompt both opts into the bead task contract and passes canonical prompt-shape validation. This preserves the shared contract guidance for marker-only drifted prompts, but restores backward compatibility by suppressing `## Scope Guidance` unless the canonical bead scope sections are actually present. Added regressions for the direct renderer and for `build_stage_prompt()` with a marker-only drifted prompt.\n\n## Steps\n\n1. [Completed] Confirmed the regression path in `render_scope_guidance()` and verified that marker-only prompts still satisfy `prompt_uses_contract()`, which is why scope guidance was leaking into non-canonical prompts.\n2. [Completed] Updated `src/contexts/workflow_composition/review_classification.rs` so scope guidance now requires a contract-marked prompt that also passes canonical prompt-shape validation, and added a unit test proving marker-only drifted prompts now return empty scope guidance.\n3. [Completed] Extended `tests/unit/prompt_builder_test.rs` with a regression covering a marker-only drifted planning prompt, then ran formatting and targeted verification for the renderer and prompt-builder paths.\n\n## Validation Evidence\n\n- `cargo fmt -- src/contexts/workflow_composition/review_classification.rs tests/unit/prompt_builder_test.rs`\n- `cargo test render_scope_guidance -- --nocapture` passed (3 tests, including the new marker-only drifted prompt case)\n- `cargo test build_stage_prompt_skips_scope_guidance_for_marker_only_drifted_prompt -- --nocapture` passed\n- `cargo test --test unit prompt_builder_test -- --nocapture` passed (14 prompt-builder tests)\n- `nix build` failed in unrelated existing tests that require `ps`; failures were in automation-runtime/CLI process-group cleanup paths, not in the changed scope-guidance code paths\n\n## Outstanding Risks\n\n- `nix build` does not pass cleanly in this environment: 5 existing tests fail while trying to enumerate process groups via `ps` (`No such file or directory`), so full-repo verification remains blocked by that unrelated harness/environment issue.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

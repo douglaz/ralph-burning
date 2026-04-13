@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260413084713",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 4
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-3-bfd4b428",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "finding_summary: `render_scope_guidance()` emits `## Scope Guidance` for any prompt that merely has the contract marker, even if the bead scope sections are absent. The new gate at [src/contexts/workflow_composition/review_classification.rs:478-483] only checks `prompt_uses_contract()`, and `prompt_uses_contract()` is intentionally true for marker-only/drifted prompts [src/contexts/project_run_record/task_prompt_contract.rs:123-124], as the existing test at [src/contexts/project_run_record/task_prompt_contract.rs:419-428] shows. That means Planning/PlanAndImplement can now tell the model to obey `Must-Do Scope`, `Explicit Non-Goals`, and `Acceptance Criteria` sections that are not actually present, which violates the backward-compat requirement for prompts with no bead-scope sections.\nseverity: low\naffected_files:\n- src/contexts/workflow_composition/review_classification.rs\n- tests/unit/prompt_builder_test.rs\nremediation_hint: Only emit scope guidance when the prompt actually contains the canonical scope section headings (or passes canonical prompt-shape validation), and add a regression test for a contract-marker prompt missing those sections.",
-        "created_at": "2026-04-13T15:52:42.298258821Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "e04c5a7c89311b7754de6035e69d7f98576fa07f2ef8e9853bca7f372dbb95fd"
-      }
-    ],
-    "processed_count": 2
+    "pending": [],
+    "processed_count": 3
   },
-  "status_summary": "running: final review restart round 4 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-13T15:42:40.680818258Z",
