@@ -51,6 +51,7 @@ fn sample_validation_payload() -> ValidationPayload {
         evidence: vec!["All tests pass.".to_string()],
         findings_or_gaps: vec![],
         follow_up_or_amendments: vec![],
+        classified_findings: vec![],
     }
 }
 
@@ -177,6 +178,7 @@ fn validation_artifact_shows_rejected_with_follow_up() {
         evidence: vec!["CI fails.".to_string()],
         findings_or_gaps: vec!["Missing tests.".to_string()],
         follow_up_or_amendments: vec!["Add integration tests.".to_string()],
+        classified_findings: vec![],
     };
     let artifact = renderers::render_validation(StageId::FinalReview, &payload);
 
