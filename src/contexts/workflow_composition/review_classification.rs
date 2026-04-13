@@ -383,6 +383,91 @@ pub fn validate_classification(classification: &FindingClassification) -> Vec<St
     errors
 }
 
+// ── Classification guidance for prompts ─────────────────────────────
+
+/// Renders classification guidance text to be injected into review and
+/// final_review prompts.
+///
+/// When `include_propose_new_bead` is true, the guidance includes the
+/// propose-new-bead classification (used by final_review). The review
+/// stage only uses fix-now and planned-elsewhere.
+///
+/// `pe_bead_ids` is the set of bead IDs from the "Already Planned
+/// Elsewhere" section that reviewers may reference. If empty, the
+/// planned-elsewhere guidance still appears but notes that no beads are
+/// listed.
+pub fn render_classification_guidance(
+    pe_bead_ids: &std::collections::HashSet<String>,
+    include_propose_new_bead: bool,
+) -> String {
+    let mut guidance = String::from(
+        "## Finding Classification\n\
+         \n\
+         Classify every finding you report using exactly one of the following categories.\n\
+         \n\
+         ### fix-now\n\
+         \n\
+         The finding is within the current bead's scope and should be fixed immediately.\n\
+         Required fields: `finding_summary`, `severity` (critical/high/medium/low), \
+         `affected_files` (list of file paths), optional `remediation_hint`.\n",
+    );
+
+    guidance.push_str(
+        "\n\
+         ### planned-elsewhere\n\
+         \n\
+         The finding is valid but is already owned by another bead listed in the \
+         \"Already Planned Elsewhere\" section of the project prompt. Use this when \
+         you are confident the referenced bead's scope covers the concern.\n\
+         Required fields: `finding_summary`, `mapped_to_bead_id`, `confidence` \
+         (0.0\u{2013}1.0, must be > 0.8 or it will be flagged for review), `rationale`.\n",
+    );
+
+    if pe_bead_ids.is_empty() {
+        guidance.push_str(
+            "\nNo beads are listed in the \"Already Planned Elsewhere\" section, \
+             so this classification is unlikely to apply.\n",
+        );
+    } else {
+        let mut sorted_ids: Vec<&str> = pe_bead_ids.iter().map(String::as_str).collect();
+        sorted_ids.sort();
+        guidance.push_str("\nValid bead IDs for `mapped_to_bead_id`:\n");
+        for id in &sorted_ids {
+            guidance.push_str(&format!("- `{id}`\n"));
+        }
+    }
+
+    if include_propose_new_bead {
+        guidance.push_str(
+            "\n\
+             ### propose-new-bead\n\
+             \n\
+             The finding represents genuinely missing work not covered by any existing bead. \
+             Use this sparingly \u{2014} only when the concern is real and no existing bead \
+             addresses it.\n\
+             Required fields: `finding_summary`, `proposed_title`, `proposed_scope`, \
+             `severity` (critical/high/medium/low), `rationale`.\n",
+        );
+    }
+
+    guidance.push_str(
+        "\n\
+         ### Decision guide\n\
+         \n\
+         1. Is the finding within the current bead's scope? \u{2192} **fix-now**\n\
+         2. Is it covered by a bead listed in \"Already Planned Elsewhere\"? \
+         \u{2192} **planned-elsewhere**\n",
+    );
+    if include_propose_new_bead {
+        guidance.push_str(
+            "3. Is it genuinely missing from all existing beads? \
+             \u{2192} **propose-new-bead**\n",
+        );
+    }
+
+    guidance
+}
+
 /// Validates a list of classifications, returning all errors with their
 /// indices for diagnostics.
 pub fn validate_classifications(
@@ -1386,6 +1471,55 @@ mod tests {
         ] {
             assert_eq!(severity.to_string(), severity.as_str());
         }
+        Ok(())
+    }
+
+    // ── Classification guidance rendering ───────────────────────────
+
+    #[test]
+    fn render_guidance_without_propose_new_bead_omits_that_section(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pe = std::collections::HashSet::new();
+        let guidance = render_classification_guidance(&pe, false);
+        assert!(guidance.contains("### fix-now"));
+        assert!(guidance.contains("### planned-elsewhere"));
+        assert!(!guidance.contains("### propose-new-bead"));
+        assert!(!guidance.contains("propose-new-bead"));
+        Ok(())
+    }
+
+    #[test]
+    fn render_guidance_with_propose_new_bead_includes_all_sections(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pe = std::collections::HashSet::new();
+        let guidance = render_classification_guidance(&pe, true);
+        assert!(guidance.contains("### fix-now"));
+        assert!(guidance.contains("### planned-elsewhere"));
+        assert!(guidance.contains("### propose-new-bead"));
+        assert!(guidance.contains("### Decision guide"));
+        Ok(())
+    }
+
+    #[test]
+    fn render_guidance_lists_pe_bead_ids_sorted() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pe = std::collections::HashSet::new();
+        pe.insert("m1.zeta-task".to_owned());
+        pe.insert("m1.alpha-task".to_owned());
+        let guidance = render_classification_guidance(&pe, false);
+        assert!(guidance.contains("- `m1.alpha-task`"));
+        assert!(guidance.contains("- `m1.zeta-task`"));
+        // alpha should appear before zeta
+        let alpha_pos = guidance.find("m1.alpha-task").unwrap();
+        let zeta_pos = guidance.find("m1.zeta-task").unwrap();
+        assert!(alpha_pos < zeta_pos);
+        Ok(())
+    }
+
+    #[test]
+    fn render_guidance_notes_empty_pe_section() -> Result<(), Box<dyn std::error::Error>> {
+        let pe = std::collections::HashSet::new();
+        let guidance = render_classification_guidance(&pe, false);
+        assert!(guidance.contains("unlikely to apply"));
         Ok(())
     }
 }

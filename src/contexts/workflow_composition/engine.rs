@@ -61,6 +61,7 @@ use super::final_review;
 use super::panel_contracts::{CompletionVerdict, RecordKind, RecordProducer};
 use super::prompt_review;
 use super::retry_policy::RetryPolicy;
+use super::review_classification;
 use super::validation;
 use super::{agent_record_producer, flow_semantics, stage_plan_for_flow, FlowSemantics};
 use crate::adapters::validation_runner::ValidationGroupResult;
@@ -162,6 +163,13 @@ pub fn build_stage_prompt(
     let template_id = template_catalog::stage_template_id(contract.stage_id);
     let role_instruction = stage_role_instruction(role, contract.stage_id);
 
+    let classification_guidance_block = if contract.stage_id == StageId::Review {
+        let pe_bead_ids = task_prompt_contract::extract_pe_bead_ids(&project_prompt);
+        review_classification::render_classification_guidance(&pe_bead_ids, false)
+    } else {
+        String::new()
+    };
+
     template_catalog::resolve_and_render(
         template_id,
         base_dir,
@@ -173,6 +181,7 @@ pub fn build_stage_prompt(
             ("json_schema", &schema),
             ("prior_outputs", &prior_outputs_block),
             ("remediation", &remediation_block),
+            ("classification_guidance", &classification_guidance_block),
         ],
     )
 }
