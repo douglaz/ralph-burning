@@ -708,6 +708,77 @@ fn build_stage_prompt_injects_scope_guidance_into_legacy_plan_and_implement_over
 }
 
 #[test]
+fn build_stage_prompt_injects_scope_guidance_before_final_schema_in_legacy_override() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-builder-legacy-schema-collision").unwrap();
+    let run_id = RunId::new("run-20260314193213").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::PlanAndImplement);
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
+    ];
+    let mut context = sample_bead_context();
+    context.agents_guidance = Some(
+        "Keep changes inspectable.\n\n## Authoritative JSON Schema\n\nThis heading belongs to repo guidance.".to_owned(),
+    );
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        &render_bead_task_prompt(&context),
+        &events,
+    );
+
+    let ws_templates = base_dir.join(".ralph-burning").join("templates");
+    fs::create_dir_all(&ws_templates).expect("create templates dir");
+    fs::write(
+        ws_templates.join("plan_and_implement.md"),
+        "LEGACY STAGE\n\n{{role_instruction}}\n\n{{project_prompt}}\n\n## Authoritative JSON Schema\n\n```json\n{{json_schema}}\n```",
+    )
+    .expect("write override");
+
+    let artifact_store = InMemoryArtifactStore { payloads: vec![] };
+    let prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendFamily::Claude,
+        BackendRole::Implementer,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("legacy override with schema heading should still render");
+
+    let repo_guidance_index = prompt
+        .find("This heading belongs to repo guidance.")
+        .expect("repo guidance heading should remain inside project prompt");
+    let scope_guidance_index = prompt
+        .find("## Scope Guidance")
+        .expect("scope guidance should be injected");
+    let final_schema_index = prompt
+        .rfind("## Authoritative JSON Schema")
+        .expect("final schema heading should exist");
+
+    assert!(
+        repo_guidance_index < scope_guidance_index,
+        "scope guidance should not be injected into the middle of project prompt content"
+    );
+    assert!(
+        scope_guidance_index < final_schema_index,
+        "scope guidance should still appear before the final schema section"
+    );
+}
+
+#[test]
 fn build_stage_prompt_keeps_generic_legacy_override_without_scope_guidance() {
     let temp_dir = tempdir().expect("create temp dir");
     let base_dir = temp_dir.path();

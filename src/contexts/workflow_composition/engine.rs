@@ -213,7 +213,13 @@ fn inject_scope_guidance(rendered_prompt: &str, scope_guidance: &str) -> String 
     }
 
     const SCHEMA_HEADING: &str = "\n## Authoritative JSON Schema";
-    if let Some(index) = rendered_prompt.find(SCHEMA_HEADING) {
+    let schema_index = rendered_prompt.rfind(SCHEMA_HEADING).or_else(|| {
+        rendered_prompt
+            .starts_with(&SCHEMA_HEADING[1..])
+            .then_some(0)
+    });
+
+    if let Some(index) = schema_index {
         let mut injected = String::with_capacity(rendered_prompt.len() + scope_guidance.len() + 2);
         injected.push_str(rendered_prompt[..index].trim_end());
         injected.push_str("\n\n");
