@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-vote-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260413084713-final_review-vote-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T16:17:11.450198442Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted. The proposed amendment fixes a real, actionable contradiction in assembled planning prompts that can lead to nondeterministic interpretation and duplicate/overlapping work, so it directly improves correctness and safety of scope enforcement.\n\n## Votes\n\n- `fr-5-6607050f`: Accept\n  Both planning contract and scope guidance are injected into the same prompt, with one permitting absorption of Already Planned Elsewhere work under a \"strictly required\" exception and the other forbidding it. This is a correctness bug in prompt semantics, not just policy drift. Removing or conditionally suppressing the carveout for planning stages and adding a regression assertion for the final prompt is a valid, maintainable fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 5
+}

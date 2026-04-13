@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-planner-positions-c1-a1-cr5-artifact",
+  "payload_id": "run-20260413084713-final_review-planner-positions-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T16:17:06.795260150Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nVerified the contradiction by reading all four files. task_prompt_contract.rs:87 says 'Treat Already Planned Elsewhere as out-of-scope unless the work is strictly required to satisfy the active bead' while review_classification.rs:496-497 says 'Do not absorb work owned by Already Planned Elsewhere.' Both blocks are injected into Planning/PlanAndImplement prompts via the default stage template (template_catalog.rs:105-112), creating genuinely contradictory instructions in the same prompt. This is a real defect that undermines scope enforcement.\n\n## Votes\n\n- `fr-5-6607050f`: Accept\n  Confirmed the contradiction exists in the assembled prompt. The default stage template injects both {{task_prompt_contract}} (line 105) and {{classification_guidance}} (line 112). For Planning/PlanAndImplement stages, engine.rs:171-173 populates classification_guidance with render_scope_guidance(), which says 'Do not absorb work owned by Already Planned Elsewhere' (review_classification.rs:496-497). But the task_prompt_contract block includes consumer_guidance_body() from task_prompt_contract.rs:87, which says 'unless the work is strictly required to satisfy the active bead' — a direct carveout that permits exactly the absorption the new rule forbids. The model receives both instructions in the same prompt and must choose between them, which is nondeterministic. The remediation is straightforward: either suppress/modify the older carveout in consumer_guidance_body() for planning stages, or condition the text so the 'strictly required' exception does not apply to 'Already Planned Elsewhere' items when scope guidance is active. A regression test asserting the final prompt has no contradictory scope instructions is also warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}

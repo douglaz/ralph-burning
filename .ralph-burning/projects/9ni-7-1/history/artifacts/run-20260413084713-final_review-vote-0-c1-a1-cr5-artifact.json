@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-vote-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260413084713-final_review-vote-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T16:18:29.839861912Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept: the amendment identifies a real contradiction in planning prompt assembly that can blur scope boundaries and allow duplicated work across beads.\n\n## Votes\n\n- `fr-5-6607050f`: Accept\n  I verified that `task_prompt_contract::consumer_guidance_body()` still says work under `Already Planned Elsewhere` is out of scope unless it is strictly required to satisfy the active bead, while `review_classification::render_scope_guidance()` tells Planning and PlanAndImplement stages not to absorb work owned by `Already Planned Elsewhere`. `build_stage_prompt()` feeds both blocks into the rendered stage prompt, and the default stage template includes placeholders for both, so the assembled prompt can contain both instructions at once. There is no explicit precedence rule in the prompt assembly, so this is a genuine ambiguity for the model rather than a harmless wording issue. That ambiguity directly undermines the intended scope isolation and can reintroduce duplicated planning. Existing tests cover presence of the new scope guidance, but not absence of the older carveout in the final prompt, so the suggested regression coverage is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}
