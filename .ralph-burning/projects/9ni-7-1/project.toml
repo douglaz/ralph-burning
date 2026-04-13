@@ -1,0 +1,7 @@
+id = "9ni-7-1"
+name = "scope-aware-planning"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "78332acc37d92c750d493ca3fde950fcff1c232df62f358739b94c4ad0060025"
+created_at = "2026-04-13T08:47:07.828817838Z"
+status_summary = "created"

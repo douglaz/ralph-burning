@@ -532,6 +532,127 @@ fn build_stage_prompt_surfaces_shared_bead_task_prompt_contract_guidance() {
 }
 
 #[test]
+fn build_stage_prompt_injects_scope_guidance_for_plan_and_implement() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-builder-scope-guidance-quickdev").unwrap();
+    let run_id = RunId::new("run-20260314193210").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::PlanAndImplement);
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
+    ];
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        &render_bead_task_prompt(&sample_bead_context()),
+        &events,
+    );
+
+    let artifact_store = InMemoryArtifactStore { payloads: vec![] };
+    let prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendFamily::Claude,
+        BackendRole::Implementer,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("build prompt");
+
+    assert!(prompt.contains("## Scope Guidance"));
+    assert!(prompt.contains(
+        "Only include work that is required by `Must-Do Scope` and `Acceptance Criteria`."
+    ));
+    assert!(prompt.contains("Treat `Explicit Non-Goals` as out of scope."));
+    assert!(prompt.contains("deferred work with a brief rationale"));
+    assert!(prompt
+        .contains("Use `Milestone Summary` and other milestone context as read-only background"));
+    assert!(prompt.contains("Do not absorb work owned by `Already Planned Elsewhere`."));
+}
+
+#[test]
+fn build_stage_prompt_injects_scope_guidance_for_planning_and_omits_it_for_generic_prompts() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-builder-scope-guidance-planning").unwrap();
+    let run_id = RunId::new("run-20260314193211").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::Planning, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::Planning);
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
+    ];
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        "# Project Prompt\n\nImplement the generic planning workflow.",
+        &events,
+    );
+
+    let artifact_store = InMemoryArtifactStore { payloads: vec![] };
+    let generic_prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendFamily::Claude,
+        BackendRole::Planner,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("build generic prompt");
+
+    assert!(!generic_prompt.contains("## Scope Guidance"));
+
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        &render_bead_task_prompt(&sample_bead_context()),
+        &events,
+    );
+
+    let scoped_prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendFamily::Claude,
+        BackendRole::Planner,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("build scoped prompt");
+
+    assert!(scoped_prompt.contains("## Scope Guidance"));
+    assert!(scoped_prompt.contains(
+        "Only include work that is required by `Must-Do Scope` and `Acceptance Criteria`."
+    ));
+}
+
+#[test]
 fn build_stage_prompt_allows_legacy_override_without_task_prompt_contract_placeholder() {
     let temp_dir = tempdir().expect("create temp dir");
     let base_dir = temp_dir.path();

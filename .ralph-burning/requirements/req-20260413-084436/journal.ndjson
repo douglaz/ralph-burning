@@ -1,0 +1,2 @@
+{"sequence":1,"timestamp":"2026-04-13T08:44:36.348729190Z","event_type":"run_created","details":{"run_id":"req-20260413-084436","status":"drafting","status_summary":"drafting: generating requirements"}}
+{"sequence":2,"timestamp":"2026-04-13T08:47:24.764436043Z","event_type":"draft_generated","details":{"run_id":"req-20260413-084436","status":"drafting","status_summary":"drafting: reviewing requirements"}}
