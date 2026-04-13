@@ -1,0 +1,7 @@
+id = "plan-scope-guidance"
+name = "Scope-aware planning guidance for plan_and_implement stage"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "59f72b6cc62f17c5d0d852122c6ce06047ada57543173e0c7412fc208e9bd26a"
+created_at = "2026-04-13T08:49:36.108209152Z"
+status_summary = "created"

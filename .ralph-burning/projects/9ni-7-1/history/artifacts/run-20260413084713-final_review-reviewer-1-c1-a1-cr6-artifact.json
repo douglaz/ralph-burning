@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260413084713-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T16:26:34.765053236Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation correctly teaches plan_and_implement and planning stages to honor bead scope, non-goals, and milestone context. Three files were modified:\n\n1. **task_prompt_contract.rs**: Parameterized `consumer_guidance_body()` to accept scope boundary text, added `planning_stage_consumer_guidance()` with stricter no-absorb language, and added `stage_consumer_guidance_for_stage_prompt()` which routes Planning/PlanAndImplement to the planning variant.\n\n2. **review_classification.rs**: Added `render_scope_guidance()` which generates detailed actionable scope rules (Must-Do, Non-Goals, Milestone context, Already Planned Elsewhere) when the project prompt declares the bead contract with valid shape. Returns empty for non-milestone prompts (backward compatible).\n\n3. **engine.rs**: Switched `build_stage_prompt` to use the new stage-aware guidance function, wires `render_scope_guidance` into the classification_guidance for Planning/PlanAndImplement, and fixed `inject_scope_guidance` to use `rfind` for `## Authoritative JSON Schema` to prevent scope guidance from being injected inside project prompt content when AGENTS guidance contains that heading.\n\nAll 15 prompt_builder tests and 4 new/updated unit tests pass. The existing callers (final_review.rs, completion.rs) correctly continue using the generic guidance variant. Backward compatibility is maintained: non-bead prompts receive no scope guidance. The rfind fix is a real bug fix tested by the new schema-collision test.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 6
+}

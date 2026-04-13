@@ -1,0 +1,4 @@
+{"sequence":1,"timestamp":"2026-04-13T08:44:36.348729190Z","event_type":"run_created","details":{"run_id":"req-20260413-084436","status":"drafting","status_summary":"drafting: generating requirements"}}
+{"sequence":2,"timestamp":"2026-04-13T08:47:24.764436043Z","event_type":"draft_generated","details":{"run_id":"req-20260413-084436","status":"drafting","status_summary":"drafting: reviewing requirements"}}
+{"sequence":3,"timestamp":"2026-04-13T08:51:06.606526435Z","event_type":"seed_generated","details":{"run_id":"req-20260413-084436","status":"completed","status_summary":"completed"}}
+{"sequence":4,"timestamp":"2026-04-13T08:51:06.611098016Z","event_type":"run_completed","details":{"run_id":"req-20260413-084436","status":"completed","status_summary":"completed"}}

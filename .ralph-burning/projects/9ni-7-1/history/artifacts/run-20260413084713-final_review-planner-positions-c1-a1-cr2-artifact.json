@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-planner-positions-c1-a1-cr2-artifact",
+  "payload_id": "run-20260413084713-final_review-planner-positions-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T15:28:14.337520249Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed amendment fr-2-01747c85 concerning render_scope_guidance() reusing the reviewer-facing extract_pe_bead_ids() helper. The code confirms both correctness problems: (1) short aliases like `alpha` are presented to planners as real bead IDs they can reference, but these don't exist as canonical IDs in the bead graph; (2) two planned-elsewhere beads sharing the same short suffix (e.g., ms-alpha.alpha and ms-beta.alpha) would collapse into a single `alpha` alias in the HashSet, silently losing a reference. The helper's own doc comment explicitly states it exists so 'reviewers may reference as mapped_to_bead_id', making its use in planner scope guidance a clear context mismatch. The test at line 1597 asserts the alias appears, cementing the bug.\n\n## Votes\n\n- `fr-2-01747c85`: Accept\n  The issue is real and verified in the code. extract_pe_bead_ids() (task_prompt_contract.rs:281) is explicitly documented as returning IDs 'that reviewers may reference as mapped_to_bead_id' and includes short-form aliases via strip_milestone_prefix (lines 302-305). render_scope_guidance() (review_classification.rs:483) calls this same function and renders all returned IDs—including aliases—as 'Bead IDs already planned elsewhere' in planner-facing guidance. This creates two concrete problems: (1) planners can defer work to a short alias like `alpha` that has no canonical entry in the bead graph, leading to dangling references; (2) distinct beads sharing a short suffix (e.g., ms-alpha.alpha vs ms-beta.alpha) collapse to one alias in the HashSet, making the guidance ambiguous and potentially causing a planner to miss a planned-elsewhere bead. The test at line 1597 asserting `- \\`alpha\\`` reinforces the bug. The fix is straightforward: render_scope_guidance should either use a separate extraction that only returns canonical (qualified) bead IDs, or filter out aliases before rendering.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

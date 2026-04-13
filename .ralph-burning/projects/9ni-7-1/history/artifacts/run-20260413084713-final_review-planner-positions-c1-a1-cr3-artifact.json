@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-planner-positions-c1-a1-cr3-artifact",
+  "payload_id": "run-20260413084713-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T15:51:48.194360498Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nEvaluated amendment fr-3-bfd4b428 regarding render_scope_guidance() emitting scope directives for marker-only prompts that lack actual bead scope sections. The finding is technically correct: prompt_uses_contract() returns true for any prompt with the contract marker (confirmed by test at line 410-416), while render_scope_guidance() emits directives referencing Must-Do Scope, Explicit Non-Goals, and Acceptance Criteria sections that may not be present. The function's own docstring states it should be empty for non-bead prompts for backward compatibility, but the guard is too broad. The existing validate_canonical_prompt_shape() function could serve as a tighter check. However, the practical impact is low since Planning/PlanAndImplement stages are almost exclusively driven by full bead prompts, and telling a model to obey non-existent sections is functionally a no-op.\n\n## Votes\n\n- `fr-3-bfd4b428`: Accept\n  The finding is accurate: render_scope_guidance() at line 478 uses prompt_uses_contract() which returns true for marker-only prompts (as the test at task_prompt_contract.rs:410-416 confirms), causing it to emit a ## Scope Guidance block referencing Must-Do Scope, Explicit Non-Goals, and Acceptance Criteria sections that don't actually exist in the prompt. This contradicts the function's own docstring (lines 476-477) which states guidance should be empty for non-bead prompts to preserve backward compatibility. The remediation is straightforward — either check for the actual canonical section headings (e.g., via validate_canonical_prompt_shape or a simpler presence check for at least one canonical heading) before emitting scope guidance. While the severity is indeed low (Planning/PlanAndImplement stages are almost always bead-driven in practice, and referencing absent sections is functionally a no-op), the defect is real, the fix is small, and closing the gap prevents confusion if marker-only prompts ever reach these stages through configuration changes or future workflow evolution.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

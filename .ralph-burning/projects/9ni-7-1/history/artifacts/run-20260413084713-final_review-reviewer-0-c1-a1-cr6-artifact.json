@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr6-artifact",
+  "payload_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T16:30:07.956839450Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed `git diff`/`git diff origin/master..HEAD` and read the changed implementation files end-to-end (`src/contexts/project_run_record/task_prompt_contract.rs`, `src/contexts/workflow_composition/review_classification.rs`, `src/contexts/workflow_composition/engine.rs`, and `tests/unit/prompt_builder_test.rs`). No actionable correctness, safety, or robustness findings were identified in this bead's changes. `cargo test --quiet` passed; `nix build` still fails in 5 pre-existing `ps`-dependent tests outside this change set.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

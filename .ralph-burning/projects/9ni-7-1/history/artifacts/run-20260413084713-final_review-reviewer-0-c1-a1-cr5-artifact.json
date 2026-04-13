@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr5-artifact",
+  "payload_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T16:16:28.354206767Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the scope-guidance changes in `engine.rs`, `review_classification.rs`, `task_prompt_contract.rs`, `template_catalog.rs`, and the prompt-builder tests. Found 1 fix-now correctness gap: the final planning prompt still carries contradictory `Already Planned Elsewhere` guidance. Targeted `cargo test --test unit prompt_builder_test -- --nocapture` passed. `nix build` failed in unrelated existing `ps`-dependent tests outside this bead's change set.\n\n## Amendments\n\n1. finding_summary: Planning prompts still contain contradictory instructions about `Already Planned Elsewhere`. `build_stage_prompt()` injects both the shared task-contract block (`src/contexts/workflow_composition/engine.rs:116-117`; rendered by the default stage template at `src/contexts/workspace_governance/template_catalog.rs:105-113`) and the new scope guidance (`src/contexts/workflow_composition/engine.rs:166-190`, `src/contexts/workflow_composition/review_classification.rs:485-497`). But the shared contract text in `src/contexts/project_run_record/task_prompt_contract.rs:76-88` still tells the model that planned-elsewhere work may be pulled into the current bead when it is \"strictly required to satisfy the active bead,\" which directly conflicts with the new \"Do not absorb work owned by `Already Planned Elsewhere`\" rule. That leaves Planning/PlanAndImplement with ambiguous scope instructions and can still produce duplicated work across beads, which is exactly what this bead is trying to prevent. severity: medium. affected_files: src/contexts/project_run_record/task_prompt_contract.rs, src/contexts/workflow_composition/engine.rs, src/contexts/workflow_composition/review_classification.rs, src/contexts/workspace_governance/template_catalog.rs. remediation_hint: Align or suppress the older task-contract guidance for planning-oriented stages so it no longer permits planned-elsewhere work to be absorbed, and add a regression that asserts the final planning prompt does not include the old \"strictly required\" carveout alongside scope guidance.\n   Rationale: The new feature is supposed to stop planning stages from duplicating work owned by other beads, but the final prompt still includes an earlier instruction that explicitly allows that duplication under a common condition.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

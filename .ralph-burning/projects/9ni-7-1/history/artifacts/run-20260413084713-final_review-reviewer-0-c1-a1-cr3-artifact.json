@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T15:50:43.878572067Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the scope-guidance changes in `engine.rs`, `review_classification.rs`, `task_prompt_contract.rs`, and the prompt-builder tests. I found one fix-now correctness gap around marker-only/drifted contract prompts. Targeted `cargo test` coverage for the new scope-guidance cases passed; `nix build` did not pass in this environment because five existing daemon/CLI tests failed while trying to run `ps`.\n\n## Amendments\n\n1. finding_summary: `render_scope_guidance()` emits `## Scope Guidance` for any prompt that merely has the contract marker, even if the bead scope sections are absent. The new gate at [src/contexts/workflow_composition/review_classification.rs:478-483] only checks `prompt_uses_contract()`, and `prompt_uses_contract()` is intentionally true for marker-only/drifted prompts [src/contexts/project_run_record/task_prompt_contract.rs:123-124], as the existing test at [src/contexts/project_run_record/task_prompt_contract.rs:419-428] shows. That means Planning/PlanAndImplement can now tell the model to obey `Must-Do Scope`, `Explicit Non-Goals`, and `Acceptance Criteria` sections that are not actually present, which violates the backward-compat requirement for prompts with no bead-scope sections.\nseverity: low\naffected_files:\n- src/contexts/workflow_composition/review_classification.rs\n- tests/unit/prompt_builder_test.rs\nremediation_hint: Only emit scope guidance when the prompt actually contains the canonical scope section headings (or passes canonical prompt-shape validation), and add a regression test for a contract-marker prompt missing those sections.\n   Rationale: This change is supposed to be backward compatible when bead scope sections are absent. As written, it changes planner instructions for a class of already-supported drifted prompts instead of leaving behavior unchanged.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

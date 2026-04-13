@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260413084713-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T15:27:26.968357465Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the `build_stage_prompt` / scope-guidance implementation and prompt-builder tests, and found one correctness issue in how planned-elsewhere bead IDs are rendered into planning guidance.\n\n## Amendments\n\n1. fix-now: `render_scope_guidance()` is reusing the reviewer-facing `extract_pe_bead_ids()` helper, so the planning prompt enumerates short aliases like `alpha` in addition to canonical bead IDs (`src/contexts/workflow_composition/review_classification.rs:483-510`, `src/contexts/project_run_record/task_prompt_contract.rs:271-305`). That helper is explicitly designed for review-time `mapped_to_bead_id` matching, not for planner-facing guidance, and it deduplicates aliases in a set. In scope guidance this creates two correctness problems: planners can defer work to an ID that does not actually exist in the bead graph, and two different planned-elsewhere beads with the same short suffix collapse into one ambiguous alias. The new test also bakes this behavior in by asserting alias output (`src/contexts/workflow_composition/review_classification.rs:1578-1603`). Severity: medium. Affected files: `src/contexts/workflow_composition/review_classification.rs`, `src/contexts/project_run_record/task_prompt_contract.rs`. Remediation hint: render only the canonical bead IDs that actually appear in the `Already Planned Elsewhere` section for planning/scope guidance, or explicitly label any alias list as reviewer-only and keep it out of planner prompts.\n   Rationale: This bead is specifically about making planning respect scope boundaries. Feeding the planner invented or ambiguous bead identifiers undermines that goal and can produce incorrect deferred-work references even though the source prompt listed the real owner beads unambiguously.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

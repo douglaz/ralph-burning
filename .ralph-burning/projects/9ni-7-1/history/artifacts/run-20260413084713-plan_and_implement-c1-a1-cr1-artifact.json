@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413084713-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-13T08:49:57.132103198Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded scope-aware planning guidance for bead-backed prompts, injected it into `Planning` and `PlanAndImplement` stage prompt rendering via the existing `classification_guidance` placeholder, and added tests covering scope-guidance rendering plus stage-prompt injection and backward compatibility for generic prompts.\n\n## Steps\n\n1. [Completed] Inspected workflow prompt composition, task prompt contract utilities, and existing prompt-builder/review-classification tests to locate the correct injection point and reuse existing contract detection helpers.\n2. [Completed] Implemented `render_scope_guidance(project_prompt)` in `review_classification.rs` so contract-backed prompts now instruct planning stages to stay within `Must-Do Scope`, defer `Explicit Non-Goals`, avoid duplicating `Already Planned Elsewhere`, and treat milestone context as read-only background; generic prompts still return empty guidance.\n3. [Completed] Updated `build_stage_prompt()` in `engine.rs` to inject scope guidance for `Planning` and `PlanAndImplement`, kept review-stage classification guidance unchanged, and added unit tests for renderer behavior and prompt injection across scoped and generic prompts.\n\n## Validation Evidence\n\n- `cargo fmt -- src/contexts/workflow_composition/review_classification.rs src/contexts/workflow_composition/engine.rs tests/unit/prompt_builder_test.rs`\n- `cargo test render_scope_guidance -- --nocapture` passed\n- `cargo test build_stage_prompt_injects_scope_guidance -- --nocapture` passed\n- `cargo test --test unit prompt_builder_test -- --nocapture` passed (12 prompt-builder tests)\n\n## Outstanding Risks\n\n- Full repository test suite was not run; validation covered the updated renderer and prompt-builder paths with targeted tests only.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

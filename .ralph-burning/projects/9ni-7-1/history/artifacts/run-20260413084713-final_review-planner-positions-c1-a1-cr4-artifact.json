@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-planner-positions-c1-a1-cr4-artifact",
+  "payload_id": "run-20260413084713-final_review-planner-positions-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T16:03:29.674567895Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAssessed one amendment about inject_scope_guidance() matching the wrong ## Authoritative JSON Schema heading when bead content contains that same heading. After reading the code, the bug is confirmed real: escape_canonical_heading_lines() does not escape 'Authoritative JSON Schema' (it's not in BEAD_TASK_PROMPT_SECTION_TITLES), and .find() matches the first occurrence, which could be inside {{project_prompt}} rather than the template's own schema section. The conditions are narrow (legacy template override without {{classification_guidance}}, bead repo guidance containing the heading) but entirely plausible.\n\n## Votes\n\n- `fr-4-9bf4eb27`: Accept\n  The bug is confirmed by code inspection. inject_scope_guidance() at engine.rs:215-216 uses .find() which matches the FIRST occurrence of '\\n## Authoritative JSON Schema' in the rendered prompt. Since 'Authoritative JSON Schema' is not in BEAD_TASK_PROMPT_SECTION_TITLES (task_prompt_contract.rs:36-45), escape_canonical_heading_lines() does NOT escape it, so it can appear unmodified in bead repo guidance content. When a legacy template override omits {{classification_guidance}}, the fallback injects scope guidance at the wrong position — splitting the project prompt instead of placing the guidance before the actual schema section. The conditions are narrow but entirely plausible (e.g., working on ralph-burning with ralph-burning, or any project whose AGENTS.md documents JSON schema sections). The remediation hint is sound: using rfind() instead of find(), anchoring to a unique structural marker, or injecting at template level before rendering would all fix this correctly. A regression test with the heading inside repo guidance should accompany the fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

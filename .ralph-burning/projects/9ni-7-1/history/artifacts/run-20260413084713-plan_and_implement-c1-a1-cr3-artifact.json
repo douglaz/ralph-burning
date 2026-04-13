@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260413084713-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-13T15:32:45.270091808Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdjusted planner-facing scope guidance to enumerate only canonical bead IDs from `Already Planned Elsewhere`, while preserving reviewer alias matching in the existing review helper. Added a dedicated canonical extractor in `task_prompt_contract.rs`, switched `render_scope_guidance()` to use it, and updated regression tests so planning prompts no longer advertise short aliases like `alpha` that do not exist as standalone bead IDs.\n\n## Steps\n\n1. [Completed] Refactored planned-elsewhere ID extraction in `src/contexts/project_run_record/task_prompt_contract.rs` into a shared internal parser, then added `extract_pe_canonical_bead_ids()` for planner-facing use while keeping `extract_pe_bead_ids()` alias-aware for review-time `mapped_to_bead_id` matching.\n2. [Completed] Updated `src/contexts/workflow_composition/review_classification.rs` so `render_scope_guidance()` lists only canonical bead IDs, and strengthened the scope-guidance regression to cover multiple canonical IDs that would otherwise collapse to the same short alias.\n3. [Completed] Ran formatting and targeted Rust tests to verify the canonical-only scope guidance behavior and ensure planning-stage prompt rendering still passes its regression coverage.\n\n## Validation Evidence\n\n- `cargo fmt -- src/contexts/project_run_record/task_prompt_contract.rs src/contexts/workflow_composition/review_classification.rs`\n- `cargo test extract_pe_canonical_bead_ids_preserves_only_canonical_ids -- --nocapture` passed\n- `cargo test render_scope_guidance_includes_scope_rules_and_canonical_planned_elsewhere_ids -- --nocapture` passed\n- `cargo test --test unit prompt_builder_test -- --nocapture` passed (13 prompt-builder tests)\n\n## Outstanding Risks\n\n- Full repository test suite was not run; validation covered the changed prompt-contract, scope-guidance, and prompt-builder paths with targeted tests.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 3
+}

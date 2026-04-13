@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413084713-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T08:50:33.580600476Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nNo correctness, safety, or robustness issues were introduced by the current diff. The only changed files are run-time metadata artifacts (`.ralph-burning/projects/9ni-7-1/run.json` and `.ralph-burning/projects/9ni-7-1/journal.ndjson`); no stage prompt-building or review-classification implementation files were modified in this change set.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

@@ -10,6 +10,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::contexts::project_run_record::task_prompt_contract;
+
 // ── Severity ─────────────────────────────────────────────────────────
 
 /// Severity level for review findings.
@@ -466,6 +468,55 @@ pub fn render_classification_guidance(
     }
 
     guidance
+}
+
+/// Renders scope guidance text for planning-oriented stages that consume a
+/// bead-backed task prompt contract.
+///
+/// The guidance is intentionally empty for generic prompts so non-milestone
+/// workflows remain backward compatible.
+pub fn render_scope_guidance(project_prompt: &str) -> String {
+    if !prompt_has_canonical_scope_sections(project_prompt) {
+        return String::new();
+    }
+
+    let planned_elsewhere_ids = task_prompt_contract::extract_pe_canonical_bead_ids(project_prompt);
+    let mut guidance = String::from(
+        "## Scope Guidance\n\
+         \n\
+         Respect the bead scope declared in the project prompt when producing a plan or \
+         implementation steps.\n\
+         \n\
+         - Only include work that is required by `Must-Do Scope` and `Acceptance Criteria`.\n\
+         - Treat `Explicit Non-Goals` as out of scope. If you need to mention them, record \
+         them as deferred work with a brief rationale instead of adding them to the active plan.\n\
+         - Use `Milestone Summary` and other milestone context as read-only background for \
+         understanding sequencing and intent. Do not expand the plan beyond the active bead \
+         based on milestone context alone.\n\
+         - Do not absorb work owned by `Already Planned Elsewhere`. Reference that work as \
+         deferred or related follow-up instead of duplicating it here.\n",
+    );
+
+    if planned_elsewhere_ids.is_empty() {
+        guidance.push_str(
+            "\nThe prompt does not list any bead IDs under `Already Planned Elsewhere`, so \
+             there are no named delegated items to reference.\n",
+        );
+    } else {
+        let mut sorted_ids: Vec<&str> = planned_elsewhere_ids.iter().map(String::as_str).collect();
+        sorted_ids.sort();
+        guidance.push_str("\nBead IDs already planned elsewhere:\n");
+        for id in sorted_ids {
+            guidance.push_str(&format!("- `{id}`\n"));
+        }
+    }
+
+    guidance
+}
+
+fn prompt_has_canonical_scope_sections(project_prompt: &str) -> bool {
+    task_prompt_contract::prompt_uses_contract(project_prompt)
+        && task_prompt_contract::validate_canonical_prompt_shape(project_prompt).is_ok()
 }
 
 /// Validates a list of classifications, returning all errors with their
@@ -1521,5 +1572,52 @@ mod tests {
         let guidance = render_classification_guidance(&pe, false);
         assert!(guidance.contains("unlikely to apply"));
         Ok(())
+    }
+
+    #[test]
+    fn render_scope_guidance_returns_empty_for_generic_prompt() {
+        let guidance = render_scope_guidance("# Prompt\n\nShip the feature.");
+        assert!(guidance.is_empty());
+    }
+
+    #[test]
+    fn render_scope_guidance_returns_empty_for_marker_only_drifted_prompt() {
+        let prompt = format!(
+            "# Drifted Prompt\n\n{}\n\n## Acceptance Criteria\n\nLater sections only.",
+            task_prompt_contract::contract_marker()
+        );
+
+        let guidance = render_scope_guidance(&prompt);
+
+        assert!(guidance.is_empty());
+    }
+
+    #[test]
+    fn render_scope_guidance_includes_scope_rules_and_canonical_planned_elsewhere_ids() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\n- ms-alpha.zeta (Zeta) - later work\n- ms-alpha.alpha (Alpha) - adjacent work\n- ms-beta.alpha (Another Alpha) - parallel work\n\n## Review Policy\n\nF\n\n## AGENTS / Repo Guidance\n\nG",
+            task_prompt_contract::contract_marker()
+        );
+
+        let guidance = render_scope_guidance(&prompt);
+
+        assert!(guidance.contains("## Scope Guidance"));
+        assert!(guidance.contains(
+            "Only include work that is required by `Must-Do Scope` and `Acceptance Criteria`."
+        ));
+        assert!(guidance.contains("Treat `Explicit Non-Goals` as out of scope."));
+        assert!(guidance.contains("deferred work with a brief rationale"));
+        assert!(guidance.contains(
+            "Use `Milestone Summary` and other milestone context as read-only background"
+        ));
+        assert!(guidance.contains("Do not absorb work owned by `Already Planned Elsewhere`."));
+        assert!(guidance.contains("- `ms-alpha.alpha`"));
+        assert!(guidance.contains("- `ms-beta.alpha`"));
+        assert!(guidance.contains("- `ms-alpha.zeta`"));
+        assert!(!guidance.contains("- `alpha`"));
+
+        let alpha_pos = guidance.find("ms-alpha.alpha").unwrap();
+        let zeta_pos = guidance.find("ms-alpha.zeta").unwrap();
+        assert!(alpha_pos < zeta_pos);
     }
 }

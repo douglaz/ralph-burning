@@ -6,6 +6,7 @@
 //! and downstream workflow stages can reason about the same stable structure.
 
 use super::fence_util::{closes_fence, opening_fence_delimiter};
+use crate::shared::domain::StageId;
 
 /// Stable contract identifier for bead-backed execution prompts.
 pub const BEAD_TASK_PROMPT_CONTRACT_NAME: &str = "bead_execution_prompt";
@@ -73,7 +74,7 @@ fn markdown_canonical_section_heading(line: &str) -> Option<(usize, usize)> {
     Some((section_index, leading_spaces))
 }
 
-fn consumer_guidance_body() -> String {
+fn consumer_guidance_body(scope_boundary_guidance: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "The project prompt below uses `{}`.\n\n",
@@ -83,9 +84,8 @@ fn consumer_guidance_body() -> String {
     for section in BEAD_TASK_PROMPT_SECTION_TITLES {
         out.push_str(&format!("- `{section}`\n"));
     }
-    out.push_str(
-        "\nUse `Must-Do Scope` plus `Acceptance Criteria` as the in-scope boundary. Treat `Explicit Non-Goals` and `Already Planned Elsewhere` as out-of-scope unless the work is strictly required to satisfy the active bead.",
-    );
+    out.push_str("\n");
+    out.push_str(scope_boundary_guidance);
     out
 }
 
@@ -128,7 +128,19 @@ pub fn prompt_uses_contract(prompt: &str) -> bool {
 /// the canonical bead task prompt contract.
 pub fn stage_consumer_guidance() -> String {
     let mut out = String::from("## Task Prompt Contract\n\n");
-    out.push_str(&consumer_guidance_body());
+    out.push_str(&consumer_guidance_body(
+        "Use `Must-Do Scope` plus `Acceptance Criteria` as the in-scope boundary. Treat `Explicit Non-Goals` and `Already Planned Elsewhere` as out-of-scope unless the work is strictly required to satisfy the active bead.",
+    ));
+    out
+}
+
+/// Guidance injected into planning-oriented workflow stage prompts when the
+/// project prompt uses the canonical bead task prompt contract.
+pub fn planning_stage_consumer_guidance() -> String {
+    let mut out = String::from("## Task Prompt Contract\n\n");
+    out.push_str(&consumer_guidance_body(
+        "Use `Must-Do Scope` plus `Acceptance Criteria` as the in-scope boundary. Treat `Explicit Non-Goals` as out-of-scope. Do not absorb work owned by `Already Planned Elsewhere`; leave it deferred or referenced as related follow-up instead of pulling it into the active bead.",
+    ));
     out
 }
 
@@ -152,6 +164,19 @@ pub fn stage_consumer_guidance_for_prompt(prompt: &str) -> String {
         stage_consumer_guidance()
     } else {
         String::new()
+    }
+}
+
+/// Return stage-consumer guidance tailored to the consuming stage when the
+/// prompt uses the canonical contract.
+pub fn stage_consumer_guidance_for_stage_prompt(stage_id: StageId, prompt: &str) -> String {
+    if !prompt_uses_contract(prompt) {
+        return String::new();
+    }
+
+    match stage_id {
+        StageId::Planning | StageId::PlanAndImplement => planning_stage_consumer_guidance(),
+        _ => stage_consumer_guidance(),
     }
 }
 
@@ -268,17 +293,10 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
     }
 }
 
-/// Extract bead IDs from the "Already Planned Elsewhere" section of a
-/// canonical bead execution prompt.  Returns the set of bead IDs that
-/// reviewers may reference as `mapped_to_bead_id`.
-///
-/// Each bullet line in the section starts with `- {bead_id} (...)`.
-/// The bead ID is the first whitespace-delimited token after `- `.
-///
-/// For each canonical (qualified) bead ID like `milestone.short_id`, the
-/// short-form alias `short_id` is also included so reviewers can reference
-/// either form.  This mirrors `planned_bead_membership_refs` in bundle.rs.
-pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
+fn extract_pe_bead_ids_internal(
+    prompt: &str,
+    include_short_form_aliases: bool,
+) -> std::collections::HashSet<String> {
     let mut result = std::collections::HashSet::new();
     let section_header = format!("## {SECTION_ALREADY_PLANNED_ELSEWHERE}");
     let mut in_section = false;
@@ -299,10 +317,13 @@ pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
                     .trim();
                 if !id.is_empty() {
                     result.insert(id.to_owned());
-                    // Also accept the short-form alias: strip the milestone
-                    // prefix (everything up to and including the first dot).
-                    if let Some(short) = strip_milestone_prefix(id) {
-                        result.insert(short.to_owned());
+                    // Review-time matching accepts a short-form alias by
+                    // stripping the milestone prefix (everything up to and
+                    // including the first dot).
+                    if include_short_form_aliases {
+                        if let Some(short) = strip_milestone_prefix(id) {
+                            result.insert(short.to_owned());
+                        }
                     }
                 }
             }
@@ -312,6 +333,27 @@ pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
     }
 
     result
+}
+
+/// Extract the canonical bead IDs from the "Already Planned Elsewhere"
+/// section of a canonical bead execution prompt.
+///
+/// Each bullet line in the section starts with `- {bead_id} (...)`.
+/// The bead ID is the first whitespace-delimited token after `- `.
+pub fn extract_pe_canonical_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
+    extract_pe_bead_ids_internal(prompt, false)
+}
+
+/// Extract bead IDs from the "Already Planned Elsewhere" section of a
+/// canonical bead execution prompt. Returns the set of bead IDs that reviewers
+/// may reference as `mapped_to_bead_id`.
+///
+/// In addition to canonical (qualified) bead IDs like `milestone.short_id`,
+/// this helper also includes the short-form alias `short_id` so review-stage
+/// matching can accept either form. This mirrors
+/// `planned_bead_membership_refs` in bundle.rs.
+pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
+    extract_pe_bead_ids_internal(prompt, true)
 }
 
 /// Strip the milestone-id prefix from a canonical bead ID.
@@ -417,6 +459,14 @@ mod tests {
             assert!(guidance.contains(section));
         }
         assert!(guidance.contains("`bead_execution_prompt/1`."));
+    }
+
+    #[test]
+    fn planning_stage_guidance_disallows_absorbing_planned_elsewhere_work() {
+        let guidance = planning_stage_consumer_guidance();
+
+        assert!(guidance.contains("Do not absorb work owned by `Already Planned Elsewhere`"));
+        assert!(!guidance.contains("strictly required to satisfy the active bead"));
     }
 
     #[test]
@@ -647,6 +697,17 @@ mod tests {
         assert!(ids.contains("9ni.8.5.3"));
         assert!(ids.contains("8.5.3"));
         assert!(ids.contains("plain-id"));
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn extract_pe_canonical_bead_ids_preserves_only_canonical_ids() {
+        let prompt = "## Already Planned Elsewhere\n\n- ms-alpha.alpha (Alpha) - downstream\n- ms-beta.alpha (Also Alpha) - adjacent\n- plain-id (No prefix) - adjacent\n";
+        let ids = extract_pe_canonical_bead_ids(prompt);
+        assert!(ids.contains("ms-alpha.alpha"));
+        assert!(ids.contains("ms-beta.alpha"));
+        assert!(ids.contains("plain-id"));
+        assert!(!ids.contains("alpha"));
         assert_eq!(ids.len(), 3);
     }
 

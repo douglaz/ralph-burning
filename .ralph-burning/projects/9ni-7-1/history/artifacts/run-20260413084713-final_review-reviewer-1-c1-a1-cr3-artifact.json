@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260413084713-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T15:44:42.117229086Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is clean and correct. Key changes reviewed:\n\n1. **task_prompt_contract.rs**: Refactored `extract_pe_bead_ids` into an internal function with a `include_short_form_aliases` flag, exposing two public variants — `extract_pe_canonical_bead_ids` (no aliases, for planning scope guidance) and `extract_pe_bead_ids` (with aliases, for review-stage matching). The separation is sound and the existing callers in `final_review.rs` and `engine.rs` review path still use the alias-inclusive variant correctly.\n\n2. **review_classification.rs**: `render_scope_guidance()` now uses `extract_pe_canonical_bead_ids` so planning guidance shows canonical IDs only (not confusing short-form aliases). Correct choice.\n\n3. **engine.rs**: `build_stage_prompt` was refactored from `resolve_and_render` to separate `resolve` + `render` calls, which is functionally equivalent (verified). The new logic checks whether the resolved template contains a `{{classification_guidance}}` placeholder and, for Planning/PlanAndImplement stages with non-empty scope guidance but no placeholder, falls back to `inject_scope_guidance`. This correctly handles legacy template overrides that lack the placeholder.\n\n4. **inject_scope_guidance**: Inserts scope guidance before `## Authoritative JSON Schema` or appends at end. Has idempotency guard via `contains()`. No bugs found.\n\n5. **Tests**: Four new/updated tests cover: scope guidance injection for plan_and_implement, scope guidance in legacy overrides, no scope guidance for generic prompts, no scope guidance for generic legacy overrides, and canonical-only bead ID extraction. All 15 relevant tests pass.\n\nNo correctness bugs, safety issues, or significant maintainability risks found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

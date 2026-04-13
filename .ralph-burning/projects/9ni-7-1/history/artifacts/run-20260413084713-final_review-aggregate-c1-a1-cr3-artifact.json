@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260413084713-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260413084713-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T15:52:42.298274891Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 3\n**Unique Amendments:** 1\n**Final Review Restarts:** 3/25\n\n## Accepted\n\n- `fr-3-bfd4b428`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-bfd4b428`\n\nfinding_summary: `render_scope_guidance()` emits `## Scope Guidance` for any prompt that merely has the contract marker, even if the bead scope sections are absent. The new gate at [src/contexts/workflow_composition/review_classification.rs:478-483] only checks `prompt_uses_contract()`, and `prompt_uses_contract()` is intentionally true for marker-only/drifted prompts [src/contexts/project_run_record/task_prompt_contract.rs:123-124], as the existing test at [src/contexts/project_run_record/task_prompt_contract.rs:419-428] shows. That means Planning/PlanAndImplement can now tell the model to obey `Must-Do Scope`, `Explicit Non-Goals`, and `Acceptance Criteria` sections that are not actually present, which violates the backward-compat requirement for prompts with no bead-scope sections.\nseverity: low\naffected_files:\n- src/contexts/workflow_composition/review_classification.rs\n- tests/unit/prompt_builder_test.rs\nremediation_hint: Only emit scope guidance when the prompt actually contains the canonical scope section headings (or passes canonical prompt-shape validation), and add a regression test for a contract-marker prompt missing those sections.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

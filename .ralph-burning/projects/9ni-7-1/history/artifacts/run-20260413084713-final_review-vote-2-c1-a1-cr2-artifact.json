@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260413084713-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T15:28:18.275610280Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted. The proposed amendment identifies a concrete correctness and maintainability defect: using a reviewer-only aliasing helper in planner guidance can emit identifiers that are not valid bead graph IDs and can silently collapse distinct planned-elsewhere beads, so deferred work references can become ambiguous or invalid.\n\n## Votes\n\n- `fr-2-01747c85`: Accept\n  `render_scope_guidance()` should surface canonical bead IDs for planner-facing prompts, but it reuses `extract_pe_bead_ids()`, which is explicitly documented for reviewer `mapped_to_bead_id` matching and returns stripped aliases. This can produce non-canonical IDs (e.g., `alpha`) and deduplicate distinct suffixes across milestones, leading to wrong or missing scope guidance. The cited test already codifies alias output, reinforcing the bug; separating reviewer aliases from planner guidance is the correct fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}
