@@ -109,6 +109,7 @@ const STAGE_DEFAULT_TEMPLATE: &str = "\
 {{project_prompt}}\
 \n\n{{prior_outputs}}\
 \n\n{{remediation}}\
+\n\n{{classification_guidance}}\
 \n\n## Authoritative JSON Schema
 
 The JSON schema below is authoritative. Return only JSON that conforms exactly to it.
@@ -229,20 +230,8 @@ end-to-end. For each issue found, cite specific files and line numbers.
 Ignore style and cosmetics — only report real bugs, safety problems, \
 correctness gaps, and significant maintainability risks.
 
-## Planned-Elsewhere Classification
-
-If a finding is a valid concern but is already covered by another bead listed \
-in the \"Already Planned Elsewhere\" section of the project prompt, you may \
-classify it as planned-elsewhere instead of proposing a fix. To do this, set \
-the `mapped_to_bead_id` field to the bead ID that owns the concern. \
-Planned-elsewhere amendments do not trigger a restart — the concern is recorded \
-as already covered by the referenced bead.
-
-Only use this classification when you are confident the mapped-to bead's scope \
-genuinely covers the finding. When in doubt, omit `mapped_to_bead_id` and \
-propose a normal amendment.
-
-{{task_prompt_contract}}\
+{{classification_guidance}}\
+\n\n{{task_prompt_contract}}\
 \n\n\
 ## Project Prompt
 
@@ -416,7 +405,12 @@ Gap Analysis:
 
 /// Stage template placeholders (shared by all stage IDs).
 const STAGE_REQUIRED: &[&str] = &["role_instruction", "project_prompt", "json_schema"];
-const STAGE_OPTIONAL: &[&str] = &["task_prompt_contract", "prior_outputs", "remediation"];
+const STAGE_OPTIONAL: &[&str] = &[
+    "task_prompt_contract",
+    "prior_outputs",
+    "remediation",
+    "classification_guidance",
+];
 
 /// Return the manifest for a known template ID, or `None` if unrecognized.
 pub fn manifest_for(template_id: &str) -> Option<TemplateManifest> {
@@ -453,7 +447,7 @@ pub fn manifest_for(template_id: &str) -> Option<TemplateManifest> {
         "final_review_reviewer" => Some(TemplateManifest {
             template_id: "final_review_reviewer",
             required_placeholders: &["project_prompt", "json_schema"],
-            optional_placeholders: &["task_prompt_contract"],
+            optional_placeholders: &["task_prompt_contract", "classification_guidance"],
             built_in_default: FINAL_REVIEW_REVIEWER_DEFAULT,
         }),
         "final_review_voter" => Some(TemplateManifest {

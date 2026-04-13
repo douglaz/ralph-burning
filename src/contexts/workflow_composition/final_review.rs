@@ -43,6 +43,7 @@ use crate::contexts::workflow_composition::panel_contracts::{
     FinalReviewVotePayload, RecordKind, RecordProducer,
 };
 use crate::contexts::workflow_composition::renderers;
+use crate::contexts::workflow_composition::review_classification;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
     BackendRole, FailureClass, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor,
@@ -2007,12 +2008,16 @@ fn build_reviewer_prompt(
     ))?;
     let task_prompt_contract_block =
         task_prompt_contract::stage_consumer_guidance_for_prompt(project_prompt);
+    let pe_bead_ids = task_prompt_contract::extract_pe_bead_ids(project_prompt);
+    let classification_guidance_block =
+        review_classification::render_classification_guidance(&pe_bead_ids, true);
     template_catalog::resolve_and_render(
         "final_review_reviewer",
         base_dir,
         project_id,
         &[
             ("task_prompt_contract", task_prompt_contract_block.as_str()),
+            ("classification_guidance", &classification_guidance_block),
             ("project_prompt", project_prompt),
             ("json_schema", &schema_str),
         ],
