@@ -574,6 +574,7 @@ fn build_stage_prompt_injects_scope_guidance_for_plan_and_implement() {
     assert!(prompt.contains(
         "Only include work that is required by `Must-Do Scope` and `Acceptance Criteria`."
     ));
+    assert!(!prompt.contains("strictly required to satisfy the active bead"));
     assert!(prompt.contains("Treat `Explicit Non-Goals` as out of scope."));
     assert!(prompt.contains("deferred work with a brief rationale"));
     assert!(prompt
@@ -650,6 +651,7 @@ fn build_stage_prompt_injects_scope_guidance_for_planning_and_omits_it_for_gener
     assert!(scoped_prompt.contains(
         "Only include work that is required by `Must-Do Scope` and `Acceptance Criteria`."
     ));
+    assert!(!scoped_prompt.contains("strictly required to satisfy the active bead"));
 }
 
 #[test]

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413084713-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260413084713-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-13T16:23:37.137684459Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAligned planning-oriented task-contract guidance with the new scope guidance so `Planning` and `PlanAndImplement` prompts no longer carry the contradictory `Already Planned Elsewhere` carveout. Added a planning-specific contract guidance variant in `task_prompt_contract.rs`, switched `build_stage_prompt()` to use stage-aware contract guidance, and extended regressions to assert scoped planning prompts still include scope guidance while omitting the old \"strictly required\" language.\n\n## Steps\n\n1. [Completed] Inspected the prompt-construction path and confirmed that planning-stage prompts were rendering both the shared task-contract block and the newer scope guidance, leaving a contradictory `Already Planned Elsewhere` instruction in the final prompt.\n2. [Completed] Refactored `task_prompt_contract.rs` to support stage-aware consumer guidance, keeping the existing generic guidance for non-planning stages while adding a planning-specific variant that forbids absorbing work owned by `Already Planned Elsewhere`.\n3. [Completed] Updated `build_stage_prompt()` in `engine.rs` to request task-contract guidance based on the consuming stage, so `Planning` and `PlanAndImplement` now receive the stricter planning-specific contract block alongside scope guidance.\n4. [Completed] Added regressions covering the planning-specific guidance helper and the final rendered planning prompts, then ran formatting, focused tests, the full prompt-builder suite, and the repo-standard `nix build` gate.\n\n## Validation Evidence\n\n- `cargo fmt -- src/contexts/project_run_record/task_prompt_contract.rs src/contexts/workflow_composition/engine.rs tests/unit/prompt_builder_test.rs`\n- `cargo test planning_stage_guidance_disallows_absorbing_planned_elsewhere_work -- --nocapture` passed\n- `cargo test build_stage_prompt_injects_scope_guidance_for_plan_and_implement -- --nocapture` passed\n- `cargo test build_stage_prompt_injects_scope_guidance_for_planning_and_omits_it_for_generic_prompts -- --nocapture` passed\n- `cargo test --test unit prompt_builder_test -- --nocapture` passed (15 prompt-builder tests)\n- `nix build` failed only in 5 pre-existing CLI/automation-runtime tests that require `ps`; the changed prompt-contract and prompt-builder paths remained green\n\n## Outstanding Risks\n\n- `nix build` still fails in 5 unrelated existing CLI/automation-runtime tests because the test environment cannot enumerate process groups via `ps` (`No such file or directory`), so the full repository verification gate remains blocked outside the changed prompt-composition paths.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 6
+}

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260413084713",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 6
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-5-6607050f",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "finding_summary: Planning prompts still contain contradictory instructions about `Already Planned Elsewhere`. `build_stage_prompt()` injects both the shared task-contract block (`src/contexts/workflow_composition/engine.rs:116-117`; rendered by the default stage template at `src/contexts/workspace_governance/template_catalog.rs:105-113`) and the new scope guidance (`src/contexts/workflow_composition/engine.rs:166-190`, `src/contexts/workflow_composition/review_classification.rs:485-497`). But the shared contract text in `src/contexts/project_run_record/task_prompt_contract.rs:76-88` still tells the model that planned-elsewhere work may be pulled into the current bead when it is \"strictly required to satisfy the active bead,\" which directly conflicts with the new \"Do not absorb work owned by `Already Planned Elsewhere`\" rule. That leaves Planning/PlanAndImplement with ambiguous scope instructions and can still produce duplicated work across beads, which is exactly what this bead is trying to prevent. severity: medium. affected_files: src/contexts/project_run_record/task_prompt_contract.rs, src/contexts/workflow_composition/engine.rs, src/contexts/workflow_composition/review_classification.rs, src/contexts/workspace_governance/template_catalog.rs. remediation_hint: Align or suppress the older task-contract guidance for planning-oriented stages so it no longer permits planned-elsewhere work to be absorbed, and add a regression that asserts the final planning prompt does not include the old \"strictly required\" carveout alongside scope guidance.",
-        "created_at": "2026-04-13T16:18:29.855412060Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "f6bccef609570b27c2b98ef88548c5b4818db461cff501f9ccb0220181b29a8a"
-      }
-    ],
-    "processed_count": 4
+    "pending": [],
+    "processed_count": 5
   },
-  "status_summary": "running: final review restart round 6 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-13T16:08:54.543212861Z",

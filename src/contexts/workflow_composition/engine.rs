@@ -113,8 +113,10 @@ pub fn build_stage_prompt(
         &InvocationContract::Stage(*contract),
         backend_family,
     ))?;
-    let task_prompt_contract_block =
-        task_prompt_contract::stage_consumer_guidance_for_prompt(&project_prompt);
+    let task_prompt_contract_block = task_prompt_contract::stage_consumer_guidance_for_stage_prompt(
+        contract.stage_id,
+        &project_prompt,
+    );
 
     // Pre-render optional sections
     let prior_outputs_block = if !prior_outputs.is_empty() {

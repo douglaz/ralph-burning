@@ -6,6 +6,7 @@
 //! and downstream workflow stages can reason about the same stable structure.
 
 use super::fence_util::{closes_fence, opening_fence_delimiter};
+use crate::shared::domain::StageId;
 
 /// Stable contract identifier for bead-backed execution prompts.
 pub const BEAD_TASK_PROMPT_CONTRACT_NAME: &str = "bead_execution_prompt";
@@ -73,7 +74,7 @@ fn markdown_canonical_section_heading(line: &str) -> Option<(usize, usize)> {
     Some((section_index, leading_spaces))
 }
 
-fn consumer_guidance_body() -> String {
+fn consumer_guidance_body(scope_boundary_guidance: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "The project prompt below uses `{}`.\n\n",
@@ -83,9 +84,8 @@ fn consumer_guidance_body() -> String {
     for section in BEAD_TASK_PROMPT_SECTION_TITLES {
         out.push_str(&format!("- `{section}`\n"));
     }
-    out.push_str(
-        "\nUse `Must-Do Scope` plus `Acceptance Criteria` as the in-scope boundary. Treat `Explicit Non-Goals` and `Already Planned Elsewhere` as out-of-scope unless the work is strictly required to satisfy the active bead.",
-    );
+    out.push_str("\n");
+    out.push_str(scope_boundary_guidance);
     out
 }
 
@@ -128,7 +128,19 @@ pub fn prompt_uses_contract(prompt: &str) -> bool {
 /// the canonical bead task prompt contract.
 pub fn stage_consumer_guidance() -> String {
     let mut out = String::from("## Task Prompt Contract\n\n");
-    out.push_str(&consumer_guidance_body());
+    out.push_str(&consumer_guidance_body(
+        "Use `Must-Do Scope` plus `Acceptance Criteria` as the in-scope boundary. Treat `Explicit Non-Goals` and `Already Planned Elsewhere` as out-of-scope unless the work is strictly required to satisfy the active bead.",
+    ));
+    out
+}
+
+/// Guidance injected into planning-oriented workflow stage prompts when the
+/// project prompt uses the canonical bead task prompt contract.
+pub fn planning_stage_consumer_guidance() -> String {
+    let mut out = String::from("## Task Prompt Contract\n\n");
+    out.push_str(&consumer_guidance_body(
+        "Use `Must-Do Scope` plus `Acceptance Criteria` as the in-scope boundary. Treat `Explicit Non-Goals` as out-of-scope. Do not absorb work owned by `Already Planned Elsewhere`; leave it deferred or referenced as related follow-up instead of pulling it into the active bead.",
+    ));
     out
 }
 
@@ -152,6 +164,19 @@ pub fn stage_consumer_guidance_for_prompt(prompt: &str) -> String {
         stage_consumer_guidance()
     } else {
         String::new()
+    }
+}
+
+/// Return stage-consumer guidance tailored to the consuming stage when the
+/// prompt uses the canonical contract.
+pub fn stage_consumer_guidance_for_stage_prompt(stage_id: StageId, prompt: &str) -> String {
+    if !prompt_uses_contract(prompt) {
+        return String::new();
+    }
+
+    match stage_id {
+        StageId::Planning | StageId::PlanAndImplement => planning_stage_consumer_guidance(),
+        _ => stage_consumer_guidance(),
     }
 }
 
@@ -434,6 +459,14 @@ mod tests {
             assert!(guidance.contains(section));
         }
         assert!(guidance.contains("`bead_execution_prompt/1`."));
+    }
+
+    #[test]
+    fn planning_stage_guidance_disallows_absorbing_planned_elsewhere_work() {
+        let guidance = planning_stage_consumer_guidance();
+
+        assert!(guidance.contains("Do not absorb work owned by `Already Planned Elsewhere`"));
+        assert!(!guidance.contains("strictly required to satisfy the active bead"));
     }
 
     #[test]
