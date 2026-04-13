@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413213145-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413213145-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T21:58:04.894011604Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the Claude reasoning-effort changes in `src/adapters/process_backend.rs` and `src/contexts/workspace_governance/config.rs` plus the related tests. I did not find any correctness, safety, or robustness issues in the submitted scope. I also verified locally that the installed Claude CLI exposes `--effort`, and `cargo test`, `cargo fmt --check`, and `cargo clippy --quiet` completed successfully. `nix build` was started but did not finish within the review window.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
