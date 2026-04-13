@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413224245-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413224245-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T22:57:12.984267504Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nVerified amendment fr-1-8655d1c3 against the cited code. The race is real: PID-file cleanup happens after writer-lock release at all cited call sites, while `remove_pid_file_if_matches()` performs a separate read/compare/unlink sequence with no protection against a successor acquiring the lock and rewriting `run.pid` in between.\n\n## Votes\n\n- `fr-1-8655d1c3`: Accept\n  `src/adapters/fs.rs:635-647` is a classic TOCTOU sequence: read `run.pid`, compare with the expected record, then unlink the path. In `src/cli/run.rs` at the cited sites, cleanup calls `lock_guard.close()`/`guard.close()` first and only then invokes `remove_pid_file_if_matches()`. In `src/contexts/automation_runtime/cli_writer_lease.rs`, `remove_owned_run_pid_file()` similarly runs after `LeaseService::release()` has already released the writer lock. Once the lock is released, another start/resume can create a new owner and rewrite `run.pid`; the exiting process can still pass its comparison against the old contents and then delete the successor's PID file before or after the replacement window, leaving a live run looking stale. That is a real correctness and recovery-safety bug, and moving PID cleanup into the same critical section as writer-lock ownership is the right fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

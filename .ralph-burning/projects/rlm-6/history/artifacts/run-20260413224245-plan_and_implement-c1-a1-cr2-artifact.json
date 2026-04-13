@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413224245-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260413224245-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-13T23:04:52.319005281Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the `run.pid` cleanup race that could delete a successor run's PID record after lease release. The fix has two parts: `FileSystem::remove_pid_file_if_matches` now removes `run.pid` via an atomic rename-to-staging flow instead of a compare-then-unlink sequence, and the `run start`, `run resume`, `run stop`, and stale-writer cleanup paths now remove the matching PID before releasing the writer lease when they still own it. This preserves the existing liveness/stale-recovery behavior while closing the handoff window described in the amendment.\n\n## Steps\n\n1. [Completed] Inspect the current PID cleanup, writer-lease release, and stale-owner recovery paths in `src/adapters/fs.rs`, `src/cli/run.rs`, and `src/contexts/automation_runtime/cli_writer_lease.rs` to confirm the reported race and identify the narrowest safe fix.\n2. [Completed] Patch `run.pid` cleanup so matching PID records are removed safely during ownership handoff: harden `FileSystem::remove_pid_file_if_matches` with atomic staging semantics and move the relevant start/resume/stop and stale-owner cleanup call sites to perform PID cleanup before releasing the writer lease.\n3. [Completed] Run repository validation and capture remaining blockers against the bead acceptance criteria.\n\n## Validation Evidence\n\n- `cargo test` passed on the current tree after the PID-cleanup changes.\n- `cargo fmt --check` passed on the current tree after the changes.\n- `cargo clippy --all-targets --all-features -- -D warnings` still fails, but the remaining errors are pre-existing unrelated lint failures such as `dead_code` in `src/adapters/fs.rs:1188`, an unread field in `src/contexts/workflow_composition/engine.rs:7074`, and additional existing clippy findings in `src/cli/project.rs`, `src/contexts/milestone_record/service.rs`, `src/contexts/project_run_record/task_prompt_contract.rs`, and other modules.\n- Code inspection confirms the race remediation is in place: atomic PID-file removal logic now lives in `src/adapters/fs.rs`, and the run lifecycle plus stale-writer cleanup call sites in `src/cli/run.rs` and `src/contexts/automation_runtime/cli_writer_lease.rs` perform PID cleanup before releasing ownership.\n\n## Outstanding Risks\n\n- `cargo clippy --all-targets --all-features -- -D warnings` still fails on pre-existing unrelated lint errors outside this bead, so the clippy acceptance criterion remains unmet on the current tree.\n- The worktree already had unrelated modified runtime state under `.ralph-burning/projects/rlm-6/`; those files were left untouched.\n- Two existing timing-sensitive `run stop` CLI tests remain ignored/flaky in the suite (`run_stop_reconciles_running_snapshot_after_sigterm_handoff_removes_pid` and `run_stop_sigkill_finalizes_snapshot_even_when_backend_cleanup_fails`).\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

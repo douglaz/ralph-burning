@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260413224245-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413224245-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T22:57:53.602279005Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 3\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-8655d1c3`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-8655d1c3`\n\nfinding_summary: `run.pid` cleanup is racy after the writer lease is released, so an exiting run can delete a successor run's PID file.\nseverity: high\naffected_files: [\"src/adapters/fs.rs\", \"src/cli/run.rs\", \"src/contexts/automation_runtime/cli_writer_lease.rs\"]\nline_refs: [\"src/adapters/fs.rs:635-647\", \"src/cli/run.rs:3439-3443\", \"src/cli/run.rs:3673-3680\", \"src/cli/run.rs:4055-4061\", \"src/contexts/automation_runtime/cli_writer_lease.rs:130-153\"]\nremediation_hint: Remove `run.pid` while the caller still owns the writer lock, or move PID-file cleanup into the same critical section as lease release; a read-then-`remove_file` on the path is not safe once another owner can acquire the project.\nexplanation: `remove_pid_file_if_matches()` rereads `run.pid` and then unlinks the path. Every caller in this bead does that after `lock_guard.close()` / lease release, so a new start or resume can acquire the writer lock and rewrite `run.pid` between the compare and the unlink. The old process then deletes the successor's PID record, which makes a live run look stale and can trigger incorrect stop/resume recovery against an active orchestrator.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

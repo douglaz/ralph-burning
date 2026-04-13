@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413224245-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413224245-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T22:49:58.385778337Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nComprehensive review of the run liveness tracking, stop command, and stale-run recovery implementation. All acceptance criteria are met: PID file is written on run start/resume (engine.rs:1343, engine.rs:2108) and removed on clean exit (run.rs:3439-3443, run.rs:3673-3680); run stop handles stale detection and live process termination with SIGTERM/SIGKILL (run.rs:3702-3817); run status detects stale Running states via classify_running_snapshot_liveness (run.rs:9167-9184); run resume auto-recovers from stale Running via reconcile_or_recover_claimed_running_snapshot (run.rs:3532-3591); SIGTERM/Ctrl-C signal handling persists interruption markers and cleans up PID files (run.rs:2498-2614, run.rs:2649-2664). PID records include proc_start_ticks (Linux) and proc_start_marker (macOS) for authoritative process identity verification, preventing false liveness from PID reuse. All 789 tests pass, cargo fmt --check is clean. 17 pre-existing clippy warnings are all non-blocking (dead code stubs, unused field, style suggestions).\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}
