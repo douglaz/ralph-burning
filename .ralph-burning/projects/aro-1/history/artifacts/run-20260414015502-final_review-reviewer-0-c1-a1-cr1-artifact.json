@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-reviewer-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414015502-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:14:49.405405643Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the modified final-review artifacts plus the relevant final-review/source snapshot code. Found one in-scope regression against the planner-removal contract and one separate final-review traceability bug that should be tracked as new work.\n\n## Amendments\n\n1. finding_summary: New final-review snapshots still serialize `stage_resolution_snapshot.final_review_planner` in `.ralph-burning/projects/aro-1/run.json:33-36`, even though `StageResolutionSnapshot` no longer defines that field in `src/contexts/project_run_record/model.rs:186-206`. severity: high. affected_files: [\".ralph-burning/projects/aro-1/run.json\"]. remediation_hint: Regenerate or update the checked-in run snapshot so post-change final-review state only persists `final_review_reviewers` and `final_review_arbiter`.\n   Rationale: The bead explicitly removes planner from final review and requires new `run.json` snapshots to be planner-free. Committing a new snapshot that still contains `final_review_planner` violates that contract and will fail any schema/snapshot assertion for the new output shape.\n2. finding_summary: Final-review supporting-record filenames are off by one. `final_review_reviewer_id()` emits one-based IDs at `src/contexts/workflow_composition/final_review.rs:100-101`, but proposal artifacts are persisted as `reviewer-{idx}` at `src/contexts/workflow_composition/final_review.rs:627-638` and vote artifacts as `vote-{member_index}` at `src/contexts/workflow_composition/final_review.rs:1115-1126`, both zero-based. The current run already shows the mismatch: `.ralph-burning/projects/aro-1/journal.ndjson:10` records completion for `reviewer-3`, while `.ralph-burning/projects/aro-1/history/artifacts/run-20260414015502-final_review-reviewer-2-c1-a1-cr1-artifact.json:2-13` stores that same result under `reviewer-2`. proposed_title: Align final-review supporting record suffixes with reviewer IDs. proposed_scope: Persist proposal/vote supporting records with the same one-based reviewer IDs used in journal/runtime events, and add a regression test that correlates reviewer IDs to supporting-record filenames. severity: medium.\n   Rationale: This is outside the planner-removal acceptance criteria, but it is a real traceability defect: artifact history and journal telemetry currently disagree about which reviewer produced a proposal or vote, which undermines audit/debug tooling.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

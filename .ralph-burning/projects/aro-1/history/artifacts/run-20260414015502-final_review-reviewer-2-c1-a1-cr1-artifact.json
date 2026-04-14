@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:10:29.305322565Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound 1 bug: a new test fixture snapshot still contains `final_review_planner`, which conflicts with the planner-removal contract.\n\n## Amendments\n\n1. File `.ralph-burning/projects/aro-1/run.json` now writes a prohibited field in the final-review snapshot: `stage_resolution_snapshot.final_review_planner` is present at lines 33-36. This violates the required removal of planner-role artifacts from new final-review snapshots and will cause fixture-based snapshot checks for “planner-free” run output to fail or silently drift. (Severity: high)\n\nFiles: `.ralph-burning/projects/aro-1/run.json:33-36`\n   Rationale: Remove `final_review_planner` from generated/new fixture run snapshots so final-review snapshots only persist final_review_reviewers and final_review_arbiter (plus any other non-planner fields).\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

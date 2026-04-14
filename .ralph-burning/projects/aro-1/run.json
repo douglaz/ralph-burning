@@ -2,29 +2,100 @@
   "active_run": {
     "run_id": "run-20260414015502",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-14T01:55:02.845264326Z",
     "prompt_hash_at_cycle_start": "8ea2de6fac495087de6396aeecfda1140346306d468dd9eec6a72e996171ce18",
     "prompt_hash_at_stage_start": "8ea2de6fac495087de6396aeecfda1140346306d468dd9eec6a72e996171ce18",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-3ea59dad",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: New final-review snapshots still serialize `stage_resolution_snapshot.final_review_planner` in `.ralph-burning/projects/aro-1/run.json:33-36`, even though `StageResolutionSnapshot` no longer defines that field in `src/contexts/project_run_record/model.rs:186-206`. severity: high. affected_files: [\".ralph-burning/projects/aro-1/run.json\"]. remediation_hint: Regenerate or update the checked-in run snapshot so post-change final-review state only persists `final_review_reviewers` and `final_review_arbiter`.",
+        "created_at": "2026-04-14T02:18:22.354151967Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "e0559ad0325d1de26fdb5c6d2353438e340086874ac484637079505ab58342fb"
+      },
+      {
+        "amendment_id": "fr-1-a85b0c74",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: Final-review supporting-record filenames are off by one. `final_review_reviewer_id()` emits one-based IDs at `src/contexts/workflow_composition/final_review.rs:100-101`, but proposal artifacts are persisted as `reviewer-{idx}` at `src/contexts/workflow_composition/final_review.rs:627-638` and vote artifacts as `vote-{member_index}` at `src/contexts/workflow_composition/final_review.rs:1115-1126`, both zero-based. The current run already shows the mismatch: `.ralph-burning/projects/aro-1/journal.ndjson:10` records completion for `reviewer-3`, while `.ralph-burning/projects/aro-1/history/artifacts/run-20260414015502-final_review-reviewer-2-c1-a1-cr1-artifact.json:2-13` stores that same result under `reviewer-2`. proposed_title: Align final-review supporting record suffixes with reviewer IDs. proposed_scope: Persist proposal/vote supporting records with the same one-based reviewer IDs used in journal/runtime events, and add a regression test that correlates reviewer IDs to supporting-record filenames. severity: medium.",
+        "created_at": "2026-04-14T02:18:22.354154952Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "4b1b940350275e6d1486ce6c2cf95265e86452cc5e7db5a3e25575bd1965a1df"
+      },
+      {
+        "amendment_id": "fr-1-fd259192",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Two test function names still reference 'planner' but their assertions now check 'arbiter':\n1. `tests/unit/backend_diagnostics_test.rs:2533` — `probe_with_availability_final_review_failure_reports_planner_not_generic` should be renamed to `probe_with_availability_final_review_failure_reports_arbiter_not_generic`\n2. `tests/unit/backend_diagnostics_test.rs:1729` — `probe_final_review_panel_uses_planner_timeout_not_final_reviewer` should be renamed to reflect the new primary role (arbiter), and the comment at line 1734 about 'planner and final_reviewer timeouts' should be updated",
+        "created_at": "2026-04-14T02:18:22.354156996Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "645fa536355514c81035a34a776808f21b57d3cb60e3f065694f35237bcf692c"
+      },
+      {
+        "amendment_id": "fr-1-9ae1de46",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Comment at `src/contexts/agent_execution/policy.rs:145` says 'Resolve only the final-review reviewer panel members (no planner/arbiter)' — should be updated to 'Resolve only the final-review reviewer panel members (no arbiter)' since the planner no longer exists in the final review panel.",
+        "created_at": "2026-04-14T02:18:22.354158128Z",
+        "batch_sequence": 4,
+        "source": "workflow_stage",
+        "dedup_key": "372cb1ee08160497e05067c98ce51aacd6d6904d16acddd141944bbd4f4f11e5"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-14T02:09:33.079359461Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
 }

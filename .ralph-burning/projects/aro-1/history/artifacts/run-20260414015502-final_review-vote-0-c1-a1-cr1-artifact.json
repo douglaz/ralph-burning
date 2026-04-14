@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414015502-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:18:22.337733770Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted four amendments: the tracked final-review run snapshot still contains removed planner data, proposal/vote artifact suffixes do not line up with reviewer IDs, two backend-diagnostics test names/comments are stale, and one policy comment is stale. Rejected the second snapshot amendment as a duplicate of the first.\n\n## Votes\n\n- `fr-1-3ea59dad`: Accept\n  `StageResolutionSnapshot` now defines `final_review_reviewers` and `final_review_arbiter`, but `.ralph-burning/projects/aro-1/run.json` still contains `stage_resolution_snapshot.final_review_planner`. That means the checked-in run snapshot is out of sync with the current model/output contract and should be regenerated or edited. This is fixture/data drift rather than a live serializer bug, but it is still a real correctness issue in tracked project data.\n- `fr-1-a85b0c74`: Accept\n  `final_review_reviewer_id()` is one-based (`reviewer-{member_index + 1}`), while proposal artifacts are persisted as `reviewer-{idx}` and vote artifacts as `vote-{member_index}`. The tracked run already shows the mismatch: journal events use `reviewer-1`/`reviewer-2`/`reviewer-3`, while proposal artifacts are named `reviewer-0`/`reviewer-1`/`reviewer-2`. That is a real traceability and auditability defect, so aligning filenames with reviewer IDs and adding a regression test is warranted.\n- `fr-1-fd259192`: Accept\n  Both cited tests still use `planner` in their names even though the surrounding assertions/comments now target arbiter-oriented final-review behavior, not planner behavior. That makes failures and future edits harder to interpret because the test names no longer describe what is actually being checked. Renaming the tests and updating the stale comment is a valid maintainability fix.\n- `fr-1-9ae1de46`: Accept\n  The comment on `resolve_final_review_reviewers` says 'no planner/arbiter', but this helper only excludes the arbiter from the final-review panel because planner is no longer part of that panel resolution. The implementation is fine; the comment is not. Fixing it improves code accuracy and avoids reader confusion.\n- `fr-1-202fdf64`: Reject\n  This reports the same defect as `fr-1-3ea59dad`: the tracked `.ralph-burning/projects/aro-1/run.json` still contains `stage_resolution_snapshot.final_review_planner`. It does not identify a distinct technical problem beyond that already-covered snapshot drift, so accepting both would create duplicate work for one issue.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
