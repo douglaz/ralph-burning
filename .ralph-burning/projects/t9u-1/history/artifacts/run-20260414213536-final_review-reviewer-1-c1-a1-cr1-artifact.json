@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414213536-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414213536-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T22:03:16.203132970Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the HEAD change against `origin/master` outside `.ralph-burning`. Found 1 high-severity correctness gap: `try_reconcile_success` now fails closed for a missing binding, but `persist_workflow_run_id` still guesses the latest `RunStarted`, which can silently create the same wrong-run reconciliation the bead is meant to prevent.\n\n## Amendments\n\n1. finding_summary: The patch still lets the daemon guess a run identity in `persist_workflow_run_id`, so a manual rerun between dispatch completion and persistence can stamp the newer run onto the task and bypass the new fail-closed reconciliation guard.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs:1779-1810\n- src/contexts/automation_runtime/daemon_loop.rs:1941-1944\n- src/contexts/automation_runtime/daemon_loop.rs:7797-7948\nremediation_hint: Stop deriving `workflow_run_id` from the latest `RunStarted` event. Persist the authoritative run id from the dispatch/result path or another deterministic artifact of the just-finished attempt; if that binding cannot be proven, leave the field unset so `try_reconcile_success` takes the new `reconciliation_no_run_binding` path.\n   Rationale: Lines 1800-1810 explicitly acknowledge that this code may bind the wrong run_id if another run starts before persistence. The new guard at lines 1941-1944 only fails closed when `workflow_run_id` is missing; once the wrong id has been written, reconciliation will trust it and can still close/sync the bead and rewrite milestone lineage for the wrong attempt. The added regression test only covers the `workflow_run_id == None` branch, so this remaining unsafe path is untested.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
