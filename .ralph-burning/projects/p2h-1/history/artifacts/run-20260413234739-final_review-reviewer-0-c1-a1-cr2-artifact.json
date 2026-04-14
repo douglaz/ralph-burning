@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413234739-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260413234739-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T00:09:30.887656439Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the `src/contexts/workflow_composition/engine.rs` change and the related prompt-review resume/availability paths. I found no correctness, safety, or robustness issues in the implemented fix: PromptReview now rejects any `effective_min_override`, the live resume path still never sets one for PromptReview, and the new regression tests cover the invariant. Validation run in this review pass: `cargo test prompt_review_drift_requirements --lib`, `cargo test prompt_review_fails_when_ --lib`, and `cargo fmt --check` all passed. `cargo clippy` and `nix build` were not run.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
