@@ -1089,6 +1089,7 @@ mod tests {
         let initial_heartbeat = Utc::now() - Duration::seconds(2);
         let cleanup_handoff = CliWriterCleanupHandoff {
             pid: 4242,
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-handoff".to_owned()),
             run_started_at: Some(Utc::now() - Duration::minutes(1)),
             proc_start_ticks: Some(99),

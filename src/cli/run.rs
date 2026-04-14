@@ -1826,17 +1826,16 @@ fn observed_cli_cleanup_owner_has_dead_pid(
     let Some(handoff) = lease.cleanup_handoff.as_ref() else {
         return Ok(false);
     };
-    if !FileSystem::process_identity_is_authoritative(
-        handoff.proc_start_ticks,
-        handoff.proc_start_marker.as_deref(),
-    ) {
-        return Ok(false);
-    }
-
-    Ok(!FileSystem::process_identity_matches_live_process(
-        handoff.pid,
-        handoff.proc_start_ticks,
-        handoff.proc_start_marker.as_deref(),
+    // Cleanup handoffs are only used to decide whether stale recovery may
+    // proceed. Ambiguous coarse marker matches must not block reclaim forever.
+    Ok(!matches!(
+        FileSystem::process_snapshot_live_state(
+            handoff.pid,
+            handoff.recorded_at,
+            handoff.proc_start_ticks,
+            handoff.proc_start_marker.as_deref(),
+        ),
+        crate::adapters::fs::PidRecordLiveState::Live
     ))
 }
 
@@ -2045,8 +2044,9 @@ fn observed_resume_recovery_owner(
         }
         RunStatus::Failed | RunStatus::Paused => Ok(ResumeRecoveryObservation {
             observed_owner: {
-                if let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? {
-                    if let Some(error) = live_pid_record_blocks_failed_or_paused_resume(&pid_record)
+                let pid_record = FileSystem::read_pid_file(base_dir, project_id)?;
+                if let Some(ref pid_record) = pid_record {
+                    if let Some(error) = live_pid_record_blocks_failed_or_paused_resume(pid_record)
                     {
                         return Err(error);
                     }
@@ -2054,7 +2054,7 @@ fn observed_resume_recovery_owner(
 
                 reconcile_observed_recovery_owners(project_id, {
                     let mut owners = Vec::new();
-                    if let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? {
+                    if let Some(pid_record) = pid_record {
                         owners.extend(pid_record.writer_owner);
                     }
                     if let Some(owner) = read_project_writer_lock_owner(base_dir, project_id)? {
@@ -2112,17 +2112,14 @@ fn daemon_handoff_process_death_proven(
     else {
         return Ok(false);
     };
-    if !FileSystem::process_identity_is_authoritative(
-        handoff.proc_start_ticks,
-        handoff.proc_start_marker.as_deref(),
-    ) {
-        return Ok(false);
-    }
-
-    Ok(!FileSystem::process_identity_matches_live_process(
-        handoff.pid,
-        handoff.proc_start_ticks,
-        handoff.proc_start_marker.as_deref(),
+    Ok(!matches!(
+        FileSystem::process_snapshot_live_state(
+            handoff.pid,
+            handoff.recorded_at,
+            handoff.proc_start_ticks,
+            handoff.proc_start_marker.as_deref(),
+        ),
+        crate::adapters::fs::PidRecordLiveState::Live
     ))
 }
 
@@ -2444,6 +2441,7 @@ fn persist_signal_cleanup_handoff(
         writer_owner,
         CliWriterCleanupHandoff {
             pid: pid_record.pid,
+            recorded_at: Some(Utc::now()),
             run_id: pid_record.run_id.clone(),
             run_started_at: pid_record.run_started_at,
             proc_start_ticks: pid_record.proc_start_ticks,
@@ -2781,7 +2779,7 @@ fn open_stop_process_handle(
             crate::adapters::fs::PidRecordLiveState::RunningUnverified => {
                 Err(AppError::RunStopFailed {
                     reason: format!(
-                        "run.pid for pid {} only matches coarse proc_start_marker data; refusing unsafe stop of an unverified pid record",
+                        "run.pid for pid {} cannot definitively verify process identity; refusing unsafe stop of an unverified pid record",
                         record.pid
                     ),
                 })
@@ -2987,16 +2985,11 @@ impl TrackedProcess {
     }
 
     fn matches_live_process(&self) -> bool {
-        FileSystem::is_pid_alive(&crate::adapters::fs::RunPidRecord {
-            pid: self.pid,
-            started_at: Utc::now(),
-            owner: crate::adapters::fs::RunPidOwner::Cli,
-            writer_owner: None,
-            run_id: None,
-            run_started_at: None,
-            proc_start_ticks: self.proc_start_ticks,
-            proc_start_marker: self.proc_start_marker.clone(),
-        })
+        FileSystem::process_identity_matches_live_process(
+            self.pid,
+            self.proc_start_ticks,
+            self.proc_start_marker.as_deref(),
+        )
     }
 }
 
@@ -3073,7 +3066,11 @@ fn kill_stale_backend_process_group(
     record: &crate::adapters::fs::RunBackendProcessRecord,
 ) -> AppResult<(bool, Vec<TrackedProcess>)> {
     let leader_is_authoritative = FileSystem::backend_process_is_authoritative(record);
-    let leader_matches_record = FileSystem::is_backend_process_alive(record);
+    let leader_live_state = FileSystem::backend_process_live_state(record);
+    let leader_matches_record = matches!(
+        leader_live_state,
+        crate::adapters::fs::PidRecordLiveState::Live
+    );
     let raw_pid_running = FileSystem::is_pid_running_unchecked(record.pid);
 
     let mut tracked_group_members = unix_process_group_members(record.pid)?
@@ -3093,6 +3090,15 @@ fn kill_stale_backend_process_group(
     if !leader_is_authoritative && raw_pid_running {
         return Err(AppError::Io(std::io::Error::other(format!(
             "refusing stale backend cleanup for pid {} because the recorded process identity is not authoritative and the pid is still live",
+            record.pid
+        ))));
+    }
+    if matches!(
+        leader_live_state,
+        crate::adapters::fs::PidRecordLiveState::RunningUnverified
+    ) {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing stale backend cleanup for pid {} because coarse process-start data cannot definitively rule out backend PID reuse",
             record.pid
         ))));
     }
@@ -7317,6 +7323,7 @@ mod tests {
             .expect("write interrupted run snapshot");
         let dead_handoff = CliWriterCleanupHandoff {
             pid: std::process::id().saturating_add(100_000),
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-1".to_owned()),
             run_started_at: Some(started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -7421,6 +7428,7 @@ mod tests {
 
         let live_handoff = CliWriterCleanupHandoff {
             pid: std::process::id(),
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-live".to_owned()),
             run_started_at: Some(started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -7582,6 +7590,7 @@ mod tests {
 
         let dead_handoff = CliWriterCleanupHandoff {
             pid: std::process::id().saturating_add(100_000),
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-detached".to_owned()),
             run_started_at: Some(started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -7678,6 +7687,7 @@ mod tests {
 
         let dead_handoff = CliWriterCleanupHandoff {
             pid: std::process::id().saturating_add(100_000),
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-detached".to_owned()),
             run_started_at: Some(started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -7797,6 +7807,7 @@ mod tests {
 
         let dead_handoff = CliWriterCleanupHandoff {
             pid: std::process::id().saturating_add(100_000),
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-dead".to_owned()),
             run_started_at: Some(started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -9129,6 +9140,7 @@ mod tests {
 
         let live_handoff = CliWriterCleanupHandoff {
             pid: pid_record.pid,
+            recorded_at: Some(Utc::now()),
             run_id: pid_record.run_id.clone(),
             run_started_at: pid_record.run_started_at,
             proc_start_ticks: pid_record.proc_start_ticks,
@@ -9195,6 +9207,104 @@ mod tests {
             )
             .expect("dead cleanup handoff should be reclaimable"),
             "cleanup handoff must let recovery reclaim the lock after run.pid is removed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn observed_cli_cleanup_owner_reclaims_when_cleanup_handoff_is_running_but_unverified() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("signal-handoff-unverified").expect("project id");
+        std::fs::create_dir_all(FileSystem::live_project_root(base_dir, &project_id))
+            .expect("ensure project root");
+
+        let unverified_handoff = CliWriterCleanupHandoff {
+            pid: std::process::id(),
+            recorded_at: None,
+            run_id: Some("run-signal-handoff".to_owned()),
+            run_started_at: Some(Utc::now()),
+            proc_start_ticks: None,
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+        let lease = CliWriterLease {
+            lease_id: "cli-signal-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            owner: "cli".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: super::CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: Utc::now(),
+            cleanup_handoff: Some(unverified_handoff),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::CliWriter(lease),
+        )
+        .expect("write cli lease");
+        <FsDaemonStore as DaemonStorePort>::acquire_writer_lock(
+            &FsDaemonStore,
+            base_dir,
+            &project_id,
+            "cli-signal-handoff",
+        )
+        .expect("acquire writer lock");
+
+        assert!(
+            super::observed_cli_cleanup_owner_has_dead_pid(
+                base_dir,
+                &project_id,
+                "cli-signal-handoff",
+            )
+            .expect("unverified cleanup handoff should be reclaimable"),
+            "cleanup handoffs without enough identity precision must not block stale recovery forever"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_handoff_process_death_proven_accepts_running_but_unverified_cleanup_handoff() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let daemon_dir = base_dir;
+        let project_id = ProjectId::new("daemon-handoff-unverified").expect("project id");
+        let started_at = Utc::now();
+        let expected_attempt =
+            crate::contexts::workflow_composition::engine::RunningAttemptIdentity {
+                run_id: "run-unverified".to_owned(),
+                started_at,
+            };
+
+        let handoff = CliWriterCleanupHandoff {
+            pid: std::process::id(),
+            recorded_at: None,
+            run_id: Some(expected_attempt.run_id.clone()),
+            run_started_at: Some(expected_attempt.started_at),
+            proc_start_ticks: None,
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-handoff".to_owned(),
+            task_id: "task-daemon-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            worktree_path: base_dir.join("worktrees/daemon-handoff"),
+            branch_name: "rb/daemon-handoff".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: Some(handoff),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            daemon_dir,
+            &LeaseRecord::Worktree(lease),
+        )
+        .expect("write daemon handoff lease");
+
+        assert!(
+            super::daemon_handoff_process_death_proven(daemon_dir, &project_id, &expected_attempt)
+                .expect("check daemon handoff liveness"),
+            "ambiguous cleanup handoffs must not block interrupted-handoff recovery indefinitely"
         );
     }
 
@@ -9467,6 +9577,13 @@ mod tests {
             ..tracked
         };
         assert!(!mismatched.matches_live_process());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_descendant_process_matches_live_current_identity() {
+        let tracked = super::TrackedProcess::from_pid(std::process::id());
+        assert!(tracked.matches_live_process());
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]

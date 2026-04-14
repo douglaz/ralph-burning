@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260414160444",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 7
@@ -23,66 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-6-dff1f2b4",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "finding_summary: Non-Linux backend-process cleanup is still unsafe after same-second PID reuse. `RunBackendProcessRecord` already stores `recorded_at` (`src/adapters/fs.rs:177-187`), but `is_backend_process_alive()` still delegates straight to marker/ticks matching (`src/adapters/fs.rs:895-900`). `kill_stale_backend_process_group()` trusts that boolean to decide whether it is safe to `SIGKILL` the recorded group/leader (`src/cli/run.rs:3075-3116`). On macOS/BSD, a backend PID reused within the same second can therefore be mistaken for the original backend and an unrelated process group can be killed.\nseverity: high\naffected_files:\n- src/adapters/fs.rs\n- src/cli/run.rs\nremediation_hint: Add a backend-process live-state helper that compares the live process start time against `recorded_at` (with an unverified state for coarse same-second marker matches) and make stale backend cleanup refuse ambiguous matches instead of treating them as safe to kill.",
-        "created_at": "2026-04-14T18:51:25.261425480Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "4fe54212ab80d6d11723df004a6082e126160cccde6e61f7d8ee938f97a5d539"
-      },
-      {
-        "amendment_id": "fr-6-c86c8bf3",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "finding_summary: Cleanup handoff liveness is still keyed off raw `proc_start_marker` matching, so same-second PID reuse remains unsafe in recovery. `CliWriterCleanupHandoff` persists only `pid` plus `proc_start_*` (`src/contexts/automation_runtime/model.rs:328-337`, written at `src/cli/run.rs:2440-2450`), and both `observed_cli_cleanup_owner_has_dead_pid()` and `daemon_handoff_process_death_proven()` still call `process_identity_matches_live_process()` directly (`src/cli/run.rs:1829-1840`, `src/cli/run.rs:2115-2126`). On macOS/BSD, a reused PID with the same whole-second `lstart` marker will still look live, which can wedge stale-owner reclaim or interrupted-handoff cleanup indefinitely.\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/model.rs\n- src/cli/run.rs\n- src/adapters/fs.rs\nremediation_hint: Persist a handoff timestamp and evaluate it through the same tri-state start-time comparison used for `RunPidRecord`; until then, marker-only handoffs should not be treated as definitive proof that the old process is still alive.",
-        "created_at": "2026-04-14T18:51:25.261428676Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "339c363e677f4df8689eafa15277c69be72d0b721d2f66497f4b222b7413df30"
-      },
-      {
-        "amendment_id": "fr-6-f6b51ae9",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "finding_summary: The new `is_pid_alive()` semantics break `TrackedProcess::matches_live_process()` for fresh descendants on non-Linux. That method now builds a synthetic `RunPidRecord` with `started_at: Utc::now()` (`src/cli/run.rs:2989-3000`), but `is_pid_alive()` only returns true for `PidRecordLiveState::Live` and downgrades whole-second marker matches to `RunningUnverified` (`src/adapters/fs.rs:798-802`, `src/adapters/fs.rs:813-892`). A child started in the current second can therefore be treated as dead and skipped by `kill_tracked_descendant_processes()` / `tracked_processes_still_alive()` (`src/cli/run.rs:3017-3049`).\nseverity: low\naffected_files:\n- src/cli/run.rs\n- src/adapters/fs.rs\nremediation_hint: Use `process_identity_matches_live_process()` for in-memory descendant snapshots, or capture a dedicated snapshot timestamp instead of routing descendant identity checks through pid-file liveness rules.",
-        "created_at": "2026-04-14T18:51:25.261431100Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "9a3bd7aaa2c573d37cd2fce34d4bfa25c4e6e328245eb99adf1e680f6b977453"
-      },
-      {
-        "amendment_id": "fr-6-4d9a9f0a",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "In observed_resume_recovery_owner (src/cli/run.rs ~line 2046-2067), the pid file is read twice in the Failed|Paused branch: once at line 2048 for the liveness check and again at line 2057 for writer_owner extraction. Between the two reads, a new process could start with the same PID and overwrite the pid file, causing the second read to return a different record than what was checked for liveness. Fix by reading the pid file once and reusing the record for both the liveness gate and the writer_owner extraction.",
-        "created_at": "2026-04-14T18:51:25.261433054Z",
-        "batch_sequence": 4,
-        "source": "workflow_stage",
-        "dedup_key": "74f11f8b7bf74fd3aad4e395319c1b9a0040e217ab32dec6aa99704ec0597261"
-      },
-      {
-        "amendment_id": "fr-6-311650ab",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "In open_stop_process_handle (src/cli/run.rs ~line 2781), the RunningUnverified error message says 'only matches coarse proc_start_marker data' but RunningUnverified can also be reached for legacy records with NO marker at all (ticks=None, marker=None, via the legacy_pid_record_live_state path where the process is running but no start time is available). The message should distinguish the two cases or use a more generic phrasing like 'cannot definitively verify process identity'.",
-        "created_at": "2026-04-14T18:51:25.261435088Z",
-        "batch_sequence": 5,
-        "source": "workflow_stage",
-        "dedup_key": "1d2832c4f47470369b2776fcadc26d6d030812a79a9b7c4734c3645ac4356188"
-      }
-    ],
-    "processed_count": 9
+    "pending": [],
+    "processed_count": 14
   },
-  "status_summary": "running: final review restart round 7 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-14T18:36:23.596192181Z",
