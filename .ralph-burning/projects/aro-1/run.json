@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260414015502",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 6
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-5-66317fda",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "finding_summary: `.ralph-burning/projects/aro-1/run.json:16-40` still records a `final_review_planner` entry in the newly written `active_run.stage_resolution_snapshot` (`.ralph-burning/projects/aro-1/run.json:33-36`), even though the final-review snapshot schema no longer defines that field (`src/contexts/project_run_record/model.rs:186-206`) and the snapshot builder only emits reviewers plus arbiter (`src/contexts/workflow_composition/engine.rs:8206-8223`). The current tree therefore still contains a new final-review snapshot that reintroduces the removed planner role.",
-        "created_at": "2026-04-14T03:06:33.285155605Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "490877bab1060811e846ee16306c0cb1cb3945a408cdd918a548e74164e82927"
-      },
-      {
-        "amendment_id": "fr-5-aa018b94",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "finding_summary: Four test scenarios in src/contexts/conformance_spec/scenarios.rs still include 'Planner position.' entries in final_review:voter payload sequences (lines ~12794, ~12938, ~13052, ~13216/13232). With the planner removed from the voting flow, the stub backend serves these planner payloads to reviewers instead, causing: (1) in all tests, reviewer 0 receives the planner's response instead of its own; (2) in the multi-round test restart_cap_force_complete, round-2 voter entry 3 (originally 'Reviewer 3 vote' targeting amendment_id) is consumed by reviewer 0, which means reviewer 0's vote references round-1's amendment_id instead of second_round_amendment_id — the vote aggregation's find() returns None for that reviewer on the current round's amendment, silently reducing the accept count from 3 to 2. Tests pass accidentally because the threshold arithmetic still yields 'Accepted'. The fix is to remove the 'Planner position.' entries from each voter sequence, leaving only reviewer vote entries matching the number of reviewers per round. severity: high. affected_files: [\"src/contexts/conformance_spec/scenarios.rs\"]. remediation_hint: In each of the four voter sequences, delete the entries with summary 'Planner position.' and adjust the remaining entries so that each round has exactly N entries matching the N reviewers, with correct amendment_ids per round.",
-        "created_at": "2026-04-14T03:06:33.285161086Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "0ae00992158b674247ac90e9fd73ec98d137f1274c4190287a6127db69e05d8c"
-      },
-      {
-        "amendment_id": "fr-5-293b5fe0",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "High: `.ralph-burning/projects/aro-1/run.json:33-36` (`active_run.stage_resolution_snapshot`) still serializes `final_review_planner`, but the current final-review stage snapshot schema is only `final_review_reviewers` and `final_review_arbiter` (`src/contexts/project_run_record/model.rs:203-206`) and `build_final_review_snapshot` emits only those fields (`src/contexts/workflow_composition/engine.rs:8206-8222`). This reintroduces a removed planner field into a new tracked `run.json` artifact and violates the no-planner final-review snapshot contract.",
-        "created_at": "2026-04-14T03:06:33.285162819Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "6100ed0ccc55ebe7c628527ac5dd9320f96a63d5f105a6297a7230c739266dda"
-      }
-    ],
-    "processed_count": 12
+    "pending": [],
+    "processed_count": 15
   },
-  "status_summary": "running: final review restart round 6 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-14T02:54:15.676949118Z",

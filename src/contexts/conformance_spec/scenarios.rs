@@ -12792,10 +12792,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                     "final_review:voter",
                     vec![
                         serde_json::json!({
-                            "summary": "Planner position.",
-                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
-                        }),
-                        serde_json::json!({
                             "summary": "Reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
@@ -12935,10 +12931,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                     "final_review:voter",
                     vec![
                         serde_json::json!({
-                            "summary": "Planner position.",
-                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
-                        }),
-                        serde_json::json!({
                             "summary": "Reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
@@ -13048,10 +13040,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                 .with_label_payload_sequence(
                     "final_review:voter",
                     vec![
-                        serde_json::json!({
-                            "summary": "Planner position.",
-                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
-                        }),
                         serde_json::json!({
                             "summary": "Reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
@@ -13213,10 +13201,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                     "final_review:voter",
                     vec![
                         serde_json::json!({
-                            "summary": "Planner position.",
-                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
-                        }),
-                        serde_json::json!({
                             "summary": "Reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
@@ -13227,10 +13211,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                         serde_json::json!({
                             "summary": "Reviewer 3 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
-                        }),
-                        serde_json::json!({
-                            "summary": "Planner position.",
-                            "votes": [{"amendment_id": second_round_amendment_id, "decision": "accept", "rationale": "Required again."}],
                         }),
                         serde_json::json!({
                             "summary": "Reviewer 1 vote.",
