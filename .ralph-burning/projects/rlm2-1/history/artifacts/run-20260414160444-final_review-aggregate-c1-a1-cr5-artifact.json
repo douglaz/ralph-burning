@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260414160444-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260414160444-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T18:17:07.214812806Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 5/25\n**Effective Min Reviewers:** 2\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-5-ecbf1d50`\n- `fr-5-640e8181`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-ecbf1d50`\n\nfinding_summary: On macOS/BSD, marker-only `run.pid` records still falsely match a reused PID that starts in the same second, so `run stop`/liveness checks can target an unrelated process.\nseverity: high\naffected_files: src/adapters/fs.rs:262-310, src/adapters/fs.rs:814-823, src/cli/run.rs:2698-2777\nremediation_hint: When `proc_start_marker` is the only identity, do not treat a raw marker match as definitively live; combine it with `record.started_at`/`compare_legacy_pid_record` and downgrade same-second matches to `RunningUnverified` instead of `Live`.\n\n### `fr-5-640e8181`\n\nfinding_summary: Failed/paused recovery still ignores a live legacy pid-only orchestrator when there is no current owner metadata, and it can also reclaim a stale owner based only on lease age, allowing resume/recovery to run alongside the original process.\nseverity: high\naffected_files: src/cli/run.rs:1840-1872, src/cli/run.rs:1924-1938, src/cli/run.rs:2015-2030, src/cli/run.rs:3525-3539\nremediation_hint: Before reclaiming or acquiring the recovery writer guard for failed/paused snapshots, consult `FileSystem::pid_record_live_state`; `Live` and `RunningUnverified` legacy pid records should block resume/reclaim the same way the running-snapshot and interrupted-handoff paths now do.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

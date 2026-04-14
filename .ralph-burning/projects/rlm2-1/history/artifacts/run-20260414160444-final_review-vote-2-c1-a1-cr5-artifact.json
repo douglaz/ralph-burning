@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-vote-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260414160444-final_review-vote-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T18:16:49.680488775Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify genuine safety defects in PID liveness checks. Amendment fr-5-ecbf1d50 correctly identifies that macOS/BSD marker-only records bypass the same-second ambiguity handling that already exists for legacy records, allowing false Live verdicts on PID reuse. Amendment fr-5-640e8181 correctly identifies that failed/paused recovery paths skip liveness checks for non-authoritative pid records, allowing concurrent execution when lease age alone triggers reclaim.\n\n## Votes\n\n- `fr-5-ecbf1d50`: Accept\n  Verified in code: on macOS/BSD, identity_is_authoritative (line 272) returns true for marker-only records, causing pid_record_live_state (line 815) to enter the authoritative branch and return Live on a marker string match. The proc_start_marker from ps -o lstart= has only second-level precision, so a PID reused within the same second produces an identical marker. The compare_legacy_pid_record path (line 244-256) already correctly returns RunningUnverified for same-second ambiguity, but it is never reached because the authoritative check short-circuits. This means open_stop_process_handle (line 2736) and send_signal_to_handle (line 2771) could send SIGTERM/SIGKILL to a reused PID on macOS/BSD. The window is narrow but the consequence (killing an unrelated process) is severe. The remediation is sound and consistent with existing infrastructure.\n- `fr-5-640e8181`: Accept\n  Verified in code: for Failed/Paused status (line 2015-2031), observed_resume_recovery_owner only extracts writer_owner from the pid record, which is None for legacy records. In observed_stale_running_owner_still_matches_attempt (line 1865-1868), the liveness gate only fires when pid_record_is_authoritative returns true — legacy records (no proc_start_ticks, no proc_start_marker) return false, so the liveness check is skipped entirely. The fallback observed_writer_owner_is_stale (line 1778-1785) relies solely on lease heartbeat age. If the original process is still alive but its lease has expired (e.g., slow heartbeat renewal), recovery reclaims the lock and runs concurrently. Using pid_record_live_state (which returns RunningUnverified for non-authoritative but running PIDs) to block both Live and RunningUnverified records is the correct fix, consistent with how the running-snapshot path already works.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 5
+}

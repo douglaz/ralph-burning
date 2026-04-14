@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T18:07:57.446902619Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe PID liveness implementation is correct and well-designed. The three-state PidRecordLiveState enum (Live/Stale/RunningUnverified) properly addresses all acceptance criteria: (1) macOS/BSD correctly uses proc_start_marker via identity_is_authoritative and process_identity_is_alive on non-Linux unix; (2) legacy pid files without start-time fields return RunningUnverified instead of assuming alive or dead; (3) PID reuse is detected by comparing live process start time against recorded started_at via compare_legacy_pid_record; (4) the WholeSeconds precision correctly handles the 1-second ambiguity window on macOS/BSD. All four call sites (classify_running_snapshot_liveness, orchestrator_process_is_alive, interrupted_handoff_cleanup_candidate, run_pid_record_is_reclaimable) correctly treat RunningUnverified conservatively — blocking reclaim and treating the process as running. Tests cover legacy records without start time, same-second ambiguity, unambiguously later recovery, and integration with run.rs and cli_writer_lease.rs. All tests pass, clippy is clean.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 5
+}

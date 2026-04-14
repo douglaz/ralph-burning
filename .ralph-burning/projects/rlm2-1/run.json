@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260414160444",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 5
+      "completion_round": 6
     },
     "started_at": "2026-04-14T17:45:41.737124116Z",
     "prompt_hash_at_cycle_start": "9e45ef91ca9fcc3d3fc1b15ef323c5db0ce054414762c4d6159f2ed0d26ee0a1",
     "prompt_hash_at_stage_start": "9e45ef91ca9fcc3d3fc1b15ef323c5db0ce054414762c4d6159f2ed0d26ee0a1",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 4
+    "final_review_restart_count": 5
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 5,
+  "completion_rounds": 6,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-5-ecbf1d50",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: On macOS/BSD, marker-only `run.pid` records still falsely match a reused PID that starts in the same second, so `run stop`/liveness checks can target an unrelated process.\nseverity: high\naffected_files: src/adapters/fs.rs:262-310, src/adapters/fs.rs:814-823, src/cli/run.rs:2698-2777\nremediation_hint: When `proc_start_marker` is the only identity, do not treat a raw marker match as definitively live; combine it with `record.started_at`/`compare_legacy_pid_record` and downgrade same-second matches to `RunningUnverified` instead of `Live`.",
+        "created_at": "2026-04-14T18:17:07.214801574Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "a24e45993e3c7e5682345d164d2a92a3198ec2bab2d160e467b9205cec04fe70"
+      },
+      {
+        "amendment_id": "fr-5-640e8181",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: Failed/paused recovery still ignores a live legacy pid-only orchestrator when there is no current owner metadata, and it can also reclaim a stale owner based only on lease age, allowing resume/recovery to run alongside the original process.\nseverity: high\naffected_files: src/cli/run.rs:1840-1872, src/cli/run.rs:1924-1938, src/cli/run.rs:2015-2030, src/cli/run.rs:3525-3539\nremediation_hint: Before reclaiming or acquiring the recovery writer guard for failed/paused snapshots, consult `FileSystem::pid_record_live_state`; `Live` and `RunningUnverified` legacy pid records should block resume/reclaim the same way the running-snapshot and interrupted-handoff paths now do.",
+        "created_at": "2026-04-14T18:17:07.214804831Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "cdeeeef8265f429e92be9fed326bc602889252307054399d0141f2169a230783"
+      }
+    ],
     "processed_count": 7
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 6 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-14T17:45:41.764491616Z",
+    "resolved_at": "2026-04-14T18:03:19.488671655Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

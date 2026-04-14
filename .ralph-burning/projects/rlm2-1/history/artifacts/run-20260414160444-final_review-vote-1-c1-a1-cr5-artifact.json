@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260414160444-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T18:17:07.198829008Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real process-identity and recovery-isolation defects. The non-Linux marker-only PID path can misclassify a reused PID as definitively live, and failed/paused recovery can proceed or reclaim ownership without first ruling out a still-live legacy orchestrator.\n\n## Votes\n\n- `fr-5-ecbf1d50`: Accept\n  On non-Linux Unix, `proc_start_marker` is derived from `ps lstart`, which is only second-granularity. `process_identity_is_alive` currently treats a raw marker match as authoritative, and `pid_record_live_state` upgrades any authoritative marker-only record straight to `Live`. That means a reused PID that starts in the same second can satisfy the marker check and be treated as the original orchestrator, which then feeds `run stop` and running-state classification with a false positive. The existing `compare_legacy_pid_record` logic already recognizes same-second ambiguity; not applying equivalent ambiguity handling to marker-only records leaves a real safety hole.\n- `fr-5-640e8181`: Accept\n  The failed/paused resume path does not perform a liveness gate against `FileSystem::pid_record_live_state` before selecting or reclaiming a writer owner. In `observed_resume_recovery_owner`, failed/paused snapshots only collect owner metadata, so a live legacy pid-only orchestrator with no current owner metadata is invisible and recovery can acquire the writer lease anyway. Separately, `acquire_recovery_writer_guard` can reclaim based on `observed_writer_owner_is_stale`, which only checks lease age, while `observed_stale_running_owner_still_matches_attempt` only blocks on authoritative pid records. That allows lease reclamation and parallel resume/recovery while the original legacy process may still be running.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}
