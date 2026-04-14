@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260414001056-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T14:38:24.586391960Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments correctly identify the same low-severity regression-test gap: the tmux-specific stdout-only exhaustion test is still ignored even though the tmux adapter now routes stdout through the exhaustion classifier and the test passes when run explicitly.\n\n## Votes\n\n- `fr-5-61c8456d`: Accept\n  Accurate. src/adapters/tmux.rs now feeds stdout through stdout_for_exit_failure_classification, but the only tmux-specific regression test for that path is still marked #[ignore], so default test runs do not enforce the behavior. Running the test with --ignored succeeds, which makes the ignore stale and the coverage gap real.\n- `fr-5-ce60c997`: Accept\n  Accurate. The ignored test in tests/unit/tmux_adapter_test.rs is the direct regression for the tmux adapter path, and the implementation change it was waiting on is already present in tmux.rs. Leaving it ignored means the tmux path is not exercised in normal test runs despite the fix being in place.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

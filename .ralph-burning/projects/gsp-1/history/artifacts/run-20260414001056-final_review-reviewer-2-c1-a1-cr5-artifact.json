@@ -2,15 +2,15 @@
   "artifact_id": "run-20260414001056-final_review-reviewer-2-c1-a1-cr5-artifact",
   "payload_id": "run-20260414001056-final_review-reviewer-2-c1-a1-cr5-payload",
   "stage_id": "final_review",
-  "created_at": "2026-04-14T01:51:29.737143045Z",
-  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nNo correctness, safety, or robustness issues were found in the current diff. The staged changes only update `.ralph-burning/projects/gsp-1/journal.ndjson` and `.ralph-burning/projects/gsp-1/run.json`; the relevant exit-classification logic in `src/adapters/process_backend.rs` and `src/adapters/tmux.rs` already routes nonzero exits through `stdout_for_exit_failure_classification` and includes stdout exhaustion matching via `is_backend_exhausted`.\n\n## Amendments\n\nNone.\n",
+  "created_at": "2026-04-14T14:37:05.909831842Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe implementation is correct and well-structured. Both process_backend.rs and tmux.rs now pass bounded raw-stdout tails into classify_exit_failure_with_output via the new stdout_for_exit_failure_classification helper, enabling stdout-only exhaustion detection. New patterns ('insufficient credits', 'insufficient credit') were added. Unit and integration tests cover the new behavior. One actionable issue: the tmux regression test is #[ignore]'d with 'requires gsp bead fix' — but this IS the gsp bead, the fix is in place, and the acceptance criteria require the test to run.\n\n## Amendments\n\n1. The tmux test `tmux_adapter_classifies_stdout_only_exhaustion_as_backend_exhausted` at tests/unit/tmux_adapter_test.rs:415 has `#[ignore = \"requires gsp bead fix: stdout-only exhaustion not yet classified as BackendExhausted\"]`. This IS the gsp bead — the fix is fully implemented in tmux.rs (lines 633-636 now use stdout_for_exit_failure_classification). The #[ignore] must be removed so the regression test actually runs. Without this, the acceptance criterion 'Regression test covers stdout-only exhaustion path' is only half-met: the process_backend integration test runs, but the tmux adapter path is never exercised.\n   Rationale: The bead's acceptance criteria explicitly require 'Regression test covers stdout-only exhaustion path'. The tmux adapter is one of two code paths that was fixed, and its test is ignored. The fix is already in place in tmux.rs — only the #[ignore] annotation needs removal. Severity: medium — the code is correct but the test coverage gap means a future regression in the tmux path would go undetected.\n",
   "record_kind": "stage_supporting",
   "producer": {
     "type": "agent",
-    "requested_backend_family": "codex",
-    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
-    "actual_backend_family": "codex",
-    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
   },
   "completion_round": 5
 }

@@ -1,45 +1,8 @@
 {
   "active_run": null,
-  "interrupted_run": {
-    "run_id": "run-20260414001056",
-    "stage_cursor": {
-      "stage": "final_review",
-      "cycle": 1,
-      "attempt": 1,
-      "completion_round": 5
-    },
-    "started_at": "2026-04-14T01:27:19.336089669Z",
-    "prompt_hash_at_cycle_start": "b588021cd0a44a3ed1eda05c1ff33ff131603b2e57a71a62632f4e0ea7ae3b9e",
-    "prompt_hash_at_stage_start": "b588021cd0a44a3ed1eda05c1ff33ff131603b2e57a71a62632f4e0ea7ae3b9e",
-    "qa_iterations_current_cycle": 0,
-    "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 4,
-    "stage_resolution_snapshot": {
-      "stage_id": "final_review",
-      "resolved_at": "2026-04-14T01:51:06.093170660Z",
-      "final_review_reviewers": [
-        {
-          "backend_family": "codex",
-          "model_id": "gpt-5.4-xhigh"
-        },
-        {
-          "backend_family": "claude",
-          "model_id": "claude-opus-4-6"
-        },
-        {
-          "backend_family": "codex",
-          "model_id": "gpt-5.3-codex-spark-xhigh"
-        }
-      ],
-      "final_review_arbiter": {
-        "backend_family": "claude",
-        "model_id": "claude-opus-4-6"
-      }
-    }
-  },
-  "status": "failed",
+  "status": "completed",
   "cycle_history": [],
-  "completion_rounds": 5,
+  "completion_rounds": 6,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
@@ -47,12 +10,12 @@
   },
   "amendment_queue": {
     "pending": [],
-    "processed_count": 9
+    "processed_count": 11
   },
-  "status_summary": "failed at Final Review: backend invocation cancelled for contract 'final_review:reviewer' via 'codex'",
+  "status_summary": "completed",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-14T01:51:06.093170660Z",
+    "resolved_at": "2026-04-14T14:33:18.097449545Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
@@ -60,7 +23,7 @@
       },
       {
         "backend_family": "claude",
-        "model_id": "claude-opus-4-6"
+        "model_id": "claude-opus-4-6-max"
       },
       {
         "backend_family": "codex",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260414001056-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T14:36:14.578945882Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the current diff and the relevant adapter/test code paths. One actionable issue remains: the tmux stdout-only exhaustion regression test is still ignored, so the bead's required coverage is not actually enforced by the normal test suite.\n\n## Amendments\n\n1. finding_summary: The tmux-specific regression test for stdout-only exhaustion is still disabled with `#[ignore]`, so normal `cargo test` runs do not cover the exact adapter path that now falls back to raw stdout in `src/adapters/tmux.rs:633-643`.\nseverity: low\naffected_files:\n- tests/unit/tmux_adapter_test.rs:414-416\n- src/adapters/tmux.rs:633-643\nremediation_hint: Remove the `#[ignore]` on `tmux_adapter_classifies_stdout_only_exhaustion_as_backend_exhausted`; it already passes when run explicitly, so the shipped suite can enforce the intended `BackendExhausted` classification on the tmux path.\n   Rationale: This is in scope for the current bead because the acceptance criteria explicitly require a regression test for the stdout-only exhaustion path. I ran `cargo test tmux_adapter_classifies_stdout_only_exhaustion_as_backend_exhausted -- --ignored`, and it passes on the current tree, so keeping it ignored just drops required coverage.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

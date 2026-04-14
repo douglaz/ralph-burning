@@ -17,6 +17,7 @@ Repository-specific guidance for agents lives in this section. Keep workflow and
 - Keep tests deterministic and add right-sized coverage for any code change: unit tests for local logic, integration tests for cross-system behavior, and scenario/e2e coverage when long-horizon behavior changes.
 - Treat `nix build` as the authoritative verification gate. Do not claim "all tests pass" unless `nix build` succeeds on the current tree.
 - Before approving a change in review, run `nix build` and require it to pass cleanly; if it fails, flakes, or is skipped, do not approve.
+- For any and all beads, `nix build` must be treated as an implicit acceptance criterion. Even if a bead's acceptance criteria section is empty or does not mention `nix build`, the change is not complete until `nix build` passes. The nix sandbox environment differs from the local dev environment (no real tmux, no network, limited binaries) — tests that pass locally may fail in the sandbox.
 - Prefer explicit, inspectable behavior over hidden tuning. If diagnostics or tracing are needed, wire them in cleanly rather than relying on ad hoc prints.
 - If a change affects persisted state or action semantics, update save/migration handling and the relevant bead context.
 

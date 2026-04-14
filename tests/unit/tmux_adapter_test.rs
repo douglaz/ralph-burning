@@ -412,8 +412,13 @@ async fn tmux_adapter_cancel_cleans_up_session_and_allows_attach_while_running()
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires gsp bead fix: stdout-only exhaustion not yet classified as BackendExhausted"]
 async fn tmux_adapter_classifies_stdout_only_exhaustion_as_backend_exhausted() {
+    // Skip in environments where real tmux is not available (e.g. nix sandbox).
+    // The underlying classification logic is covered by
+    // process_backend_test::stdout_plain_text_exhaustion_without_stderr_is_backend_exhausted.
+    if ralph_burning::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+        return;
+    }
     let bin_dir = tempdir().expect("create bin dir");
     let state_dir = tempdir().expect("create state dir");
     let _env_lock = lock_path_mutex();

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-reviewer-2-c1-a1-cr6-artifact",
+  "payload_id": "run-20260414001056-final_review-reviewer-2-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T14:44:29.150691160Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nAll acceptance criteria are met. The implementation correctly classifies stdout-only exhaustion messages as BackendExhausted in both process_backend.rs and tmux.rs adapters. The key function `stdout_for_exit_failure_classification` (process_backend.rs:1992) falls back to a bounded raw stdout tail when `extract_stdout_error` returns None (no structured JSON envelope), ensuring plain-text exhaustion keywords like 'insufficient credits' reach `is_backend_exhausted`. BackendExhausted is correctly marked as terminal (retry_policy.rs:67), preventing retries. The previously-ignored tmux regression test is now enabled and passing (788 tests pass, 0 ignored in the main suite). All three call sites (process_backend main path at line 1624, fresh-output codex path at line 1568, and tmux adapter at line 635) correctly use `stdout_for_exit_failure_classification` to pass stdout content into the classifier. Existing stderr-based classification is unchanged. `cargo test` passes (788/788). `cargo fmt --check` passes. Pre-existing clippy warnings (nonminimal_bool, clone→from_ref, MutexGuard across await, etc.) are unrelated to this change set and present on the clean tree as well.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 6
+}
