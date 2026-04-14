@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414160444-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T17:12:21.462437441Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nThreaded tri-state PID liveness handling through the remaining reclaim and recovery decisions so legacy `run.pid` records that still point at a running process no longer collapse to stale when start-time verification is unavailable. `orchestrator_process_is_alive` now treats `RunningUnverified` as still alive, CLI snapshot liveness classification now maps unverified legacy owners to the legacy-running variants instead of `Stale`, and daemon PID-file reclamation now only proceeds for definitively stale records. Added regressions covering legacy snapshot classification, resume blocking, and daemon PID-file reclaim safety.\n\n## Steps\n\n1. [Completed] Inspected the remaining bool-based PID liveness callers in `src/cli/run.rs`, `src/contexts/workflow_composition/engine.rs`, and `src/contexts/automation_runtime/cli_writer_lease.rs` to confirm where `PidRecordLiveState::RunningUnverified` was still being treated as stale during reclaim and resume flows.\n2. [Completed] Patched those callers to use tri-state-aware behavior: resume/orchestrator checks now treat `RunningUnverified` as still running, running-snapshot classification now preserves legacy-running semantics for unverified owners, and daemon PID-file reclamation now requires a definitively stale live-state before deleting `run.pid`.\n3. [Completed] Added regression tests for legacy live snapshot classification and daemon PID-file reclaim safety, then reran the targeted and full validation suite through the authoritative `nix build` gate.\n\n## Validation Evidence\n\n- `cargo test legacy_pid_liveness_marks_running_process_without_start_time_as_unverified -- --nocapture` passed.\n- `cargo test run_pid_record_is_not_reclaimable_while_legacy_daemon_owner_may_still_be_running -- --nocapture` passed.\n- `cargo test classify_running_snapshot_liveness_treats_live_legacy_pid_file_as_cli_process -- --nocapture` passed.\n- `cargo test resume_run_with_retry_keeps_live_legacy_pid_only_snapshot_running -- --nocapture` passed.\n- `cargo fmt --check` passed after formatting.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 3
+}

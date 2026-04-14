@@ -769,8 +769,15 @@ fn preserve_interrupted_run(snapshot: &mut RunSnapshot) {
 }
 
 fn orchestrator_process_is_alive(base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
-    Ok(FileSystem::read_pid_file(base_dir, project_id)?
-        .is_some_and(|record| FileSystem::pid_record_matches_live_process(&record)))
+    Ok(
+        FileSystem::read_pid_file(base_dir, project_id)?.is_some_and(|record| {
+            matches!(
+                FileSystem::pid_record_live_state(&record),
+                crate::adapters::fs::PidRecordLiveState::Live
+                    | crate::adapters::fs::PidRecordLiveState::RunningUnverified
+            )
+        }),
+    )
 }
 
 pub struct InterruptedRunUpdate<'a> {

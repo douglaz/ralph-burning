@@ -12,7 +12,7 @@ use chrono::Utc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-use crate::adapters::fs::{FileSystem, RunPidOwner, RunPidRecord};
+use crate::adapters::fs::{FileSystem, PidRecordLiveState, RunPidOwner, RunPidRecord};
 use crate::contexts::automation_runtime::lease_service::{
     try_preserve_failed_branch, LeaseService, ReleaseMode,
 };
@@ -177,8 +177,9 @@ fn run_pid_record_is_reclaimable(
     pid_record: &RunPidRecord,
     expected_writer_owner: Option<&str>,
 ) -> bool {
+    let live_state = FileSystem::pid_record_live_state(pid_record);
     pid_record.owner == RunPidOwner::Daemon
-        && (!FileSystem::pid_record_matches_live_process(pid_record)
+        && (matches!(live_state, PidRecordLiveState::Stale)
             || (pid_record.pid == std::process::id()
                 && pid_record.writer_owner.as_deref() == expected_writer_owner
                 && expected_writer_owner.is_some()))
@@ -826,7 +827,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tempfile::tempdir;
 
-    use crate::adapters::fs::{FileSystem, FsDaemonStore, RunPidOwner};
+    use crate::adapters::fs::{
+        FileSystem, FsDaemonStore, PidRecordLiveState, RunPidOwner, RunPidRecord,
+    };
     use crate::contexts::automation_runtime::model::{
         DaemonJournalEvent, DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
     };
@@ -1121,6 +1124,33 @@ mod tests {
             cli.cleanup_handoff,
             Some(cleanup_handoff),
             "heartbeat updates must preserve a persisted cleanup handoff"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_pid_record_is_not_reclaimable_while_legacy_daemon_owner_may_still_be_running() {
+        let pid_record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Daemon,
+            writer_owner: Some("writer-alpha".to_owned()),
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+
+        assert!(
+            !matches!(
+                FileSystem::pid_record_live_state(&pid_record),
+                PidRecordLiveState::Stale
+            ),
+            "test fixture must exercise a legacy pid record that still points at a running process"
+        );
+        assert!(
+            !run_pid_record_is_reclaimable(&pid_record, Some("writer-beta")),
+            "live or unverified legacy daemon pid records must block reclaim until they are verified stale"
         );
     }
 

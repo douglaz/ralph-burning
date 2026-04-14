@@ -1560,38 +1560,53 @@ fn classify_running_snapshot_liveness_with_ignored_cli_lease_owner(
 ) -> AppResult<RunningSnapshotLiveness> {
     let pid_record = FileSystem::read_pid_file(base_dir, project_id)?;
     if let Some(record) = pid_record.as_ref() {
-        if FileSystem::pid_record_matches_live_process(record) {
-            if FileSystem::pid_record_is_authoritative(record) {
-                return Ok(
-                    match (
-                        record.owner.clone(),
-                        pid_record_has_attempt_metadata(record),
-                    ) {
-                        (crate::adapters::fs::RunPidOwner::Cli, true) => {
-                            RunningSnapshotLiveness::CliProcess(record.clone())
-                        }
-                        (crate::adapters::fs::RunPidOwner::Daemon, true) => {
-                            RunningSnapshotLiveness::DaemonProcess(record.clone())
-                        }
-                        (crate::adapters::fs::RunPidOwner::Cli, false) => {
-                            RunningSnapshotLiveness::LegacyCliProcess
-                        }
-                        (crate::adapters::fs::RunPidOwner::Daemon, false) => {
-                            RunningSnapshotLiveness::LegacyDaemonProcess
-                        }
-                    },
-                );
-            }
-            return Ok(match record.owner {
-                crate::adapters::fs::RunPidOwner::Cli => RunningSnapshotLiveness::LegacyCliProcess,
-                crate::adapters::fs::RunPidOwner::Daemon => {
-                    RunningSnapshotLiveness::LegacyDaemonProcess
+        match FileSystem::pid_record_live_state(record) {
+            crate::adapters::fs::PidRecordLiveState::Live => {
+                if FileSystem::pid_record_is_authoritative(record) {
+                    return Ok(
+                        match (
+                            record.owner.clone(),
+                            pid_record_has_attempt_metadata(record),
+                        ) {
+                            (crate::adapters::fs::RunPidOwner::Cli, true) => {
+                                RunningSnapshotLiveness::CliProcess(record.clone())
+                            }
+                            (crate::adapters::fs::RunPidOwner::Daemon, true) => {
+                                RunningSnapshotLiveness::DaemonProcess(record.clone())
+                            }
+                            (crate::adapters::fs::RunPidOwner::Cli, false) => {
+                                RunningSnapshotLiveness::LegacyCliProcess
+                            }
+                            (crate::adapters::fs::RunPidOwner::Daemon, false) => {
+                                RunningSnapshotLiveness::LegacyDaemonProcess
+                            }
+                        },
+                    );
                 }
-            });
-        }
-
-        if FileSystem::pid_record_is_authoritative(record) {
-            return Ok(RunningSnapshotLiveness::Stale);
+                return Ok(match record.owner {
+                    crate::adapters::fs::RunPidOwner::Cli => {
+                        RunningSnapshotLiveness::LegacyCliProcess
+                    }
+                    crate::adapters::fs::RunPidOwner::Daemon => {
+                        RunningSnapshotLiveness::LegacyDaemonProcess
+                    }
+                });
+            }
+            crate::adapters::fs::PidRecordLiveState::RunningUnverified => {
+                return Ok(match record.owner {
+                    crate::adapters::fs::RunPidOwner::Cli => {
+                        RunningSnapshotLiveness::LegacyCliProcess
+                    }
+                    crate::adapters::fs::RunPidOwner::Daemon => {
+                        RunningSnapshotLiveness::LegacyDaemonProcess
+                    }
+                });
+            }
+            crate::adapters::fs::PidRecordLiveState::Stale => {
+                if FileSystem::pid_record_is_authoritative(record) {
+                    return Ok(RunningSnapshotLiveness::Stale);
+                }
+            }
         }
     }
 
@@ -9309,6 +9324,44 @@ mod tests {
                 assert_eq!(record.run_id.as_deref(), Some("run-1"));
             }
             _ => panic!("expected marker-only pid file to be treated as the live CLI process"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_running_snapshot_liveness_treats_live_legacy_pid_file_as_cli_process() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let project_id =
+            ProjectId::new("legacy-live-running-liveness".to_owned()).expect("project id");
+        let legacy_pid_record = crate::adapters::fs::RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: crate::adapters::fs::RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+        FileSystem::write_atomic(
+            &FileSystem::live_project_root(temp_dir.path(), &project_id).join("run.pid"),
+            &serde_json::to_string_pretty(&legacy_pid_record).expect("serialize pid file"),
+        )
+        .expect("write legacy pid file");
+
+        assert!(
+            !matches!(
+                FileSystem::pid_record_live_state(&legacy_pid_record),
+                crate::adapters::fs::PidRecordLiveState::Stale
+            ),
+            "test fixture must exercise a legacy pid record that still points at a running process"
+        );
+
+        match super::classify_running_snapshot_liveness(temp_dir.path(), &project_id)
+            .expect("classify liveness")
+        {
+            super::RunningSnapshotLiveness::LegacyCliProcess => {}
+            _ => panic!("expected legacy live pid file to block reclaim as a legacy CLI process"),
         }
     }
 }
