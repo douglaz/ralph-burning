@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260414001056-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260414001056-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T14:38:24.600358334Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 5/25\n**Effective Min Reviewers:** 2\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-5-61c8456d`\n- `fr-5-ce60c997`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-61c8456d`\n\nfinding_summary: The tmux-specific regression test for stdout-only exhaustion is still disabled with `#[ignore]`, so normal `cargo test` runs do not cover the exact adapter path that now falls back to raw stdout in `src/adapters/tmux.rs:633-643`.\nseverity: low\naffected_files:\n- tests/unit/tmux_adapter_test.rs:414-416\n- src/adapters/tmux.rs:633-643\nremediation_hint: Remove the `#[ignore]` on `tmux_adapter_classifies_stdout_only_exhaustion_as_backend_exhausted`; it already passes when run explicitly, so the shipped suite can enforce the intended `BackendExhausted` classification on the tmux path.\n\n### `fr-5-ce60c997`\n\nThe tmux test `tmux_adapter_classifies_stdout_only_exhaustion_as_backend_exhausted` at tests/unit/tmux_adapter_test.rs:415 has `#[ignore = \"requires gsp bead fix: stdout-only exhaustion not yet classified as BackendExhausted\"]`. This IS the gsp bead — the fix is fully implemented in tmux.rs (lines 633-636 now use stdout_for_exit_failure_classification). The #[ignore] must be removed so the regression test actually runs. Without this, the acceptance criterion 'Regression test covers stdout-only exhaustion path' is only half-met: the process_backend integration test runs, but the tmux adapter path is never exercised.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}
