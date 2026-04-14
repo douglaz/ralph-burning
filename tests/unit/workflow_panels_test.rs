@@ -150,7 +150,7 @@ fn final_review_proposal_payload_round_trips() {
 #[test]
 fn final_review_vote_payload_round_trips() {
     let payload = FinalReviewVotePayload {
-        summary: "Planner positions captured.".to_string(),
+        summary: "Reviewer votes captured.".to_string(),
         votes: vec![FinalReviewVote {
             amendment_id: "fr-1-deadbeef".to_string(),
             decision: FinalReviewVoteDecision::Accept,

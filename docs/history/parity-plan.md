@@ -111,7 +111,7 @@ Close the correctness and hardening gaps in the current implementation before ad
 - executable-permission checks during backend availability
 - replace shell-out `kill` with in-process signal handling
 - panel preflight should validate real panel members, not a synthetic representative target
-- include final-review planner in resolution snapshots
+- include final-review reviewers and arbiter in resolution snapshots
 - compare-ref URL encoding in GitHub compare links
 - any remaining stray history/runtime cleanup gaps if still reproducible
 
@@ -128,7 +128,7 @@ Close the correctness and hardening gaps in the current implementation before ad
 - [ ] Backend availability checks require executability, not just file existence
 - [ ] Cancel/timeout uses in-process signal APIs and preserves deterministic failure handling
 - [ ] Prompt-review, completion, and final-review panel preflight validates actual required participants
-- [ ] Final-review planner is included in resolution snapshots and backend-drift detection
+- [ ] Final-review reviewers and arbiter are included in resolution snapshots and backend-drift detection
 - [ ] GitHub compare/ref URL building uses safe path/URL encoding
 - [ ] Current P0 conformance remains green after hardening changes
 
@@ -137,7 +137,7 @@ Close the correctness and hardening gaps in the current implementation before ad
 - [ ] New conformance case: permission check failure surfaces cleanly
 - [ ] New conformance case: cancel/timeout leaves no orphan child processes
 - [ ] New conformance case: panel preflight fails when a required real panel member is unavailable
-- [ ] New conformance case: final-review planner drift is reported on resume
+- [ ] New conformance case: final-review arbiter drift is reported on resume
 - [ ] New conformance case: compare URL generation works for refs with reserved characters
 
 ### Definition of done
@@ -684,5 +684,4 @@ This parity plan is complete when:
 - [ ] manual smoke matrix is green
 - [ ] old `ralph` no longer provides any still-required feature missing in `ralph-burning`
 - [ ] repo docs point users only at `ralph-burning`
-
 

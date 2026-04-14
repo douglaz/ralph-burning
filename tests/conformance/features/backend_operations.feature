@@ -28,7 +28,7 @@ Feature: Backend operations parity (Slice 5)
   Scenario: backend probe resolves completion panel targets
     Given an initialized workspace with explicit completion panel backends
     When the operator runs `ralph-burning backend probe --role completion_panel --flow standard`
-    Then the output shows the planner target and each panel member with required/optional status
+    Then the output shows each panel member with required/optional status
     And optional members that are disabled are listed as omitted without failing the probe
     And the probe fails only when the configured minimum cannot be met
 
@@ -36,5 +36,5 @@ Feature: Backend operations parity (Slice 5)
   Scenario: backend probe resolves final review panel targets
     Given an initialized workspace with default config
     When the operator runs `ralph-burning backend probe --role final_review_panel --flow standard`
-    Then the output shows the planner target, reviewers, and arbiter
+    Then the output shows reviewers and arbiter
     And required-member failures identify the exact role, backend family, and config source

@@ -19287,10 +19287,11 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
             }
         }
 
-        // Verify probe failure semantics: disabled required backend exits non-zero
+        // Verify probe failure semantics: an explicitly configured disabled
+        // required member exits non-zero.
         std::fs::write(
             workspace_config_path(ws.path()),
-            "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
+            "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"claude\"\n\n[backends.openrouter]\nenabled = false\n\n[completion]\nbackends = [\"openrouter\"]\nmin_completers = 1\n",
         ).map_err(|e| format!("write config: {e}"))?;
 
         let out = run_cli(

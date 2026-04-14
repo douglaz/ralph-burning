@@ -374,20 +374,19 @@ cannot be constructed, the command exits non-zero. For panel probes:
   Member indices always reference the position in the original configured
   spec list, even when earlier optional members have been omitted.
 - Optional unavailable members are moved to `omitted`.
-- The planner, arbiter (final-review), and refiner (prompt-review)
-  targets are checked for availability and fail the probe if unavailable,
-  reporting their exact target label (e.g. `(planner)`, `(refiner)`) and
-  config source field (e.g. `[source: workflow.planner_backend]`,
-  `[source: final_review.arbiter_backend]`,
+- The arbiter (final-review) and refiner (prompt-review) targets are
+  checked for availability and fail the probe if unavailable, reporting
+  their exact target label (e.g. `(arbiter)`, `(refiner)`) and config
+  source field (e.g. `[source: final_review.arbiter_backend]`,
   `[source: prompt_review.refiner_backend]`).
 - Config-time probe failures (e.g. a required member's backend is
   disabled) include the exact failing target/member identity
   (e.g. `completion_panel.member[1]`, `final_review_panel.arbiter`),
   the failing backend family, and the selecting config source field,
   not just the raw policy error or the primary target.
-- Panel target timeouts match runtime semantics: the planner target uses
-  `planner` role timeout, and the refiner target uses `prompt_reviewer`
-  role timeout.
+- Panel target timeouts match runtime semantics: the arbiter target uses
+  the `arbiter` role timeout, and the refiner target uses the
+  `prompt_reviewer` role timeout.
 - If omission of optional members causes the panel minimum to be
   unsatisfied, the probe fails with an `InsufficientPanelMembers` error
   identifying the panel, the resolved count, and the required minimum.
