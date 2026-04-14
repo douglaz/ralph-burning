@@ -1,6 +1,20 @@
 {
-  "active_run": null,
-  "status": "completed",
+  "active_run": {
+    "run_id": "run-20260414050353",
+    "stage_cursor": {
+      "stage": "final_review",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 2
+    },
+    "started_at": "2026-04-14T06:00:38.879727903Z",
+    "prompt_hash_at_cycle_start": "45aebea21e007f878be93363fe93c20ac25c81898da0da77c6d749a26ab0e6d3",
+    "prompt_hash_at_stage_start": "45aebea21e007f878be93363fe93c20ac25c81898da0da77c6d749a26ab0e6d3",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 1
+  },
+  "status": "running",
   "cycle_history": [],
   "completion_rounds": 2,
   "max_completion_rounds": 25,
@@ -12,27 +26,13 @@
     "pending": [],
     "processed_count": 2
   },
-  "status_summary": "completed",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
-    "stage_id": "final_review",
-    "resolved_at": "2026-04-14T06:20:19.759175042Z",
-    "final_review_reviewers": [
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.4-xhigh"
-      },
-      {
-        "backend_family": "claude",
-        "model_id": "claude-opus-4-6-max"
-      },
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.3-codex-spark-xhigh"
-      }
-    ],
-    "final_review_arbiter": {
-      "backend_family": "claude",
-      "model_id": "claude-opus-4-6"
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-14T06:02:01.491270874Z",
+    "primary_target": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-high"
     }
   }
 }
