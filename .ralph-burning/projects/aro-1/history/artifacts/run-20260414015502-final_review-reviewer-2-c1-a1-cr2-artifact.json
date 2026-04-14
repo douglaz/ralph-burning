@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:27:03.737484407Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI found 1 fix-now issue in the modified snapshot artifact: a removed planner field remains persisted in the final-review stage resolution snapshot, which breaks the stated acceptance criteria.\n\n## Amendments\n\n1. finding: `.ralph-burning/projects/aro-1/run.json` still serializes legacy final-review planner resolution data. In the newly added active-stage snapshot, `final_review_planner` appears at lines 33-36 under `active_run.stage_resolution_snapshot`; the retained `last_stage_resolution_snapshot` also still contains `final_review_planner` at lines 73-76. This violates the contract to remove planner from final-review panel snapshots and can reintroduce planner-specific state in new run artifacts.\n   Rationale: Remove `final_review_planner` from new persisted snapshots (active and last stage-resolution snapshots) when writing final_review stage state; keep only reviewer + arbiter fields.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

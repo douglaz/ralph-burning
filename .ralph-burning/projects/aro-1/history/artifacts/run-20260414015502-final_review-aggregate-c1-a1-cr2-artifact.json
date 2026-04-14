@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260414015502-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414015502-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:33:43.253368832Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 3\n**Unique Amendments:** 2\n**Final Review Restarts:** 2/25\n\n## Accepted\n\n- `fr-2-810dbb3f`\n- `fr-2-99c0c933`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-810dbb3f`\n\nfinding_summary: The tracked `aro-1` run snapshot still contains the removed planner field. `.ralph-burning/projects/aro-1/run.json:16-40` writes `active_run.stage_resolution_snapshot.final_review_planner`, and `.ralph-burning/projects/aro-1/run.json:56-80` writes `last_stage_resolution_snapshot.final_review_planner`, even though `StageResolutionSnapshot` no longer defines that field in `src/contexts/project_run_record/model.rs:186-206` and `build_final_review_snapshot` now only emits reviewers plus arbiter in `src/contexts/workflow_composition/engine.rs:8206-8223`. severity: high. affected_files: [\".ralph-burning/projects/aro-1/run.json\"]. remediation_hint: Regenerate or update the checked-in run snapshot with the current code so both final-review snapshot blocks drop `final_review_planner`.\n\n### `fr-2-99c0c933`\n\nfinding: `.ralph-burning/projects/aro-1/run.json` still serializes legacy final-review planner resolution data. In the newly added active-stage snapshot, `final_review_planner` appears at lines 33-36 under `active_run.stage_resolution_snapshot`; the retained `last_stage_resolution_snapshot` also still contains `final_review_planner` at lines 73-76. This violates the contract to remove planner from final-review panel snapshots and can reintroduce planner-specific state in new run artifacts.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

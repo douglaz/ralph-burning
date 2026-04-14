@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414015502-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:33:03.569807631Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify the same verified inconsistency: run.json contains final_review_planner at lines 33-36 and 73-76, but the StageResolutionSnapshot struct (model.rs:186-207) has no such field and build_final_review_snapshot (engine.rs:8206-8223) only emits reviewers and arbiter. The stale data should be cleaned. Accepting both.\n\n## Votes\n\n- `fr-2-810dbb3f`: Accept\n  Verified all three claims: (1) run.json contains final_review_planner at lines 33-36 (active snapshot) and 73-76 (last snapshot), (2) StageResolutionSnapshot at model.rs:186-207 defines no final_review_planner field — it only has final_review_reviewers and final_review_arbiter, (3) build_final_review_snapshot at engine.rs:8206-8223 constructs the snapshot with only reviewers and arbiter. Since serde lacks deny_unknown_fields on this struct, deserialization silently drops the stale field, but the persisted JSON is inconsistent with the current schema. Any downstream tool reading the JSON directly would see a phantom planner role. Regenerating the snapshot to match the current code is the correct fix.\n- `fr-2-99c0c933`: Accept\n  This amendment identifies the same verified inconsistency as fr-2-810dbb3f. The run.json file persists final_review_planner in both stage_resolution_snapshot and last_stage_resolution_snapshot, contradicting the current struct definition and builder function which have no planner field. The concern about reintroducing planner-specific state is valid — if this stale run.json is read by code that parses raw JSON (not via serde deserialization), or if it serves as a template for new runs, the phantom planner entry could propagate incorrect state. Cleaning the persisted data to match the code contract is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}
