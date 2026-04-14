@@ -2587,7 +2587,6 @@ fn stage_resolution_snapshot_single_target_round_trip() {
         prompt_review_refiner: None,
         completion_completers: Vec::new(),
         final_review_reviewers: Vec::new(),
-        final_review_planner: None,
         final_review_arbiter: None,
     };
 
@@ -2618,7 +2617,6 @@ fn stage_resolution_snapshot_panel_target_round_trip() {
             },
         ],
         final_review_reviewers: Vec::new(),
-        final_review_planner: None,
         final_review_arbiter: None,
     };
 
@@ -2652,7 +2650,6 @@ fn active_run_with_snapshot_round_trip() {
             prompt_review_refiner: None,
             completion_completers: Vec::new(),
             final_review_reviewers: Vec::new(),
-            final_review_planner: None,
             final_review_arbiter: None,
         }),
     };
@@ -2663,13 +2660,14 @@ fn active_run_with_snapshot_round_trip() {
 }
 
 #[test]
-fn stage_resolution_snapshot_defaults_missing_final_review_planner_for_backwards_compat() {
+fn stage_resolution_snapshot_ignores_legacy_final_review_planner_field() {
     let json = r#"{
         "stage_id": "final_review",
         "resolved_at": "2025-01-01T00:00:00Z",
         "final_review_reviewers": [
             {"backend_family": "claude", "model_id": "claude-opus"}
         ],
+        "final_review_planner": {"backend_family": "openrouter", "model_id": "planner-old"},
         "final_review_arbiter": {"backend_family": "codex", "model_id": "codex-1"}
     }"#;
 
@@ -2679,7 +2677,6 @@ fn stage_resolution_snapshot_defaults_missing_final_review_planner_for_backwards
         ralph_burning::shared::domain::StageId::FinalReview
     );
     assert_eq!(snapshot.final_review_reviewers.len(), 1);
-    assert!(snapshot.final_review_planner.is_none());
     assert!(snapshot.final_review_arbiter.is_some());
 }
 

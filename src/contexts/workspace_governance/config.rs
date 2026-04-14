@@ -419,11 +419,6 @@ impl EffectiveConfig {
                     .as_ref()
                     .map(|selection| selection.display_string()),
             )?,
-            final_review_planner_backend: resolve_backend_selection(
-                workspace_config.final_review.planner_backend.as_deref(),
-                project_config.final_review.planner_backend.as_deref(),
-                None,
-            )?,
             implementer_backend: resolve_backend_selection(
                 workspace_config.workflow.implementer_backend.as_deref(),
                 project_config.workflow.implementer_backend.as_deref(),
@@ -757,27 +752,6 @@ impl EffectiveConfig {
                         .clone()
                         .map(|_| ()),
                     self.cli_overrides.planner_backend.clone().map(|_| ()),
-                ),
-            ),
-            ["final_review", "planner_backend"] => (
-                ConfigValue::String(
-                    self.backend_policy
-                        .final_review_planner_backend
-                        .as_ref()
-                        .map(ToString::to_string),
-                ),
-                source_for_option(
-                    self.workspace_config
-                        .final_review
-                        .planner_backend
-                        .clone()
-                        .map(|_| ()),
-                    self.project_config
-                        .final_review
-                        .planner_backend
-                        .clone()
-                        .map(|_| ()),
-                    None::<()>,
                 ),
             ),
             ["workflow", "implementer_backend"] => (
@@ -1680,7 +1654,6 @@ fn known_config_keys() -> Vec<String> {
         "completion.consensus_threshold".to_owned(),
         "final_review.enabled".to_owned(),
         "final_review.backends".to_owned(),
-        "final_review.planner_backend".to_owned(),
         "final_review.arbiter_backend".to_owned(),
         "final_review.min_reviewers".to_owned(),
         "final_review.consensus_threshold".to_owned(),
@@ -1816,9 +1789,6 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
             key,
             raw_value,
         )?,
-        ["final_review", "planner_backend"] => {
-            apply_optional_string(document, &["final_review", "planner_backend"], raw_value)?
-        }
         ["final_review", "enabled"] => {
             apply_optional_bool(document, &["final_review", "enabled"], key, raw_value)?
         }

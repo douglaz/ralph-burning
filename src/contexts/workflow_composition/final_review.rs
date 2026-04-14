@@ -6,11 +6,10 @@
 //! 1. Collect reviewer amendment proposals.
 //! 2. Normalize and deduplicate amendments by canonical body hash.
 //! 3. Short-circuit completion if no amendments remain.
-//! 4. Ask the planner for per-amendment positions.
-//! 5. Ask reviewers to vote on each amendment.
-//! 6. Compute per-amendment consensus.
-//! 7. Ask the arbiter to resolve only disputed amendments.
-//! 8. Return the final accepted amendment set for either completion or restart.
+//! 4. Ask reviewers to vote on each amendment.
+//! 5. Compute per-amendment consensus.
+//! 6. Ask the arbiter to resolve only disputed amendments.
+//! 7. Return the final accepted amendment set for either completion or restart.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -287,7 +286,6 @@ pub async fn execute_final_review_panel<A, R, S>(
     final_review_restart_count: u32,
     prompt_reference: &str,
     rollback_count: u32,
-    planner_timeout: Duration,
     reviewer_timeout_for_backend: &dyn Fn(crate::shared::domain::BackendFamily) -> Duration,
     arbiter_timeout: Duration,
     cancellation_token: CancellationToken,
@@ -745,237 +743,6 @@ where
         }
     }
 
-    let planner_prompt = build_voter_prompt(
-        "Planner Positions",
-        &amendments,
-        None,
-        &panel.planner,
-        base_dir,
-        Some(project_id),
-    )?;
-    append_panel_member_started_event(
-        journal_store,
-        base_dir,
-        project_id,
-        seq,
-        run_id,
-        cursor,
-        "vote",
-        "planner",
-        "planner",
-        &panel.planner,
-    )?;
-    append_panel_member_runtime_log(
-        log_write,
-        base_dir,
-        project_id,
-        "started",
-        "vote",
-        "planner",
-        "planner",
-        &panel.planner,
-        None,
-        None,
-        None,
-    );
-    let planner_started_at = Instant::now();
-    let planner_vote_payload = invoke_final_review_member(
-        agent_service,
-        project_root,
-        backend_working_dir,
-        run_id,
-        stage_id,
-        cursor,
-        &panel.planner,
-        BackendRole::Planner,
-        "planner",
-        "voter",
-        planner_prompt,
-        json!({
-            "amendments": amendments
-                .iter()
-                .map(|amendment| {
-                    json!({
-                        "amendment_id": amendment.amendment_id,
-                        "body": amendment.normalized_body,
-                    })
-                })
-                .collect::<Vec<_>>(),
-        }),
-        planner_timeout,
-        cancellation_token.clone(),
-    )
-    .await;
-    let (planner_vote_payload, planner_producer) = match planner_vote_payload {
-        Ok(payload) => payload,
-        Err(error) => {
-            append_panel_member_completed_event(
-                journal_store,
-                base_dir,
-                project_id,
-                seq,
-                run_id,
-                cursor,
-                "vote",
-                "planner",
-                "planner",
-                &panel.planner,
-                planner_started_at.elapsed(),
-                "failed",
-                0,
-            )?;
-            append_panel_member_runtime_log(
-                log_write,
-                base_dir,
-                project_id,
-                "completed",
-                "vote",
-                "planner",
-                "planner",
-                &panel.planner,
-                Some(planner_started_at.elapsed()),
-                Some("failed"),
-                Some(0),
-            );
-            return Err(error);
-        }
-    };
-    let (planner_backend_family, planner_model_id) = panel_member_identity_from_producer(
-        &planner_producer,
-        &panel.planner,
-        "final_review:voter",
-        "final-review planner invocations must produce agent metadata",
-    )?;
-    let planner_votes: FinalReviewVotePayload =
-        serde_json::from_value(planner_vote_payload.clone()).map_err(|e| {
-            let duration = planner_started_at.elapsed();
-            let _ = append_panel_member_completed_event_with_identity(
-                journal_store,
-                base_dir,
-                project_id,
-                seq,
-                run_id,
-                cursor,
-                "vote",
-                "planner",
-                "planner",
-                &planner_backend_family,
-                &planner_model_id,
-                duration,
-                "failed_schema_validation",
-                0,
-            );
-            append_panel_member_runtime_log_with_identity(
-                log_write,
-                base_dir,
-                project_id,
-                "completed",
-                "vote",
-                "planner",
-                "planner",
-                &planner_backend_family,
-                &planner_model_id,
-                Some(duration),
-                Some("failed_schema_validation"),
-                Some(0),
-            );
-            AppError::InvocationFailed {
-                backend: panel.planner.backend.family.to_string(),
-                contract_id: "final_review:voter".to_owned(),
-                failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                details: format!("planner positions schema validation failed: {e}"),
-            }
-        })?;
-    validate_vote_payload(&planner_votes, &amendments, &panel.planner).map_err(|error| {
-        let duration = planner_started_at.elapsed();
-        let _ = append_panel_member_completed_event_with_identity(
-            journal_store,
-            base_dir,
-            project_id,
-            seq,
-            run_id,
-            cursor,
-            "vote",
-            "planner",
-            "planner",
-            &planner_backend_family,
-            &planner_model_id,
-            duration,
-            "failed_domain_validation",
-            0,
-        );
-        append_panel_member_runtime_log_with_identity(
-            log_write,
-            base_dir,
-            project_id,
-            "completed",
-            "vote",
-            "planner",
-            "planner",
-            &planner_backend_family,
-            &planner_model_id,
-            Some(duration),
-            Some("failed_domain_validation"),
-            Some(0),
-        );
-        error
-    })?;
-    let planner_duration = planner_started_at.elapsed();
-    append_panel_member_completed_event_with_identity(
-        journal_store,
-        base_dir,
-        project_id,
-        seq,
-        run_id,
-        cursor,
-        "vote",
-        "planner",
-        "planner",
-        &planner_backend_family,
-        &planner_model_id,
-        planner_duration,
-        "planner_positions_recorded",
-        planner_votes.votes.len(),
-    )?;
-    append_panel_member_runtime_log_with_identity(
-        log_write,
-        base_dir,
-        project_id,
-        "completed",
-        "vote",
-        "planner",
-        "planner",
-        &planner_backend_family,
-        &planner_model_id,
-        Some(planner_duration),
-        Some("planner_positions_recorded"),
-        Some(planner_votes.votes.len()),
-    );
-    let planner_artifact = renderers::render_final_review_vote(
-        "Final Review Planner Positions",
-        &planner_votes,
-        &planner_producer.to_string(),
-    );
-    persist_supporting_record(
-        artifact_write,
-        base_dir,
-        project_id,
-        run_id,
-        cursor,
-        stage_id,
-        rollback_count,
-        &planner_vote_payload,
-        &planner_artifact,
-        planner_producer,
-        "planner-positions",
-    )?;
-
-    let planner_positions: HashMap<String, FinalReviewVoteDecision> = planner_votes
-        .votes
-        .iter()
-        .map(|vote| (vote.amendment_id.clone(), vote.decision))
-        .collect();
-
     // --- Vote phase: prepare and emit started events ---
     let amendments_context = json!({
         "amendments": amendments
@@ -984,9 +751,6 @@ where
                 json!({
                     "amendment_id": amendment.amendment_id,
                     "body": amendment.normalized_body,
-                    "planner_position": planner_positions
-                        .get(&amendment.amendment_id)
-                        .map(|decision| decision.to_string()),
                 })
             })
             .collect::<Vec<_>>(),
@@ -998,7 +762,6 @@ where
         let vote_prompt = build_voter_prompt(
             "Final Review Votes",
             &amendments,
-            Some(&planner_votes),
             &reviewer.target,
             base_dir,
             Some(project_id),
@@ -1445,7 +1208,6 @@ where
 
         let arbiter_prompt = build_arbiter_prompt(
             &disputed_set,
-            &planner_votes,
             &reviewer_votes,
             &panel.arbiter,
             base_dir,
@@ -2062,7 +1824,6 @@ fn build_reviewer_prompt(
 fn build_voter_prompt(
     title: &str,
     amendments: &[CanonicalAmendment],
-    planner_votes: Option<&FinalReviewVotePayload>,
     backend_target: &ResolvedBackendTarget,
     base_dir: &Path,
     project_id: Option<&ProjectId>,
@@ -2095,14 +1856,6 @@ fn build_voter_prompt(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    let planner_section = planner_votes
-        .map(|payload| {
-            format!(
-                "\n\n## Planner Positions\n\n```json\n{}\n```",
-                serde_json::to_string_pretty(payload).unwrap_or_default()
-            )
-        })
-        .unwrap_or_default();
     template_catalog::resolve_and_render(
         "final_review_voter",
         base_dir,
@@ -2110,7 +1863,6 @@ fn build_voter_prompt(
         &[
             ("title", title),
             ("amendments", &amendment_text),
-            ("planner_positions", &planner_section),
             ("json_schema", &schema_str),
         ],
     )
@@ -2118,7 +1870,6 @@ fn build_voter_prompt(
 
 fn build_arbiter_prompt(
     disputed_amendments: &HashMap<String, &CanonicalAmendment>,
-    planner_votes: &FinalReviewVotePayload,
     reviewer_votes: &[FinalReviewVotePayload],
     backend_target: &ResolvedBackendTarget,
     base_dir: &Path,
@@ -2152,7 +1903,6 @@ fn build_arbiter_prompt(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    let planner_str = serde_json::to_string_pretty(planner_votes)?;
     let reviewer_str = serde_json::to_string_pretty(reviewer_votes)?;
     template_catalog::resolve_and_render(
         "final_review_arbiter",
@@ -2160,7 +1910,6 @@ fn build_arbiter_prompt(
         project_id,
         &[
             ("amendments", &amendment_text),
-            ("planner_positions", &planner_str),
             ("reviewer_votes", &reviewer_str),
             ("json_schema", &schema_str),
         ],
@@ -3000,12 +2749,18 @@ mod tests {
             .expect("journal")
             .len() as u64;
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
-            reviewers: vec![ResolvedPanelMember {
-                target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
-                required: true,
-                configured_index: 0,
-            }],
+            reviewers: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                    required: true,
+                    configured_index: 0,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2-model"),
+                    required: true,
+                    configured_index: 1,
+                },
+            ],
             arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
         };
 
@@ -3022,14 +2777,13 @@ mod tests {
             &mut seq,
             &cursor,
             &panel,
-            1,
+            2,
             0,
             1.0,
             0,
             0,
             "prompt.md",
             0,
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),
@@ -3064,22 +2818,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn final_review_planner_prompt_failure_does_not_emit_vote_started_telemetry() {
+    async fn final_review_voter_prompt_failure_does_not_emit_vote_started_telemetry() {
         let tmp = tempdir().expect("tempdir");
         let base_dir = tmp.path();
-        let project_id = setup_project(base_dir, "fr-planner-prompt-failure");
+        let project_id = setup_project(base_dir, "fr-voter-prompt-failure");
         write_workspace_template_override(base_dir, "final_review_voter", "broken voter");
         let adapter = RecordingFinalReviewAdapter::default();
         let agent_service =
             AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
-        let run_id = RunId::new("run-final-review-planner-prompt-failure").expect("run id");
+        let run_id = RunId::new("run-final-review-voter-prompt-failure").expect("run id");
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
         let mut seq = FsJournalStore
             .read_journal(base_dir, &project_id)
             .expect("journal")
             .len() as u64;
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![ResolvedPanelMember {
                 target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
                 required: true,
@@ -3108,14 +2861,13 @@ mod tests {
             0,
             "prompt.md",
             0,
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),
         )
         .await
         .err()
-        .expect("planner prompt failure should abort final review");
+        .expect("voter prompt failure should abort final review");
 
         assert!(
             matches!(error, AppError::MalformedTemplate { .. }),
@@ -3135,9 +2887,9 @@ mod tests {
         let runtime_logs = FsRuntimeLogStore
             .read_runtime_logs(base_dir, &project_id)
             .expect("runtime logs");
-        assert!(runtime_logs.iter().all(|entry| {
-            !(entry.message.contains("phase=vote") && entry.message.contains("reviewer_id=planner"))
-        }));
+        assert!(runtime_logs
+            .iter()
+            .all(|entry| !entry.message.contains("phase=vote")));
     }
 
     #[tokio::test]
@@ -3146,7 +2898,7 @@ mod tests {
         let base_dir = tmp.path();
         let project_id = setup_project(base_dir, "fr-reviewer-vote-prompt-failure");
         let adapter = RecordingFinalReviewAdapter::with_template_override_after_invocation(
-            "voter-planner",
+            "reviewer-reviewer-1",
             "final_review_voter",
             "broken voter",
         );
@@ -3159,7 +2911,6 @@ mod tests {
             .expect("journal")
             .len() as u64;
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![ResolvedPanelMember {
                 target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
                 required: true,
@@ -3188,7 +2939,6 @@ mod tests {
             0,
             "prompt.md",
             0,
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),
@@ -3203,8 +2953,8 @@ mod tests {
         );
         assert_eq!(
             adapter.invocation_ids_for("final_review:voter").len(),
-            1,
-            "planner vote should succeed before reviewer vote prompt construction fails"
+            0,
+            "vote prompt construction should fail before any reviewer vote invocation"
         );
 
         let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
@@ -3213,7 +2963,7 @@ mod tests {
                 event.event_type,
                 JournalEventType::ReviewerStarted | JournalEventType::ReviewerCompleted
             ) && event.details["phase"] == "vote"
-                && event.details["reviewer_id"] == "reviewer-1"
+                && event.details["reviewer_id"] == "reviewer-2"
         }));
 
         let runtime_logs = FsRuntimeLogStore
@@ -3221,7 +2971,7 @@ mod tests {
             .expect("runtime logs");
         assert!(runtime_logs.iter().all(|entry| {
             !(entry.message.contains("phase=vote")
-                && entry.message.contains("reviewer_id=reviewer-1"))
+                && entry.message.contains("reviewer_id=reviewer-2"))
         }));
     }
 
@@ -3241,7 +2991,6 @@ mod tests {
             .expect("journal")
             .len() as u64;
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![ResolvedPanelMember {
                 target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
                 required: true,
@@ -3270,7 +3019,6 @@ mod tests {
             0,
             "prompt.md",
             0,
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),
@@ -3320,7 +3068,6 @@ mod tests {
             .expect("journal")
             .len() as u64;
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
@@ -3364,7 +3111,6 @@ mod tests {
             0,
             "prompt.md",
             0,
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),
@@ -3376,7 +3122,7 @@ mod tests {
         assert!(!result.final_accepted_amendments.is_empty());
 
         let vote_ids = adapter.invocation_ids_for("final_review:voter");
-        assert_eq!(vote_ids.len(), 3, "planner plus two successful reviewers");
+        assert_eq!(vote_ids.len(), 2, "two successful reviewers should vote");
         assert!(
             vote_ids
                 .iter()
@@ -3405,8 +3151,8 @@ mod tests {
             .filter(|event| event.event_type == crate::contexts::project_run_record::model::JournalEventType::ReviewerCompleted)
             .collect();
         assert!(
-            reviewer_started.len() >= 5,
-            "expected proposal, planner, and reviewer vote starts"
+            reviewer_started.len() >= 4,
+            "expected proposal and reviewer vote starts"
         );
         assert_eq!(
             reviewer_started.len(),
@@ -3439,7 +3185,6 @@ mod tests {
             .expect("journal")
             .len() as u64;
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
@@ -3475,7 +3220,6 @@ mod tests {
             0,
             "prompt.md",
             0,
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),
@@ -3533,7 +3277,6 @@ mod tests {
             .expect("journal")
             .len() as u64;
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![ResolvedPanelMember {
                 target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
                 required: true,
@@ -3562,7 +3305,6 @@ mod tests {
             0,
             "prompt.md",
             0,
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),
@@ -3614,7 +3356,6 @@ mod tests {
             .expect("journal")
             .len() as u64;
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![ResolvedPanelMember {
                 target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
                 required: true,
@@ -3643,7 +3384,6 @@ mod tests {
             0,
             "prompt.md",
             0,
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),
@@ -3687,7 +3427,6 @@ mod tests {
             .expect("journal")
             .len() as u64;
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
@@ -3731,7 +3470,6 @@ mod tests {
             0,
             "prompt.md",
             0,
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),
@@ -3743,8 +3481,8 @@ mod tests {
         assert_eq!(result.aggregate_payload["total_reviewers"], json!(2));
         assert_eq!(
             adapter.invocation_ids_for("final_review:voter").len(),
-            4,
-            "planner plus three reviewer vote attempts should be recorded"
+            3,
+            "three reviewer vote attempts should be recorded"
         );
     }
 
@@ -3765,7 +3503,6 @@ mod tests {
             .expect("journal")
             .len() as u64;
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
@@ -3801,7 +3538,6 @@ mod tests {
             0,
             "prompt.md",
             0,
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),
@@ -3821,8 +3557,8 @@ mod tests {
             .collect();
 
         assert!(
-            supporting_final_review_artifacts.len() >= 5,
-            "expected reviewer proposals, planner positions, and vote artifacts"
+            supporting_final_review_artifacts.len() >= 4,
+            "expected reviewer proposals and reviewer vote artifacts"
         );
         assert!(
             supporting_final_review_artifacts.iter().all(|record| matches!(
@@ -3854,7 +3590,6 @@ mod tests {
         // Two required reviewers, min_reviewers=2. One exhausts.
         // With quorum reduction, effective min becomes 1, so panel succeeds.
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-1-model"),
@@ -3890,7 +3625,6 @@ mod tests {
             0,    // rollback_count
             "prompt.md",
             0, // skip_final_validation_rounds
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),
@@ -3934,7 +3668,6 @@ mod tests {
             .expect("journal")
             .len() as u64;
         let panel = FinalReviewPanelResolution {
-            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-0-model"),
@@ -3970,7 +3703,6 @@ mod tests {
             0,    // rollback_count
             "prompt.md",
             0, // skip_final_validation_rounds
-            Duration::from_secs(1),
             &|_| Duration::from_secs(1),
             Duration::from_secs(1),
             CancellationToken::new(),

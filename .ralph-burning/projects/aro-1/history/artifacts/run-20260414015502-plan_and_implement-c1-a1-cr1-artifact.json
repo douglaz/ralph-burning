@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414015502-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T02:09:32.951056866Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemoved the planner role from the final-review panel flow. Final review now goes proposal phase -> reviewer voting -> arbiter only when votes are disputed. I deleted planner-specific prompt/context wiring, final-review planner resolution/config handling, planner journal/snapshot fields, and updated run snapshot compatibility expectations plus conformance/unit tests to match the arbiter-only panel.\n\n## Steps\n\n1. [Completed] Inspect final-review execution, prompt templates, backend resolution, snapshot models, and tests for planner-role usage\n2. [Completed] Remove planner invocation/config/snapshot handling from final review and update voter/arbiter prompt rendering plus diagnostics/preflight/resume logic\n3. [Completed] Update unit and conformance tests to reflect reviewer-only voting with arbiter tie-breaking\n4. [Completed] Run validation commands and record results\n\n## Validation Evidence\n\n- `cargo test --no-run` passed after the refactor.\n- `cargo test` passed.\n- `cargo test final_review_ -- --nocapture` passed during focused regression checking.\n- `cargo fmt --check` passed.\n- `cargo clippy --all-targets --all-features -- -D warnings` failed on unrelated existing lints, not on the final-review planner removal itself.\n\n## Outstanding Risks\n\n- `cargo clippy --all-targets --all-features -- -D warnings` still fails on pre-existing repo-wide issues outside this change set (for example dead code and unrelated Clippy lints in `src/adapters/fs.rs`, `src/cli/project.rs`, `src/contexts/milestone_record/service.rs`, and others).\n- `nix build` was not run, so I am not claiming the repository's authoritative gate is clean.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-reviewer-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260414001056-final_review-reviewer-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:51:29.737143045Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nNo correctness, safety, or robustness issues were found in the current diff. The staged changes only update `.ralph-burning/projects/gsp-1/journal.ndjson` and `.ralph-burning/projects/gsp-1/run.json`; the relevant exit-classification logic in `src/adapters/process_backend.rs` and `src/adapters/tmux.rs` already routes nonzero exits through `stdout_for_exit_failure_classification` and includes stdout exhaustion matching via `is_backend_exhausted`.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 5
+}

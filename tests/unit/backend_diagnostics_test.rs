@@ -239,10 +239,6 @@ fn show_effective_contains_all_roles() {
         role_names.contains(&"implementer"),
         "should contain implementer"
     );
-    assert!(
-        role_names.contains(&"final_review_panel.planner"),
-        "should contain final_review_panel.planner"
-    );
 }
 
 #[test]
@@ -684,54 +680,6 @@ fn show_effective_reports_source_for_arbiter_role() {
     if let Some(arb) = arbiter {
         assert_eq!("workspace.toml", arb.override_source);
     }
-}
-
-#[test]
-fn show_effective_reports_source_for_final_review_planner_role() {
-    let temp_dir = tempdir().expect("create temp dir");
-    initialize_workspace_fixture(temp_dir.path());
-
-    let mut workspace = WorkspaceConfig::new(test_timestamp());
-    workspace.final_review.planner_backend = Some("codex".to_owned());
-    write_workspace_config(temp_dir.path(), &workspace);
-
-    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
-    let service = BackendDiagnosticsService::new(&config);
-    let view = service.show_effective();
-
-    let planner = view
-        .roles
-        .iter()
-        .find(|r| r.role == "final_review_panel.planner")
-        .expect("final_review_panel.planner row should exist");
-    assert_eq!("workspace.toml", planner.override_source);
-    assert_eq!("new_session", planner.session_policy);
-}
-
-#[test]
-fn show_effective_final_review_planner_model_source_ignores_workflow_planner_override() {
-    let temp_dir = tempdir().expect("create temp dir");
-    initialize_workspace_fixture(temp_dir.path());
-
-    let mut workspace = WorkspaceConfig::new(test_timestamp());
-    workspace.workflow.planner_backend = Some("claude(workflow-planner-model)".to_owned());
-    workspace.final_review.planner_backend = Some("codex".to_owned());
-    write_workspace_config(temp_dir.path(), &workspace);
-
-    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
-    let service = BackendDiagnosticsService::new(&config);
-    let view = service.show_effective();
-
-    let planner = view
-        .roles
-        .iter()
-        .find(|r| r.role == "final_review_panel.planner")
-        .expect("final_review_panel.planner row should exist");
-    assert_eq!(
-        "default", planner.model_source,
-        "final-review planner should resolve model source from its selected family, not workflow.planner_backend"
-    );
-    assert_ne!("workflow-planner-model", planner.model_id);
 }
 
 // ── final-review probe arbiter tests ─────────────────────────────────────────
@@ -2113,7 +2061,7 @@ fn check_refiner_failure_reports_exact_member_and_source() {
 }
 
 #[test]
-fn check_final_review_planner_failure_reports_exact_member_and_source() {
+fn check_final_review_arbiter_failure_reports_exact_member_and_source() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());
 
@@ -2121,7 +2069,7 @@ fn check_final_review_planner_failure_reports_exact_member_and_source() {
     workspace
         .backends
         .insert("codex".to_owned(), empty_backend_settings(false));
-    workspace.final_review.planner_backend = Some("codex".to_owned());
+    workspace.final_review.arbiter_backend = Some("codex".to_owned());
     write_workspace_config(temp_dir.path(), &workspace);
 
     let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
@@ -2130,25 +2078,25 @@ fn check_final_review_planner_failure_reports_exact_member_and_source() {
 
     assert!(
         !result.passed,
-        "should fail when final-review planner backend is disabled"
+        "should fail when final-review arbiter backend is disabled"
     );
-    let planner_failure = result
+    let arbiter_failure = result
         .failures
         .iter()
-        .find(|f| f.role == "final_review_panel.planner")
-        .expect("expected exact planner failure identity");
+        .find(|f| f.role == "final_review_panel.arbiter")
+        .expect("expected exact arbiter failure identity");
     assert_eq!(
         BackendCheckFailureKind::RequiredMemberUnavailable,
-        planner_failure.failure_kind
+        arbiter_failure.failure_kind
     );
     assert_eq!(
-        "final_review.planner_backend", planner_failure.config_source,
-        "planner failure should report the dedicated final-review planner config field"
+        "final_review.arbiter_backend", arbiter_failure.config_source,
+        "arbiter failure should report the dedicated final-review arbiter config field"
     );
 }
 
 #[test]
-fn probe_final_review_panel_disabled_planner_reports_dedicated_identity_and_source() {
+fn probe_final_review_panel_disabled_arbiter_reports_dedicated_identity_and_source() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());
 
@@ -2156,23 +2104,23 @@ fn probe_final_review_panel_disabled_planner_reports_dedicated_identity_and_sour
     workspace
         .backends
         .insert("codex".to_owned(), empty_backend_settings(false));
-    workspace.final_review.planner_backend = Some("codex".to_owned());
+    workspace.final_review.arbiter_backend = Some("codex".to_owned());
     write_workspace_config(temp_dir.path(), &workspace);
 
     let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
     let service = BackendDiagnosticsService::new(&config);
     let result = service.probe("final_review_panel", FlowPreset::Standard, 1);
 
-    assert!(result.is_err(), "disabled final-review planner should fail");
+    assert!(result.is_err(), "disabled final-review arbiter should fail");
     let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("planner"),
-        "should identify the planner target: {}",
+        err_msg.contains("arbiter"),
+        "should identify the arbiter target: {}",
         err_msg
     );
     assert!(
-        err_msg.contains("final_review.planner_backend"),
-        "should identify the dedicated planner config source: {}",
+        err_msg.contains("final_review.arbiter_backend"),
+        "should identify the dedicated arbiter config source: {}",
         err_msg
     );
     assert!(
@@ -2636,16 +2584,16 @@ async fn probe_with_availability_final_review_failure_reports_planner_not_generi
 
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
-    // Must mention "planner" as the primary target, not a generic label
+    // Must mention "arbiter" as the primary target, not a generic label
     assert!(
-        err_msg.contains("planner"),
-        "final_review_panel availability failure should identify 'planner' as target: {}",
+        err_msg.contains("arbiter"),
+        "final_review_panel availability failure should identify 'arbiter' as target: {}",
         err_msg
     );
 }
 
 #[tokio::test]
-async fn check_with_availability_reports_final_review_planner_even_when_reviewers_do_not_resolve() {
+async fn check_with_availability_reports_final_review_arbiter_even_when_reviewers_do_not_resolve() {
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
@@ -2697,7 +2645,7 @@ async fn check_with_availability_reports_final_review_planner_even_when_reviewer
     workspace
         .backends
         .insert("codex".to_owned(), empty_backend_settings(false));
-    workspace.final_review.planner_backend = Some("openrouter".to_owned());
+    workspace.final_review.arbiter_backend = Some("openrouter".to_owned());
     workspace.final_review.backends = Some(vec![PanelBackendSpec::required(BackendFamily::Codex)]);
     workspace.final_review.min_reviewers = Some(1);
     write_workspace_config(temp_dir.path(), &workspace);
@@ -2710,18 +2658,18 @@ async fn check_with_availability_reports_final_review_planner_even_when_reviewer
         .check_backends_with_availability(FlowPreset::Standard, &adapter)
         .await;
 
-    let planner_failure = result
+    let arbiter_failure = result
         .failures
         .iter()
-        .find(|f| f.role == "final_review_panel.planner")
-        .expect("planner availability should be checked independently");
+        .find(|f| f.role == "final_review_panel.arbiter")
+        .expect("arbiter availability should be checked independently");
     assert_eq!(
         BackendCheckFailureKind::AvailabilityFailure,
-        planner_failure.failure_kind
+        arbiter_failure.failure_kind
     );
     assert_eq!(
-        "final_review.planner_backend", planner_failure.config_source,
-        "planner availability failure should report the dedicated config source"
+        "final_review.arbiter_backend", arbiter_failure.config_source,
+        "arbiter availability failure should report the dedicated config source"
     );
 }
 

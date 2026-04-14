@@ -1280,8 +1280,6 @@ pub struct FinalReviewSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backends: Option<Vec<PanelBackendSpec>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub planner_backend: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arbiter_backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_reviewers: Option<usize>,
@@ -1297,7 +1295,6 @@ impl FinalReviewSettings {
     pub fn is_empty(&self) -> bool {
         self.enabled.is_none()
             && self.backends.is_none()
-            && self.planner_backend.is_none()
             && self.arbiter_backend.is_none()
             && self.min_reviewers.is_none()
             && self.consensus_threshold.is_none()
@@ -1614,8 +1611,6 @@ pub struct EffectiveBackendPolicy {
     pub default_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner_backend: Option<BackendSelection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub final_review_planner_backend: Option<BackendSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub implementer_backend: Option<BackendSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

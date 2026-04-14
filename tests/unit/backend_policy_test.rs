@@ -488,7 +488,7 @@ fn completion_panel_defaults_to_opposite_family_when_backends_are_unset() {
 }
 
 #[test]
-fn final_review_panel_resolution_includes_planner_target() {
+fn final_review_panel_resolution_includes_reviewers_and_arbiter() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());
 
@@ -501,7 +501,6 @@ fn final_review_panel_resolution_includes_planner_target() {
         .resolve_final_review_panel(1)
         .expect("resolve final review panel");
 
-    assert_eq!(BackendFamily::Claude, panel.planner.backend.family);
     assert_eq!(
         3,
         panel.reviewers.len(),
@@ -559,52 +558,6 @@ fn final_review_panel_supports_same_family_with_distinct_models() {
         panel.reviewers[1].target.backend.family
     );
     assert_eq!("gpt-5.4-xhigh", panel.reviewers[1].target.model.model_id);
-}
-
-#[test]
-fn final_review_planner_override_does_not_eagerly_require_workflow_planner() {
-    let temp_dir = tempdir().expect("create temp dir");
-    initialize_workspace_fixture(temp_dir.path());
-
-    let mut workspace = WorkspaceConfig::new(test_timestamp());
-    workspace.settings.default_backend = Some("claude".to_owned());
-    workspace
-        .backends
-        .insert("codex".to_owned(), empty_backend_settings(true));
-    workspace.workflow.planner_backend = Some("openrouter".to_owned());
-    workspace.final_review.planner_backend = Some("codex".to_owned());
-    write_workspace_config(temp_dir.path(), &workspace);
-
-    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
-    let panel = BackendPolicyService::new(&effective)
-        .resolve_final_review_panel(1)
-        .expect("resolve final review panel");
-
-    assert_eq!(BackendFamily::Codex, panel.planner.backend.family);
-}
-
-#[test]
-fn final_review_planner_falls_back_to_workflow_planner_when_unset() {
-    let temp_dir = tempdir().expect("create temp dir");
-    initialize_workspace_fixture(temp_dir.path());
-
-    let mut workspace = WorkspaceConfig::new(test_timestamp());
-    workspace.settings.default_backend = Some("claude".to_owned());
-    workspace
-        .backends
-        .insert("codex".to_owned(), empty_backend_settings(true));
-    workspace.workflow.planner_backend = Some("codex".to_owned());
-    // Deliberately do NOT set final_review.planner_backend
-    write_workspace_config(temp_dir.path(), &workspace);
-
-    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
-    let panel = BackendPolicyService::new(&effective)
-        .resolve_final_review_panel(1)
-        .expect("resolve final review panel");
-
-    // Without an explicit final_review.planner_backend, should fall back to
-    // the workflow planner backend (codex).
-    assert_eq!(BackendFamily::Codex, panel.planner.backend.family);
 }
 
 #[test]

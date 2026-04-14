@@ -1,5 +1,6 @@
 {
-  "active_run": {
+  "active_run": null,
+  "interrupted_run": {
     "run_id": "run-20260414001056",
     "stage_cursor": {
       "stage": "final_review",
@@ -12,9 +13,35 @@
     "prompt_hash_at_stage_start": "b588021cd0a44a3ed1eda05c1ff33ff131603b2e57a71a62632f4e0ea7ae3b9e",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 4
+    "final_review_restart_count": 4,
+    "stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-04-14T01:51:06.093170660Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4-xhigh"
+        },
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.3-codex-spark-xhigh"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
   },
-  "status": "running",
+  "status": "failed",
   "cycle_history": [],
   "completion_rounds": 5,
   "max_completion_rounds": 25,
@@ -26,10 +53,10 @@
     "pending": [],
     "processed_count": 9
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "failed at Final Review: backend invocation cancelled for contract 'final_review:reviewer' via 'codex'",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-14T01:42:50.746500185Z",
+    "resolved_at": "2026-04-14T01:51:06.093170660Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
