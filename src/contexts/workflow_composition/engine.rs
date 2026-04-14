@@ -7024,6 +7024,7 @@ struct FinalReviewQueuedAmendment {
     /// the mapping handler instead of the amendment queue.
     mapped_to_bead_id: Option<String>,
     /// Three-way classification for downstream routing.
+    #[allow(dead_code)]
     classification: crate::contexts::workflow_composition::panel_contracts::AmendmentClassification,
 }
 

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if command -v nix >/dev/null 2>&1 && [ -f "flake.nix" ]; then
+    if ! nix develop -c cargo fmt --check 2>/dev/null; then
+        echo "Code is not formatted. Run 'nix develop -c cargo fmt' before committing."
+        exit 1
+    fi
+else
+    if ! cargo fmt --check 2>/dev/null; then
+        echo "Code is not formatted. Run 'cargo fmt' before committing."
+        exit 1
+    fi
+fi

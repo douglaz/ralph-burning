@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "Running pre-push checks..."
+
+if command -v nix >/dev/null 2>&1 && [ -f "flake.nix" ]; then
+    echo "Checking formatting..."
+    if ! nix develop -c cargo fmt --check 2>/dev/null; then
+        echo "Code is not formatted. Run 'nix develop -c cargo fmt' before pushing."
+        exit 1
+    fi
+
+    echo "Running clippy..."
+    if ! nix develop -c cargo clippy -- -D warnings 2>&1; then
+        echo "Clippy found issues. Fix them before pushing."
+        exit 1
+    fi
+else
+    echo "Checking formatting..."
+    if ! cargo fmt --check 2>/dev/null; then
+        echo "Code is not formatted. Run 'cargo fmt' before pushing."
+        exit 1
+    fi
+
+    echo "Running clippy..."
+    if ! cargo clippy -- -D warnings 2>&1; then
+        echo "Clippy found issues. Fix them before pushing."
+        exit 1
+    fi
+fi
+
+echo "All pre-push checks passed."

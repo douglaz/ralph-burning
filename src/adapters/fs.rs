@@ -1185,6 +1185,7 @@ impl FileSystem {
     }
 
     #[cfg(any(target_os = "linux", not(unix)))]
+    #[allow(dead_code)]
     fn proc_start_marker_raw(_pid: u32) -> Option<String> {
         None
     }
@@ -4543,7 +4544,7 @@ impl FsTaskRunLineageStore {
     fn finalize_task_run_internal(
         path: &Path,
         milestone_id: &MilestoneId,
-        entries: &mut Vec<TaskRunEntry>,
+        entries: &mut [TaskRunEntry],
         bead_id: &str,
         project_id: &str,
         run_id: &str,

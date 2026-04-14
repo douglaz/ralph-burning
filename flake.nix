@@ -93,6 +93,17 @@
           ];
 
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
+
+          shellHook = ''
+            if [ -d .git ] && [ -d .githooks ]; then
+              current_hooks_path=$(git config core.hooksPath || echo "")
+              if [ "$current_hooks_path" != ".githooks" ]; then
+                git config core.hooksPath .githooks
+                echo "Git hooks configured (.githooks/pre-commit, .githooks/pre-push)"
+                echo "To disable: git config --unset core.hooksPath"
+              fi
+            fi
+          '';
         };
       });
 }

@@ -2383,11 +2383,7 @@ pub fn extract_milestone_bundle_handoff(
         (Some(Err(payload_error)), Some(Err(embedded_error))) => {
             return Err(AppError::RequirementsHandoffFailed {
                 task_id: run_id.to_owned(),
-                details: format!(
-                    "{}; {}",
-                    payload_error.to_string(),
-                    embedded_error.to_string()
-                ),
+                details: format!("{}; {}", payload_error, embedded_error),
             });
         }
         (Some(Err(payload_error)), None) => return Err(payload_error),
