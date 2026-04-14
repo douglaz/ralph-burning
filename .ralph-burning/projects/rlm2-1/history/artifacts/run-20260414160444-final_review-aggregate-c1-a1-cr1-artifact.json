@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260414160444-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414160444-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T16:35:01.504395145Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 2\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-ea5acac2`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-ea5acac2`\n\nfinding_summary: In `src/cli/run.rs:2180-2188`, `interrupted_handoff_cleanup_candidate_with_dirs()` now treats `FileSystem::pid_record_matches_live_process()` returning `false` as proof that the interrupted owner is gone. That is not true for legacy pid files: `src/adapters/fs.rs:795-804` also returns `false` when `process_started_at()` cannot be obtained, and that lookup depends on `/proc/stat` on Linux or `ps` output parsing on BSD/macOS (`src/adapters/fs.rs:294-318`). In those environments a still-running legacy owner can be misclassified as dead and have its interrupted-state cleanup run early.\nseverity: medium\naffected_files: src/cli/run.rs, src/adapters/fs.rs\nremediation_hint: Keep waiting when the pid record is non-authoritative and start-time comparison is unavailable; only proceed once the process is definitively gone or PID reuse is positively detected.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T16:33:07.215938892Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed the PID liveness safety changes across platforms. The diff contains two substantive code changes (excluding .ralph-burning/ orchestration state): (1) In src/cli/run.rs:2181, `is_pid_alive` is replaced with `pid_record_matches_live_process` in the interrupted-handoff cleanup path, correctly handling legacy PID records without proc_start_ticks/proc_start_marker by falling back to live-process start time comparison. (2) In tests/unit/process_backend_test.rs, the timeout test is relaxed to accept either Timeout or TransportFailure, accommodating nix sandbox environments where teardown confirmation fails. A new Linux-only regression test validates the legacy PID path. All remaining is_pid_alive call sites were verified: they are either guarded by pid_record_is_authoritative() checks, operate in stop/signal flows where conservative behavior is correct, or use freshly-captured identity fields. The legacy_pid_record_matches_live_process fallback logic is sound — it checks PID liveness, retrieves the live process start time, and compares against the recorded started_at to detect PID reuse. The clean timeout path remains strictly tested by the separate clean_timeout_teardown_yields_timeout_without_warning test. No bugs, safety problems, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

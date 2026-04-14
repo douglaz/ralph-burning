@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414160444-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T16:35:01.490408799Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed amendment fr-1-ea5acac2 concerning the legacy PID file handling in interrupted_handoff_cleanup_candidate_with_dirs(). Traced the full call chain from run.rs through pid_record_matches_live_process → legacy_pid_record_matches_live_process → process_started_at. Confirmed that when a legacy pid record is present, the PID is verified running via is_pid_running_unchecked (line 799), but process_started_at returns None (line 802-803), the function returns false — which the caller in run.rs interprets as 'process is definitively gone' and proceeds to cleanup. This is an unsafe default: the process is confirmed running, and the inability to obtain its start time (due to /proc read failure on Linux, ps output failure on macOS, or restricted environments) should not be treated as proof it's a different process. The safe behavior is to conservatively treat an ambiguous running PID as still being the owner.\n\n## Votes\n\n- `fr-1-ea5acac2`: Accept\n  The finding is technically correct. At fs.rs:799, is_pid_running_unchecked confirms the PID is alive. At fs.rs:802-803, if process_started_at returns None, legacy_pid_record_matches_live_process returns false. The caller in run.rs:2180-2188 then falls through to Ready, treating the process as gone and proceeding with cleanup. This is wrong: a confirmed-running PID whose start time cannot be determined should be conservatively treated as the live owner (return true), not as dead. The failure modes for process_started_at are real — /proc/stat unreadable in restricted containers on Linux, ps output parsing failures on macOS/BSD — and the consequence (early cleanup of a still-running owner's interrupted state) is a data safety issue. The cost of false-positive waiting (owner retries later) is far lower than false-negative early cleanup (conflicting operations). The remediation hint is sound: return true (or a third 'inconclusive' state that blocks cleanup) when the PID is running but identity cannot be confirmed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}
