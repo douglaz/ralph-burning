@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T16:52:03.924006102Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe implementation is correct and well-structured. It introduces `PidRecordLiveState` with `RunningUnverified` for the case where PID is running but identity can't be verified, correctly honors `proc_start_marker` on non-Linux via `identity_is_authoritative`, and conservatively treats `RunningUnverified` as 'wait' at the handoff cleanup callsite. Tests cover the new state at unit and integration levels. No bugs or safety issues found in the changed code. One propose-new-bead for the three remaining callsites that still use the boolean `pid_record_matches_live_process` API (pre-existing behavior, not a regression).\n\n## Amendments\n\n1. Three callsites still use `pid_record_matches_live_process()` which treats `RunningUnverified` as 'not alive' — same pre-existing behavior, but inconsistent with the bead's 'don't assume alive or dead' principle. Affected callsites:\n1. `orchestrator_process_is_alive` (src/contexts/workflow_composition/engine.rs:773) — could allow a second orchestrator to start if /proc or ps fails for a running process\n2. `run_pid_record_is_reclaimable` (src/contexts/automation_runtime/cli_writer_lease.rs:181) — could allow CLI to reclaim a daemon PID record for a running process\n3. `classify_running_snapshot_liveness_with_ignored_cli_lease_owner` (src/cli/run.rs:1563) — falls through to lease checking instead of recognizing the running process\n\nEach callsite needs its own analysis since the correct treatment of `RunningUnverified` may differ (e.g., orchestrator check should probably treat it as alive, while liveness classification might want a distinct return variant).\n   Rationale: The current bead fixed the most critical callsite (handoff cleanup), but the stated principle of 'don't assume the process is alive or dead' for missing start-time fields isn't applied at the other three callsites. These aren't regressions (behavior is unchanged), but represent incomplete coverage of the design goal. A follow-up bead should audit each callsite and decide the correct `RunningUnverified` semantics per-callsite.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 2
+}
