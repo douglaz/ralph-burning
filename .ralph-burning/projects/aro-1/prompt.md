@@ -58,11 +58,21 @@ Update all tests that reference the planner role, planner_positions, or planner 
 - Reviewer voting phase (just without planner context)
 - Quorum threshold logic
 
+## IMPORTANT: Exclude orchestration state from review scope
+
+Files under `.ralph-burning/` are live orchestration state (run.json, journal.ndjson, artifacts, etc.) managed by the ralph-burning runtime itself. They are NOT application code and MUST NOT be reviewed or flagged as findings. Specifically:
+
+- `.ralph-burning/projects/*/run.json` — these contain runtime state from the current run, including stage resolution snapshots that may still reference the old planner field. This is expected and correct — the runtime will stop writing planner fields in NEW runs after this change ships, but the CURRENT run's state was created before the change and cannot be retroactively modified.
+- `.ralph-burning/projects/*/journal.ndjson` — runtime event log
+- `.ralph-burning/projects/*/history/` — historical artifacts
+
+DO NOT flag any file under `.ralph-burning/` as needing changes. Only review source code under `src/`, `tests/`, `docs/`, and config files like `Cargo.toml`, `flake.nix`.
+
 ## Acceptance Criteria
 - Final review panel no longer invokes a planner
 - Reviewers vote independently without planner positions
 - Arbiter still resolves tied votes
 - All tests pass with updated expectations
-- No planner-related fields in new run.json snapshots
+- No planner-related fields in NEW run.json snapshots (existing runtime state from this run is excluded)
 - Old snapshots with planner fields can still be read (backward compat)
 - cargo test && cargo clippy && cargo fmt --check pass

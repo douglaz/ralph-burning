@@ -421,7 +421,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 ));
             }
 
-            // Full panel resolution for planner + reviewers
+            // Full panel resolution for reviewers
             if let Ok(res) = self.policy.resolve_final_review_panel(1) {
                 let minimum = self.config.final_review_policy().min_reviewers;
                 self.check_panel_availability(

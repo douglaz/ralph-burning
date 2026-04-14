@@ -31,10 +31,6 @@
           "model_id": "gpt-5.3-codex-spark-xhigh"
         }
       ],
-      "final_review_planner": {
-        "backend_family": "claude",
-        "model_id": "claude-opus-4-6"
-      },
       "final_review_arbiter": {
         "backend_family": "claude",
         "model_id": "claude-opus-4-6"
@@ -71,10 +67,6 @@
         "model_id": "gpt-5.3-codex-spark-xhigh"
       }
     ],
-    "final_review_planner": {
-      "backend_family": "claude",
-      "model_id": "claude-opus-4-6"
-    },
     "final_review_arbiter": {
       "backend_family": "claude",
       "model_id": "claude-opus-4-6"

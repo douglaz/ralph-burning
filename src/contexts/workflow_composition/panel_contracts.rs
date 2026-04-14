@@ -197,7 +197,7 @@ pub struct FinalReviewProposalPayload {
     pub amendments: Vec<FinalReviewProposal>,
 }
 
-/// Per-amendment vote used by both the planner-position step and reviewer voting.
+/// Per-amendment vote used by reviewer voting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FinalReviewVoteDecision {
@@ -222,7 +222,7 @@ pub struct FinalReviewVote {
     pub rationale: String,
 }
 
-/// Payload returned by the planner-position step and each reviewer voting pass.
+/// Payload returned by each reviewer voting pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FinalReviewVotePayload {
     pub summary: String,
