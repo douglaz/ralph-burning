@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414213536-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414213536-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T23:06:55.208591153Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe implementation correctly removes the unsafe journal-reading fallback in persist_workflow_run_id and replaces it with an authoritative run_id captured directly from the dispatch/resume return value. The fix covers both single-repo and multi-repo daemon paths consistently. Key changes: (1) engine functions now return AppResult<String> (the run_id) via new *_and_capture_run_id variants, preserving backward compat with delegation wrappers; (2) persist_workflow_run_id takes an explicit Option<&str> instead of reading the journal; (3) try_reconcile_success receives the authoritative run_id and uses workflow_run_id_for_reconciliation to prefer it over the persisted task field; (4) missing_workflow_run_id_failure transitions the milestone controller to NeedsOperator and returns an error marking the task Failed. The RunStatus::Completed branch correctly returns Ok(None), and reconciliation retries with no authoritative or persisted run_id correctly fail closed. Three new tests cover the missing-binding, authoritative-binding-before-persistence, and persist-requires-authoritative scenarios. All acceptance criteria met: cargo test (788 passed), clippy -D warnings clean, fmt --check clean, nix build result symlink updated.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}

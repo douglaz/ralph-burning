@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414213536-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414213536-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T23:12:36.532384961Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed one amendment concerning the ephemeral authoritative_run_id bypassing the durable workflow_run_id check in the daemon reconciliation path. The amendment identifies a genuine fail-closed contract violation: when persist_workflow_run_id fails (non-blocking) but try_reconcile_success proceeds using the ephemeral run_id, irreversible side effects (bead close, milestone lineage) can complete before mark_completed/label-sync fails. On retry, the ephemeral run_id is gone and the task has no durable binding, so the retry hits missing_workflow_run_id_failure and goes to needs-operator — but the bead is already closed with no automated recovery path. While the failure requires two correlated store failures (persist + mark_completed), the principle is important for a system managing Bitcoin transactions, and the remediation (make persist mandatory or reload-and-verify before reconciliation) is straightforward.\n\n## Votes\n\n- `fr-3-22c03200`: Accept\n  The amendment correctly identifies a violation of the fail-closed contract documented at lines 1852-1857. The workflow_run_id_for_reconciliation function (line 1798-1803) prefers the ephemeral authoritative_run_id over the task's durable workflow_run_id, meaning a failed persist_workflow_run_id does not prevent reconciliation from proceeding. This creates a narrow but real failure window: if persist fails (line 993/1684), reconciliation succeeds (closing the bead and updating milestone lineage at lines 2076-2089), and then mark_completed (line 1146/1747) or label sync (line 1151) fails, the system is left in a partial-success state. On retry, the ephemeral run_id is gone and the task lacks a durable binding, so missing_workflow_run_id_failure fires and the milestone goes to needs-operator — but the bead is already irreversibly closed. The idempotent retry paths in reconcile_success become unreachable because the run_id check fails before they can execute. The test at lines 8170-8173 explicitly codifies this bypass behavior. The remediation — making persist_workflow_run_id return a checked Result, or reloading the task to verify the write before proceeding — is proportionate and does not add significant complexity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}
