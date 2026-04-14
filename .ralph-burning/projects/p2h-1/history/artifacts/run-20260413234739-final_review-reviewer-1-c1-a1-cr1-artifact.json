@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413234739-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413234739-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-13T23:56:37.709294826Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation is correct and well-targeted. The PromptReview arm of `drift_still_satisfies_requirements` now explicitly rejects any `Some(...)` value for `effective_min_override`, returning `AppError::ResumeDriftFailure`. The doc comment is updated to document this invariant. A regression test (`prompt_review_drift_requirements_reject_effective_min_override`) verifies that `Some(1)` is rejected with the expected error. The single production call site at engine.rs:2032 already passes `None` for PromptReview (initialized at line 1840, never modified in the PromptReview arm), so no behavioral change occurs today — this is purely a defensive guard against future misuse. The test passes (`cargo test --lib`). Formatting is clean. Clippy warnings in engine.rs are pre-existing (unrelated `classification` field never-read warning). No correctness, safety, or robustness issues found in the change itself.\n\n## Amendments\n\n1. Missing positive-path unit test: there is no test that calls `drift_still_satisfies_requirements(&snapshot, StageId::PromptReview, &config, None)` and asserts success. The new test only covers the rejection path (`Some(1)`). A complementary test exercising the happy path (None override, sufficient validators) would strengthen confidence that the refactored PromptReview arm still works correctly for normal resume scenarios. This is low severity — the code path is exercised by the integration resume flow — but adding a 5-line test is cheap insurance.\n   Rationale: The bead's acceptance criteria state 'Regression test covers this invariant'. The invariant has two sides: (1) override is rejected, and (2) normal operation (None) still succeeds. Only side (1) is tested. A positive test completes the invariant coverage.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

@@ -2,29 +2,67 @@
   "active_run": {
     "run_id": "run-20260413234739",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-13T23:47:39.191162252Z",
     "prompt_hash_at_cycle_start": "86ecb9097f46705ffdfe380e75052d910ce722a57ce16b6db403f506683d3e6d",
     "prompt_hash_at_stage_start": "86ecb9097f46705ffdfe380e75052d910ce722a57ce16b6db403f506683d3e6d",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-5090fa33",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Missing positive-path unit test: there is no test that calls `drift_still_satisfies_requirements(&snapshot, StageId::PromptReview, &config, None)` and asserts success. The new test only covers the rejection path (`Some(1)`). A complementary test exercising the happy path (None override, sufficient validators) would strengthen confidence that the refactored PromptReview arm still works correctly for normal resume scenarios. This is low severity — the code path is exercised by the integration resume flow — but adding a 5-line test is cheap insurance.",
+        "created_at": "2026-04-14T00:01:41.603431709Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "fa167ca3a6229fdabd233f8f1251c78cc3aac5a3d0e227cf914127dda1d9597f"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-13T23:53:57.738222232Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_planner": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    },
+    "final_review_arbiter": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
 }
