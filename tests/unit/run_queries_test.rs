@@ -486,3 +486,70 @@ fn reconcile_snapshot_status_repairs_terminal_run_without_run_started_event() {
     assert_eq!(snapshot.status, RunStatus::Failed);
     assert!(snapshot.active_run.is_none());
 }
+
+#[test]
+fn terminal_status_for_attempt_scopes_terminal_events_to_the_requested_attempt() {
+    let original_started_at = test_timestamp();
+    let original_failed_at = original_started_at + chrono::Duration::minutes(5);
+    let resumed_at = original_started_at + chrono::Duration::minutes(10);
+    let resumed_completed_at = resumed_at + chrono::Duration::minutes(5);
+    let events = vec![
+        JournalEvent {
+            sequence: 1,
+            timestamp: original_started_at,
+            event_type: JournalEventType::RunStarted,
+            details: serde_json::json!({
+                "run_id": "run-1",
+                "first_stage": "planning",
+                "max_completion_rounds": 20
+            }),
+        },
+        JournalEvent {
+            sequence: 2,
+            timestamp: original_failed_at,
+            event_type: JournalEventType::RunFailed,
+            details: serde_json::json!({
+                "run_id": "run-1",
+                "stage_id": "review",
+                "failure_class": "stage_failure",
+                "message": "original attempt failed",
+                "completion_rounds": 1,
+                "max_completion_rounds": 20
+            }),
+        },
+        JournalEvent {
+            sequence: 3,
+            timestamp: resumed_at,
+            event_type: JournalEventType::RunResumed,
+            details: serde_json::json!({
+                "run_id": "run-1",
+                "resume_stage": "implementation",
+                "cycle": 2,
+                "completion_round": 1,
+                "max_completion_rounds": 20
+            }),
+        },
+        JournalEvent {
+            sequence: 4,
+            timestamp: resumed_completed_at,
+            event_type: JournalEventType::RunCompleted,
+            details: serde_json::json!({
+                "run_id": "run-1",
+                "stage_id": "implementation",
+                "completion_rounds": 1,
+                "max_completion_rounds": 20
+            }),
+        },
+    ];
+
+    assert_eq!(
+        queries::terminal_status_for_attempt("run-1", original_started_at, &events),
+        Some(RunStatus::Failed),
+        "the original attempt should stop at its own terminal event even after a later resume"
+    );
+    assert_eq!(
+        queries::terminal_status_for_attempt("run-1", resumed_at, &events),
+        Some(RunStatus::Completed),
+        "the resumed attempt should still see its own terminal outcome"
+    );
+}

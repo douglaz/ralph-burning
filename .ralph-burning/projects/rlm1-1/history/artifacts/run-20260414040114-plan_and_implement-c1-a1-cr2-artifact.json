@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414040114-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414040114-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T04:55:44.752275605Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nSplit attempt-boundary reconciliation so `terminal_status_for_running_attempt()` still uses the latest durable or inferred attempt boundary for the active running snapshot, while `terminal_status_for_attempt()` now scopes terminal-event lookup to the specific attempt identified by `started_at` and stops at the next start/resume boundary. Added regressions for per-attempt terminal lookup and for interrupted-handoff repair after a later `run_resumed`, preventing duplicate stale `run_failed` events from being appended after a resume.\n\n## Steps\n\n1. [Completed] Inspect `reconcile_snapshot_status`, `terminal_status_for_running_attempt`, `terminal_status_for_attempt`, and the interrupted-attempt repair callers to confirm where the latest-boundary logic was incorrectly being reused for older attempts.\n2. [Completed] Refactor `src/contexts/project_run_record/queries.rs` so running-snapshot reconciliation keeps latest-attempt awareness, while specific-attempt reconciliation anchors to the last `run_started` or `run_resumed` at or before the requested attempt and ignores later attempts.\n3. [Completed] Add regression coverage for attempt-scoped terminal lookup and for interrupted-handoff repair when an older failed attempt is followed by a later `run_resumed` for the same `run_id`.\n4. [Completed] Run validation for formatting, linting, targeted regressions, and the full Rust test suite.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo test --test unit run_queries_test::terminal_status_for_attempt_scopes_terminal_events_to_the_requested_attempt -- --exact` passed.\n- `cargo test --lib cli::run::tests::repair_missing_interrupted_handoff_run_failed_event_ignores_older_attempt_terminal_after_resume -- --exact` passed.\n- `cargo test` passed, including the existing stale-resume reconciliation regressions such as `run_status_ignores_terminal_journal_events_before_latest_resume_for_same_run_id` and `run_status_ignores_terminal_journal_events_before_unjournaled_resume_snapshot_started_at`.\n- `nix build` was started and began building `ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`, but no completion result was available before this response was prepared.\n\n## Outstanding Risks\n\n- `nix build` was started but had not completed by the time this response was prepared, so the repository's authoritative Nix gate is still unconfirmed.\n- The worktree already had unrelated changes in `.ralph-burning/projects/rlm1-1/journal.ndjson` and `.ralph-burning/projects/rlm1-1/run.json`; they were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

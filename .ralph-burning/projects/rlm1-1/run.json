@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260414040114",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-f14e3884",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: `terminal_status_for_attempt()` no longer answers whether the specific attempt identified by `started_at` reached a terminal state. `run_attempt_boundary_sequence()` always anchors to the latest `run_started`/`run_resumed` for the run id (`src/contexts/project_run_record/queries.rs:33-64`), so once a later resume exists, callers checking an older interrupted attempt (`src/contexts/workflow_composition/engine.rs:943-957`, `src/contexts/automation_runtime/daemon_loop.rs:3158-3192`) will incorrectly get `None`. Those repair paths then append a second `run_failed` for the old attempt after the resume boundary, which can poison the live resumed attempt and reintroduce the stale-failure reconciliation bug this bead is meant to eliminate.\nseverity: high\naffected_files:\n- src/contexts/project_run_record/queries.rs:33-83\n- src/contexts/workflow_composition/engine.rs:943-957\n- src/contexts/automation_runtime/daemon_loop.rs:3158-3192\nremediation_hint: Keep the latest-boundary logic in a helper used only for the current running snapshot, but make `terminal_status_for_attempt()` locate the boundary for the specific `started_at` passed in (the last `run_started`/`run_resumed` at or before that attempt). Add a regression where interrupted-attempt repair runs after a later `run_resumed` and must not append a duplicate terminal event.",
-        "created_at": "2026-04-14T04:46:01.657286270Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "6ce63d9f78c0f1d57ea38ff78a67ae9e73d8f1248d0136cd3e8fdef5d0ed7549"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-14T04:37:13.056287416Z",
