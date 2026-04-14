@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414160444-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T17:51:12.037149140Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed `origin/master..HEAD`, inspected the PID-liveness changes in `src/adapters/fs.rs`, `src/cli/run.rs`, `src/contexts/automation_runtime/cli_writer_lease.rs`, and `src/contexts/workflow_composition/engine.rs`, and ran `cargo test` on the current Linux tree. The implementation looks sound overall, but I found one fix-now issue: a stale non-Linux test expectation in `src/adapters/fs.rs` that will fail on macOS/BSD under the new `RunningUnverified` semantics.\n\n## Amendments\n\n1. finding_summary: `src/adapters/fs.rs:235-255` now classifies coarse non-Linux legacy matches that land in the same second as `PidRecordLiveState::RunningUnverified`, but the non-Linux unit test at `src/adapters/fs.rs:6054-6074` still expects `legacy_pid_record_matches_live_process()` to return `true` for that exact case. On macOS/BSD, `cargo test` will therefore fail even though Linux stays green, so the cross-platform acceptance criteria are not met.\nseverity: medium\naffected_files:\n- src/adapters/fs.rs\nremediation_hint: Update the non-Linux test and any remaining boolean expectations tied to same-second legacy recovery to assert the new three-state behavior (`RunningUnverified` / legacy-process classification) instead of expecting a boolean live match.\n   Rationale: This bead explicitly targets safe PID liveness on macOS/BSD and requires tests to pass. Leaving the old boolean expectation in place breaks the non-Linux test suite and obscures whether the new `RunningUnverified` behavior is actually validated on those platforms.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

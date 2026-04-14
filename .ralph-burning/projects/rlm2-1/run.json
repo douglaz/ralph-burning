@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260414160444",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
-    "started_at": "2026-04-14T16:04:44.139167115Z",
+    "started_at": "2026-04-14T17:45:41.737124116Z",
     "prompt_hash_at_cycle_start": "9e45ef91ca9fcc3d3fc1b15ef323c5db0ce054414762c4d6159f2ed0d26ee0a1",
     "prompt_hash_at_stage_start": "9e45ef91ca9fcc3d3fc1b15ef323c5db0ce054414762c4d6159f2ed0d26ee0a1",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-68d89039",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "finding_summary: `src/adapters/fs.rs:235-255` now classifies coarse non-Linux legacy matches that land in the same second as `PidRecordLiveState::RunningUnverified`, but the non-Linux unit test at `src/adapters/fs.rs:6054-6074` still expects `legacy_pid_record_matches_live_process()` to return `true` for that exact case. On macOS/BSD, `cargo test` will therefore fail even though Linux stays green, so the cross-platform acceptance criteria are not met.\nseverity: medium\naffected_files:\n- src/adapters/fs.rs\nremediation_hint: Update the non-Linux test and any remaining boolean expectations tied to same-second legacy recovery to assert the new three-state behavior (`RunningUnverified` / legacy-process classification) instead of expecting a boolean live match.",
+        "created_at": "2026-04-14T17:51:58.851120423Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "7656a0588391c2ea43cc2da249525009e997a866c1dd5feaf636a73423ddf187"
+      },
+      {
+        "amendment_id": "fr-4-8b58ceb2",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "Test `legacy_pid_liveness_accepts_same_second_live_process_on_non_linux_unix` at `src/adapters/fs.rs:6056` would fail on macOS/BSD. It asserts `FileSystem::legacy_pid_record_matches_live_process(&record)` returns `true`, but the new `compare_legacy_pid_record` returns `RunningUnverified` for same-second WholeSeconds matches, and `legacy_pid_record_matches_live_process` only accepts `PidRecordLiveState::Live`. The test should be updated to assert the live state is `RunningUnverified` (or at least not `Stale`) using `legacy_pid_record_live_state` directly, and the test name should reflect the new semantics (e.g., `legacy_pid_liveness_marks_same_second_live_process_as_unverified_on_non_linux_unix`). Affected file: `src/adapters/fs.rs` lines 6056-6075.",
+        "created_at": "2026-04-14T17:51:58.851124100Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "072f959538e05a7b950f63c24e5475a1cc06ccb7647fdf58cc9f674a36e25402"
+      }
+    ],
     "processed_count": 5
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-14T17:12:21.578075828Z",
+    "resolved_at": "2026-04-14T17:45:41.764491616Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414160444-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T17:51:44.863831691Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments correctly identify the same non-Linux test regression: the implementation now classifies same-second legacy PID matches as `RunningUnverified`, while a macOS/BSD-only test still expects the old boolean `true`/`Live` behavior.\n\n## Votes\n\n- `fr-4-68d89039`: Accept\n  `compare_legacy_pid_record()` now returns `PidRecordLiveState::RunningUnverified` for whole-second matches within the same second, and `legacy_pid_record_matches_live_process()` only returns true for `Live`. The non-Linux test still asserting `true` will therefore fail on macOS/BSD. This is a real cross-platform correctness issue, and updating the test to assert the new tri-state behavior is the right remediation.\n- `fr-4-8b58ceb2`: Accept\n  This amendment is technically correct and more specific about the failing path. The cited test name and assertion still encode the old semantics, but the new implementation deliberately treats same-second coarse matches as `RunningUnverified`, not `Live`. Checking `legacy_pid_record_live_state()` directly and renaming the test to reflect the unverified state would align the test with the implemented behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
