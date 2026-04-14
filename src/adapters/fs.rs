@@ -6053,7 +6053,7 @@ mod tests {
 
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
-    fn legacy_pid_liveness_accepts_same_second_live_process_on_non_linux_unix() {
+    fn legacy_pid_liveness_marks_same_second_live_process_as_unverified_on_non_linux_unix() {
         let live_started_at =
             FileSystem::process_started_at(std::process::id()).expect("process start time");
         let record = RunPidRecord {
@@ -6071,7 +6071,10 @@ mod tests {
             !FileSystem::is_pid_alive(&record),
             "legacy pid records without identity fields must not be treated as authoritative"
         );
-        assert!(FileSystem::legacy_pid_record_matches_live_process(&record));
+        assert_eq!(
+            FileSystem::legacy_pid_record_live_state(&record, Some(live_started_at)),
+            PidRecordLiveState::RunningUnverified
+        );
     }
 
     #[test]
