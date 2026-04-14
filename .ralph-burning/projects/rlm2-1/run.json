@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260414160444",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-ea5acac2",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: In `src/cli/run.rs:2180-2188`, `interrupted_handoff_cleanup_candidate_with_dirs()` now treats `FileSystem::pid_record_matches_live_process()` returning `false` as proof that the interrupted owner is gone. That is not true for legacy pid files: `src/adapters/fs.rs:795-804` also returns `false` when `process_started_at()` cannot be obtained, and that lookup depends on `/proc/stat` on Linux or `ps` output parsing on BSD/macOS (`src/adapters/fs.rs:294-318`). In those environments a still-running legacy owner can be misclassified as dead and have its interrupted-state cleanup run early.\nseverity: medium\naffected_files: src/cli/run.rs, src/adapters/fs.rs\nremediation_hint: Keep waiting when the pid record is non-authoritative and start-time comparison is unavailable; only proceed once the process is definitively gone or PID reuse is positively detected.",
-        "created_at": "2026-04-14T16:35:01.504390116Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "02c1a7996d82d7378d78a8e3932cd4eee06ae5e2543ecf0f80c4cc4f48580396"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-14T16:29:06.268756708Z",

@@ -208,6 +208,13 @@ struct ProcessStartTime {
     precision: ProcessStartPrecision,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PidRecordLiveState {
+    Live,
+    Stale,
+    RunningUnverified,
+}
+
 impl ProcessStartTime {
     fn precise(started_at: DateTime<Utc>) -> Self {
         Self {
@@ -784,29 +791,58 @@ impl FileSystem {
         Self::process_identity_is_alive(pid, proc_start_ticks, proc_start_marker)
     }
 
-    pub fn pid_record_matches_live_process(record: &RunPidRecord) -> bool {
+    pub(crate) fn pid_record_live_state(record: &RunPidRecord) -> PidRecordLiveState {
         if Self::pid_record_is_authoritative(record) {
-            return Self::is_pid_alive(record);
+            return if Self::is_pid_alive(record) {
+                PidRecordLiveState::Live
+            } else {
+                PidRecordLiveState::Stale
+            };
         }
 
-        Self::legacy_pid_record_matches_live_process(record)
+        Self::legacy_pid_record_live_state(record, Self::process_started_at(record.pid))
+    }
+
+    pub fn pid_record_matches_live_process(record: &RunPidRecord) -> bool {
+        matches!(
+            Self::pid_record_live_state(record),
+            PidRecordLiveState::Live
+        )
     }
 
     pub fn legacy_pid_record_matches_live_process(record: &RunPidRecord) -> bool {
+        matches!(
+            Self::legacy_pid_record_live_state(record, Self::process_started_at(record.pid)),
+            PidRecordLiveState::Live
+        )
+    }
+
+    fn legacy_pid_record_live_state(
+        record: &RunPidRecord,
+        live_started_at: Option<ProcessStartTime>,
+    ) -> PidRecordLiveState {
         if Self::pid_record_is_authoritative(record) {
-            return Self::is_pid_alive(record);
+            return if Self::is_pid_alive(record) {
+                PidRecordLiveState::Live
+            } else {
+                PidRecordLiveState::Stale
+            };
         }
         if !Self::is_pid_running_unchecked(record.pid) {
-            return false;
+            return PidRecordLiveState::Stale;
         }
-        let Some(live_started_at) = Self::process_started_at(record.pid) else {
-            return false;
+        let Some(live_started_at) = live_started_at else {
+            return PidRecordLiveState::RunningUnverified;
         };
 
         // Legacy pid files without any recorded process identity can only be
         // matched by comparing the live process start against the pid-file
         // write timestamp. A newer live start implies PID reuse.
-        live_started_at.matches_legacy_pid_record(record.started_at)
+        if live_started_at.matches_legacy_pid_record(record.started_at) {
+            PidRecordLiveState::Live
+        } else {
+            PidRecordLiveState::Stale
+        }
     }
 
     pub fn is_backend_process_alive(record: &RunBackendProcessRecord) -> bool {
@@ -5893,6 +5929,25 @@ mod tests {
         };
 
         assert!(FileSystem::legacy_pid_record_matches_live_process(&record));
+    }
+
+    #[test]
+    fn legacy_pid_liveness_marks_running_process_without_start_time_as_unverified() {
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+
+        assert_eq!(
+            FileSystem::legacy_pid_record_live_state(&record, None),
+            PidRecordLiveState::RunningUnverified
+        );
     }
 
     #[cfg(target_os = "linux")]

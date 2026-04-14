@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414160444-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T16:47:58.127829119Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nIntroduced a tri-state PID liveness result in `src/adapters/fs.rs` so legacy pid records can distinguish confirmed-live, confirmed-stale/PID-reused, and still-running-but-unverified cases when start-time lookup is unavailable. Updated interrupted handoff cleanup in `src/cli/run.rs` to keep waiting for legacy owners in that unverified-running state instead of treating them as gone, and added regression coverage for the new legacy liveness semantics.\n\n## Steps\n\n1. [Completed] Inspected the legacy PID liveness helpers and interrupted handoff cleanup path to confirm the regression source: `pid_record_matches_live_process()` collapsed 'running but start-time unavailable' into the same `false` result as a definitively stale record.\n2. [Completed] Patched `src/adapters/fs.rs` to expose a `PidRecordLiveState` tri-state helper and rewired `pid_record_matches_live_process()`/legacy matching through it, then updated `src/cli/run.rs` so interrupted handoff cleanup waits on both confirmed-live and running-but-unverified legacy pid records.\n3. [Completed] Added regression coverage for the unverified legacy state, reran targeted tests for PID liveness and interrupted handoff cleanup, then completed the required verification suite including the authoritative `nix build`.\n\n## Validation Evidence\n\n- `cargo test legacy_pid_liveness_marks_running_process_without_start_time_as_unverified -- --nocapture` passed.\n- `cargo test interrupted_handoff_cleanup_candidate_waits_for_live_legacy_pid_record -- --nocapture` passed.\n- `cargo fmt --check` passed after formatting.\n- `cargo test` passed: lib 832 passed / 0 failed / 1 ignored, CLI integration 210 passed / 0 failed / 2 ignored, `run_attach_tmux` 1 passed / 0 failed, unit integration 788 passed / 0 failed, doc-tests 0 failed / 9 ignored.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

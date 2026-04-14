@@ -2178,7 +2178,11 @@ pub(crate) fn interrupted_handoff_cleanup_candidate_with_dirs(
     // During the SIGTERM or daemon-cancellation grace period the snapshot is
     // already marked interrupted but the engine future is still settling.
     if let Ok(Some(pid_record)) = FileSystem::read_pid_file(workspace_dir, project_id) {
-        if FileSystem::pid_record_matches_live_process(&pid_record) {
+        if matches!(
+            FileSystem::pid_record_live_state(&pid_record),
+            crate::adapters::fs::PidRecordLiveState::Live
+                | crate::adapters::fs::PidRecordLiveState::RunningUnverified
+        ) {
             return Ok(InterruptedHandoffCleanupCandidate::WaitingForLiveOwner);
         }
     } else if daemon_handoff
