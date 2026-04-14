@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414202007-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414202007-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T20:49:43.667146515Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed amendment fr-1-aff4311c regarding RunningUnverified handling in cleanup handoffs. After thorough code analysis, the asymmetric treatment is a deliberate, well-documented design decision to prevent permanent deadlocks for legacy/non-Linux handoffs, not an oversight. The alternative (treating RunningUnverified as blocking in handoffs) would create unrecoverable stuck states.\n\n## Votes\n\n- `fr-1-aff4311c`: Reject\n  The code explicitly and intentionally treats RunningUnverified as reclaimable in cleanup handoffs (comment at line 1829-1830: 'Ambiguous coarse marker matches must not block reclaim forever'). This is asymmetric with primary PID records (which treat RunningUnverified as blocking at lines 1870, 1886, 2235, engine.rs:776) by design. The reason: cleanup handoffs from legacy code (no recorded_at) or non-Linux systems (coarse timestamps) can be permanently stuck in RunningUnverified — they will never resolve to Live or Stale because the identity data is insufficient. The proposed fix (only reclaim on Stale) would create permanent deadlocks: the handoff would stay RunningUnverified forever, blocking all resume attempts. Modern code writes proc_start_ticks which bypasses the RunningUnverified path entirely (fs.rs:284-290), so this only affects transitional/legacy handoffs. The tests at 9215-9307 correctly lock in the intentional design, not unsafe behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

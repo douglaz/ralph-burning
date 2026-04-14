@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414202007-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414202007-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T20:40:10.399367350Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the stale-run recovery changes in `src/adapters/fs.rs`, `src/cli/run.rs`, `src/contexts/automation_runtime/{cli_writer_lease,daemon_loop,model}.rs`, `src/contexts/workflow_composition/engine.rs`, and the added tests. Found 1 high-severity safety issue: cleanup-handoff reclaim currently treats `RunningUnverified` as safe-to-reclaim.\n\n## Amendments\n\n1. finding_summary: `run resume` / interrupted-handoff recovery can reclaim a still-running cleanup owner when handoff liveness is only `RunningUnverified`.\nseverity: high\naffected_files: [\"src/cli/run.rs\"]\nremediation_hint: Treat cleanup-handoff `RunningUnverified` as blocking, not reclaimable; only reclaim once the handoff is definitively `Stale` (or after rewriting the handoff with precise identity data).\nDetails: `observed_cli_cleanup_owner_has_dead_pid` at `src/cli/run.rs:1831-1838` and `daemon_handoff_process_death_proven` at `src/cli/run.rs:2115-2123` both use `!matches!(..., Live)`, so `RunningUnverified` is handled the same as `Stale`. But `process_snapshot_live_state` returns `RunningUnverified` for still-running legacy handoffs with no `recorded_at`, and on non-Linux for same-second marker-only matches. In those cases a concurrent `run resume` can steal the writer lease and repair interrupted state while the original cleanup process is still alive. The new tests at `src/cli/run.rs:9215-9307` lock in this unsafe behavior.\n   Rationale: The whole point of this bead is to revalidate ownership before reclaiming. `RunningUnverified` means the code could not prove the process is dead, so reclaiming on that state reopens the stale stop/resume race on legacy and coarse-timestamp paths.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
