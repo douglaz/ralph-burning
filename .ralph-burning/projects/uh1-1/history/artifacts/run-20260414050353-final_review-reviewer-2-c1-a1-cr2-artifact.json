@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414050353-final_review-reviewer-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414050353-final_review-reviewer-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T06:27:09.080390119Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed the planner-reference cleanup commit. Changes correctly remove the planner field from CompletionPanelResolution, remove planner as a primary target in panel probe availability checks (diagnostics.rs), update the conformance probe-failure scenario to use an explicit disabled member instead of planner inheritance, rename and update tests, and clean stale planner references from docs. All modified tests pass (7/7), clippy is clean (-D warnings), and fmt --check passes. The remaining BackendPolicyRole::Planner and BackendRole::Planner variants are legitimately used for stage role resolution (plan_and_implement, planning, etc.) and are not stale final-review artifacts. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 2
+}
