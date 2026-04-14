@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-vote-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260414160444-final_review-vote-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T19:27:39.729361939Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed amendment fr-7-54d90245 concerning RunningUnverified cleanup handoff reclaim behavior. After examining the code at all cited locations, the behavior is an intentional, well-tested design choice — not a bug. The code explicitly trades a narrow false-positive reclaim window for guaranteed liveness/recovery of stuck locks from legacy or degraded-data handoffs.\n\n## Votes\n\n- `fr-7-54d90245`: Reject\n  The behavior flagged here is intentional and explicitly tested. Two tests — `observed_cli_cleanup_owner_reclaims_when_cleanup_handoff_is_running_but_unverified` (run.rs:9215) and `daemon_handoff_process_death_proven_accepts_running_but_unverified_cleanup_handoff` (run.rs:9266) — assert that RunningUnverified handoffs ARE reclaimable, with assertion messages explaining the rationale: 'cleanup handoffs without enough identity precision must not block stale recovery forever' and 'ambiguous cleanup handoffs must not block interrupted-handoff recovery indefinitely.' The inline comment at run.rs:1829-1830 also documents this: 'Cleanup handoffs are only used to decide whether stale recovery may proceed. Ambiguous coarse marker matches must not block reclaim forever.' The proposed remediation (only reclaim on Stale) would reintroduce the exact deadlock the code is designed to prevent: legacy handoffs with no proc_start_ticks and no recorded_at would become permanently unrecoverable whenever the PID is reused by another process. For NEW handoffs, both write sites (run.rs:2444 and daemon_loop.rs:3122) persist recorded_at: Some(Utc::now()), so RunningUnverified only triggers on macOS/BSD within the same-second WholeSeconds ambiguity window — a sub-second race where the handoff writer is in signal cleanup (about to exit anyway). The practical risk of false-positive reclaim is negligible compared to the permanent-deadlock risk the amendment's fix would create.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 7
+}
