@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414160444-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T17:18:53.605056776Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the cumulative code changes excluding `.ralph-burning/` and found 1 fix-now correctness gap in the non-Linux legacy PID reuse logic.\n\n## Amendments\n\n1. finding_summary: `src/adapters/fs.rs:235-238` drops `ProcessStartPrecision` on the floor, and `legacy_pid_record_live_state()` (`src/adapters/fs.rs:820-845`) treats any live process whose derived start time is `<= record.started_at` as definitively `Live`. On macOS/BSD, `process_started_at()` only has whole-second precision (`src/adapters/fs.rs:323-328`), so a PID reused later in the same second as the original `run.pid` write is still accepted as the original process. That means legacy pid files can still be misclassified as live after PID reuse on the non-Linux platforms this bead is supposed to harden, causing resume/recovery/cleanup to wait on an unrelated process.\nseverity: medium\naffected_files: [\"src/adapters/fs.rs\"]\nremediation_hint: Make the coarse-grained path conservative. When the live start time is only known to whole-second precision, same-second comparisons should return `RunningUnverified` (or equivalent) rather than `Live`; only timestamps at least one full second after the rounded start should be treated as a definite match.\n   Rationale: The acceptance criteria explicitly require safe PID reuse handling on macOS/BSD. As written, the non-Linux legacy fallback still has a same-second false-positive window because it rounds the live start time down to seconds and then ignores that loss of precision.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
