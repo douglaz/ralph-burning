@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414063113-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414063113-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T06:48:24.242041201Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the diff against `origin/master`, read the changed implementation and test areas, and spot-checked targeted CLI tests. One medium-severity functional issue remains: the new `project create` fallback ignores the repo's existing default-flow resolution, so command behavior can diverge from configured or reported defaults.\n\n## Amendments\n\n1. finding_summary: `project create` now bypasses the repo's resolved `default_flow` when `--flow` is omitted. `handle_create` hardcodes `FlowPreset::Minimal` at `src/cli/project.rs:191-196`, while the canonical default-flow resolution still lives in `src/contexts/workspace_governance/config.rs:21-22` and `src/contexts/workspace_governance/config.rs:173-179`. As a result, `config get default_flow` (or a workspace override such as `quick_dev`) can disagree with the flow actually written into the new project, which silently changes the stage plan for that run.\n   Rationale: This is a functional mismatch, not just a cosmetic inconsistency: operators can configure or inspect one default flow and still get a different orchestration pipeline when they omit `--flow` on `project create`. Use the resolved config default as the fallback in `handle_create`, and update the compiled default to `minimal` as needed if that is the intended new global default.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

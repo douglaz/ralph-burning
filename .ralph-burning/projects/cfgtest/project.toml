@@ -1,0 +1,7 @@
+id = "cfgtest"
+name = "CfgTest"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "d95588ff0983e25a02e4d1b8d8c7820456252375cf408ad40912cb12dd2264e8"
+created_at = "2026-04-14T06:46:43.419277662Z"
+status_summary = "created"

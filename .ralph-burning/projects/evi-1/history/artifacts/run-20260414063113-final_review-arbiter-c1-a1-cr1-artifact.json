@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414063113-final_review-arbiter-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414063113-final_review-arbiter-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T06:53:08.293101222Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected the amendment. The `Minimal` default in `project create` is a deliberate, regression-tested design choice — not a configuration bypass. The workspace `default_flow` setting governs runtime flow resolution for active projects, while the CLI creation default is intentionally conservative. Multiple creation paths in the codebase follow the same pattern of using context-specific defaults rather than the workspace-level setting.\n\n## Rulings\n\n- `fr-1-45c0b42f`: Reject\n  The hardcoded `FlowPreset::Minimal` in `handle_create` (project.rs:196) is intentional, not an accidental bypass. Three pieces of evidence tip the balance toward rejection: (1) An explicit regression test (`cli.rs:1982-2014`, `project_create_defaults_to_minimal_flow_without_flag`) asserts this exact behavior, proving it was a deliberate design choice. (2) The workspace `default_flow` setting and the `project create` CLI default serve different purposes — the former governs runtime flow resolution for active projects (`backend.rs:362-378`), while the latter is a CLI-level safe default for the creation command. These are not the same semantic slot. (3) Other creation paths also use context-specific defaults rather than the workspace setting: milestone-based creation uses `milestone_bundle.bundle.default_flow` (project.rs:335), and seed handoff uses the seed flow (service.rs:331). The pattern across the codebase is that each creation path chooses its own appropriate default. While it is true that `config get default_flow` may report a different value than what `project create` writes, this reflects distinct configuration layers rather than a consistency bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}
