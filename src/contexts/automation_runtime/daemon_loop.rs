@@ -985,13 +985,12 @@ where
 
         match outcome {
             Ok(run_id) => {
-                // Persist only the authoritative run_id captured from the
-                // dispatch/resume path. If dispatch cannot prove the run
-                // identity, leave the binding unset so reconciliation fails
-                // closed instead of guessing from the journal.
-                if !is_post_completion_retry {
-                    self.persist_workflow_run_id(store_dir, &active_task, run_id.as_deref());
-                }
+                let reconciliation_task = self.task_for_success_reconciliation(
+                    store_dir,
+                    &active_task,
+                    run_id.as_deref(),
+                    is_post_completion_retry,
+                )?;
 
                 // Reconciliation-only retries (reconciliation_*) skip the PR
                 // handler: the PR was already created/merged on the original
@@ -1090,7 +1089,7 @@ where
                   // Reconcile bead BEFORE marking completed so a crash between
                   // reconciliation and mark_completed causes reprocessing on restart.
                 if let Err((failure_class, failure_message)) = self
-                    .try_reconcile_success(repo_root, &active_task, run_id.as_deref())
+                    .try_reconcile_success(repo_root, &reconciliation_task)
                     .await
                 {
                     match DaemonTaskService::mark_failed(
@@ -1677,12 +1676,12 @@ where
 
         match outcome {
             Ok(run_id) => {
-                // Persist only the authoritative run_id captured from the
-                // dispatch/resume path — skip for post-completion retries
-                // (see multi-repo path comment).
-                if !is_post_completion_retry {
-                    self.persist_workflow_run_id(base_dir, &active_task, run_id.as_deref());
-                }
+                let reconciliation_task = self.task_for_success_reconciliation(
+                    base_dir,
+                    &active_task,
+                    run_id.as_deref(),
+                    is_post_completion_retry,
+                )?;
 
                 // Skip PR handler for reconciliation-only retries — see
                 // multi-repo path comment for rationale.
@@ -1718,7 +1717,7 @@ where
                 // Reconcile bead BEFORE marking completed so a crash between
                 // reconciliation and mark_completed causes reprocessing on restart.
                 if let Err((failure_class, failure_message)) = self
-                    .try_reconcile_success(base_dir, &active_task, run_id.as_deref())
+                    .try_reconcile_success(base_dir, &reconciliation_task)
                     .await
                 {
                     if let Err(e) = DaemonTaskService::mark_failed(
@@ -1795,12 +1794,21 @@ where
         }
     }
 
-    fn workflow_run_id_for_reconciliation<'task>(
+    fn task_for_success_reconciliation(
         &self,
-        task: &'task DaemonTask,
-        authoritative_run_id: Option<&'task str>,
-    ) -> Option<&'task str> {
-        authoritative_run_id.or(task.workflow_run_id.as_deref())
+        store_dir: &Path,
+        task: &DaemonTask,
+        run_id: Option<&str>,
+        is_post_completion_retry: bool,
+    ) -> AppResult<DaemonTask> {
+        // Only trust a workflow binding once it has been durably written to
+        // the task record. A transient run_id captured from dispatch/resume is
+        // not enough: if the metadata write failed, success reconciliation
+        // must fail closed instead of partially reconciling the wrong attempt.
+        if !is_post_completion_retry {
+            self.persist_workflow_run_id(store_dir, task, run_id);
+        }
+        self.store.read_task(store_dir, &task.task_id)
     }
 
     fn missing_workflow_run_id_failure(
@@ -1868,7 +1876,6 @@ where
         &self,
         project_dir: &Path,
         task: &DaemonTask,
-        authoritative_run_id: Option<&str>,
     ) -> Result<(), (String, String)> {
         use crate::adapters::br_process::{BrAdapter, BrMutationAdapter, OsProcessRunner};
         use crate::adapters::bv_process::{BvAdapter, OsBvProcessRunner};
@@ -1921,16 +1928,13 @@ where
         // workflow_run_id binding, we additionally move the milestone
         // controller to needs-operator so the ambiguity is visible.
 
-        // Extract run_id and started_at. Reconciliation retries must use the
-        // durable workflow_run_id persisted on the task. The first success path
-        // may also use the authoritative run_id captured directly from the
-        // dispatch/resume call before persistence becomes visible to the
-        // in-memory task snapshot. Guessing from the latest RunStarted journal
-        // event remains unsafe because a newer manual re-run may have appended
-        // its own run identity.
-        let run_id_from_task = match self
-            .workflow_run_id_for_reconciliation(task, authoritative_run_id)
-        {
+        // Extract run_id and started_at. Reconciliation must only use the
+        // durable workflow_run_id persisted on the task record. Guessing from
+        // the latest RunStarted journal event remains unsafe because a newer
+        // manual re-run may have appended its own run identity, and a
+        // transient in-memory run_id is not durable enough to prove the
+        // binding survived persistence.
+        let run_id_from_task = match task.workflow_run_id.as_deref() {
             Some(run_id) => run_id,
             None => {
                 return Err(self.missing_workflow_run_id_failure(project_dir, task, task_source))
@@ -4504,6 +4508,18 @@ mod tests {
         }
     }
 
+    struct FailOnceWorkflowRunIdWriteStore {
+        fail_next_workflow_run_id_write: AtomicBool,
+    }
+
+    impl FailOnceWorkflowRunIdWriteStore {
+        fn new() -> Self {
+            Self {
+                fail_next_workflow_run_id_write: AtomicBool::new(true),
+            }
+        }
+    }
+
     struct FailOnceLeaseReferenceClearStore {
         task_id: String,
         fail_next_clear_lease_write: AtomicBool,
@@ -4537,6 +4553,111 @@ mod tests {
             {
                 return Err(AppError::Io(std::io::Error::other(
                     "simulated waiting-task metadata write failure",
+                )));
+            }
+
+            FsDaemonStore.write_task(base_dir, task)
+        }
+
+        fn list_leases(&self, base_dir: &std::path::Path) -> AppResult<Vec<WorktreeLease>> {
+            FsDaemonStore.list_leases(base_dir)
+        }
+
+        fn read_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<WorktreeLease> {
+            FsDaemonStore.read_lease(base_dir, lease_id)
+        }
+
+        fn write_lease(&self, base_dir: &std::path::Path, lease: &WorktreeLease) -> AppResult<()> {
+            FsDaemonStore.write_lease(base_dir, lease)
+        }
+
+        fn list_lease_records(&self, base_dir: &std::path::Path) -> AppResult<Vec<LeaseRecord>> {
+            FsDaemonStore.list_lease_records(base_dir)
+        }
+
+        fn read_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<LeaseRecord> {
+            FsDaemonStore.read_lease_record(base_dir, lease_id)
+        }
+
+        fn write_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease: &LeaseRecord,
+        ) -> AppResult<()> {
+            FsDaemonStore.write_lease_record(base_dir, lease)
+        }
+
+        fn remove_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<ResourceCleanupOutcome> {
+            FsDaemonStore.remove_lease(base_dir, lease_id)
+        }
+
+        fn read_daemon_journal(
+            &self,
+            base_dir: &std::path::Path,
+        ) -> AppResult<Vec<DaemonJournalEvent>> {
+            FsDaemonStore.read_daemon_journal(base_dir)
+        }
+
+        fn append_daemon_journal_event(
+            &self,
+            base_dir: &std::path::Path,
+            event: &DaemonJournalEvent,
+        ) -> AppResult<()> {
+            FsDaemonStore.append_daemon_journal_event(base_dir, event)
+        }
+
+        fn acquire_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            lease_id: &str,
+        ) -> AppResult<()> {
+            FsDaemonStore.acquire_writer_lock(base_dir, project_id, lease_id)
+        }
+
+        fn release_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            expected_owner: &str,
+        ) -> AppResult<WriterLockReleaseOutcome> {
+            FsDaemonStore.release_writer_lock(base_dir, project_id, expected_owner)
+        }
+    }
+
+    impl DaemonStorePort for FailOnceWorkflowRunIdWriteStore {
+        fn list_tasks(&self, base_dir: &std::path::Path) -> AppResult<Vec<DaemonTask>> {
+            FsDaemonStore.list_tasks(base_dir)
+        }
+
+        fn read_task(&self, base_dir: &std::path::Path, task_id: &str) -> AppResult<DaemonTask> {
+            FsDaemonStore.read_task(base_dir, task_id)
+        }
+
+        fn create_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            FsDaemonStore.create_task(base_dir, task)
+        }
+
+        fn write_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            if task.workflow_run_id.is_some()
+                && self
+                    .fail_next_workflow_run_id_write
+                    .swap(false, Ordering::SeqCst)
+            {
+                return Err(AppError::Io(std::io::Error::other(
+                    "simulated workflow_run_id metadata write failure",
                 )));
             }
 
@@ -7898,7 +8019,7 @@ mod tests {
         );
 
         let error = daemon
-            .try_reconcile_success(base, &task, None)
+            .try_reconcile_success(base, &task)
             .await
             .expect_err("missing workflow_run_id must fail closed");
         assert_eq!(error.0, "reconciliation_no_run_binding");
@@ -8047,7 +8168,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn try_reconcile_success_uses_authoritative_run_id_before_task_reload() {
+    async fn try_reconcile_success_fails_closed_when_workflow_run_id_persist_fails() {
         let temp = tempdir().expect("tempdir");
         let base = temp.path();
         let now = Utc::now();
@@ -8123,10 +8244,26 @@ mod tests {
                 &journal::serialize_event(&run_started).expect("serialize run_started"),
             )
             .expect("append run_started");
+        let run_completed = journal::run_completed_event(
+            run_started.sequence + 1,
+            now + chrono::Duration::seconds(3),
+            &authoritative_run_id,
+            1,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&run_completed).expect("serialize run_completed"),
+            )
+            .expect("append run_completed");
 
         let mut task = sample_pending_task("task-authoritative-run-binding", &project_id);
         task.status = TaskStatus::Active;
         task.attempt_count = 1;
+        let store = FailOnceWorkflowRunIdWriteStore::new();
+        store.create_task(base, &task).expect("create task");
 
         let agent_service = AgentExecutionService::new(
             StubBackendAdapter::default(),
@@ -8134,7 +8271,7 @@ mod tests {
             FsSessionStore,
         );
         let daemon = DaemonLoop::new(
-            &FsDaemonStore,
+            &store,
             &WorktreeAdapter,
             &FsProjectStore,
             &FsRunSnapshotStore,
@@ -8147,19 +8284,23 @@ mod tests {
             &agent_service,
         );
 
-        let error = daemon
-            .try_reconcile_success(base, &task, Some(authoritative_run_id.as_str()))
-            .await
-            .expect_err(
-                "missing run_completed should still fail after accepting authoritative run_id",
-            );
-        assert_eq!(error.0, "reconciliation_metadata_error");
+        daemon.persist_workflow_run_id(base, &task, Some(authoritative_run_id.as_str()));
+        let reloaded_task = store
+            .read_task(base, &task.task_id)
+            .expect("read reloaded task");
         assert!(
-            error.1.contains(&format!(
-                "no RunCompleted journal event for run_id={}",
-                authoritative_run_id.as_str()
-            )),
-            "reconciliation should look up metadata for the authoritative run_id: {}",
+            reloaded_task.workflow_run_id.is_none(),
+            "failed persistence must leave the durable workflow_run_id unset"
+        );
+
+        let error = daemon
+            .try_reconcile_success(base, &reloaded_task)
+            .await
+            .expect_err("missing durable workflow_run_id must fail closed");
+        assert_eq!(error.0, "reconciliation_no_run_binding");
+        assert!(
+            error.1.contains("workflow_run_id is missing"),
+            "reconciliation should explain the missing durable binding: {}",
             error.1
         );
 
@@ -8169,8 +8310,8 @@ mod tests {
                 .expect("controller should exist");
         assert_eq!(
             controller.state,
-            milestone_controller::MilestoneControllerState::Running,
-            "authoritative run_id should bypass the missing-binding needs-operator path"
+            milestone_controller::MilestoneControllerState::NeedsOperator,
+            "missing durable workflow_run_id should escalate to needs_operator"
         );
     }
 

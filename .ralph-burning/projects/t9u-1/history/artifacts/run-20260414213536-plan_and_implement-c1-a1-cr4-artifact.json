@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414213536-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414213536-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T23:26:00.471971892Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `src/contexts/automation_runtime/daemon_loop.rs` so success reconciliation no longer accepts a transient dispatch `run_id` as proof of task-to-run identity. Both dispatch paths now reload the task after best-effort `persist_workflow_run_id` and pass that durable task record into `try_reconcile_success`, which only reconciles when `workflow_run_id` is actually stored on the task. If persistence was skipped or failed, reconciliation now fails closed, moves the milestone controller to `needs_operator`, and returns `reconciliation_no_run_binding` so the daemon task is marked failed instead of reconciling the wrong run. Added regression coverage for the original missing-binding path and for the failed-persist path that previously could have reconciled using an in-memory run id.\n\n## Steps\n\n1. [Completed] Inspect the daemon dispatch and reconciliation flow to confirm where an in-memory `run_id` was bypassing the durable `workflow_run_id` check.\n2. [Completed] Refactor success reconciliation to reload the task after `persist_workflow_run_id` and require the stored `workflow_run_id` before any bead close/sync or milestone lineage updates proceed.\n3. [Completed] Add regression coverage for missing durable bindings, including a simulated `workflow_run_id` persistence failure, and rerun the required cargo and nix validation gates.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo test try_reconcile_success_missing_workflow_run_id_fails_closed_and_signals_operator --features test-stub` passed.\n- `cargo test try_reconcile_success_fails_closed_when_workflow_run_id_persist_fails --features test-stub` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

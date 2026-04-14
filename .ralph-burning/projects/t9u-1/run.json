@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260414213536",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 4
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-3-22c03200",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "finding_summary: The new authoritative run_id fallback bypasses the durable workflow_run_id check, so a failed set_workflow_run_id write no longer stops reconciliation.\nseverity: medium\naffected_files: [\"src/contexts/automation_runtime/daemon_loop.rs\"]\nremediation_hint: Reload the task after persist_workflow_run_id (or make that write mandatory) and only let try_reconcile_success proceed when the durable task record actually contains workflow_run_id; do not use the transient run_id to bypass the fail-closed path.\n\nDetails: persist_workflow_run_id is still explicitly non-blocking at src/contexts/automation_runtime/daemon_loop.rs:1772-1795, but the callers at src/contexts/automation_runtime/daemon_loop.rs:992-994, 1092-1094, 1683-1684, and 1720-1722 now hand the in-memory run_id straight into try_reconcile_success. workflow_run_id_for_reconciliation then prefers that ephemeral value over the task's stored binding at src/contexts/automation_runtime/daemon_loop.rs:1798-1803 and 1931-1937, and the new test at src/contexts/automation_runtime/daemon_loop.rs:8050-8174 locks in that behavior. If the store write fails and a later mark_completed/label-sync step fails at src/contexts/automation_runtime/daemon_loop.rs:1145-1155 or 1747-1748, the daemon has already closed/synced the bead and updated milestone lineage even though the task still lacks a durable task-to-run binding. That violates the bead's fail-closed contract and leaves the retry path in an operator-only state after partial success bookkeeping has already happened.",
-        "created_at": "2026-04-14T23:12:57.294962937Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "515b3b3c8ff3ec9f7808fcdadfe39e2c394a280a723b9c022b2a124b173cff1d"
-      }
-    ],
-    "processed_count": 2
+    "pending": [],
+    "processed_count": 3
   },
-  "status_summary": "running: final review restart round 4 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-14T23:04:15.935415213Z",
