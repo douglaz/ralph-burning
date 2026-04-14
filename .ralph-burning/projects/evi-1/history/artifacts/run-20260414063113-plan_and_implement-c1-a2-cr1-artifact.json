@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414063113-plan_and_implement-c1-a2-cr1-artifact",
+  "payload_id": "run-20260414063113-plan_and_implement-c1-a2-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T06:38:46.146883550Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `project create` so `--flow` is optional and defaults to `FlowPreset::Minimal` when omitted, while preserving explicit `--flow standard` parsing. Also changed the remaining hardcoded default-flow fixtures in workflow/milestone tests from `Standard` to `Minimal` and added CLI coverage for the new default behavior.\n\n## Steps\n\n1. [Completed] Locate all `project create` and milestone/workflow default-flow paths that hardcoded `FlowPreset::Standard` as the default and confirm `.ralph-burning/` state was out of scope.\n2. [Completed] Implement the CLI change in `src/cli/project.rs` so omitted `--flow` resolves to `FlowPreset::Minimal`, while still parsing explicit overrides normally.\n3. [Completed] Update affected test fixtures in workflow and milestone modules to use `FlowPreset::Minimal` as the default-flow baseline.\n4. [Completed] Add CLI regression coverage proving `project create` without `--flow` writes a project with flow `minimal` and still reports success.\n5. [Completed] Run repository validation gates and confirm the change passes formatting, linting, and tests.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo test` passed across the full suite, including `src/lib.rs` (830 passed, 1 ignored), `tests/cli.rs` (210 passed, 2 ignored), `tests/unit.rs` (788 passed), and doc-tests (0 passed, 9 ignored).\n- Targeted regression checks also passed for `project_create_defaults_to_minimal_flow_without_flag`, `project_create_from_requirements_materializes_milestone_bundle_output`, `slot_matching_bead_ids_without_explicit_flag_stay_implicit`, and `final_review_snapshot_serialization_includes_reviewer_and_arbiter_targets`.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

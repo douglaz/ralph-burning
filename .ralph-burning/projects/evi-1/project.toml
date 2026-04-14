@@ -1,0 +1,7 @@
+id = "evi-1"
+name = "default-minimal-flow"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "ed48bb28df83606ccf565177bbc54a9dd40b9e5d1f6f8757acfeb18f6ceae530"
+created_at = "2026-04-14T06:31:13.309156967Z"
+status_summary = "created"

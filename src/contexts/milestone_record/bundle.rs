@@ -1499,7 +1499,7 @@ mod tests {
                     flow_override: None,
                 }],
             }],
-            default_flow: FlowPreset::Standard,
+            default_flow: FlowPreset::Minimal,
             agents_guidance: None,
         };
 

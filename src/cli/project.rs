@@ -104,7 +104,7 @@ pub struct ProjectCreateArgs {
     pub name: Option<String>,
     #[arg(long, required_unless_present = "from_requirements")]
     pub prompt: Option<PathBuf>,
-    #[arg(long, required_unless_present = "from_requirements")]
+    #[arg(long)]
     pub flow: Option<String>,
     #[arg(
         long = "from-requirements",
@@ -188,8 +188,12 @@ async fn handle_create(args: ProjectCreateArgs) -> AppResult<()> {
     // Validate project ID
     let project_id = ProjectId::new(args.id.expect("clap should require --id"))?;
 
-    // Validate flow preset
-    let flow: FlowPreset = args.flow.expect("clap should require --flow").parse()?;
+    let flow = args
+        .flow
+        .as_deref()
+        .map(str::parse)
+        .transpose()?
+        .unwrap_or(FlowPreset::Minimal);
 
     let prompt_arg = args.prompt.expect("clap should require --prompt");
     let prompt_path = if prompt_arg.is_absolute() {
