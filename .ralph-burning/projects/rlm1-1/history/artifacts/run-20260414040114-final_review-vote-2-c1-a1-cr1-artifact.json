@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414040114-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414040114-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T04:45:43.591778701Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed amendment fr-1-f14e3884 by examining the actual implementation of run_attempt_boundary_sequence, terminal_status_for_attempt, and both caller sites with their guards. The finding correctly identifies that durable_boundary in run_attempt_boundary_sequence always anchors to the latest RunStarted/RunResumed for the run_id (ignoring the started_at parameter), making the function unable to correctly scope to a specific earlier attempt once a later resume exists. While both callers have snapshot guards that mitigate the most obvious cases, the resume flow writes the snapshot before appending run_resumed to the journal, creating a TOCTOU window where the guard passes on the old snapshot but the journal read picks up the new boundary. The remediation — scoping durable_boundary to the last start/resume at or before started_at — is correct and targeted.\n\n## Votes\n\n- `fr-1-f14e3884`: Accept\n  The finding is technically sound. run_attempt_boundary_sequence (queries.rs:38-48) uses .rev().find() to locate the absolute latest RunStarted/RunResumed for the run_id, ignoring the started_at parameter entirely for the durable_boundary component. The max() aggregation at line 63 ensures the latest resume always dominates. This breaks the semantic contract of terminal_status_for_attempt — it cannot correctly answer whether a specific earlier attempt reached terminal state once a later resume exists. The snapshot guards at both call sites (engine.rs:936, daemon_loop.rs:3144-3154) mitigate many cases, but the resume flow writes the snapshot (engine.rs:2073) before appending run_resumed to the journal (engine.rs:2089), creating a real TOCTOU window: a repair path can pass the guard on the old snapshot, then read a journal that now includes the new run_resumed boundary, causing it to incorrectly append run_failed after the live resume's boundary. In a crash-recovery system — the exact domain this code operates in — this race is not theoretical. The consequence (poisoning the live resumed attempt with a stale run_failed) directly reintroduces the bug this bead is designed to eliminate. The proposed remediation is clean: scope durable_boundary to the last RunStarted/RunResumed at or before the given started_at timestamp.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

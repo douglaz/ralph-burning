@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414040114-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414040114-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T04:43:26.055754340Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the current project-state diff plus the attempt-aware reconciliation code and regressions. One fix-now correctness issue remains: the shared `terminal_status_for_attempt()` helper lost per-attempt semantics for interrupted/historical callers, which can append a duplicate terminal event after resume and undermine the new status reconciliation behavior.\n\n## Amendments\n\n1. finding_summary: `terminal_status_for_attempt()` no longer answers whether the specific attempt identified by `started_at` reached a terminal state. `run_attempt_boundary_sequence()` always anchors to the latest `run_started`/`run_resumed` for the run id (`src/contexts/project_run_record/queries.rs:33-64`), so once a later resume exists, callers checking an older interrupted attempt (`src/contexts/workflow_composition/engine.rs:943-957`, `src/contexts/automation_runtime/daemon_loop.rs:3158-3192`) will incorrectly get `None`. Those repair paths then append a second `run_failed` for the old attempt after the resume boundary, which can poison the live resumed attempt and reintroduce the stale-failure reconciliation bug this bead is meant to eliminate.\nseverity: high\naffected_files:\n- src/contexts/project_run_record/queries.rs:33-83\n- src/contexts/workflow_composition/engine.rs:943-957\n- src/contexts/automation_runtime/daemon_loop.rs:3158-3192\nremediation_hint: Keep the latest-boundary logic in a helper used only for the current running snapshot, but make `terminal_status_for_attempt()` locate the boundary for the specific `started_at` passed in (the last `run_started`/`run_resumed` at or before that attempt). Add a regression where interrupted-attempt repair runs after a later `run_resumed` and must not append a duplicate terminal event.\n   Rationale: The project prompt explicitly called out `terminal_status_for_attempt` as part of the reconciliation surface. The new helper logic is correct for `reconcile_snapshot_status()` on the active running attempt, but it is not safe for historical/interrupted-attempt repair, where the supplied `started_at` is supposed to scope the lookup. Leaving it as-is can create a fresh post-resume terminal event and flip a resumed run back to Failed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
