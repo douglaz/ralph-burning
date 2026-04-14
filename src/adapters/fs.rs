@@ -232,9 +232,29 @@ impl ProcessStartTime {
         }
     }
 
-    fn matches_legacy_pid_record(self, record_started_at: DateTime<Utc>) -> bool {
-        let _ = self.precision;
-        self.started_at <= record_started_at
+    fn compare_legacy_pid_record(self, record_started_at: DateTime<Utc>) -> PidRecordLiveState {
+        match self.precision {
+            ProcessStartPrecision::Precise => {
+                if self.started_at <= record_started_at {
+                    PidRecordLiveState::Live
+                } else {
+                    PidRecordLiveState::Stale
+                }
+            }
+            #[cfg(any(test, all(unix, not(target_os = "linux"))))]
+            ProcessStartPrecision::WholeSeconds => {
+                if record_started_at < self.started_at {
+                    return PidRecordLiveState::Stale;
+                }
+
+                let unambiguous_match_at = self.started_at + chrono::Duration::seconds(1);
+                if record_started_at >= unambiguous_match_at {
+                    PidRecordLiveState::Live
+                } else {
+                    PidRecordLiveState::RunningUnverified
+                }
+            }
+        }
     }
 }
 
@@ -838,11 +858,7 @@ impl FileSystem {
         // Legacy pid files without any recorded process identity can only be
         // matched by comparing the live process start against the pid-file
         // write timestamp. A newer live start implies PID reuse.
-        if live_started_at.matches_legacy_pid_record(record.started_at) {
-            PidRecordLiveState::Live
-        } else {
-            PidRecordLiveState::Stale
-        }
+        live_started_at.compare_legacy_pid_record(record.started_at)
     }
 
     pub fn is_backend_process_alive(record: &RunBackendProcessRecord) -> bool {
@@ -5931,6 +5947,7 @@ mod tests {
         assert!(FileSystem::legacy_pid_record_matches_live_process(&record));
     }
 
+    #[cfg(unix)]
     #[test]
     fn legacy_pid_liveness_marks_running_process_without_start_time_as_unverified() {
         let record = RunPidRecord {
@@ -6058,15 +6075,30 @@ mod tests {
     }
 
     #[test]
-    fn coarse_process_start_precision_accepts_same_second_legacy_recovery() {
+    fn coarse_process_start_precision_marks_same_second_legacy_recovery_unverified() {
         let live_started_at = Utc
             .with_ymd_and_hms(2026, 4, 11, 12, 0, 0)
             .single()
             .expect("timestamp");
         let recorded_at = live_started_at + chrono::Duration::milliseconds(900);
 
-        assert!(
-            ProcessStartTime::whole_seconds(live_started_at).matches_legacy_pid_record(recorded_at)
+        assert_eq!(
+            ProcessStartTime::whole_seconds(live_started_at).compare_legacy_pid_record(recorded_at),
+            PidRecordLiveState::RunningUnverified
+        );
+    }
+
+    #[test]
+    fn coarse_process_start_precision_accepts_unambiguously_later_legacy_recovery() {
+        let live_started_at = Utc
+            .with_ymd_and_hms(2026, 4, 11, 12, 0, 0)
+            .single()
+            .expect("timestamp");
+        let recorded_at = live_started_at + chrono::Duration::seconds(1);
+
+        assert_eq!(
+            ProcessStartTime::whole_seconds(live_started_at).compare_legacy_pid_record(recorded_at),
+            PidRecordLiveState::Live
         );
     }
 
@@ -6079,7 +6111,10 @@ mod tests {
             + chrono::Duration::milliseconds(100);
         let recorded_at = live_started_at + chrono::Duration::milliseconds(800);
 
-        assert!(ProcessStartTime::precise(live_started_at).matches_legacy_pid_record(recorded_at));
+        assert_eq!(
+            ProcessStartTime::precise(live_started_at).compare_legacy_pid_record(recorded_at),
+            PidRecordLiveState::Live
+        );
     }
 
     #[cfg(unix)]
