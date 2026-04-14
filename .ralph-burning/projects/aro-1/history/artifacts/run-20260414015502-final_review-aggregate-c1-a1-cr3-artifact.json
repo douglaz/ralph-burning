@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260414015502-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414015502-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:43:07.744476057Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 3\n**Unique Amendments:** 3\n**Final Review Restarts:** 3/25\n\n## Accepted\n\n- `fr-3-182adb87`\n- `fr-3-5a16fec6`\n- `fr-3-b0a0bd61`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-182adb87`\n\nfinding_summary: `.ralph-burning/projects/aro-1/run.json:33-36` and `.ralph-burning/projects/aro-1/run.json:73-76` still serialize `final_review_planner`, even though `StageResolutionSnapshot` no longer defines that field in `src/contexts/project_run_record/model.rs:186-206` and `build_final_review_snapshot` now only emits reviewers plus arbiter in `src/contexts/workflow_composition/engine.rs:8206-8223`. severity: high. affected_files: [\".ralph-burning/projects/aro-1/run.json\"]. remediation_hint: Regenerate or scrub the checked-in `aro-1` run snapshot so every persisted final-review snapshot block contains only `final_review_reviewers` and `final_review_arbiter`.\n\n### `fr-3-5a16fec6`\n\ndocs/templates.md lines 50-51 still reference the old planner_positions placeholder: voter lists `planner_positions` as optional, and arbiter lists `planner_positions` as required. These should be updated to match the new template manifests (voter has no optional placeholders, arbiter requires only `amendments`, `reviewer_votes`, `json_schema`).\n\n### `fr-3-b0a0bd61`\n\nHigh: New final-review snapshots in `.ralph-burning/projects/aro-1/run.json` still persist `final_review_planner` even though the field has been removed from current stage-resolution schema/output. See `run.json:16-36` (`active_run.stage_resolution_snapshot`) and `run.json:56-80` (`last_stage_resolution_snapshot`) where `final_review_planner` is still present. This is contradictory because `StageResolutionSnapshot` now defines only reviewers/arbiter for final review (`src/contexts/project_run_record/model.rs:186-207`), and the builder emits only those fields (`src/contexts/workflow_composition/engine.rs:8206-8223`).\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

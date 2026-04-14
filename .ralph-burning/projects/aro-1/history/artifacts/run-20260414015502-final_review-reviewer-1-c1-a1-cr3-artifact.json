@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414015502-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:40:43.869525561Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the planner role removal from the final review panel. The implementation correctly removes: (1) planner invocation and journal events from final_review.rs, (2) planner_positions from voter and arbiter prompt templates, (3) final_review_planner field from StageResolutionSnapshot, (4) final_review_planner_backend from config/domain/policy, (5) planner resolution and availability checks from engine preflight/resume, (6) all associated diagnostics methods. Backward compat is maintained: serde ignores unknown fields for old snapshots containing final_review_planner, and FinalReviewSettings uses serde(flatten) to absorb old planner_backend config values. The .map_err to .inspect_err refactoring on arbiter validation is correct. The if-let flattening in diagnostics.rs probe code is semantically equivalent. Vote artifact IDs now use 1-based reviewer-aligned naming via final_review_vote_id(). All 787 unit tests pass. No clippy regressions from changed files (existing clippy errors are pre-existing in unrelated code). One minor docs staleness issue found.\n\n## Amendments\n\n1. docs/templates.md lines 50-51 still reference the old planner_positions placeholder: voter lists `planner_positions` as optional, and arbiter lists `planner_positions` as required. These should be updated to match the new template manifests (voter has no optional placeholders, arbiter requires only `amendments`, `reviewer_votes`, `json_schema`).\n   Rationale: The docs/templates.md file is user-facing documentation that describes the template placeholder contract. It now contradicts the actual template_catalog.rs manifest. Users relying on these docs for custom template overrides would get incorrect guidance about which placeholders are available. This is a straightforward documentation update that's within scope of this bead.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}
