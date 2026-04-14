@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414040114-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414040114-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T04:41:07.339072259Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nImplementation is correct and already complete. The attempt-aware status reconciliation was implemented in PR #116 (commit 93ab4eab) and refined in subsequent commits. The current bead's implementer correctly identified the pre-existing fix and validated it. Code review confirms: (1) run_attempt_boundary_sequence correctly computes the attempt boundary from the most recent run_started/run_resumed journal event or snapshot started_at fallback, defaulting to 0 for the missing-run_started edge case; (2) terminal_status_for_attempt only considers terminal events after the boundary sequence; (3) all callers (handle_status in cli/run.rs, run_status service functions, daemon_loop) use the attempt-aware API; (4) comprehensive test coverage across unit tests (workflow_engine_test.rs, run_queries_test.rs) and CLI integration tests (cli.rs) covering durable resume boundary, unjournaled resume with snapshot started_at fallback, missing run_started with terminal event, and end-to-end journal recovery after snapshot write failure. All tests pass. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

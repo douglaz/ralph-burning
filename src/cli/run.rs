@@ -7494,6 +7494,129 @@ mod tests {
     }
 
     #[test]
+    fn repair_missing_interrupted_handoff_run_failed_event_ignores_older_attempt_terminal_after_resume(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+        let failed_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:05:00Z")
+            .expect("parse failed_at")
+            .with_timezone(&Utc);
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/daemon-resumed-handoff"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/daemon-resumed-handoff/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"daemon-resumed-handoff","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-detached","first_stage":"implementation","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:05:00Z","event_type":"run_failed","details":{"run_id":"run-detached","stage_id":"implementation","failure_class":"stage_failure","message":"original attempt failed","completion_rounds":1,"max_completion_rounds":20}}
+{"sequence":4,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_resumed","details":{"run_id":"run-detached","resume_stage":"implementation","cycle":2,"completion_round":1,"max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let project_id = ProjectId::new("daemon-resumed-handoff").expect("project id");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-detached".to_owned(),
+                stage_cursor: StageCursor::new(StageId::Implementation, 1, 1, 1)
+                    .expect("stage cursor"),
+                started_at,
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed (interrupted by daemon shutdown)".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base_dir, &project_id, &snapshot)
+            .expect("write interrupted run snapshot");
+
+        let dead_handoff = CliWriterCleanupHandoff {
+            pid: std::process::id().saturating_add(100_000),
+            run_id: Some("run-detached".to_owned()),
+            run_started_at: Some(started_at),
+            proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+        let worktree_lease = WorktreeLease {
+            lease_id: "lease-resumed-daemon-handoff".to_owned(),
+            task_id: "task-resumed-daemon-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            worktree_path: base_dir.join("worktrees/resumed-daemon-handoff"),
+            branch_name: "rb/resumed-daemon-handoff".to_owned(),
+            acquired_at: failed_at,
+            ttl_seconds: 300,
+            last_heartbeat: failed_at,
+            cleanup_handoff: Some(dead_handoff),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::Worktree(worktree_lease),
+        )
+        .expect("write detached daemon handoff lease");
+
+        let repaired =
+            repair_missing_interrupted_handoff_run_failed_event(base_dir, &project_id, &snapshot)
+                .expect("repair resumed daemon handoff");
+        assert!(
+            repaired,
+            "repair should still inspect the interrupted attempt even when a later resume exists"
+        );
+
+        let journal_events = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("read repaired project journal");
+        assert_eq!(
+            journal_events
+                .iter()
+                .filter(|event| event.event_type == JournalEventType::RunFailed)
+                .count(),
+            1,
+            "repair must not append a duplicate run_failed for the old attempt after a later run_resumed"
+        );
+        assert_eq!(
+            journal_events.last().expect("last event").event_type,
+            JournalEventType::RunResumed,
+            "repair must leave the resumed-attempt boundary as the last durable event"
+        );
+        assert_eq!(
+            journal_events.last().expect("last event").sequence,
+            4,
+            "repair must not append a stale terminal event after the resumed-attempt boundary"
+        );
+        assert_eq!(
+            journal_events
+                .iter()
+                .filter(|event| event.event_type == JournalEventType::RunResumed)
+                .count(),
+            1,
+            "test fixture should keep the later resume intact"
+        );
+        assert_eq!(
+            crate::contexts::project_run_record::queries::terminal_status_for_attempt(
+                "run-detached",
+                started_at,
+                &journal_events,
+            ),
+            Some(RunStatus::Failed),
+            "the original interrupted attempt should still report its own terminal status"
+        );
+    }
+
+    #[test]
     fn repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot_cleans_stale_daemon_backends(
     ) {
         let temp_dir = tempfile::tempdir().expect("tempdir");

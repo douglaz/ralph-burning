@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414040114-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414040114-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T04:46:01.644223311Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment: the attempt-terminal query regressed from attempt-specific semantics to latest-run semantics, which can hide an older attempt's terminal event after a later resume and reopen stale-failure corruption paths.\n\n## Votes\n\n- `fr-1-f14e3884`: Accept\n  `terminal_status_for_attempt(run_id, started_at, ...)` is supposed to answer for the attempt identified by `started_at`, but `run_attempt_boundary_sequence()` now takes the maximum of the latest durable `run_started`/`run_resumed` for that `run_id` and the pre-`started_at` fallback. With events like `run_started(A)`, `run_failed(A)`, `run_resumed(B)` on the same `run_id`, a lookup for attempt A gets boundary = `run_resumed(B)` and incorrectly returns `None` instead of `Failed`. That is a real correctness regression in `src/contexts/project_run_record/queries.rs`. The repair paths in `engine.rs` and `daemon_loop.rs` use this helper to decide whether to append a missing `run_failed`; because they validate the interrupted snapshot before reading the journal, a concurrent later resume can make the helper miss the old terminal event and cause a duplicate stale `run_failed` to be appended after the resume boundary. That can poison the resumed attempt and reintroduce exactly the stale-failure reconciliation bug this change was trying to avoid. The fix should split 'latest running attempt' logic from 'specific attempt by started_at' logic and add a regression test for old-attempt repair after a later `run_resumed`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

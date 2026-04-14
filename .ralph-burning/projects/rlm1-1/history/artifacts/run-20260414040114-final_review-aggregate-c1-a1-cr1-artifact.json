@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260414040114-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414040114-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T04:46:01.657294485Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 2\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-f14e3884`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-f14e3884`\n\nfinding_summary: `terminal_status_for_attempt()` no longer answers whether the specific attempt identified by `started_at` reached a terminal state. `run_attempt_boundary_sequence()` always anchors to the latest `run_started`/`run_resumed` for the run id (`src/contexts/project_run_record/queries.rs:33-64`), so once a later resume exists, callers checking an older interrupted attempt (`src/contexts/workflow_composition/engine.rs:943-957`, `src/contexts/automation_runtime/daemon_loop.rs:3158-3192`) will incorrectly get `None`. Those repair paths then append a second `run_failed` for the old attempt after the resume boundary, which can poison the live resumed attempt and reintroduce the stale-failure reconciliation bug this bead is meant to eliminate.\nseverity: high\naffected_files:\n- src/contexts/project_run_record/queries.rs:33-83\n- src/contexts/workflow_composition/engine.rs:943-957\n- src/contexts/automation_runtime/daemon_loop.rs:3158-3192\nremediation_hint: Keep the latest-boundary logic in a helper used only for the current running snapshot, but make `terminal_status_for_attempt()` locate the boundary for the specific `started_at` passed in (the last `run_started`/`run_resumed` at or before that attempt). Add a regression where interrupted-attempt repair runs after a later `run_resumed` and must not append a duplicate terminal event.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

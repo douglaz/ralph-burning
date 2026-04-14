@@ -1,0 +1,7 @@
+id = "rlm1-1"
+name = "reconciliation-attempt-aware"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "a7d0b380697fa493f527d838e80a6236daede34aa06ae79636ad40ff29e264e1"
+created_at = "2026-04-14T04:01:14.580774930Z"
+status_summary = "created"
