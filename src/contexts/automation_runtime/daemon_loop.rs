@@ -1089,8 +1089,9 @@ where
                 } // end if !is_reconciliation_only_retry
                   // Reconcile bead BEFORE marking completed so a crash between
                   // reconciliation and mark_completed causes reprocessing on restart.
-                if let Err((failure_class, failure_message)) =
-                    self.try_reconcile_success(repo_root, &active_task).await
+                if let Err((failure_class, failure_message)) = self
+                    .try_reconcile_success(repo_root, &active_task, run_id.as_deref())
+                    .await
                 {
                     match DaemonTaskService::mark_failed(
                         self.store,
@@ -1716,8 +1717,9 @@ where
                 }
                 // Reconcile bead BEFORE marking completed so a crash between
                 // reconciliation and mark_completed causes reprocessing on restart.
-                if let Err((failure_class, failure_message)) =
-                    self.try_reconcile_success(base_dir, &active_task).await
+                if let Err((failure_class, failure_message)) = self
+                    .try_reconcile_success(base_dir, &active_task, run_id.as_deref())
+                    .await
                 {
                     if let Err(e) = DaemonTaskService::mark_failed(
                         self.store,
@@ -1793,6 +1795,14 @@ where
         }
     }
 
+    fn workflow_run_id_for_reconciliation<'task>(
+        &self,
+        task: &'task DaemonTask,
+        authoritative_run_id: Option<&'task str>,
+    ) -> Option<&'task str> {
+        authoritative_run_id.or(task.workflow_run_id.as_deref())
+    }
+
     fn missing_workflow_run_id_failure(
         &self,
         project_dir: &Path,
@@ -1858,6 +1868,7 @@ where
         &self,
         project_dir: &Path,
         task: &DaemonTask,
+        authoritative_run_id: Option<&str>,
     ) -> Result<(), (String, String)> {
         use crate::adapters::br_process::{BrAdapter, BrMutationAdapter, OsProcessRunner};
         use crate::adapters::bv_process::{BvAdapter, OsBvProcessRunner};
@@ -1910,11 +1921,16 @@ where
         // workflow_run_id binding, we additionally move the milestone
         // controller to needs-operator so the ambiguity is visible.
 
-        // Extract run_id and started_at. Only reconcile against the durable
-        // workflow_run_id persisted on the task after dispatch. Guessing from
-        // the latest RunStarted journal event is unsafe because a newer manual
-        // re-run may have appended its own run identity.
-        let run_id_from_task = match task.workflow_run_id.as_deref() {
+        // Extract run_id and started_at. Reconciliation retries must use the
+        // durable workflow_run_id persisted on the task. The first success path
+        // may also use the authoritative run_id captured directly from the
+        // dispatch/resume call before persistence becomes visible to the
+        // in-memory task snapshot. Guessing from the latest RunStarted journal
+        // event remains unsafe because a newer manual re-run may have appended
+        // its own run identity.
+        let run_id_from_task = match self
+            .workflow_run_id_for_reconciliation(task, authoritative_run_id)
+        {
             Some(run_id) => run_id,
             None => {
                 return Err(self.missing_workflow_run_id_failure(project_dir, task, task_source))
@@ -7882,7 +7898,7 @@ mod tests {
         );
 
         let error = daemon
-            .try_reconcile_success(base, &task)
+            .try_reconcile_success(base, &task, None)
             .await
             .expect_err("missing workflow_run_id must fail closed");
         assert_eq!(error.0, "reconciliation_no_run_binding");
@@ -8027,6 +8043,134 @@ mod tests {
             persisted.workflow_run_id.as_deref(),
             Some(original_run_id.as_str()),
             "persisted binding must use the authoritative dispatch run_id, not the latest journal event"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn try_reconcile_success_uses_authoritative_run_id_before_task_reload() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        let now = Utc::now();
+        initialize_workspace(base, now).expect("init workspace");
+
+        let milestone = create_milestone(
+            &FsMilestoneStore,
+            base,
+            CreateMilestoneInput {
+                id: "ms-authoritative-run-binding".to_owned(),
+                name: "Authoritative run binding".to_owned(),
+                description: "Fresh dispatch should use captured run_id".to_owned(),
+            },
+            now,
+        )
+        .expect("create milestone");
+        let task_source = TaskSource {
+            milestone_id: milestone.id.to_string(),
+            bead_id: "ms-authoritative-run-binding.bead-1".to_owned(),
+            parent_epic_id: None,
+            origin: TaskOrigin::Milestone,
+            plan_hash: Some("plan-v1".to_owned()),
+            plan_version: Some(1),
+        };
+        let project_id = ProjectId::new("authoritative-run-binding-project").expect("project id");
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Authoritative run binding project".to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt"),
+                created_at: now,
+                task_source: Some(task_source.clone()),
+            },
+        )
+        .expect("create project");
+
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base,
+            &milestone.id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::Running,
+                "bead execution started",
+            )
+            .with_bead(&task_source.bead_id)
+            .with_task("task-authoritative-run-binding"),
+            now - chrono::Duration::seconds(1),
+        )
+        .expect("mark controller running");
+
+        let authoritative_run_id =
+            RunId::new("run-authoritative-first-dispatch").expect("authoritative run id");
+        let journal_events = FsJournalStore
+            .read_journal(base, &project_id)
+            .expect("read initial journal");
+        let run_started = journal::run_started_event(
+            journal::last_sequence(&journal_events) + 1,
+            now + chrono::Duration::seconds(2),
+            &authoritative_run_id,
+            StageId::Implementation,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&run_started).expect("serialize run_started"),
+            )
+            .expect("append run_started");
+
+        let mut task = sample_pending_task("task-authoritative-run-binding", &project_id);
+        task.status = TaskStatus::Active;
+        task.attempt_count = 1;
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .try_reconcile_success(base, &task, Some(authoritative_run_id.as_str()))
+            .await
+            .expect_err(
+                "missing run_completed should still fail after accepting authoritative run_id",
+            );
+        assert_eq!(error.0, "reconciliation_metadata_error");
+        assert!(
+            error.1.contains(&format!(
+                "no RunCompleted journal event for run_id={}",
+                authoritative_run_id.as_str()
+            )),
+            "reconciliation should look up metadata for the authoritative run_id: {}",
+            error.1
+        );
+
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &milestone.id)
+                .expect("load controller")
+                .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Running,
+            "authoritative run_id should bypass the missing-binding needs-operator path"
         );
     }
 
