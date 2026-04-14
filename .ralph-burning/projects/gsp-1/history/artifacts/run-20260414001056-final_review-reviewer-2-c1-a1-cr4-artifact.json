@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-reviewer-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414001056-final_review-reviewer-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:43:17.638131885Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nNo defects were found in the reviewed change set. The working-tree diff only updates .ralph-burning project metadata, and `src/adapters/process_backend.rs` + `src/adapters/tmux.rs` currently already pass bounded stdout text into `classify_exit_failure_with_output` when structured stdout parsing is unavailable, with corresponding tests for plain-stdout-only exhaustion classification.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}

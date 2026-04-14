@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414001056-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:46:30.162687492Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the stdout-only exhaustion classification fix across process_backend.rs and tmux.rs. The implementation is correct and well-scoped: (1) New `stdout_for_exit_failure_classification` helper properly prefers structured stdout error and falls back to a bounded raw-stdout tail (4096 bytes via STDERR_EXHAUSTION_SCAN_LIMIT), consistent with how stderr is already handled. (2) All three call sites (two in process_backend, one in tmux) are consistently updated. (3) Two new exhaustion patterns ('insufficient credits'/'insufficient credit') are reasonable additions. (4) Test coverage is comprehensive — unit tests for the helper function, an inline test for end-to-end classification, and integration tests for both ProcessBackendAdapter and TmuxAdapter exercising the full path with a real stubbed process. (5) Docstrings for `classify_exit_failure_with_output` are correctly updated to reflect the new behavior. (6) The false-positive risk from model conversation content is mitigated by bounding the scan to the last 4096 bytes, matching the existing stderr strategy. Pre-existing clippy warnings exist in other files but none were introduced by this change. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

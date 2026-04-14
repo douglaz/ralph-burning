@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-planner-positions-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414001056-final_review-planner-positions-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:48:50.187212455Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nVerified the amendment by reading the test and source files. The test at tmux_adapter_test.rs:416 calls check_tmux_available() which scans the system PATH for a real tmux binary BEFORE the fake tmux is installed at line 429. On systems without tmux, the test silently returns at line 417, never exercising the stdout-only exhaustion classification at tmux.rs:632-644. The existing check_tmux_available_in() method (line 82) already supports custom search paths and would fix this cleanly.\n\n## Votes\n\n- `fr-4-a6c27c9a`: Accept\n  Confirmed by reading the code. The test guard at line 416 calls check_tmux_available() which uses ProcessBackendAdapter::system_path_entries() — this checks the system PATH for a real tmux binary before the fake tmux fixture is written (line 429) and before PathGuard::prepend modifies PATH (line 422). On CI or any environment without tmux installed, the test silently passes without covering the new classification logic at tmux.rs:632-644. This is a real testing gap: the test gives false coverage confidence. The fix is straightforward — the codebase already has check_tmux_available_in() at line 82 that accepts custom search paths, so the test can install the fake tmux first, then call check_tmux_available_in(&[bin_dir.path().to_path_buf()]) to validate availability against the fixture directory. Low severity is appropriate since it doesn't affect production code, but it should be fixed to ensure the regression test actually regresses.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

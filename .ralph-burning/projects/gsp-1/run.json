@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260414001056",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
     "started_at": "2026-04-14T01:27:19.336089669Z",
     "prompt_hash_at_cycle_start": "b588021cd0a44a3ed1eda05c1ff33ff131603b2e57a71a62632f4e0ea7ae3b9e",
     "prompt_hash_at_stage_start": "b588021cd0a44a3ed1eda05c1ff33ff131603b2e57a71a62632f4e0ea7ae3b9e",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-a6c27c9a",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "finding_summary: The new tmux regression test can silently pass without exercising the stdout-only exhaustion path because it bails out on `TmuxAdapter::check_tmux_available()` before the fake tmux binary is added to `PATH`. On environments that do not have a real `tmux` installed, `tests/unit/tmux_adapter_test.rs:416-423` returns early and never covers the `src/adapters/tmux.rs:632-644` classification logic added by this bead. severity: low affected_files: [\"tests/unit/tmux_adapter_test.rs:416-423\", \"src/adapters/tmux.rs:632-644\"] remediation_hint: Install the fake tmux fixture before the availability check, or switch the guard to `check_tmux_available_in()` against the temporary bin dir so the test always exercises the new code path.",
+        "created_at": "2026-04-14T01:49:28.853782498Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "e3553bd186082eb3f63bf3ce51883a8e4c3dad286e7a1299f18cb37fa44db0ba"
+      }
+    ],
     "processed_count": 8
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-14T01:27:19.363353812Z",
+    "resolved_at": "2026-04-14T01:42:50.746500185Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

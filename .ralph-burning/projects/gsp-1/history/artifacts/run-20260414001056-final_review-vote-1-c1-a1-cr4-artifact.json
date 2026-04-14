@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414001056-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:49:28.840225279Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nVerified the amendment by reading tmux_adapter_test.rs and tmux.rs. The test at line 416 calls check_tmux_available() which uses ProcessBackendAdapter::system_path_entries() to scan the system PATH for a real tmux binary. This check runs before the fake tmux fixture is written (line 429) and before PathGuard::prepend could help (line 422). On environments without tmux (e.g., CI), the test silently returns at line 417, giving false coverage of the stdout-only exhaustion classification at tmux.rs:632-644. The fix is clean: check_tmux_available_in() at line 82 already accepts custom search paths, so the test can install the fake tmux first, then validate availability against the fixture directory.\n\n## Votes\n\n- `fr-4-a6c27c9a`: Accept\n  Confirmed by code inspection. The test guard at line 416 calls check_tmux_available() which delegates to ProcessBackendAdapter::system_path_entries() — this scans the real system PATH for tmux before the fake tmux binary is written at line 429. On any system without tmux installed, the test silently returns at line 417, never exercising the new stdout-only exhaustion classification logic at tmux.rs:632-644. This is a genuine testing gap: the test provides false coverage confidence because it appears to exist and pass, but on tmux-less environments (common in CI) it tests nothing. The fix is straightforward — check_tmux_available_in() already exists at line 82 and accepts custom search paths, so the test should install the fake tmux first, then call check_tmux_available_in(&[bin_dir.path().to_path_buf()]) to verify availability against the fixture directory. Low severity is correct since production code is unaffected, but the amendment should be accepted to ensure the regression test actually provides the coverage it claims.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}

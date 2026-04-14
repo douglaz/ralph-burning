@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-vote-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414001056-final_review-vote-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:48:53.574619516Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted. The amendment identifies a genuine test-quality defect: the regression test’s availability guard can bypass the new stdout-exhaustion classification path when real tmux is absent, so the intended behavior may never be exercised. This is a maintainability and robustness issue for coverage determinism and should be fixed as described.\n\n## Votes\n\n- `fr-4-a6c27c9a`: Accept\n  The test calls `check_tmux_available()` before installing the fake tmux fixture and before PATH prepending, so on hosts without tmux it exits early and does not execute the targeted code path. This can produce a false pass and reduce confidence in regression coverage; using the custom-path checker (`check_tmux_available_in`) against the temp bin directory (or creating fixture first) is the correct fix and low-risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}
