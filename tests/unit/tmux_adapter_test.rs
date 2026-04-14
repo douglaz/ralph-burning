@@ -413,20 +413,19 @@ async fn tmux_adapter_cancel_cleans_up_session_and_allows_attach_while_running()
 
 #[tokio::test(flavor = "current_thread")]
 async fn tmux_adapter_classifies_stdout_only_exhaustion_as_backend_exhausted() {
-    if ralph_burning::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
-        return;
-    }
     let bin_dir = tempdir().expect("create bin dir");
     let state_dir = tempdir().expect("create state dir");
     let _env_lock = lock_path_mutex();
+    write_fake_tmux(bin_dir.path(), state_dir.path());
+    TmuxAdapter::check_tmux_available_in(&[bin_dir.path().to_path_buf()])
+        .expect("fake tmux should be discoverable");
+
     let _path_guard = PathGuard::prepend(bin_dir.path());
     std::env::set_var("FAKE_TMUX_STATE_DIR", state_dir.path());
-
     write_executable(
         &bin_dir.path().join("claude"),
         "#!/bin/sh\ncat > /dev/null\necho 'Your account has insufficient credits remaining.'\nexit 1\n",
     );
-    write_fake_tmux(bin_dir.path(), state_dir.path());
 
     let (_dir, request) = request_fixture("tmux-stdout-exhausted");
     let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), true).expect("tmux adapter");
