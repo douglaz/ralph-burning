@@ -2,15 +2,15 @@
   "artifact_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr1-artifact",
   "payload_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr1-payload",
   "stage_id": "final_review",
-  "created_at": "2026-04-14T02:10:29.305322565Z",
-  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound 1 bug: a new test fixture snapshot still contains `final_review_planner`, which conflicts with the planner-removal contract.\n\n## Amendments\n\n1. File `.ralph-burning/projects/aro-1/run.json` now writes a prohibited field in the final-review snapshot: `stage_resolution_snapshot.final_review_planner` is present at lines 33-36. This violates the required removal of planner-role artifacts from new final-review snapshots and will cause fixture-based snapshot checks for “planner-free” run output to fail or silently drift. (Severity: high)\n\nFiles: `.ralph-burning/projects/aro-1/run.json:33-36`\n   Rationale: Remove `final_review_planner` from generated/new fixture run snapshots so final-review snapshots only persist final_review_reviewers and final_review_arbiter (plus any other non-planner fields).\n",
+  "created_at": "2026-04-14T02:14:29.624575138Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThorough review of the planner removal from the final review panel. The implementation is comprehensive and correct: all planner invocation code, planner backend resolution, planner journal events, planner positions in voter/arbiter prompts, planner fields in snapshots, planner config keys, and planner diagnostics have been cleanly removed across 10 source files and 4 test files. Backward compatibility is maintained via serde's default behavior (no deny_unknown_fields), and a dedicated test verifies old snapshots with final_review_planner are still readable. All 33 final_review tests pass. Two minor cosmetic issues exist (stale function/test names still mentioning 'planner') but these do not affect correctness.\n\n## Amendments\n\n1. Two test function names still reference 'planner' but their assertions now check 'arbiter':\n1. `tests/unit/backend_diagnostics_test.rs:2533` — `probe_with_availability_final_review_failure_reports_planner_not_generic` should be renamed to `probe_with_availability_final_review_failure_reports_arbiter_not_generic`\n2. `tests/unit/backend_diagnostics_test.rs:1729` — `probe_final_review_panel_uses_planner_timeout_not_final_reviewer` should be renamed to reflect the new primary role (arbiter), and the comment at line 1734 about 'planner and final_reviewer timeouts' should be updated\n   Rationale: Stale test names are misleading and will confuse future developers about what the tests actually verify. The assertions inside were correctly updated to check for 'arbiter' but the function names were not. Low severity but easy fix and within scope of this bead.\n2. Comment at `src/contexts/agent_execution/policy.rs:145` says 'Resolve only the final-review reviewer panel members (no planner/arbiter)' — should be updated to 'Resolve only the final-review reviewer panel members (no arbiter)' since the planner no longer exists in the final review panel.\n   Rationale: The comment references a role (planner) that no longer exists in this context. While minor, it adds confusion about whether a planner was intentionally excluded or never existed. Easy single-line fix within scope.\n",
   "record_kind": "stage_supporting",
   "producer": {
     "type": "agent",
-    "requested_backend_family": "codex",
-    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
-    "actual_backend_family": "codex",
-    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
   },
   "completion_round": 1
 }

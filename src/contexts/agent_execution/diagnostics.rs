@@ -922,7 +922,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         let minimum = self.config.final_review_policy().min_reviewers;
 
         // Try the full panel resolution; if it fails, identify the exact
-        // failing reviewer (planner and arbiter already succeeded above).
+        // failing reviewer (arbiter already succeeded above).
         let resolution = self
             .policy
             .resolve_final_review_panel(cycle)
@@ -1141,18 +1141,16 @@ impl<'a> BackendDiagnosticsService<'a> {
                 ),
                 _ => None,
             };
-            if let Some(primary) = primary_role {
-                if let Ok(primary) = primary {
-                    if let Err(err) = adapter.check_availability(&primary).await {
-                        return Err(AppError::BackendUnavailable {
-                            backend: primary.backend.family.as_str().to_owned(),
-                            details: format!(
-                                "required primary '{}' for '{}' unavailable: {} [source: {}]",
-                                primary_target, role_str, err, primary_source
-                            ),
-                            failure_class: None,
-                        });
-                    }
+            if let Some(Ok(primary)) = primary_role {
+                if let Err(err) = adapter.check_availability(&primary).await {
+                    return Err(AppError::BackendUnavailable {
+                        backend: primary.backend.family.as_str().to_owned(),
+                        details: format!(
+                            "required primary '{}' for '{}' unavailable: {} [source: {}]",
+                            primary_target, role_str, err, primary_source
+                        ),
+                        failure_class: None,
+                    });
                 }
             }
 

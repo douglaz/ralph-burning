@@ -12856,7 +12856,7 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(
         m,
-        "workflow.final_review.planner_completion_with_pending_amendments_fails",
+        "workflow.final_review.completion_with_pending_amendments_fails",
         || {
             use crate::contexts::project_run_record::service::AmendmentQueuePort;
 

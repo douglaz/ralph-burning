@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414015502-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T02:26:22.915107432Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFinished the final-review planner-removal remediation. I aligned final-review supporting artifact IDs with one-based reviewer IDs in `src/contexts/workflow_composition/final_review.rs`, added a regression test for reviewer/vote artifact naming, renamed stale arbiter-focused diagnostics tests and comments, updated the final-review conformance scenario ID/name, and cleaned the checked-in `.ralph-burning/projects/aro-1` sample run data by removing the stale `final_review_planner` snapshot field, dropping planner journal/artifact remnants, and renaming stored reviewer/vote artifacts to the new one-based suffixes.\n\n## Steps\n\n1. [Completed] Inspect the remaining planner-related drift in final-review code paths, tests, and checked-in sample run artifacts\n2. [Completed] Patch final-review supporting record suffixing, stale arbiter/planner labels, and final-review conformance naming\n3. [Completed] Update the checked-in `.ralph-burning/projects/aro-1` snapshot, journal, and stored final-review artifacts to match the planner-free flow\n4. [Completed] Run formatting, test, and clippy validation and record the remaining repo-wide failures\n\n## Validation Evidence\n\n- `cargo fmt` passed.\n- `cargo test` passed.\n- `cargo test --no-run` passed after the final follow-up cleanup.\n- `cargo fmt --check` passed.\n- `cargo clippy --all-targets --all-features -- -D warnings` still fails, but the remaining reported errors are outside the touched final-review/planner-removal files; the filtered rerun showed no matches in `src/contexts/workflow_composition/final_review.rs`, `src/contexts/agent_execution/diagnostics.rs`, `src/contexts/agent_execution/policy.rs`, `tests/unit/backend_diagnostics_test.rs`, `tests/conformance/features/final_review.feature`, or `src/contexts/conformance_spec/scenarios.rs`.\n\n## Outstanding Risks\n\n- `cargo clippy --all-targets --all-features -- -D warnings` still fails on pre-existing repo-wide issues outside this change set, including lints in `src/adapters/fs.rs`, `src/cli/project.rs`, `src/cli/run.rs`, `src/contexts/milestone_record/service.rs`, `src/contexts/project_run_record/service.rs`, and `src/contexts/workflow_composition/completion.rs`.\n- `nix build` was not run, so the repository's authoritative gate is still unverified in this turn.\n- The checked-in sample run history still contains historical amendment text describing the previously-detected planner/suffix issues; the runtime data shape is corrected, but those narrative artifact bodies remain as historical review output.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

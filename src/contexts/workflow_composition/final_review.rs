@@ -101,6 +101,10 @@ fn final_review_reviewer_id(member_index: usize) -> String {
     format!("reviewer-{}", member_index + 1)
 }
 
+fn final_review_vote_id(member_index: usize) -> String {
+    format!("vote-{}", member_index + 1)
+}
+
 fn panel_member_identity_from_producer(
     producer: &RecordProducer,
     target: &ResolvedBackendTarget,
@@ -635,7 +639,7 @@ where
             &reviewer_payload,
             &artifact,
             producer,
-            &format!("reviewer-{idx}"),
+            reviewer_id.as_str(),
         ) {
             if deferred_processing_error.is_none() {
                 deferred_processing_error = Some(e);
@@ -1112,6 +1116,7 @@ where
             &votes,
             &producer.to_string(),
         );
+        let vote_id = final_review_vote_id(reviewer.member_index);
         if let Err(e) = persist_supporting_record(
             artifact_write,
             base_dir,
@@ -1123,7 +1128,7 @@ where
             &vote_payload,
             &artifact,
             producer,
-            &format!("vote-{}", reviewer.member_index),
+            &vote_id,
         ) {
             if deferred_vote_processing_error.is_none() {
                 deferred_vote_processing_error = Some(e);
@@ -1347,7 +1352,7 @@ where
                     details: format!("final-review arbiter schema validation failed: {e}"),
                 }
             })?;
-        validate_arbiter_payload(&arbiter, &disputed_ids, &panel.arbiter).map_err(|error| {
+        validate_arbiter_payload(&arbiter, &disputed_ids, &panel.arbiter).inspect_err(|_| {
             let duration = arbiter_started_at.elapsed();
             let _ = append_panel_member_completed_event_with_identity(
                 journal_store,
@@ -1379,7 +1384,6 @@ where
                 Some("failed_domain_validation"),
                 Some(0),
             );
-            error
         })?;
         let arbiter_duration = arbiter_started_at.elapsed();
         append_panel_member_completed_event_with_identity(
@@ -3570,6 +3574,109 @@ mod tests {
                 }) if !requested_backend_family.is_empty() && !requested_model_id.is_empty()
             )),
             "final-review supporting artifacts must persist agent producer metadata: {supporting_final_review_artifacts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn final_review_supporting_artifact_ids_align_with_reviewer_ids() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-supporting-artifact-ids");
+        let agent_service = AgentExecutionService::new(
+            RecordingFinalReviewAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let run_id = RunId::new("run-final-review-artifact-ids").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            reviewers: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                    required: true,
+                    configured_index: 0,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2-model"),
+                    required: true,
+                    configured_index: 1,
+                },
+            ],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &crate::adapters::fs::FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            2,
+            0,
+            0.5,
+            2,
+            0,
+            "prompt.md",
+            0,
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("final review should succeed");
+
+        let artifacts = FsArtifactStore
+            .list_artifacts(base_dir, &project_id)
+            .expect("list artifacts");
+        let supporting_ids: Vec<_> = artifacts
+            .into_iter()
+            .filter(|record| {
+                record.stage_id == StageId::FinalReview
+                    && record.record_kind == RecordKind::StageSupporting
+            })
+            .map(|record| record.artifact_id)
+            .collect();
+
+        assert!(
+            supporting_ids
+                .iter()
+                .any(|id| id.contains("-final_review-reviewer-1-")),
+            "proposal artifact should align with reviewer-1: {supporting_ids:?}"
+        );
+        assert!(
+            supporting_ids
+                .iter()
+                .any(|id| id.contains("-final_review-reviewer-2-")),
+            "proposal artifact should align with reviewer-2: {supporting_ids:?}"
+        );
+        assert!(
+            supporting_ids
+                .iter()
+                .any(|id| id.contains("-final_review-vote-1-")),
+            "vote artifact should align with reviewer 1: {supporting_ids:?}"
+        );
+        assert!(
+            supporting_ids
+                .iter()
+                .any(|id| id.contains("-final_review-vote-2-")),
+            "vote artifact should align with reviewer 2: {supporting_ids:?}"
+        );
+        assert!(
+            supporting_ids
+                .iter()
+                .all(|id| !id.contains("-final_review-reviewer-0-") && !id.contains("-final_review-vote-0-")),
+            "final-review supporting artifacts must not use zero-based reviewer ids: {supporting_ids:?}"
         );
     }
 

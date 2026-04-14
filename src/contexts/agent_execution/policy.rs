@@ -142,7 +142,7 @@ impl<'a> BackendPolicyService<'a> {
         Ok(FinalReviewPanelResolution { reviewers, arbiter })
     }
 
-    /// Resolve only the final-review reviewer panel members (no planner/arbiter).
+    /// Resolve only the final-review reviewer panel members (no arbiter).
     /// Used by preflight to assemble the panel with member-specific error wrapping.
     pub fn resolve_final_review_reviewers(&self) -> AppResult<Vec<ResolvedPanelMember>> {
         self.resolve_panel_backends(

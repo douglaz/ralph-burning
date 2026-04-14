@@ -1726,13 +1726,14 @@ async fn probe_prompt_review_panel_failure_reports_refiner_source() {
 // ── probe timeout fidelity tests ──────────────────────────────────────────────
 
 #[test]
-fn probe_final_review_panel_uses_planner_timeout_not_final_reviewer() {
+fn probe_final_review_panel_uses_arbiter_timeout_path_not_final_reviewer() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());
 
     let mut workspace = WorkspaceConfig::new(test_timestamp());
-    // Set distinct planner and final_reviewer timeouts so the test can
-    // distinguish which role the probe uses.
+    // Set distinct arbiter-primary and final_reviewer timeouts so the test can
+    // distinguish which path the probe uses. The arbiter currently inherits the
+    // planner timeout slot.
     let mut claude_settings = empty_backend_settings(true);
     claude_settings.role_timeouts = BackendRoleTimeouts {
         planner: Some(11),
@@ -2530,7 +2531,7 @@ fn probe_prompt_review_panel_failure_reports_refiner_not_planner() {
 }
 
 #[tokio::test]
-async fn probe_with_availability_final_review_failure_reports_planner_not_generic() {
+async fn probe_with_availability_final_review_failure_reports_arbiter_not_generic() {
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
