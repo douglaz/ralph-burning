@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260414015502",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 4
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-3-182adb87",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "finding_summary: `.ralph-burning/projects/aro-1/run.json:33-36` and `.ralph-burning/projects/aro-1/run.json:73-76` still serialize `final_review_planner`, even though `StageResolutionSnapshot` no longer defines that field in `src/contexts/project_run_record/model.rs:186-206` and `build_final_review_snapshot` now only emits reviewers plus arbiter in `src/contexts/workflow_composition/engine.rs:8206-8223`. severity: high. affected_files: [\".ralph-burning/projects/aro-1/run.json\"]. remediation_hint: Regenerate or scrub the checked-in `aro-1` run snapshot so every persisted final-review snapshot block contains only `final_review_reviewers` and `final_review_arbiter`.",
-        "created_at": "2026-04-14T02:43:07.744466569Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "ea10a0c0cbbb5df83308d3113cff74b46f939bdd880bbd873351c3d8d3a7b89f"
-      },
-      {
-        "amendment_id": "fr-3-5a16fec6",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "docs/templates.md lines 50-51 still reference the old planner_positions placeholder: voter lists `planner_positions` as optional, and arbiter lists `planner_positions` as required. These should be updated to match the new template manifests (voter has no optional placeholders, arbiter requires only `amendments`, `reviewer_votes`, `json_schema`).",
-        "created_at": "2026-04-14T02:43:07.744468513Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "59380ba1ee7bd9f1bd66995e1bd4574feb550c2a24d9e8bde0e177905401c5a1"
-      },
-      {
-        "amendment_id": "fr-3-b0a0bd61",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "High: New final-review snapshots in `.ralph-burning/projects/aro-1/run.json` still persist `final_review_planner` even though the field has been removed from current stage-resolution schema/output. See `run.json:16-36` (`active_run.stage_resolution_snapshot`) and `run.json:56-80` (`last_stage_resolution_snapshot`) where `final_review_planner` is still present. This is contradictory because `StageResolutionSnapshot` now defines only reviewers/arbiter for final review (`src/contexts/project_run_record/model.rs:186-207`), and the builder emits only those fields (`src/contexts/workflow_composition/engine.rs:8206-8223`).",
-        "created_at": "2026-04-14T02:43:07.744470376Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "8dd63130d1a7c672ae146247a73aaeae9ce94f6f440c1eec3086b0e942ecd69b"
-      }
-    ],
-    "processed_count": 6
+    "pending": [],
+    "processed_count": 9
   },
-  "status_summary": "running: final review restart round 4 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-14T02:34:53.909871151Z",

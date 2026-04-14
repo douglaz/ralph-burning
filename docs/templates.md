@@ -47,8 +47,8 @@ These IDs correspond to `StageId::as_str()`:
 | `prompt_review_validator` | `role_label`, `prompt_text`, `json_schema` | — |
 | `completion_panel_completer` | `prompt_text`, `json_schema` | — |
 | `final_review_reviewer` | `project_prompt`, `json_schema` | — |
-| `final_review_voter` | `title`, `amendments`, `json_schema` | `planner_positions` |
-| `final_review_arbiter` | `amendments`, `planner_positions`, `reviewer_votes`, `json_schema` | — |
+| `final_review_voter` | `title`, `amendments`, `json_schema` | — |
+| `final_review_arbiter` | `amendments`, `reviewer_votes`, `json_schema` | — |
 
 ### Requirements
 
