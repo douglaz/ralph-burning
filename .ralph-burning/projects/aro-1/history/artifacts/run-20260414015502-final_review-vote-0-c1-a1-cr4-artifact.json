@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-vote-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414015502-final_review-vote-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:51:07.534454424Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments are valid. `fr-4-9b6b050f` and `fr-4-8d2a18b5` both identify real final-review snapshot schema drift: checked-in run snapshots still contain legacy `final_review_planner` data even though the current snapshot model and builder only define reviewers plus arbiter. `fr-4-a1df756e` identifies stale comments that still describe planner participation in final review, which is a real maintainability defect.\n\n## Votes\n\n- `fr-4-9b6b050f`: Accept\n  Verified. `.ralph-burning/projects/aro-1/run.json` and `.ralph-burning/projects/gsp-1/run.json` both still serialize `final_review_planner` in final-review stage snapshots, while `StageResolutionSnapshot` in `src/contexts/project_run_record/model.rs` no longer has that field and `build_final_review_snapshot` in `src/contexts/workflow_composition/engine.rs` only emits `final_review_reviewers` plus `final_review_arbiter`. That is genuine persisted-state/schema drift and the proposed remediation is appropriate.\n- `fr-4-a1df756e`: Accept\n  Verified. `src/contexts/workflow_composition/panel_contracts.rs` still says the vote types are used by the planner-position step, and `src/contexts/agent_execution/diagnostics.rs` still labels final-review resolution as 'planner + reviewers'. Those comments are stale relative to the current final-review contract and can mislead future maintenance and review work.\n- `fr-4-8d2a18b5`: Accept\n  Verified. `.ralph-burning/projects/aro-1/run.json` contains `final_review_planner` in both the active and last final-review snapshots, despite the current contract modeling only `final_review_reviewers` and `final_review_arbiter`. This overlaps with `fr-4-9b6b050f`, but it is independently correct: the artifact still records a removed planner role and should be regenerated or scrubbed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

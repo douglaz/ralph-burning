@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260414015502",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
     "started_at": "2026-04-14T01:55:02.845264326Z",
     "prompt_hash_at_cycle_start": "8ea2de6fac495087de6396aeecfda1140346306d468dd9eec6a72e996171ce18",
     "prompt_hash_at_stage_start": "8ea2de6fac495087de6396aeecfda1140346306d468dd9eec6a72e996171ce18",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-9b6b050f",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "finding_summary: The branch still checks in planner-era final-review snapshots. `.ralph-burning/projects/aro-1/run.json:33-36` and `.ralph-burning/projects/aro-1/run.json:73-76`, plus `.ralph-burning/projects/gsp-1/run.json:34-37` and `.ralph-burning/projects/gsp-1/run.json:74-77`, still serialize `final_review_planner` even though `StageResolutionSnapshot` no longer defines that field in `src/contexts/project_run_record/model.rs:186-206` and `build_final_review_snapshot` now only emits reviewers plus arbiter in `src/contexts/workflow_composition/engine.rs:8206-8223`. severity: high. affected_files: [\".ralph-burning/projects/aro-1/run.json\", \".ralph-burning/projects/gsp-1/run.json\"]. remediation_hint: Regenerate or scrub the checked-in run snapshots with the current serializer so every persisted final-review snapshot block omits `final_review_planner`.",
+        "created_at": "2026-04-14T02:51:23.899466270Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "39d32c947153eb70a0fc6f923aef9c938899607d929b1d95a72db75fd2495dd6"
+      },
+      {
+        "amendment_id": "fr-4-a1df756e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "Stale doc comments in panel_contracts.rs still reference the removed planner role in the final review context. Line 200: '/// Per-amendment vote used by both the planner-position step and reviewer voting.' should be '/// Per-amendment vote used by reviewer voting.' Line 225: '/// Payload returned by the planner-position step and each reviewer voting pass.' should be '/// Payload returned by each reviewer voting pass.' Additionally, diagnostics.rs line 424 comment says '// Full panel resolution for planner + reviewers' but should say '// Full panel resolution for reviewers' since the final review panel no longer includes a planner.",
+        "created_at": "2026-04-14T02:51:23.899469396Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "6cd9edb3e979a82a0ff1d4665be3232d2b8195c7b009e283807ded8ce1d2b75e"
+      },
+      {
+        "amendment_id": "fr-4-8d2a18b5",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "High: `.ralph-burning/projects/aro-1/run.json` now includes legacy planner state in the newly added final-review stage-resolution snapshots at lines `33-36` (`active_run.stage_resolution_snapshot.final_review_planner`) and `73-76` (`last_stage_resolution_snapshot.final_review_planner`), despite planner being removed from the final-review panel contract. This creates snapshot-schema drift and re-introduces a stale planner role in new run artifacts. See contract expectation that final-review snapshots should only carry `final_review_reviewers` and `final_review_arbiter`.",
+        "created_at": "2026-04-14T02:51:23.899471209Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "93636a51e030257d98bc3704ce3d0bd354e6a46a69e413b2a82f6c5c44de2cc0"
+      }
+    ],
     "processed_count": 9
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-14T02:34:53.909871151Z",
+    "resolved_at": "2026-04-14T02:44:00.694181267Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

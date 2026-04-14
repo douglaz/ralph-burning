@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:44:26.477616533Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\n1 high-confidence issue found in the new snapshot updates: stale `final_review_planner` remains in run.json final-review snapshots.\n\n## Amendments\n\n1. High: `.ralph-burning/projects/aro-1/run.json` now includes legacy planner state in the newly added final-review stage-resolution snapshots at lines `33-36` (`active_run.stage_resolution_snapshot.final_review_planner`) and `73-76` (`last_stage_resolution_snapshot.final_review_planner`), despite planner being removed from the final-review panel contract. This creates snapshot-schema drift and re-introduces a stale planner role in new run artifacts. See contract expectation that final-review snapshots should only carry `final_review_reviewers` and `final_review_arbiter`.\n   Rationale: Regenerate/sanitize this fixture with the current serializer so both snapshot objects omit `final_review_planner`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}

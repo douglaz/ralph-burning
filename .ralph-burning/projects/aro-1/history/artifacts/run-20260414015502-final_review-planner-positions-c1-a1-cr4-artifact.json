@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-planner-positions-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414015502-final_review-planner-positions-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:50:24.758698511Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll three amendments identify real issues stemming from the removal of the planner role from the final-review panel. The run.json files for both aro-1 and gsp-1 contain stale `final_review_planner` fields that no longer correspond to the code's data model, and doc comments in panel_contracts.rs and diagnostics.rs still reference the removed planner role. Two of the three amendments (fr-4-9b6b050f and fr-4-8d2a18b5) cover the same underlying run.json schema drift issue, but both are valid findings.\n\n## Votes\n\n- `fr-4-9b6b050f`: Accept\n  Verified: both aro-1/run.json (lines 33-36, 73-76) and gsp-1/run.json (lines 34-37, 74-77) contain `final_review_planner` entries, while `StageResolutionSnapshot` in model.rs no longer defines that field and `build_final_review_snapshot` in engine.rs no longer emits it. This is genuine schema drift between persisted state and the current code model. The remediation (regenerate or scrub the snapshots) is appropriate.\n- `fr-4-a1df756e`: Accept\n  Verified: panel_contracts.rs line 200 still says 'planner-position step and reviewer voting' and line 225 still says 'planner-position step and each reviewer voting pass', and diagnostics.rs line 424 still says 'planner + reviewers'. All three comments reference a planner role that has been removed from the final-review panel. These stale doc comments create confusion about the system's actual behavior and should be updated.\n- `fr-4-8d2a18b5`: Accept\n  Verified: aro-1/run.json contains `final_review_planner` at both snapshot locations (active_run.stage_resolution_snapshot and last_stage_resolution_snapshot). This is the same underlying issue as fr-4-9b6b050f but the finding is independently valid — the persisted data includes a field the code no longer models, creating real schema drift. The snapshot should only carry `final_review_reviewers` and `final_review_arbiter` per the current contract.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}
