@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414040114-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414040114-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T05:01:22.988622710Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the attempt-aware reconciliation changes in `src/contexts/project_run_record/queries.rs` and the added regressions in `tests/unit/run_queries_test.rs` and `src/cli/run.rs`. I did not find any correctness, safety, robustness, or significant maintainability issues in the implementation. I also spot-checked the new coverage with `cargo test --test unit run_queries_test::terminal_status_for_attempt_scopes_terminal_events_to_the_requested_attempt -- --exact` and `cargo test cli::run::tests::repair_missing_interrupted_handoff_run_failed_event_ignores_older_attempt_terminal_after_resume -- --exact`, both of which passed.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
