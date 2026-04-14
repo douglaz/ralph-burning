@@ -1817,7 +1817,10 @@ fn observed_cli_cleanup_owner_has_dead_pid(
             return Ok(false);
         }
 
-        return Ok(!FileSystem::is_pid_alive(&pid_record));
+        return Ok(matches!(
+            FileSystem::pid_record_live_state(&pid_record),
+            crate::adapters::fs::PidRecordLiveState::Stale
+        ));
     }
 
     let Some(handoff) = lease.cleanup_handoff.as_ref() else {
@@ -1863,13 +1866,41 @@ fn observed_stale_running_owner_still_matches_attempt(
         }
 
         if FileSystem::pid_record_is_authoritative(&pid_record)
-            && FileSystem::is_pid_alive(&pid_record)
+            && matches!(
+                FileSystem::pid_record_live_state(&pid_record),
+                crate::adapters::fs::PidRecordLiveState::Live
+                    | crate::adapters::fs::PidRecordLiveState::RunningUnverified
+            )
         {
             return Ok(false);
         }
     }
 
     observed_writer_owner_is_stale(base_dir, project_id, expected_owner)
+}
+
+fn live_pid_record_blocks_failed_or_paused_resume(
+    record: &crate::adapters::fs::RunPidRecord,
+) -> Option<AppError> {
+    if !matches!(
+        FileSystem::pid_record_live_state(record),
+        crate::adapters::fs::PidRecordLiveState::Live
+            | crate::adapters::fs::PidRecordLiveState::RunningUnverified
+    ) {
+        return None;
+    }
+
+    Some(match (record.owner.clone(), pid_record_has_attempt_metadata(record)) {
+        (crate::adapters::fs::RunPidOwner::Cli, true) => AppError::ResumeFailed {
+            reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
+        },
+        (crate::adapters::fs::RunPidOwner::Cli, false) => AppError::ResumeFailed {
+            reason: "project has a legacy CLI-owned running run without current-version attempt tracking; wait for it to finish or for stale recovery to become safe before resuming".to_owned(),
+        },
+        (crate::adapters::fs::RunPidOwner::Daemon, _) => AppError::ResumeFailed {
+            reason: "project has a daemon-owned running run; wait for the daemon task to finish or stop it through daemon controls".to_owned(),
+        },
+    })
 }
 
 fn acquire_recovery_writer_guard(
@@ -2013,19 +2044,28 @@ fn observed_resume_recovery_owner(
             }
         }
         RunStatus::Failed | RunStatus::Paused => Ok(ResumeRecoveryObservation {
-            observed_owner: reconcile_observed_recovery_owners(project_id, {
-                let mut owners = Vec::new();
+            observed_owner: {
                 if let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? {
-                    owners.extend(pid_record.writer_owner);
+                    if let Some(error) = live_pid_record_blocks_failed_or_paused_resume(&pid_record)
+                    {
+                        return Err(error);
+                    }
                 }
-                if let Some(owner) = read_project_writer_lock_owner(base_dir, project_id)? {
-                    owners.push(owner);
-                }
-                owners.extend(detached_project_writer_owners_for_recovery(
-                    base_dir, project_id,
-                )?);
-                owners
-            })?,
+
+                reconcile_observed_recovery_owners(project_id, {
+                    let mut owners = Vec::new();
+                    if let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? {
+                        owners.extend(pid_record.writer_owner);
+                    }
+                    if let Some(owner) = read_project_writer_lock_owner(base_dir, project_id)? {
+                        owners.push(owner);
+                    }
+                    owners.extend(detached_project_writer_owners_for_recovery(
+                        base_dir, project_id,
+                    )?);
+                    owners
+                })?
+            },
             should_reconcile_claimed_running_snapshot: false,
             allow_dead_cli_cleanup_reclaim: true,
         }),
@@ -2733,10 +2773,20 @@ fn open_stop_process_handle(
 
     #[cfg(not(target_os = "linux"))]
     {
-        if !FileSystem::is_pid_alive(record) {
-            return Ok(None);
+        match FileSystem::pid_record_live_state(record) {
+            crate::adapters::fs::PidRecordLiveState::Live => {
+                Ok(Some(StopProcessHandle::Legacy(record.clone())))
+            }
+            crate::adapters::fs::PidRecordLiveState::Stale => Ok(None),
+            crate::adapters::fs::PidRecordLiveState::RunningUnverified => {
+                Err(AppError::RunStopFailed {
+                    reason: format!(
+                        "run.pid for pid {} only matches coarse proc_start_marker data; refusing unsafe stop of an unverified pid record",
+                        record.pid
+                    ),
+                })
+            }
         }
-        Ok(Some(StopProcessHandle::Legacy(record.clone())))
     }
 }
 
@@ -8881,6 +8931,127 @@ mod tests {
             }
             other => panic!("expected ambiguous writer-state error, got: {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn observed_resume_recovery_owner_blocks_failed_snapshot_on_live_legacy_pid_without_owner_metadata(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("failed-live-legacy-pid").expect("project id");
+
+        let legacy_pid_record = crate::adapters::fs::RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+        FileSystem::write_atomic(
+            &FileSystem::live_project_root(base_dir, &project_id).join("run.pid"),
+            &serde_json::to_string_pretty(&legacy_pid_record).expect("serialize pid file"),
+        )
+        .expect("write legacy pid file");
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: None,
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let error = match super::observed_resume_recovery_owner(base_dir, &project_id, &snapshot) {
+            Ok(_) => panic!("live legacy pid must block failed-snapshot resume recovery"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            AppError::ResumeFailed { reason }
+                if reason == "project has a legacy CLI-owned running run without current-version attempt tracking; wait for it to finish or for stale recovery to become safe before resuming"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn observed_resume_recovery_owner_does_not_reclaim_stale_owner_while_legacy_pid_may_still_be_running(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("failed-live-legacy-pid-stale-owner").expect("project id");
+        let owner = "cli-live-legacy-failed-owner";
+        let stale_at =
+            Utc::now() - chrono::Duration::seconds((super::CLI_LEASE_TTL_SECONDS + 5) as i64);
+
+        let legacy_pid_record = crate::adapters::fs::RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: Some(owner.to_owned()),
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+        FileSystem::write_atomic(
+            &FileSystem::live_project_root(base_dir, &project_id).join("run.pid"),
+            &serde_json::to_string_pretty(&legacy_pid_record).expect("serialize pid file"),
+        )
+        .expect("write legacy pid file");
+
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::CliWriter(CliWriterLease {
+                lease_id: owner.to_owned(),
+                project_id: project_id.to_string(),
+                owner: "cli".to_owned(),
+                acquired_at: stale_at,
+                ttl_seconds: super::CLI_LEASE_TTL_SECONDS,
+                last_heartbeat: stale_at,
+                cleanup_handoff: None,
+            }),
+        )
+        .expect("write stale cli lease");
+        <FsDaemonStore as DaemonStorePort>::acquire_writer_lock(
+            &FsDaemonStore,
+            base_dir,
+            &project_id,
+            owner,
+        )
+        .expect("acquire stale writer lock");
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: None,
+            status: RunStatus::Paused,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "paused".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let error = match super::observed_resume_recovery_owner(base_dir, &project_id, &snapshot) {
+            Ok(_) => panic!("live legacy pid must block paused-snapshot stale-owner reclaim"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            AppError::ResumeFailed { reason }
+                if reason == "project has a legacy CLI-owned running run without current-version attempt tracking; wait for it to finish or for stale recovery to become safe before resuming"
+        ));
     }
 
     #[test]

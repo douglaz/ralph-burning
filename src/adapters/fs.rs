@@ -796,10 +796,9 @@ impl FileSystem {
     }
 
     pub fn is_pid_alive(record: &RunPidRecord) -> bool {
-        Self::process_identity_is_alive(
-            record.pid,
-            record.proc_start_ticks,
-            record.proc_start_marker.as_deref(),
+        matches!(
+            Self::pid_record_live_state(record),
+            PidRecordLiveState::Live
         )
     }
 
@@ -812,8 +811,20 @@ impl FileSystem {
     }
 
     pub(crate) fn pid_record_live_state(record: &RunPidRecord) -> PidRecordLiveState {
+        #[cfg(all(unix, not(target_os = "linux")))]
+        if record.proc_start_ticks.is_none() && record.proc_start_marker.is_some() {
+            return Self::marker_only_pid_record_live_state(
+                record,
+                Self::process_started_at(record.pid),
+            );
+        }
+
         if Self::pid_record_is_authoritative(record) {
-            return if Self::is_pid_alive(record) {
+            return if Self::process_identity_is_alive(
+                record.pid,
+                record.proc_start_ticks,
+                record.proc_start_marker.as_deref(),
+            ) {
                 PidRecordLiveState::Live
             } else {
                 PidRecordLiveState::Stale
@@ -842,7 +853,11 @@ impl FileSystem {
         live_started_at: Option<ProcessStartTime>,
     ) -> PidRecordLiveState {
         if Self::pid_record_is_authoritative(record) {
-            return if Self::is_pid_alive(record) {
+            return if Self::process_identity_is_alive(
+                record.pid,
+                record.proc_start_ticks,
+                record.proc_start_marker.as_deref(),
+            ) {
                 PidRecordLiveState::Live
             } else {
                 PidRecordLiveState::Stale
@@ -858,6 +873,22 @@ impl FileSystem {
         // Legacy pid files without any recorded process identity can only be
         // matched by comparing the live process start against the pid-file
         // write timestamp. A newer live start implies PID reuse.
+        live_started_at.compare_legacy_pid_record(record.started_at)
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn marker_only_pid_record_live_state(
+        record: &RunPidRecord,
+        live_started_at: Option<ProcessStartTime>,
+    ) -> PidRecordLiveState {
+        if !Self::process_identity_is_alive(record.pid, None, record.proc_start_marker.as_deref()) {
+            return PidRecordLiveState::Stale;
+        }
+
+        let Some(live_started_at) = live_started_at else {
+            return PidRecordLiveState::RunningUnverified;
+        };
+
         live_started_at.compare_legacy_pid_record(record.started_at)
     }
 
@@ -5924,9 +5955,14 @@ mod tests {
             proc_start_marker: None,
         };
 
+        let live_state = FileSystem::pid_record_live_state(&record);
         assert!(
-            !FileSystem::is_pid_alive(&record),
-            "pid records without proc_start_ticks must not be treated as authoritative"
+            !matches!(live_state, PidRecordLiveState::Stale),
+            "legacy pid records for a live process must stay conservatively live until PID reuse is proven"
+        );
+        assert_eq!(
+            FileSystem::is_pid_alive(&record),
+            matches!(live_state, PidRecordLiveState::Live)
         );
     }
 
@@ -6049,6 +6085,37 @@ mod tests {
         assert!(FileSystem::pid_record_is_authoritative(&record));
         assert!(FileSystem::is_pid_alive(&record));
         assert!(FileSystem::pid_record_matches_live_process(&record));
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn marker_only_pid_records_same_second_match_is_unverified_on_non_linux_unix() {
+        let live_started_at =
+            FileSystem::process_started_at(std::process::id()).expect("process start time");
+        let record = RunPidRecord {
+            pid: std::process::id(),
+            started_at: live_started_at.started_at + chrono::Duration::milliseconds(900),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+
+        assert!(FileSystem::pid_record_is_authoritative(&record));
+        assert_eq!(
+            FileSystem::pid_record_live_state(&record),
+            PidRecordLiveState::RunningUnverified
+        );
+        assert!(
+            !FileSystem::is_pid_alive(&record),
+            "same-second marker-only matches must not be treated as definitively live"
+        );
+        assert!(
+            !FileSystem::pid_record_matches_live_process(&record),
+            "same-second marker-only matches must not opt into definitive live-process actions"
+        );
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]
