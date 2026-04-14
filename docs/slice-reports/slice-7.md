@@ -55,8 +55,8 @@ A malformed override now fails with no new journal entries, snapshots, or run-st
 ### Required Change 2 — Template documentation contract
 Synced `docs/templates.md` with the actual manifests in `template_catalog.rs`:
 - `final_review_reviewer`: `prompt_text` → `project_prompt`
-- `final_review_voter`: `prompt_text, prior_reviews` → `title, amendments` (required), `planner_positions` (optional)
-- `final_review_arbiter`: `prompt_text, prior_reviews` → `amendments, planner_positions, reviewer_votes`
+- `final_review_voter`: `prompt_text, prior_reviews` → `title, amendments, json_schema`
+- `final_review_arbiter`: `prompt_text, prior_reviews` → `amendments, reviewer_votes, json_schema`
 - `requirements_review`: removed spurious `idea` from required placeholders
 - `requirements_question_set`: `idea, draft_artifact, review_artifact` → `idea, missing_info`
 - `requirements_project_seed`: `synthesis_artifact, impl_spec_artifact` → `requirements_artifact, follow_ups`

@@ -463,7 +463,6 @@ fn completion_panel_defaults_to_opposite_family_when_backends_are_unset() {
     let first_cycle = policy
         .resolve_completion_panel(1)
         .expect("resolve cycle one completion panel");
-    assert_eq!(BackendFamily::Claude, first_cycle.planner.backend.family);
     assert_eq!(
         effective.completion_policy().min_completers,
         first_cycle.completers.len()
@@ -476,7 +475,6 @@ fn completion_panel_defaults_to_opposite_family_when_backends_are_unset() {
     let second_cycle = policy
         .resolve_completion_panel(2)
         .expect("resolve cycle two completion panel");
-    assert_eq!(BackendFamily::Codex, second_cycle.planner.backend.family);
     assert_eq!(
         effective.completion_policy().min_completers,
         second_cycle.completers.len()

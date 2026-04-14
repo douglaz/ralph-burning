@@ -22,7 +22,6 @@ pub struct ResolvedPanelMember {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionPanelResolution {
-    pub planner: ResolvedBackendTarget,
     pub completers: Vec<ResolvedPanelMember>,
 }
 
@@ -83,7 +82,6 @@ impl<'a> BackendPolicyService<'a> {
     }
 
     pub fn resolve_completion_panel(&self, cycle: u32) -> AppResult<CompletionPanelResolution> {
-        let planner = self.resolve_role_target(BackendPolicyRole::Planner, cycle)?;
         let completers = if self.config.completion_backends_are_explicit() {
             self.resolve_panel_backends(
                 &self.config.completion_policy().backends,
@@ -94,10 +92,7 @@ impl<'a> BackendPolicyService<'a> {
             self.default_completion_targets(cycle)?
         };
 
-        Ok(CompletionPanelResolution {
-            planner,
-            completers,
-        })
+        Ok(CompletionPanelResolution { completers })
     }
 
     pub fn resolve_prompt_review_panel(

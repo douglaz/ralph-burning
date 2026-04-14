@@ -77,16 +77,16 @@
   This applies to `completion_panel`, `final_review_panel`, and
   `prompt_review_panel`.
 - `backend probe` config-time and availability-time failures now include
-  exact target identity (e.g. `(planner)`, `(refiner)`) and config source
-  field, replacing the previous generic `(planner/primary)` label.
+  exact target identity (e.g. `(arbiter)`, `(refiner)`) and config source
+  field, replacing the previous generic primary-target label.
 - `backend check` now resolves and checks arbiter and refiner availability
   independently of full panel resolution, so all blocking failures are
   aggregated even when reviewer/validator resolution fails first.
 - `backend probe` config-time panel failures now identify the exact
   failing target/member (e.g. `completion_panel.member[1]`,
   `final_review_panel.arbiter`), the backend family, and the selecting
-  config source field, instead of collapsing all panel errors to the
-  primary target (planner).
+  config source field, instead of collapsing all panel errors to a
+  generic primary target.
 - `backend show-effective` now correctly reports `model_source` for
   models embedded in `default_backend` (e.g. `default_backend = "codex(model)"`)
   by tracing to the `default_backend` source, not misreporting as `"default"`.

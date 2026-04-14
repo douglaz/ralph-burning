@@ -1731,12 +1731,11 @@ fn probe_final_review_panel_uses_arbiter_timeout_path_not_final_reviewer() {
     initialize_workspace_fixture(temp_dir.path());
 
     let mut workspace = WorkspaceConfig::new(test_timestamp());
-    // Set distinct arbiter-primary and final_reviewer timeouts so the test can
-    // distinguish which path the probe uses. The arbiter currently inherits the
-    // planner timeout slot.
+    // Set distinct arbiter and final_reviewer timeouts so the test can
+    // distinguish which path the probe uses.
     let mut claude_settings = empty_backend_settings(true);
     claude_settings.role_timeouts = BackendRoleTimeouts {
-        planner: Some(11),
+        arbiter: Some(11),
         final_reviewer: Some(22),
         ..Default::default()
     };
@@ -1796,14 +1795,13 @@ fn probe_prompt_review_panel_uses_prompt_reviewer_timeout_not_validator() {
 }
 
 #[test]
-fn probe_completion_panel_uses_planner_timeout_not_completer() {
+fn probe_completion_panel_has_no_primary_target() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());
 
     let mut workspace = WorkspaceConfig::new(test_timestamp());
     let mut claude_settings = empty_backend_settings(true);
     claude_settings.role_timeouts = BackendRoleTimeouts {
-        planner: Some(7),
         completer: Some(42),
         ..Default::default()
     };
@@ -1831,7 +1829,7 @@ fn probe_completion_panel_uses_planner_timeout_not_completer() {
 // ── probe failure config source tests ─────────────────────────────────────────
 
 #[tokio::test]
-async fn probe_failure_includes_config_source_for_planner() {
+async fn probe_failure_includes_config_source_for_arbiter() {
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
@@ -1885,13 +1883,13 @@ async fn probe_failure_includes_config_source_for_planner() {
 
     assert!(
         result.is_err(),
-        "probe should fail when planner is unavailable"
+        "probe should fail when arbiter is unavailable"
     );
     let err_msg = result.unwrap_err().to_string();
-    // No explicit planner override set, so planner inherits from default_backend
+    // No explicit arbiter override set, so the arbiter inherits from default_backend.
     assert!(
         err_msg.contains("[source: default_backend]"),
-        "inherited planner failure should report default_backend, not workflow.planner_backend: {}",
+        "inherited arbiter failure should report default_backend, not workflow.planner_backend: {}",
         err_msg
     );
 }
@@ -2490,7 +2488,7 @@ fn probe_config_time_failure_includes_target_identity_and_source() {
 }
 
 #[test]
-fn probe_prompt_review_panel_failure_reports_refiner_not_planner() {
+fn probe_prompt_review_panel_failure_reports_refiner_not_generic_primary_label() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());
 
@@ -2517,7 +2515,7 @@ fn probe_prompt_review_panel_failure_reports_refiner_not_planner() {
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
 
-    // Must report "refiner" as the target, NOT "planner/primary"
+    // Must report "refiner" as the target, not a generic primary label.
     assert!(
         err_msg.contains("refiner"),
         "prompt_review_panel config failure should identify refiner as target: {}",
@@ -2920,7 +2918,7 @@ fn probe_completion_panel_disabled_member_reports_exact_member_identity() {
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
 
-    // Must identify the exact failing member, not just "planner"
+    // Must identify the exact failing member, not just a panel-level label.
     assert!(
         err_msg.contains("completion_panel.member[1]"),
         "should identify exact failing member completion_panel.member[1]: {}",

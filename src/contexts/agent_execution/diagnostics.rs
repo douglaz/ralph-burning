@@ -365,7 +365,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             return result;
         }
 
-        // Required targets: stage roles, panel planners/arbiters/refiners.
+        // Required targets: stage roles plus singleton panel targets.
         // These always fail on unavailability.
         let mut required_targets: Vec<(ResolvedBackendTarget, String, String)> = Vec::new();
         let flow_def = flow_definition(flow);
@@ -855,7 +855,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         let completion_source = self.completion_panel_config_source();
 
         // Try the full panel resolution; if it fails, identify the exact
-        // failing member (planner already succeeded above).
+        // failing member directly.
         let resolution = self.policy.resolve_completion_panel(cycle).map_err(|err| {
             self.identify_failing_panel_member(
                 "completion_panel",
@@ -1087,9 +1087,9 @@ impl<'a> BackendDiagnosticsService<'a> {
 
     /// Probe with real adapter availability. Optional panel members that are
     /// enabled but unavailable are moved to `omitted` instead of `members`.
-    /// Required unavailable members, planners, arbiters, and refiners cause the
-    /// probe to fail with exact member identity, backend family, and effective
-    /// config source field.
+    /// Required unavailable members and singleton panel targets (arbiter,
+    /// refiner) cause the probe to fail with exact member identity, backend
+    /// family, and effective config source field.
     pub async fn probe_with_availability<A: AgentExecutionPort>(
         &self,
         role_str: &str,
@@ -1123,38 +1123,30 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
 
         if let Some(panel) = &mut result.panel {
-            // For panel probes (target: None), check the panel's primary role
-            // availability (planner for completion, arbiter for final_review,
-            // refiner for prompt_review).
-            let primary_role = match panel.panel_type.as_str() {
-                "completion" => Some(
-                    self.policy
-                        .resolve_role_target(BackendPolicyRole::Planner, result.cycle),
-                ),
-                "final_review" => Some(
-                    self.policy
-                        .resolve_role_target(BackendPolicyRole::Arbiter, result.cycle),
-                ),
-                "prompt_review" => Some(
-                    self.policy
-                        .resolve_role_target(BackendPolicyRole::PromptReviewer, result.cycle),
-                ),
-                _ => None,
-            };
-            if let Some(Ok(primary)) = primary_role {
-                if let Err(err) = adapter.check_availability(&primary).await {
-                    return Err(AppError::BackendUnavailable {
-                        backend: primary.backend.family.as_str().to_owned(),
-                        details: format!(
-                            "required primary '{}' for '{}' unavailable: {} [source: {}]",
-                            primary_target, role_str, err, primary_source
-                        ),
-                        failure_class: None,
-                    });
+            // Prompt-review still has a singleton refiner target in addition
+            // to validator members, so availability is checked separately.
+            if panel.panel_type == "prompt_review" {
+                let refiner = self
+                    .policy
+                    .resolve_role_target(BackendPolicyRole::PromptReviewer, result.cycle);
+                if let Ok(refiner) = refiner {
+                    let refiner_source =
+                        self.config_source_for_role(BackendPolicyRole::PromptReviewer);
+                    if let Err(err) = adapter.check_availability(&refiner).await {
+                        return Err(AppError::BackendUnavailable {
+                            backend: refiner.backend.family.as_str().to_owned(),
+                            details: format!(
+                                "required primary '{}' for '{}' unavailable: {} [source: {}]",
+                                "refiner", role_str, err, refiner_source
+                            ),
+                            failure_class: None,
+                        });
+                    }
                 }
             }
 
-            // Check arbiter availability (required for final_review_panel)
+            // Final-review still has a singleton arbiter target in addition to
+            // reviewer members, so availability is checked separately.
             if let Some(arbiter) = &panel.arbiter {
                 let arbiter_source = self.config_source_for_role(BackendPolicyRole::Arbiter);
                 let family: BackendFamily = arbiter.backend_family.parse()?;
@@ -1173,7 +1165,8 @@ impl<'a> BackendDiagnosticsService<'a> {
 
             let members_source = self.panel_members_config_source(&panel.panel_type);
 
-            // Check panel members: required unavailable → fail; optional unavailable → omit
+            // Check panel members: required unavailable -> fail; optional
+            // unavailable -> omit.
             let member_label_prefix = Self::panel_member_label_prefix(&panel.panel_type);
             let mut available_members = Vec::new();
             for member in panel.members.drain(..) {
@@ -1225,8 +1218,8 @@ impl<'a> BackendDiagnosticsService<'a> {
     }
 
     /// Build a probe error with exact target identity, backend family, and
-    /// selecting config source field for a specific component (planner,
-    /// arbiter, refiner, or singular role).
+    /// selecting config source field for a specific component (arbiter,
+    /// refiner, or singular role).
     fn make_probe_target_error(
         &self,
         panel: &str,
@@ -1246,7 +1239,7 @@ impl<'a> BackendDiagnosticsService<'a> {
 
     /// Identify which panel member spec failed resolution, and build an error
     /// with exact `panel.member_label[N]` identity and the panel's config
-    /// source field. Used when the primary target (planner/refiner/arbiter)
+    /// source field. Used when the panel's singleton target (refiner/arbiter)
     /// succeeded but `resolve_*_panel()` still failed.
     ///
     /// When the failure is caused by optional-member omission dropping the
@@ -1301,11 +1294,10 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
     }
 
-    /// Return a human-readable label for the primary target of a probe,
-    /// identifying the exact role/member that serves as the primary target.
+    /// Return a human-readable label for a probe target, identifying the exact
+    /// role/member used in availability reporting.
     fn probe_primary_target_label<'b>(&self, role_str: &'b str) -> &'b str {
         match role_str {
-            "completion_panel" => "planner",
             "final_review_panel" => "arbiter",
             "final_reviewer" => "reviewer[0]",
             "prompt_review_panel" => "refiner",
@@ -1313,15 +1305,12 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
     }
 
-    /// Resolve the effective config source field for the primary/planner target
-    /// of a probe, based on the role string.
+    /// Resolve the effective config source field for a probe target, based on
+    /// the role string.
     fn probe_primary_config_source(&self, role_str: &str) -> String {
         match role_str {
-            // Completion panel uses the planner as primary target
-            "completion_panel" => self.config_source_for_role(BackendPolicyRole::Planner),
             "final_review_panel" => self.config_source_for_role(BackendPolicyRole::Arbiter),
             "final_reviewer" => "final_review.backends".to_owned(),
-            // Prompt-review panel uses the refiner as primary target
             "prompt_review_panel" => self.config_source_for_role(BackendPolicyRole::PromptReviewer),
             // Singular role probe — parse to get the actual role's config source
             _ => match role_str.parse::<BackendPolicyRole>() {
