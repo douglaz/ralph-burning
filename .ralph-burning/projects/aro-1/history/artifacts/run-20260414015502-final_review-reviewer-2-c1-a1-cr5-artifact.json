@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:55:22.186518891Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nOne issue found: the working-tree snapshot artifact at `.ralph-burning/projects/aro-1/run.json` still includes removed final-review planner data (`final_review_planner`), while implementation paths currently write only reviewer + arbiter fields. Update the fixture run artifact accordingly.\n\n## Amendments\n\n1. High: `.ralph-burning/projects/aro-1/run.json:33-36` (`active_run.stage_resolution_snapshot`) still serializes `final_review_planner`, but the current final-review stage snapshot schema is only `final_review_reviewers` and `final_review_arbiter` (`src/contexts/project_run_record/model.rs:203-206`) and `build_final_review_snapshot` emits only those fields (`src/contexts/workflow_composition/engine.rs:8206-8222`). This reintroduces a removed planner field into a new tracked `run.json` artifact and violates the no-planner final-review snapshot contract.\n   Rationale: Confidence: high. The checked-in run snapshot now drifts from active runtime schema/persistence behavior and can misrepresent intended stage-resolution persistence after this flow change.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 5
+}
