@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414015502-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:41:58.674592396Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted all three amendments. fr-3-182adb87 and fr-3-b0a0bd61 both identify the same stale snapshot schema drift for final review state in checked-in run data, and fr-3-5a16fec6 correctly flags template documentation drift.\n\n## Votes\n\n- `fr-3-182adb87`: Accept\n  The persisted `run.json` snapshots still carrying `final_review_planner` directly conflict with the current `StageResolutionSnapshot` schema and snapshot builder output, which now only include reviewer/arbiter fields; this is a real data-integrity mismatch that should be scrubbed or regenerated.\n- `fr-3-5a16fec6`: Accept\n  `docs/templates.md` placeholders are stale versus the active template manifests, still mentioning `planner_positions` where it is no longer part of voter/arbiter schemas, which can mislead template configuration and is a correctness/documentation issue.\n- `fr-3-b0a0bd61`: Accept\n  This is the same class of schema drift as fr-3-182adb87, with `final_review_planner` remaining in `run.json` stage-resolution snapshots despite removal from model and builder output; acceptance is warranted as duplicate evidence of the same underlying inconsistency.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

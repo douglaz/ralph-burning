@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260414001056-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414001056-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:49:28.853787818Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 3\n**Unique Amendments:** 1\n**Final Review Restarts:** 4/25\n\n## Accepted\n\n- `fr-4-a6c27c9a`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-a6c27c9a`\n\nfinding_summary: The new tmux regression test can silently pass without exercising the stdout-only exhaustion path because it bails out on `TmuxAdapter::check_tmux_available()` before the fake tmux binary is added to `PATH`. On environments that do not have a real `tmux` installed, `tests/unit/tmux_adapter_test.rs:416-423` returns early and never covers the `src/adapters/tmux.rs:632-644` classification logic added by this bead. severity: low affected_files: [\"tests/unit/tmux_adapter_test.rs:416-423\", \"src/adapters/tmux.rs:632-644\"] remediation_hint: Install the fake tmux fixture before the availability check, or switch the guard to `check_tmux_available_in()` against the temporary bin dir so the test always exercises the new code path.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

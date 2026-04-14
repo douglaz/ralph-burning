@@ -278,7 +278,7 @@ fn role_mapping_is_deterministic() {
 }
 
 #[test]
-fn final_review_planner_drift_is_detected_without_breaking_old_snapshots() {
+fn final_review_arbiter_drift_is_detected() {
     use ralph_burning::contexts::agent_execution::policy::ResolvedPanelMember;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
 
@@ -287,24 +287,15 @@ fn final_review_planner_drift_is_detected_without_breaking_old_snapshots() {
         required: true,
         configured_index: 0,
     }];
-    let arbiter = ResolvedBackendTarget::new(BackendFamily::Codex, "arbiter-model");
-    let planner_a = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-a");
-    let planner_b = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-b");
+    let arbiter_a = ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-a");
+    let arbiter_b = ResolvedBackendTarget::new(BackendFamily::Codex, "arbiter-b");
 
     let original =
-        engine::build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner_a, &arbiter);
-    let drifted =
-        engine::build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner_b, &arbiter);
+        engine::build_final_review_snapshot(StageId::FinalReview, &reviewers, &arbiter_a);
+    let drifted = engine::build_final_review_snapshot(StageId::FinalReview, &reviewers, &arbiter_b);
     assert!(
         engine::resolution_has_drifted(&original, &drifted),
-        "planner changes must trigger final-review drift"
-    );
-
-    let mut legacy_snapshot = original.clone();
-    legacy_snapshot.final_review_planner = None;
-    assert!(
-        !engine::resolution_has_drifted(&legacy_snapshot, &original),
-        "old snapshots without planner baselines must not false-positive on resume"
+        "arbiter changes must trigger final-review drift"
     );
 }
 
@@ -2037,16 +2028,16 @@ async fn preflight_check_fails_with_unavailable_backend() {
 }
 
 #[tokio::test]
-async fn preflight_check_validates_final_review_planner_member() {
+async fn preflight_check_validates_final_review_arbiter_member() {
     let temp = tempdir().unwrap();
     setup_workspace(temp.path());
 
     let workspace_toml = workspace_config_path(temp.path());
     let content = fs::read_to_string(&workspace_toml).unwrap();
     let patched = if content.contains("[workflow]") {
-        content.replace("[workflow]", "[workflow]\nplanner_backend = \"openrouter\"")
+        format!("{content}\n[final_review]\narbiter_backend = \"openrouter\"\n")
     } else {
-        format!("{content}\n[workflow]\nplanner_backend = \"openrouter\"\n")
+        format!("{content}\n[final_review]\narbiter_backend = \"openrouter\"\n")
     };
     fs::write(&workspace_toml, patched).unwrap();
 
@@ -2060,26 +2051,26 @@ async fn preflight_check_validates_final_review_planner_member() {
         Err(AppError::PreflightFailed { stage_id, details }) => {
             assert_eq!(stage_id, StageId::FinalReview);
             assert!(
-                details.contains("planner"),
-                "expected planner-specific preflight failure, got: {details}"
+                details.contains("arbiter"),
+                "expected arbiter-specific preflight failure, got: {details}"
             );
         }
-        other => panic!("expected planner preflight failure, got: {other:?}"),
+        other => panic!("expected arbiter preflight failure, got: {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn preflight_check_honours_dedicated_final_review_planner_over_workflow_planner() {
+async fn preflight_check_honours_final_review_arbiter_override() {
     let temp = tempdir().unwrap();
     setup_workspace(temp.path());
 
-    // Set workflow.planner_backend to an unavailable backend, but override
-    // final_review.planner_backend to "claude" which is available by default.
-    // If the preflight correctly uses the dedicated override, it should succeed.
+    // Set the default planner family to an unavailable backend, but override
+    // the final-review arbiter to "claude" which is available by default.
+    // If preflight correctly uses the dedicated arbiter override, it should succeed.
     let workspace_toml = workspace_config_path(temp.path());
     let content = fs::read_to_string(&workspace_toml).unwrap();
     let patched = format!(
-        "{content}\n[workflow]\nplanner_backend = \"openrouter\"\n\n[final_review]\nplanner_backend = \"claude\"\n"
+        "{content}\n[workflow]\nplanner_backend = \"openrouter\"\n\n[final_review]\narbiter_backend = \"claude\"\n"
     );
     fs::write(&workspace_toml, patched).unwrap();
 
@@ -2091,7 +2082,7 @@ async fn preflight_check_honours_dedicated_final_review_planner_over_workflow_pl
     let result = engine::preflight_check(&adapter, &config, 1, &plan).await;
     assert!(
         result.is_ok(),
-        "preflight should succeed when final_review.planner_backend overrides \
+        "preflight should succeed when final_review.arbiter_backend overrides \
          an unavailable workflow.planner_backend, got: {result:?}"
     );
 }
@@ -5511,12 +5502,12 @@ async fn resume_uses_interrupted_final_review_restart_count_when_journal_lags() 
 }
 
 #[tokio::test]
-async fn resume_upgrades_legacy_final_review_snapshot_before_next_planner_drift_check() {
+async fn resume_warns_when_final_review_arbiter_drifts() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
     setup_workspace(base_dir);
-    let pid = create_standard_project(base_dir, "fr-legacy-planner-resume");
+    let pid = create_standard_project(base_dir, "fr-arbiter-drift-resume");
     let initial_config = EffectiveConfig::load(base_dir).unwrap();
 
     let initial_result = engine::execute_standard_run(
@@ -5536,95 +5527,26 @@ async fn resume_upgrades_legacy_final_review_snapshot_before_next_planner_drift_
     .await;
     assert!(
         initial_result.is_err(),
-        "initial run should fail in final_review so resume can exercise the legacy snapshot path"
+        "initial run should fail in final_review so resume can exercise drift detection"
     );
 
-    let mut legacy_snapshot = FsRunSnapshotStore
+    let baseline_snapshot = FsRunSnapshotStore
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
-    let legacy_resolution = legacy_snapshot
+    let baseline_resolution = baseline_snapshot
         .last_stage_resolution_snapshot
-        .as_mut()
+        .as_ref()
         .expect("failed final_review run should preserve a resolution snapshot");
-    assert_eq!(legacy_resolution.stage_id, StageId::FinalReview);
-    assert!(
-        legacy_resolution.final_review_planner.is_some(),
-        "baseline failing run should capture the planner before legacy mutation"
-    );
-    legacy_resolution.final_review_planner = None;
-    legacy_snapshot
-        .interrupted_run
-        .as_mut()
-        .expect("failed run should preserve interrupted final_review metadata")
-        .stage_resolution_snapshot
-        .as_mut()
-        .expect("interrupted final_review metadata should carry a resolution snapshot")
-        .final_review_planner = None;
-    FsRunSnapshotWriteStore
-        .write_run_snapshot(base_dir, &pid, &legacy_snapshot)
-        .unwrap();
-
-    let first_resume_result = engine::resume_standard_run(
-        &build_agent_service_with_adapter(
-            StubBackendAdapter::default().with_invoke_failure(StageId::FinalReview),
-        ),
-        &FsRunSnapshotStore,
-        &FsRunSnapshotWriteStore,
-        &FsJournalStore,
-        &FsArtifactStore,
-        &FsPayloadArtifactWriteStore,
-        &FsRuntimeLogWriteStore,
-        &FsAmendmentQueueStore,
-        base_dir,
-        &pid,
-        &initial_config,
-    )
-    .await;
-    assert!(
-        first_resume_result.is_err(),
-        "first resume should re-interrupt final_review after upgrading the legacy snapshot"
-    );
-
-    let upgraded_snapshot = FsRunSnapshotStore
-        .read_run_snapshot(base_dir, &pid)
-        .unwrap();
-    let persisted_resolution = upgraded_snapshot
-        .last_stage_resolution_snapshot
-        .as_ref()
-        .expect("first resume should persist the upgraded final_review snapshot");
-    let persisted_planner = persisted_resolution
-        .final_review_planner
+    assert_eq!(baseline_resolution.stage_id, StageId::FinalReview);
+    let persisted_arbiter = baseline_resolution
+        .final_review_arbiter
         .clone()
-        .expect("first resume should persist the final_review planner baseline");
-    assert_eq!(persisted_resolution.stage_id, StageId::FinalReview);
-    assert_eq!(
-        persisted_planner.backend_family,
-        BackendFamily::Claude.as_str(),
-        "the upgraded snapshot should restore the original planner family"
-    );
-    assert!(
-        !persisted_planner.model_id.is_empty(),
-        "the upgraded snapshot should restore the planner model"
-    );
-    let interrupted_planner = upgraded_snapshot
-        .interrupted_run
-        .as_ref()
-        .expect("re-interrupted run should preserve interrupted metadata")
-        .stage_resolution_snapshot
-        .as_ref()
-        .expect("re-interrupted run should preserve the upgraded stage snapshot")
-        .final_review_planner
-        .as_ref()
-        .expect("re-interrupted run should carry the upgraded planner baseline");
-    assert_eq!(
-        interrupted_planner, &persisted_planner,
-        "the re-interrupted run should carry the upgraded planner baseline forward"
-    );
+        .expect("baseline failing run should capture the final-review arbiter");
 
-    EffectiveConfig::set(base_dir, "workflow.planner_backend", "codex").unwrap();
+    EffectiveConfig::set(base_dir, "final_review.arbiter_backend", "codex").unwrap();
     let drift_config = EffectiveConfig::load(base_dir).unwrap();
 
-    let second_resume_result = engine::resume_standard_run(
+    let resume_result = engine::resume_standard_run(
         &build_agent_service(),
         &FsRunSnapshotStore,
         &FsRunSnapshotWriteStore,
@@ -5639,8 +5561,8 @@ async fn resume_upgrades_legacy_final_review_snapshot_before_next_planner_drift_
     )
     .await;
     assert!(
-        second_resume_result.is_ok(),
-        "second resume should complete after detecting planner drift: {second_resume_result:?}"
+        resume_result.is_ok(),
+        "resume should complete after detecting arbiter drift: {resume_result:?}"
     );
 
     let completed_snapshot = FsRunSnapshotStore
@@ -5657,34 +5579,34 @@ async fn resume_upgrades_legacy_final_review_snapshot_before_next_planner_drift_
                 && event.details.get("stage_id").and_then(Value::as_str)
                     == Some(StageId::FinalReview.as_str())
         })
-        .expect("second resume should emit a durable final_review drift warning");
-    let old_planner = warning
+        .expect("resume should emit a durable final_review drift warning");
+    let old_arbiter = warning
         .details
         .get("details")
         .and_then(|details| details.get("old_resolution"))
-        .and_then(|resolution| resolution.get("final_review_planner"))
-        .expect("durable warning should include the persisted old planner");
-    let new_planner = warning
+        .and_then(|resolution| resolution.get("final_review_arbiter"))
+        .expect("durable warning should include the persisted old arbiter");
+    let new_arbiter = warning
         .details
         .get("details")
         .and_then(|details| details.get("new_resolution"))
-        .and_then(|resolution| resolution.get("final_review_planner"))
-        .expect("durable warning should include the re-resolved new planner");
+        .and_then(|resolution| resolution.get("final_review_arbiter"))
+        .expect("durable warning should include the re-resolved new arbiter");
     assert_eq!(
-        old_planner.get("backend_family").and_then(Value::as_str),
-        Some(persisted_planner.backend_family.as_str())
+        old_arbiter.get("backend_family").and_then(Value::as_str),
+        Some(persisted_arbiter.backend_family.as_str())
     );
     assert_eq!(
-        old_planner.get("model_id").and_then(Value::as_str),
-        Some(persisted_planner.model_id.as_str())
+        old_arbiter.get("model_id").and_then(Value::as_str),
+        Some(persisted_arbiter.model_id.as_str())
     );
     assert_eq!(
-        new_planner.get("backend_family").and_then(Value::as_str),
+        new_arbiter.get("backend_family").and_then(Value::as_str),
         Some(BackendFamily::Codex.as_str())
     );
     assert_ne!(
-        old_planner, new_planner,
-        "second resume should compare against the upgraded planner baseline"
+        old_arbiter, new_arbiter,
+        "resume should compare against the persisted arbiter baseline"
     );
 }
 

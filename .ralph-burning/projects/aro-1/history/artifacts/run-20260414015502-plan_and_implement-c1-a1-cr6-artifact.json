@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260414015502-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T03:09:05.521539595Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemoved the last tracked final-review planner snapshot entry from `.ralph-burning/projects/aro-1/run.json` and deleted the stale \"Planner position.\" stub payloads from the four final-review conformance voter sequences in `src/contexts/conformance_spec/scenarios.rs`. The checked-in sample snapshot now matches the planner-free schema, and the conformance scenarios now feed exactly reviewer-count-aligned vote payloads per round so reviewers no longer consume planner-era responses by accident.\n\n## Steps\n\n1. [Completed] Inspect the remaining planner-removal drift in the tracked sample run snapshot and the final-review conformance voter payload sequences\n2. [Completed] Patch `.ralph-burning/projects/aro-1/run.json` to remove the lingering `final_review_planner` field from the tracked final-review snapshot\n3. [Completed] Remove planner-era voter payload entries from the affected final-review conformance scenarios so each round supplies reviewer-only vote payloads with the correct amendment IDs\n4. [Completed] Run targeted validation for JSON integrity, legacy snapshot compatibility, final-review regressions, formatting, and the repository test suite\n\n## Validation Evidence\n\n- `jq empty .ralph-burning/projects/aro-1/run.json` passed.\n- `jq '.last_stage_resolution_snapshot' .ralph-burning/projects/aro-1/run.json` now shows only `final_review_reviewers` and `final_review_arbiter`.\n- `cargo test stage_resolution_snapshot_ignores_legacy_final_review_planner_field -- --nocapture` passed.\n- `cargo test final_review -- --nocapture` passed.\n- `cargo fmt --check` passed.\n- `cargo test` passed.\n- `cargo clippy --all-targets --all-features -- -D warnings` failed, but the reported errors are in pre-existing files outside this remediation and not in the edited planner-removal targets.\n\n## Outstanding Risks\n\n- `cargo clippy --all-targets --all-features -- -D warnings` still fails on pre-existing repo-wide issues outside this change set, including lints in `src/adapters/fs.rs`, `src/cli/project.rs`, `src/cli/run.rs`, `src/contexts/milestone_record/service.rs`, `src/contexts/project_run_record/task_prompt_contract.rs`, `src/contexts/project_run_record/service.rs`, `src/contexts/requirements_drafting/service.rs`, `src/contexts/automation_runtime/daemon_loop.rs`, and `src/contexts/workflow_composition/completion.rs`.\n- `nix build` was not run in this remediation pass, so the repository’s authoritative gate remains unverified.\n- `.ralph-burning/projects/aro-1/journal.ndjson` was already dirty in the worktree and was left untouched; historical planner references may still exist there as audit history.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 6
+}

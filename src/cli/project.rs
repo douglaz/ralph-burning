@@ -845,6 +845,7 @@ fn ensure_bead_creation_targets_are_actionable(
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 enum BrShowResponse {
     Single(BeadDetail),
     Many(Vec<BeadDetail>),

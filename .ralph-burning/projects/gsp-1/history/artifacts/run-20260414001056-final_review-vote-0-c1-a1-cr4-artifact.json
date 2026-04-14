@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-vote-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414001056-final_review-vote-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:49:17.162293266Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nI accept the amendment. The cited test has a real coverage hole: it checks for tmux on the ambient system PATH before installing the fake tmux fixture or prepending the temp bin dir, so on machines without a real tmux binary it returns early and never exercises the new stdout-only exhaustion classification path.\n\n## Votes\n\n- `fr-4-a6c27c9a`: Accept\n  The test at tests/unit/tmux_adapter_test.rs:416-423 calls `TmuxAdapter::check_tmux_available()` before `write_fake_tmux(...)` and before `PathGuard::prepend(bin_dir.path())`. `check_tmux_available()` in src/adapters/tmux.rs:133-138 consults `ProcessBackendAdapter::system_path_entries()`, so it only sees the ambient PATH. That means environments without a real tmux installed will silently return from the test and skip the behavior under test at src/adapters/tmux.rs:632-644. This is a genuine regression-test defect because it can report a pass without covering the newly added classification logic. Using `check_tmux_available_in()` against the temp bin dir, or moving fixture setup ahead of the guard, would make the test deterministic.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

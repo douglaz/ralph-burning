@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414001056-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:34:18.705504909Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted all five amendments. They are technically consistent, and together they close a real regression gap: non-JSON plain-stdout exhaustion signals are currently dropped from classification, which can cause retry-heavy fallback behavior instead of graceful degradation. The proposed fallbacks and test additions are narrowly scoped to failure classification semantics and align with existing bounded-output scanning and existing matcher architecture.\n\n## Votes\n\n- `fr-3-635ab8d4`: Accept\n  This directly fixes a confirmed defect in both adapters: passing `\"\"` when `extract_stdout_error()` returns `None` suppresses valid plain-text exhaustion signals and misclassifies them. Using a bounded raw stdout fallback for classifier input is the correct robust behavior.\n- `fr-3-c3dbda29`: Accept\n  The matcher gap for common phrases like `insufficient credits` is real and orthogonal to structured parsing. Expanding `BACKEND_EXHAUSTED_PATTERNS` with this wording improves recall without affecting rate-limit semantics if added as an additional exhaustion token.\n- `fr-3-93e191ce`: Accept\n  Regression coverage is incomplete for stdout-only exhaustion classification, and tmux has no failure-classification coverage for this path. Adding unit coverage is necessary to prevent silent reintroduction of this exact gap and to lock behavior into future edits.\n- `fr-3-237ad494`: Accept\n  This amendment correctly states the implementation is still missing and prescribes the precise remediation (bounded stdout tail fallback + doc update + regression test). All items map to observable correctness gaps and are safe, maintainable, and actionable.\n- `fr-3-0529a182`: Accept\n  The specific path-by-path identification in process backend and tmux reinforces the same core bug and ensures the retry-without-resume path is covered. It is technically valid and non-conflicting with the core fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414001056-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:27:48.574079732Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nOne correctness regression remains: stdout-only exhaustion messages can still be misclassified as retryable `TransportFailure` in both process and tmux backends due to not passing raw stdout text into output-based classification.\n\n## Amendments\n\n1. Critical path still misses plain-stdout exhaustion detection. In `src/adapters/process_backend.rs`, both non-zero-exit paths pass `stdout_for_class` as `stdout_error.as_deref().unwrap_or_default()` (lines `~1562`, `~1575`, and `~1633`), and `src/adapters/tmux.rs` does the same at lines `~632-642`. If `extract_stdout_error()` fails (plain text on stdout, not JSON), `classify_exit_failure_with_output()` receives `stdout=\"\"` and backends that emit `usage limit`, `quota exceeded`, etc. only to stdout are classified as `TransportFailure` instead of `BackendExhausted` and retried. Add bounded raw stdout tail fallback (similar to `STDERR_EXHAUSTION_SCAN_LIMIT`) for classification when `extract_stdout_error` is `None`, and pass that to `classify_exit_failure_with_output()`.\n   Rationale: Severity: high. This violates the acceptance intent (stdout-only exhaustion should degrade gracefully) and causes unnecessary retries/reduced availability handling. Regression coverage currently exists for JSON stdout exhaustion (`tests/unit/process_backend_test.rs:2100`, `2159`, etc.) but not for plain-stdout-only exhaustion messages in either adapter.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

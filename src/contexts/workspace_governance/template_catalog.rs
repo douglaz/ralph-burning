@@ -254,19 +254,16 @@ on its technical merit — correctness, safety, robustness, and maintainability.
 ## Instructions
 
 1. Consider each amendment carefully on its own merits.
-2. If planner positions are provided below, weigh them as additional context \
-when forming your decision.
-3. Vote ACCEPT or REJECT for each amendment with a clear rationale.
-4. Do NOT reject amendments because they are \"out of scope\" or \"beyond the \
+2. Vote ACCEPT or REJECT for each amendment with a clear rationale.
+3. Do NOT reject amendments because they are \"out of scope\" or \"beyond the \
 original spec\" — any real bug or safety issue is valid regardless of scope.
-5. Do NOT dismiss concurrency or isolation issues as \"theoretical\" just \
+4. Do NOT dismiss concurrency or isolation issues as \"theoretical\" just \
 because they don't currently cause failures — shared mutable state is a \
 defect even if current callers happen to be read-only.
 
 ## Proposed Amendments
 
-{{amendments}}\
-\n\n{{planner_positions}}
+{{amendments}}
 
 ## Authoritative JSON Schema
 
@@ -279,13 +276,12 @@ The JSON schema below is authoritative. Return only JSON that conforms exactly t
 const FINAL_REVIEW_ARBITER_DEFAULT: &str = "\
 # Final Review Arbiter
 
-You are the arbiter resolving disputed amendments where reviewers and \
-planner disagree.
+You are the arbiter resolving disputed amendments where reviewers disagree.
 
 ## Instructions
 
 1. Consider each disputed amendment carefully.
-2. Read the planner's position and the reviewer votes for context.
+2. Read the reviewer votes for context.
 3. Make a final ruling: ACCEPT or REJECT for each disputed amendment.
 4. Provide clear rationale for each ruling, citing the specific evidence \
 that tips the balance.
@@ -293,10 +289,6 @@ that tips the balance.
 ## Disputed Amendments
 
 {{amendments}}
-
-## Planner Positions
-
-{{planner_positions}}
 
 ## Reviewer Votes
 
@@ -453,17 +445,12 @@ pub fn manifest_for(template_id: &str) -> Option<TemplateManifest> {
         "final_review_voter" => Some(TemplateManifest {
             template_id: "final_review_voter",
             required_placeholders: &["title", "amendments", "json_schema"],
-            optional_placeholders: &["planner_positions"],
+            optional_placeholders: &[],
             built_in_default: FINAL_REVIEW_VOTER_DEFAULT,
         }),
         "final_review_arbiter" => Some(TemplateManifest {
             template_id: "final_review_arbiter",
-            required_placeholders: &[
-                "amendments",
-                "planner_positions",
-                "reviewer_votes",
-                "json_schema",
-            ],
+            required_placeholders: &["amendments", "reviewer_votes", "json_schema"],
             optional_placeholders: &[],
             built_in_default: FINAL_REVIEW_ARBITER_DEFAULT,
         }),

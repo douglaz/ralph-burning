@@ -12,8 +12,8 @@ Feature: Final Review Panel
     When the workflow restarts planning with those amendments
     Then the next final-review pass completes without another restart
 
-  @workflow.final_review.planner_completion_with_pending_amendments_fails
-  Scenario: Pending amendments block planner completion
+  @workflow.final_review.completion_with_pending_amendments_fails
+  Scenario: Pending amendments block completion
     Given pending final-review amendments still exist
     When completion is evaluated
     Then completion is blocked until the amendments are processed

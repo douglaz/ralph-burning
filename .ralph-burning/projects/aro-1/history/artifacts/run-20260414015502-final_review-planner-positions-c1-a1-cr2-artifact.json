@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-planner-positions-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414015502-final_review-planner-positions-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:32:32.250151506Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nBoth amendments identify the same real inconsistency: .ralph-burning/projects/aro-1/run.json contains final_review_planner in both stage_resolution_snapshot (lines 33-36) and last_stage_resolution_snapshot (lines 73-76), but the StageResolutionSnapshot struct (model.rs:186-207) no longer defines that field and build_final_review_snapshot (engine.rs:8206-8223) never emits it. The legacy data is stale and should be cleaned up to match the current schema.\n\n## Votes\n\n- `fr-2-810dbb3f`: Accept\n  Verified: run.json contains final_review_planner at lines 33-36 and 73-76, but StageResolutionSnapshot no longer defines this field (model.rs:186-207) and the builder function (engine.rs:8206-8223) only emits reviewers and arbiter. The struct lacks #[serde(deny_unknown_fields)] so deserialization silently drops the stale field, but the persisted data is inconsistent with the current schema. Any tool reading the JSON directly (not via serde) could misinterpret the planner as a live role. Regenerating or scrubbing the snapshot is the correct fix.\n- `fr-2-99c0c933`: Accept\n  This identifies the same verified inconsistency as fr-2-810dbb3f: run.json still serializes final_review_planner in both snapshot locations despite the model and builder code having removed the field. The concern about reintroducing planner-specific state in new artifacts is valid — if the stale run.json is used as a template or reference for downstream processes that parse JSON directly, the phantom planner entry could propagate. Cleaning the persisted state to match the current code contract is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

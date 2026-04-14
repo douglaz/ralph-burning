@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414015502-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T02:44:00.582224823Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nResolved the remaining planner-removal drift in tracked artifacts. I removed the lingering `final_review_planner` snapshot field from `.ralph-burning/projects/aro-1/run.json` and updated `docs/templates.md` so the final-review voter and arbiter placeholder tables match the current planner-free template manifests.\n\n## Steps\n\n1. [Completed] Inspect the remaining planner-related references in the checked-in sample run snapshot and template documentation\n2. [Completed] Patch tracked artifacts to remove the active `final_review_planner` snapshot field and stale `planner_positions` template documentation\n3. [Completed] Run targeted validation for JSON integrity, legacy snapshot compatibility, and absence of planner placeholders in active docs/snapshots\n\n## Validation Evidence\n\n- `jq empty .ralph-burning/projects/aro-1/run.json` passed after the edit, confirming the sample run snapshot remains valid JSON.\n- `rg -n '\"final_review_planner\"\\s*:' .ralph-burning/projects/aro-1/run.json` returned no matches, confirming the active serialized snapshot field is gone from the checked-in run snapshot.\n- `rg -n 'planner_positions' docs/templates.md` returned no matches, confirming the final-review template documentation no longer advertises the removed placeholder.\n- `cargo test stage_resolution_snapshot_ignores_legacy_final_review_planner_field -- --nocapture` passed, confirming backward-compatible deserialization for legacy snapshots with the removed planner field still works.\n- A broader `rg` over `.ralph-burning/projects/aro-1/run.json` now finds planner-related strings only inside historical amendment `body` text, not as active snapshot keys.\n\n## Outstanding Risks\n\n- I did not rerun the full repository gates in this remediation pass (`cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt --check`, `nix build`).\n- `.ralph-burning/projects/aro-1/run.json` still contains `final_review_planner` and `planner_positions` inside historical amendment text bodies; those are preserved audit-history strings, not active snapshot/schema fields.\n- `.ralph-burning/projects/aro-1/journal.ndjson` was already modified in the worktree and was not rewritten in this pass, so historical planner references may still exist there as retained history.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

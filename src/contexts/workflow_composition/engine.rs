@@ -358,15 +358,6 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                 preflight_required_panel_target(
                     adapter,
                     entry.stage_id,
-                    "planner",
-                    &panel.planner,
-                    "final-review planner",
-                    &mut probed,
-                )
-                .await?;
-                preflight_required_panel_target(
-                    adapter,
-                    entry.stage_id,
                     "arbiter",
                     &panel.arbiter,
                     "final-review arbiter",
@@ -438,15 +429,8 @@ fn resolve_final_review_panel_for_preflight(
     cycle: u32,
 ) -> AppResult<FinalReviewPanelResolution> {
     // Resolve each member individually for member-specific error attribution.
-    // resolve_final_review_planner_target honours final_review.planner_backend.
     // resolve_role_target(Arbiter) honours final_review.arbiter_backend via
     // selection_for_role.
-    let planner = policy
-        .resolve_final_review_planner_target(cycle)
-        .map_err(|error| AppError::PreflightFailed {
-            stage_id: StageId::FinalReview,
-            details: format!("required final-review planner resolution failed: {error}"),
-        })?;
     let arbiter = policy
         .resolve_role_target(BackendPolicyRole::Arbiter, cycle)
         .map_err(|error| AppError::PreflightFailed {
@@ -460,11 +444,7 @@ fn resolve_final_review_panel_for_preflight(
                 stage_id: StageId::FinalReview,
                 details: format!("final-review reviewer resolution failed: {error}"),
             })?;
-    Ok(FinalReviewPanelResolution {
-        planner,
-        reviewers,
-        arbiter,
-    })
+    Ok(FinalReviewPanelResolution { reviewers, arbiter })
 }
 
 async fn preflight_required_panel_target<A: AgentExecutionPort>(
@@ -1943,17 +1923,6 @@ where
                 let min_reviewers = effective_config.final_review_policy().min_reviewers;
                 agent_service
                     .adapter()
-                    .check_availability(&panel.planner)
-                    .await
-                    .map_err(|_| AppError::ResumeDriftFailure {
-                        stage_id: current_stage,
-                        details: format!(
-                            "required final-review planner ({}) unavailable on resume",
-                            panel.planner.backend.family,
-                        ),
-                    })?;
-                agent_service
-                    .adapter()
                     .check_availability(&panel.arbiter)
                     .await
                     .map_err(|_| AppError::ResumeDriftFailure {
@@ -2009,12 +1978,7 @@ where
                     });
                 }
                 panel.reviewers = available;
-                build_final_review_snapshot(
-                    current_stage,
-                    &panel.reviewers,
-                    &panel.planner,
-                    &panel.arbiter,
-                )
+                build_final_review_snapshot(current_stage, &panel.reviewers, &panel.arbiter)
             }
             _ => {
                 let target =
@@ -2022,10 +1986,6 @@ where
                 build_single_target_snapshot(current_stage, &target)
             }
         };
-
-        let legacy_final_review_snapshot_needs_upgrade = current_stage == StageId::FinalReview
-            && old_snapshot.final_review_planner.is_none()
-            && new_snapshot.final_review_planner.is_some();
 
         if resolution_has_drifted(&old_snapshot, &new_snapshot) {
             // Fail early if requirements no longer met.
@@ -2049,13 +2009,6 @@ where
                 base_dir,
                 project_id,
             )?;
-        } else if legacy_final_review_snapshot_needs_upgrade {
-            // Old final-review snapshots created before planner tracking should
-            // silently adopt the re-resolved planner so later resumes have a
-            // durable baseline even though no drift warning is emitted.
-            // Persist immediately so the upgrade survives a preflight failure.
-            snapshot.last_stage_resolution_snapshot = Some(new_snapshot.clone());
-            run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot)?;
         }
     }
 
@@ -7071,6 +7024,7 @@ struct FinalReviewQueuedAmendment {
     /// the mapping handler instead of the amendment queue.
     mapped_to_bead_id: Option<String>,
     /// Three-way classification for downstream routing.
+    #[allow(dead_code)]
     classification: crate::contexts::workflow_composition::panel_contracts::AmendmentClassification,
 }
 
@@ -7651,21 +7605,6 @@ where
 
     agent_service
         .adapter()
-        .check_availability(&panel.planner)
-        .await
-        .map_err(|error| {
-            let failure_class = match &error {
-                AppError::BackendUnavailable { failure_class, .. } => *failure_class,
-                _ => None,
-            };
-            AppError::BackendUnavailable {
-                backend: panel.planner.backend.family.to_string(),
-                details: format!("required final-review planner unavailable: {error}"),
-                failure_class,
-            }
-        })?;
-    agent_service
-        .adapter()
         .check_availability(&panel.arbiter)
         .await
         .map_err(|error| {
@@ -7746,10 +7685,7 @@ where
     }
     panel.reviewers = available_reviewers;
 
-    let resolution =
-        build_final_review_snapshot(stage_id, &panel.reviewers, &panel.planner, &panel.arbiter);
-    let planner_timeout =
-        policy.timeout_for_role(panel.planner.backend.family, BackendPolicyRole::Planner);
+    let resolution = build_final_review_snapshot(stage_id, &panel.reviewers, &panel.arbiter);
     let reviewer_timeout_for_backend = |family: BackendFamily| -> Duration {
         policy.timeout_for_role(family, BackendPolicyRole::FinalReviewer)
     };
@@ -7823,7 +7759,6 @@ where
         current_active_run(snapshot)?.final_review_restart_count,
         prompt_reference,
         snapshot.rollback_point_meta.rollback_count,
-        planner_timeout,
         &reviewer_timeout_for_backend,
         arbiter_timeout,
         cancellation_token,
@@ -8223,7 +8158,6 @@ pub fn build_single_target_snapshot(
         prompt_review_refiner: None,
         completion_completers: Vec::new(),
         final_review_reviewers: Vec::new(),
-        final_review_planner: None,
         final_review_arbiter: None,
     }
 }
@@ -8245,7 +8179,6 @@ pub fn build_prompt_review_snapshot(
         prompt_review_refiner: Some(resolved_target_to_record(&panel.refiner)),
         completion_completers: Vec::new(),
         final_review_reviewers: Vec::new(),
-        final_review_planner: None,
         final_review_arbiter: None,
     }
 }
@@ -8266,7 +8199,6 @@ pub fn build_completion_snapshot(
             .map(|m| resolved_target_to_record(&m.target))
             .collect(),
         final_review_reviewers: Vec::new(),
-        final_review_planner: None,
         final_review_arbiter: None,
     }
 }
@@ -8275,7 +8207,6 @@ pub fn build_completion_snapshot(
 pub fn build_final_review_snapshot(
     stage_id: StageId,
     reviewers: &[crate::contexts::agent_execution::policy::ResolvedPanelMember],
-    planner: &ResolvedBackendTarget,
     arbiter: &ResolvedBackendTarget,
 ) -> StageResolutionSnapshot {
     StageResolutionSnapshot {
@@ -8289,7 +8220,6 @@ pub fn build_final_review_snapshot(
             .iter()
             .map(|member| resolved_target_to_record(&member.target))
             .collect(),
-        final_review_planner: Some(resolved_target_to_record(planner)),
         final_review_arbiter: Some(resolved_target_to_record(arbiter)),
     }
 }
@@ -8327,13 +8257,6 @@ pub fn resolution_has_drifted(
         || old.prompt_review_refiner != new.prompt_review_refiner
         || old.completion_completers != new.completion_completers
         || old.final_review_reviewers != new.final_review_reviewers
-        || match (&old.final_review_planner, &new.final_review_planner) {
-            (Some(old_planner), Some(new_planner)) => old_planner != new_planner,
-            (Some(_), None) => true,
-            // Old snapshots created before planner tracking will have `None`;
-            // don't flag drift for legacy resumes.
-            (None, _) => false,
-        }
         || old.final_review_arbiter != new.final_review_arbiter
 }
 
@@ -8404,12 +8327,6 @@ pub fn drift_still_satisfies_requirements(
                 return Err(AppError::ResumeDriftFailure {
                     stage_id,
                     details: "re-resolved final-review panel has no arbiter".to_owned(),
-                });
-            }
-            if new_snapshot.final_review_planner.is_none() {
-                return Err(AppError::ResumeDriftFailure {
-                    stage_id,
-                    details: "re-resolved final-review panel has no planner".to_owned(),
                 });
             }
         }
@@ -8616,22 +8533,12 @@ mod tests {
     }
 
     #[test]
-    fn final_review_snapshot_serialization_includes_planner_target() {
+    fn final_review_snapshot_serialization_includes_reviewer_and_arbiter_targets() {
         let reviewers = final_review_reviewers();
-        let planner = ResolvedBackendTarget::new(BackendFamily::OpenRouter, "planner-model");
         let arbiter = ResolvedBackendTarget::new(BackendFamily::Stub, "arbiter-model");
 
-        let snapshot =
-            build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner, &arbiter);
+        let snapshot = build_final_review_snapshot(StageId::FinalReview, &reviewers, &arbiter);
         let serialized = serde_json::to_value(&snapshot).expect("snapshot should serialize");
-
-        assert_eq!(
-            serialized.get("final_review_planner"),
-            Some(&serde_json::json!({
-                "backend_family": "openrouter",
-                "model_id": "planner-model",
-            }))
-        );
 
         let serialized_reviewers = serialized
             .get("final_review_reviewers")
@@ -8648,47 +8555,34 @@ mod tests {
     }
 
     #[test]
-    fn final_review_planner_drift_detection_handles_new_and_legacy_snapshots() {
+    fn final_review_arbiter_drift_detection_is_detected() {
         let reviewers = final_review_reviewers();
-        let arbiter = ResolvedBackendTarget::new(BackendFamily::Stub, "arbiter-model");
-        let planner_a = ResolvedBackendTarget::new(BackendFamily::OpenRouter, "planner-a");
-        let planner_b = ResolvedBackendTarget::new(BackendFamily::OpenRouter, "planner-b");
+        let arbiter_a = ResolvedBackendTarget::new(BackendFamily::Stub, "arbiter-a");
+        let arbiter_b = ResolvedBackendTarget::new(BackendFamily::Stub, "arbiter-b");
 
-        let old =
-            build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner_a, &arbiter);
-        let changed =
-            build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner_b, &arbiter);
+        let old = build_final_review_snapshot(StageId::FinalReview, &reviewers, &arbiter_a);
+        let changed = build_final_review_snapshot(StageId::FinalReview, &reviewers, &arbiter_b);
         assert!(resolution_has_drifted(&old, &changed));
-
-        let mut legacy_snapshot = old.clone();
-        legacy_snapshot.final_review_planner = None;
-        assert!(!resolution_has_drifted(&legacy_snapshot, &old));
-
-        let mut missing_planner = old.clone();
-        missing_planner.final_review_planner = None;
-        assert!(resolution_has_drifted(&old, &missing_planner));
     }
 
     #[test]
-    fn final_review_drift_requirements_fail_when_planner_is_missing() {
+    fn final_review_drift_requirements_fail_when_arbiter_is_missing() {
         let reviewers = final_review_reviewers();
-        let planner = ResolvedBackendTarget::new(BackendFamily::OpenRouter, "planner-model");
         let arbiter = ResolvedBackendTarget::new(BackendFamily::Stub, "arbiter-model");
         let config = final_review_effective_config();
 
-        let mut snapshot =
-            build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner, &arbiter);
-        snapshot.final_review_planner = None;
+        let mut snapshot = build_final_review_snapshot(StageId::FinalReview, &reviewers, &arbiter);
+        snapshot.final_review_arbiter = None;
 
         let error =
             drift_still_satisfies_requirements(&snapshot, StageId::FinalReview, &config, None)
-                .expect_err("missing planner should fail final-review requirements");
+                .expect_err("missing arbiter should fail final-review requirements");
         assert!(matches!(
             error,
             AppError::ResumeDriftFailure {
                 stage_id: StageId::FinalReview,
                 details,
-            } if details == "re-resolved final-review panel has no planner"
+            } if details == "re-resolved final-review panel has no arbiter"
         ));
     }
 

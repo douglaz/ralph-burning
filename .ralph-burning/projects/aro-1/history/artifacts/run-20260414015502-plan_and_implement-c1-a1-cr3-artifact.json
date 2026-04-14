@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414015502-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T02:34:53.805049310Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `.ralph-burning/projects/aro-1/run.json` to remove the lingering `final_review_planner` entry from the persisted `last_stage_resolution_snapshot`, leaving the tracked run snapshot aligned with the planner-free final-review schema. The active run snapshot already had no planner field; the remaining planner mentions in `run.json` are now only historical amendment text, not serialized snapshot state.\n\n## Steps\n\n1. [Completed] Inspect the checked-in `aro-1` run snapshot for any remaining serialized `final_review_planner` fields in active and last stage-resolution snapshots\n2. [Completed] Patch `.ralph-burning/projects/aro-1/run.json` so persisted final-review snapshot state contains reviewers plus arbiter only\n3. [Completed] Validate the updated snapshot shape and confirm legacy planner-field deserialization coverage still passes\n\n## Validation Evidence\n\n- `rg -n '\"final_review_planner\"' .ralph-burning/projects/aro-1/run.json` returned no matches after the patch, confirming the snapshot field is no longer serialized there.\n- `jq empty .ralph-burning/projects/aro-1/run.json` passed, confirming the edited snapshot remains valid JSON.\n- `cargo test stage_resolution_snapshot_ignores_legacy_final_review_planner_field -- --nocapture` passed, confirming backward-compatible reading of old snapshots with the legacy planner field still works.\n\n## Outstanding Risks\n\n- I did not rerun the full repository gates in this remediation pass (`cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt --check`, `nix build`).\n- `.ralph-burning/projects/aro-1/journal.ndjson` and some checked-in history artifacts still contain historical planner references from earlier review rounds; I did not rewrite that audit history in this pass.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-vote-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414015502-final_review-vote-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:43:07.720293964Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments are valid. `fr-3-182adb87` and `fr-3-b0a0bd61` are overlapping reports of the same stale persisted final-review snapshot data in `.ralph-burning/projects/aro-1/run.json`; `fr-3-5a16fec6` is a separate, valid documentation drift issue in `docs/templates.md`.\n\n## Votes\n\n- `fr-3-182adb87`: Accept\n  Verified. `.ralph-burning/projects/aro-1/run.json` still contains `final_review_planner` in both persisted final-review snapshot blocks, while `StageResolutionSnapshot` in `src/contexts/project_run_record/model.rs` now defines only `final_review_reviewers` and `final_review_arbiter`, and `build_final_review_snapshot` in `src/contexts/workflow_composition/engine.rs` only populates those fields. This is stale persisted state, not current serializer output, and serde currently tolerates it, but the checked-in snapshot is inconsistent with the live schema and should be regenerated or scrubbed.\n- `fr-3-5a16fec6`: Accept\n  Verified. `docs/templates.md` still documents `planner_positions` for both `final_review_voter` and `final_review_arbiter`, but `src/contexts/workspace_governance/template_catalog.rs` defines `final_review_voter` with required placeholders `title`, `amendments`, `json_schema` and no optional placeholders, and `final_review_arbiter` with required placeholders `amendments`, `reviewer_votes`, `json_schema`. The docs are stale and can mislead anyone authoring template overrides.\n- `fr-3-b0a0bd61`: Accept\n  Valid, but it overlaps with `fr-3-182adb87`. The amendment correctly identifies that both `active_run.stage_resolution_snapshot` and `last_stage_resolution_snapshot` in `.ralph-burning/projects/aro-1/run.json` still persist `final_review_planner` even though the current schema and snapshot builder no longer include that field. As with the other finding, this is a stale checked-in snapshot inconsistency rather than proof that the current code still emits the field, but it is still a real maintainability/data-integrity issue worth fixing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

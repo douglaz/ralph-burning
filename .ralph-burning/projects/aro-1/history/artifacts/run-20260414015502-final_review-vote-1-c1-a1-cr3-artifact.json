@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414015502-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:42:38.228282004Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll three amendments are valid and verified against the source code. Amendments fr-3-182adb87 and fr-3-b0a0bd61 identify the same real issue (stale final_review_planner in run.json), confirmed by: (1) no occurrences of final_review_planner in src/, (2) StageResolutionSnapshot in model.rs:186-207 has no such field, (3) build_final_review_snapshot in engine.rs:8206-8223 emits only reviewers + arbiter, yet run.json lines 33-36 and 73-76 still contain final_review_planner. Amendment fr-3-5a16fec6 correctly identifies stale docs: templates.md line 50 shows voter with optional planner_positions and line 51 shows arbiter requiring planner_positions, but template_catalog.rs:445-456 shows voter has no optional placeholders and arbiter requires only amendments/reviewer_votes/json_schema.\n\n## Votes\n\n- `fr-3-182adb87`: Accept\n  Confirmed: run.json lines 33-36 and 73-76 contain final_review_planner, but grep finds zero occurrences of that field name anywhere in src/. StageResolutionSnapshot (model.rs:186-207) defines no such field, and build_final_review_snapshot (engine.rs:8211-8223) populates only final_review_reviewers and final_review_arbiter. The stale data was written by an older code version. While serde's skip_serializing_if/default annotations mean deserialization won't crash on the unknown field, the persisted snapshot is inconsistent with the current schema — a data integrity issue that should be remediated by scrubbing or regenerating the snapshot.\n- `fr-3-5a16fec6`: Accept\n  Confirmed: docs/templates.md line 50 lists final_review_voter with optional planner_positions, and line 51 lists final_review_arbiter requiring planner_positions. However, template_catalog.rs:445-450 shows voter requires [title, amendments, json_schema] with empty optional_placeholders, and lines 451-456 show arbiter requires [amendments, reviewer_votes, json_schema] with empty optional_placeholders. The planner_positions placeholder has been fully removed from source code (zero grep matches in src/). The docs are stale and would mislead anyone writing custom template overrides.\n- `fr-3-b0a0bd61`: Accept\n  This identifies the same verified issue as fr-3-182adb87: final_review_planner persists in run.json at both active_run.stage_resolution_snapshot (lines 33-36) and last_stage_resolution_snapshot (lines 73-76), contradicting the current schema and builder code. The finding is technically correct and the evidence is identical. Accept because it is a valid data integrity issue, though note it is a duplicate of fr-3-182adb87 and a single remediation action (scrubbing both snapshot locations in run.json) addresses both amendments.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

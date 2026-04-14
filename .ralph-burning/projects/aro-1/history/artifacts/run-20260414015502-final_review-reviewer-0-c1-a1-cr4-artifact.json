@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-reviewer-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414015502-final_review-reviewer-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:48:10.122272817Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the planner-removal changes across final-review execution, template/config/snapshot code, and the tracked sample run artifacts. The implementation looks consistent, but the committed run snapshots are still stale and retain `final_review_planner`.\n\n## Amendments\n\n1. finding_summary: The branch still checks in planner-era final-review snapshots. `.ralph-burning/projects/aro-1/run.json:33-36` and `.ralph-burning/projects/aro-1/run.json:73-76`, plus `.ralph-burning/projects/gsp-1/run.json:34-37` and `.ralph-burning/projects/gsp-1/run.json:74-77`, still serialize `final_review_planner` even though `StageResolutionSnapshot` no longer defines that field in `src/contexts/project_run_record/model.rs:186-206` and `build_final_review_snapshot` now only emits reviewers plus arbiter in `src/contexts/workflow_composition/engine.rs:8206-8223`. severity: high. affected_files: [\".ralph-burning/projects/aro-1/run.json\", \".ralph-burning/projects/gsp-1/run.json\"]. remediation_hint: Regenerate or scrub the checked-in run snapshots with the current serializer so every persisted final-review snapshot block omits `final_review_planner`.\n   Rationale: The source changes remove planner resolution from the live final-review flow, but the newly tracked run snapshots in this branch still publish planner state. That leaves the branch failing its own acceptance criterion for planner-free `run.json` output and can mislead any tooling or reviewers that consume the serialized project state directly.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

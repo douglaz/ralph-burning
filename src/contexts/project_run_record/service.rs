@@ -1195,8 +1195,7 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
     };
     let repo_guidance = escape_canonical_heading_lines(&repo_guidance);
 
-    vec![
-        format!(
+    [format!(
             "# Ralph Task Prompt\n\n{}\n\n- Contract: `{}`\n- Version: `{}`\n- Milestone: `{}`\n- Bead: `{}`\n\nThis project executes bead `{}` for milestone `{}`.",
             task_prompt_contract::contract_marker(),
             task_prompt_contract::BEAD_TASK_PROMPT_CONTRACT_NAME,
@@ -1245,8 +1244,7 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
             "## {}\n\n{}",
             task_prompt_contract::SECTION_AGENTS_REPO_GUIDANCE,
             repo_guidance
-        ),
-    ]
+        )]
     .join("\n\n")
 }
 

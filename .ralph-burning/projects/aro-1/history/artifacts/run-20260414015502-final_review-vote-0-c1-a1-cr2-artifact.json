@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-vote-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414015502-final_review-vote-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:33:43.240687819Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify the same verified inconsistency: `.ralph-burning/projects/aro-1/run.json` still contains `final_review_planner` in both the active-stage and last-stage final-review snapshots, while `StageResolutionSnapshot` no longer defines that field and `build_final_review_snapshot` no longer emits it. This is not an immediate deserialization break because current serde behavior ignores unknown legacy fields, but the checked-in persisted run artifact is out of sync with the current schema and can mislead any tooling or humans that inspect the JSON directly.\n\n## Votes\n\n- `fr-2-810dbb3f`: Accept\n  Accepted. The cited lines in `.ralph-burning/projects/aro-1/run.json` do contain `final_review_planner`, and the current `StageResolutionSnapshot` definition only includes reviewers plus `final_review_arbiter`. `build_final_review_snapshot` likewise emits reviewers and arbiter only. That makes the persisted snapshot stale relative to the current contract. The impact is mostly schema/data consistency rather than a hard runtime failure, because legacy unknown fields are intentionally tolerated on read, but the tracked artifact should still be regenerated or scrubbed to match current output.\n- `fr-2-99c0c933`: Accept\n  Accepted. This is the same underlying defect stated more concisely: the newly added `active_run.stage_resolution_snapshot` and the existing `last_stage_resolution_snapshot` both still serialize legacy planner data even though planner is no longer part of the final-review snapshot model. Because `run.json` is persisted authoritative state, carrying a phantom planner entry is misleading and risks propagating obsolete state through direct JSON consumers or future copied artifacts, even if serde-based readers currently ignore it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-vote-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260414015502-final_review-vote-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T03:04:22.747120823Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted all three amendments; they identify concrete schema/data consistency and test-harness correctness issues that should be fixed.\n\n## Votes\n\n- `fr-5-66317fda`: Accept\n  Confirms a persisted run snapshot includes a removed `final_review_planner` field despite the current final-review schema/builder only supporting `final_review_reviewers` and `final_review_arbiter`; this is a real artifact-contract violation in tracked `run.json` state.\n- `fr-5-aa018b94`: Accept\n  Identifies an actual misalignment in conformance scenarios where stale planner vote payloads are still consumed as reviewer votes, causing incorrect routing of votes across reviewers and rounds; this can silently skew aggregation and hides real failures.\n- `fr-5-293b5fe0`: Accept\n  Same underlying issue as fr-5-66317fda in a different location/context: a stale `final_review_planner` field remains in new `stage_resolution_snapshot` artifacts, violating the final-review no-planner snapshot contract.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 5
+}

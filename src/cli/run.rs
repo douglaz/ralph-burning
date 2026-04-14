@@ -2087,17 +2087,15 @@ fn matching_daemon_cleanup_handoff(
     let mut matching_handoffs = Vec::new();
     let mut matched_owners = HashSet::new();
 
-    if let Some((_owner, record)) =
+    if let Some((_owner, LeaseRecord::Worktree(lease))) =
         read_project_writer_lease_record(&FsDaemonStore, daemon_store_dir, project_id)?
     {
-        if let LeaseRecord::Worktree(lease) = record {
-            if lease.project_id == project_id.as_str() {
-                if let Some(handoff) = lease.cleanup_handoff.as_ref() {
-                    if daemon_cleanup_handoff_matches_attempt(handoff, expected_attempt)
-                        && matched_owners.insert(lease.lease_id.clone())
-                    {
-                        matching_handoffs.push((lease.lease_id, handoff.clone()));
-                    }
+        if lease.project_id == project_id.as_str() {
+            if let Some(handoff) = lease.cleanup_handoff.as_ref() {
+                if daemon_cleanup_handoff_matches_attempt(handoff, expected_attempt)
+                    && matched_owners.insert(lease.lease_id.clone())
+                {
+                    matching_handoffs.push((lease.lease_id, handoff.clone()));
                 }
             }
         }

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-vote-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414015502-final_review-vote-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:50:28.619064293Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted amendments are technically sound: they all address concrete regressions introduced by removing planner from final-review panel semantics and are aligned with the current model and contract behavior.\n\n## Votes\n\n- `fr-4-9b6b050f`: Accept\n  This is a real schema drift issue: `final_review_planner` appears in checked-in run snapshots while `StageResolutionSnapshot` and `build_final_review_snapshot` no longer define/emit it, so persisted artifacts diverge from current deserialization expectations and should be regenerated or cleaned.\n- `fr-4-a1df756e`: Accept\n  The referenced doc comments and diagnostics text still describe a planner-role participation in final review that no longer exists, which is misleading and undermines maintainability by documenting a behavior that cannot occur in code.\n- `fr-4-8d2a18b5`: Accept\n  This repeats the same class of regression in `aro-1` final-review stage-resolution snapshots: legacy `final_review_planner` state persists in active and last snapshots, creating stale persisted schema and inconsistency with the active contract that only supports reviewers and arbiter.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}

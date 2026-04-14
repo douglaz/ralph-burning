@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414015502-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:35:32.114712330Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound 1 high-severity issue: planner remains serialized in new final-review snapshot fields in run.json.\n\n## Amendments\n\n1. High: New final-review snapshots in `.ralph-burning/projects/aro-1/run.json` still persist `final_review_planner` even though the field has been removed from current stage-resolution schema/output. See `run.json:16-36` (`active_run.stage_resolution_snapshot`) and `run.json:56-80` (`last_stage_resolution_snapshot`) where `final_review_planner` is still present. This is contradictory because `StageResolutionSnapshot` now defines only reviewers/arbiter for final review (`src/contexts/project_run_record/model.rs:186-207`), and the builder emits only those fields (`src/contexts/workflow_composition/engine.rs:8206-8223`).\n   Rationale: This is a functional artifact regression in the final state capture and can reintroduce planner-specific state into newly written run snapshots; it violates the stated contract and reduces backward-forward consistency.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

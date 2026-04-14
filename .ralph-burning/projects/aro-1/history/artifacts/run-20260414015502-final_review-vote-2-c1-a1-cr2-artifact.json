@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414015502-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:32:35.521350638Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBoth amendments identify the same concrete schema drift: persisted run snapshots still contain `final_review_planner` while the current schema and snapshot builder no longer support it, so this is a real correctness/data-quality issue and should be fixed.\n\n## Votes\n\n- `fr-2-810dbb3f`: Accept\n  The tracked run artifact is out of sync with `StageResolutionSnapshot` and `build_final_review_snapshot`, creating stale fields that can confuse consumers or propagate invalid state; removing the field from `run.json` is necessary.\n- `fr-2-99c0c933`: Accept\n  This duplicates the same verified inconsistency and explicitly calls out the contract risk; accepting aligns persisted artifacts with current contract by eliminating planner-specific state from final-review snapshots.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

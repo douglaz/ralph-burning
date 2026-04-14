@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-reviewer-0-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414001056-final_review-reviewer-0-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:48:14.344143875Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the stdout-only exhaustion classification changes in `src/adapters/process_backend.rs`, `src/adapters/tmux.rs`, and the associated unit tests. The runtime classification changes look correct, but the new tmux regression test is not robust because it can skip entirely before exercising the added behavior.\n\n## Amendments\n\n1. finding_summary: The new tmux regression test can silently pass without exercising the stdout-only exhaustion path because it bails out on `TmuxAdapter::check_tmux_available()` before the fake tmux binary is added to `PATH`. On environments that do not have a real `tmux` installed, `tests/unit/tmux_adapter_test.rs:416-423` returns early and never covers the `src/adapters/tmux.rs:632-644` classification logic added by this bead. severity: low affected_files: [\"tests/unit/tmux_adapter_test.rs:416-423\", \"src/adapters/tmux.rs:632-644\"] remediation_hint: Install the fake tmux fixture before the availability check, or switch the guard to `check_tmux_available_in()` against the temporary bin dir so the test always exercises the new code path.\n   Rationale: This bead explicitly adds regression coverage for stdout-only exhaustion classification. As written, the tmux test does not provide reliable coverage in environments without a real tmux binary, so regressions in the tmux path can slip through unnoticed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

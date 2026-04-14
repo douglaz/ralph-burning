@@ -84,12 +84,12 @@ fn consumer_guidance_body(scope_boundary_guidance: &str) -> String {
     for section in BEAD_TASK_PROMPT_SECTION_TITLES {
         out.push_str(&format!("- `{section}`\n"));
     }
-    out.push_str("\n");
+    out.push('\n');
     out.push_str(scope_boundary_guidance);
     out
 }
 
-fn top_level_lines<'a>(prompt: &'a str) -> impl Iterator<Item = &'a str> {
+fn top_level_lines(prompt: &str) -> impl Iterator<Item = &str> {
     let mut active_fence = None;
     prompt.lines().filter(move |line| {
         if let Some(opening) = active_fence {

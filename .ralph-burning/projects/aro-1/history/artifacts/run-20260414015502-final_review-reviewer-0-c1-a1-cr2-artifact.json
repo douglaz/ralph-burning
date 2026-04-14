@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-reviewer-0-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414015502-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:31:41.107471676Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the final-review planner-removal changes across the workflow, config, diagnostics, template, and snapshot code, plus the tracked runtime artifacts. One fix-now regression remains: the committed `aro-1` run snapshot still persists `final_review_planner` in new final-review snapshot blocks.\n\n## Amendments\n\n1. finding_summary: The tracked `aro-1` run snapshot still contains the removed planner field. `.ralph-burning/projects/aro-1/run.json:16-40` writes `active_run.stage_resolution_snapshot.final_review_planner`, and `.ralph-burning/projects/aro-1/run.json:56-80` writes `last_stage_resolution_snapshot.final_review_planner`, even though `StageResolutionSnapshot` no longer defines that field in `src/contexts/project_run_record/model.rs:186-206` and `build_final_review_snapshot` now only emits reviewers plus arbiter in `src/contexts/workflow_composition/engine.rs:8206-8223`. severity: high. affected_files: [\".ralph-burning/projects/aro-1/run.json\"]. remediation_hint: Regenerate or update the checked-in run snapshot with the current code so both final-review snapshot blocks drop `final_review_planner`.\n   Rationale: This violates the bead's acceptance criteria for new planner-free `run.json` snapshots, and the `active_run.stage_resolution_snapshot` block is a newly written final-review snapshot rather than a preserved legacy artifact.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

@@ -12354,7 +12354,7 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
         Ok(())
     });
 
-    reg!(m, "parity_slice0_final_review_planner_in_snapshot", || {
+    reg!(m, "parity_slice0_final_review_arbiter_in_snapshot", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "slice0-final-review-snapshot", "standard")?;
 
@@ -12378,17 +12378,17 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
             ));
         }
 
-        let planner = resolution
-            .get("final_review_planner")
-            .ok_or_else(|| "final_review_planner missing from saved snapshot".to_owned())?;
-        if planner
+        let arbiter = resolution
+            .get("final_review_arbiter")
+            .ok_or_else(|| "final_review_arbiter missing from saved snapshot".to_owned())?;
+        if arbiter
             .get("backend_family")
             .and_then(|v| v.as_str())
             .is_none()
-            || planner.get("model_id").and_then(|v| v.as_str()).is_none()
+            || arbiter.get("model_id").and_then(|v| v.as_str()).is_none()
         {
             return Err(format!(
-                "final_review_planner must include backend_family and model_id, got {planner}"
+                "final_review_arbiter must include backend_family and model_id, got {arbiter}"
             ));
         }
 
@@ -12397,7 +12397,7 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(
         m,
-        "parity_slice0_final_review_planner_drift_detected",
+        "parity_slice0_final_review_arbiter_drift_detected",
         || {
             let reviewers = vec![
                 ResolvedPanelMember {
@@ -12412,20 +12412,15 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
                 },
             ];
             let arbiter = ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter");
-            let old_snapshot = build_final_review_snapshot(
-                StageId::FinalReview,
-                &reviewers,
-                &ResolvedBackendTarget::new(BackendFamily::Claude, "planner-a"),
-                &arbiter,
-            );
+            let old_snapshot =
+                build_final_review_snapshot(StageId::FinalReview, &reviewers, &arbiter);
             let new_snapshot = build_final_review_snapshot(
                 StageId::FinalReview,
                 &reviewers,
-                &ResolvedBackendTarget::new(BackendFamily::Codex, "planner-b"),
-                &arbiter,
+                &ResolvedBackendTarget::new(BackendFamily::Codex, "arbiter-b"),
             );
             if !resolution_has_drifted(&old_snapshot, &new_snapshot) {
-                return Err("planner-only final-review drift should be detected".to_owned());
+                return Err("arbiter-only final-review drift should be detected".to_owned());
             }
 
             let ws = TempWorkspace::new()?;
@@ -12444,11 +12439,11 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
             )?;
             assert_failure(&start_out)?;
 
-            let planner_out = run_cli(
-                &["config", "set", "workflow.planner_backend", "codex"],
+            let arbiter_out = run_cli(
+                &["config", "set", "final_review.arbiter_backend", "codex"],
                 ws.path(),
             )?;
-            assert_success(&planner_out)?;
+            assert_success(&arbiter_out)?;
 
             let resume_out = run_cli(&["run", "resume"], ws.path())?;
             assert_success(&resume_out)?;
@@ -12466,7 +12461,7 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
                             == Some("final_review")
                 })
                 .ok_or_else(|| {
-                    "expected durable_warning event for final-review planner drift".to_owned()
+                    "expected durable_warning event for final-review arbiter drift".to_owned()
                 })?;
 
             let warning_details = warning_event
@@ -12480,29 +12475,22 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
                 .get("new_resolution")
                 .ok_or_else(|| "durable_warning missing new_resolution".to_owned())?;
 
-            let old_planner = old_resolution
-                .get("final_review_planner")
-                .ok_or_else(|| "old_resolution missing final_review_planner".to_owned())?;
-            let new_planner = new_resolution
-                .get("final_review_planner")
-                .ok_or_else(|| "new_resolution missing final_review_planner".to_owned())?;
-            if old_planner == new_planner {
+            let old_arbiter = old_resolution
+                .get("final_review_arbiter")
+                .ok_or_else(|| "old_resolution missing final_review_arbiter".to_owned())?;
+            let new_arbiter = new_resolution
+                .get("final_review_arbiter")
+                .ok_or_else(|| "new_resolution missing final_review_arbiter".to_owned())?;
+            if old_arbiter == new_arbiter {
                 return Err(
-                    "expected planner drift warning to show changed planner resolution".to_owned(),
-                );
-            }
-            if old_resolution.get("final_review_arbiter")
-                != new_resolution.get("final_review_arbiter")
-            {
-                return Err(
-                    "arbiter should remain stable in planner-only drift scenario".to_owned(),
+                    "expected arbiter drift warning to show changed arbiter resolution".to_owned(),
                 );
             }
             if old_resolution.get("final_review_reviewers")
                 != new_resolution.get("final_review_reviewers")
             {
                 return Err(
-                    "reviewers should remain stable in planner-only drift scenario".to_owned(),
+                    "reviewers should remain stable in arbiter-only drift scenario".to_owned(),
                 );
             }
 
@@ -12804,10 +12792,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                     "final_review:voter",
                     vec![
                         serde_json::json!({
-                            "summary": "Planner position.",
-                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
-                        }),
-                        serde_json::json!({
                             "summary": "Reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
@@ -12868,7 +12852,7 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(
         m,
-        "workflow.final_review.planner_completion_with_pending_amendments_fails",
+        "workflow.final_review.completion_with_pending_amendments_fails",
         || {
             use crate::contexts::project_run_record::service::AmendmentQueuePort;
 
@@ -12946,10 +12930,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                 .with_label_payload_sequence(
                     "final_review:voter",
                     vec![
-                        serde_json::json!({
-                            "summary": "Planner position.",
-                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
-                        }),
                         serde_json::json!({
                             "summary": "Reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
@@ -13060,10 +13040,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                 .with_label_payload_sequence(
                     "final_review:voter",
                     vec![
-                        serde_json::json!({
-                            "summary": "Planner position.",
-                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
-                        }),
                         serde_json::json!({
                             "summary": "Reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
@@ -13225,10 +13201,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                     "final_review:voter",
                     vec![
                         serde_json::json!({
-                            "summary": "Planner position.",
-                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
-                        }),
-                        serde_json::json!({
                             "summary": "Reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
@@ -13239,10 +13211,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                         serde_json::json!({
                             "summary": "Reviewer 3 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
-                        }),
-                        serde_json::json!({
-                            "summary": "Planner position.",
-                            "votes": [{"amendment_id": second_round_amendment_id, "decision": "accept", "rationale": "Required again."}],
                         }),
                         serde_json::json!({
                             "summary": "Reviewer 1 vote.",

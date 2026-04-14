@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414015502-final_review-planner-positions-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414015502-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T02:41:54.792097575Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll three amendments are valid. Amendments fr-3-182adb87 and fr-3-b0a0bd61 identify the same real issue (stale `final_review_planner` in run.json) — both are correct but overlapping. Amendment fr-3-5a16fec6 correctly identifies stale docs/templates.md entries that no longer match the actual template manifests in template_catalog.rs.\n\n## Votes\n\n- `fr-3-182adb87`: Accept\n  Verified: run.json lines 33-36 and 73-76 contain `final_review_planner` but `StageResolutionSnapshot` (model.rs:186-207) has no such field, and `build_final_review_snapshot` (engine.rs:8211-8223) only populates `final_review_reviewers` and `final_review_arbiter`. The persisted data was written by an older code version and is now inconsistent with the schema. Since `StageResolutionSnapshot` uses `#[serde(default, skip_serializing_if)]` annotations, serde will silently ignore unknown fields during deserialization, so this won't cause a runtime crash — but it is still a data integrity issue: the snapshot files claim a planner role that no longer exists in the system, which could mislead anyone inspecting the run state. Scrubbing or regenerating the snapshot is the correct fix.\n- `fr-3-5a16fec6`: Accept\n  Verified: docs/templates.md line 50 lists `final_review_voter` with optional `planner_positions`, and line 51 lists `final_review_arbiter` requiring `planner_positions`. The actual manifests in template_catalog.rs:445-456 show: voter requires `[\"title\", \"amendments\", \"json_schema\"]` with no optional placeholders, and arbiter requires `[\"amendments\", \"reviewer_votes\", \"json_schema\"]` with no optional. The docs are stale — `planner_positions` no longer appears anywhere in the source code (grep confirmed zero matches in src/). This documentation drift could cause confusion for anyone writing custom template overrides.\n- `fr-3-b0a0bd61`: Accept\n  This identifies the same real issue as fr-3-182adb87 — stale `final_review_planner` entries in run.json snapshots that contradict the current schema and builder code. The evidence is identical: model.rs:186-207 defines no planner field, engine.rs:8206-8223 emits none, yet run.json lines 16-36 and 56-80 still contain it. Accept because it is a valid finding; however, note this is a duplicate of fr-3-182adb87 and only one remediation action is needed (scrub both snapshot locations in run.json).\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}
