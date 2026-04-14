@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260414160444-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T18:51:05.563189014Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted all five amendments. Three identify real non-Linux PID-identity bugs caused by coarse start-time markers, one identifies a valid TOCTOU on `run.pid`, and one correctly fixes an inaccurate stop-path diagnostic.\n\n## Votes\n\n- `fr-6-dff1f2b4`: Accept\n  `RunBackendProcessRecord.recorded_at` exists but `is_backend_process_alive()` still reduces liveness to raw ticks/marker matching. On non-Linux marker-only paths, same-second PID reuse can therefore be treated as a definitive match, and `kill_stale_backend_process_group()` will use that false positive to signal `-pid` or `pid`, which can kill an unrelated process group or process.\n- `fr-6-c86c8bf3`: Accept\n  `CliWriterCleanupHandoff` persists only PID plus start markers, and both recovery checks still use `process_identity_matches_live_process()` as a boolean proof of life. That leaves the same same-second marker-only reuse hole on non-Linux, so stale-owner reclaim or interrupted-handoff cleanup can be blocked by an unrelated reused PID that merely shares the coarse `lstart` marker.\n- `fr-6-f6b51ae9`: Accept\n  `TrackedProcess::matches_live_process()` synthesizes a `RunPidRecord` with `started_at: Utc::now()`. On non-Linux marker-only paths, a descendant started earlier in the same second can only downgrade to `RunningUnverified`, and `is_pid_alive()` then returns false, so live descendants can be skipped by descendant cleanup and post-cleanup liveness checks.\n- `fr-6-4d9a9f0a`: Accept\n  The function reads shared mutable `run.pid` twice and combines the first read's liveness result with the second read's `writer_owner`. That is a real TOCTOU: recovery can reason about a mixed state that was never observed atomically, and reading the pid file once is the correct robustness fix even if later lock acquisition mitigates some races.\n- `fr-6-311650ab`: Accept\n  `RunningUnverified` is not exclusive to coarse `proc_start_marker` matches; legacy records with no marker/ticks can reach that state as well. The current error text is therefore factually inaccurate and should describe unverifiable process identity generically instead of attributing every case to marker-only matching.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}
