@@ -7,8 +7,8 @@ use chrono::Utc;
 use serde_json::json;
 
 use crate::adapters::fs::{
-    FileSystem, FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
-    FsMilestoneStore, FsTaskRunLineageStore,
+    FileSystem, FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+    FsMilestoneSnapshotStore, FsMilestoneStore, FsTaskRunLineageStore,
 };
 use crate::adapters::github::GithubPort;
 use crate::cli::run::{
@@ -44,6 +44,7 @@ use crate::contexts::automation_runtime::{
     github_intake, DaemonStorePort, RebaseConflictRequest, RebaseConflictResolution,
     RebaseConflictResolver, WorktreePort,
 };
+use crate::contexts::milestone_record::controller as milestone_controller;
 use crate::contexts::milestone_record::service as milestone_service;
 use crate::contexts::project_run_record::model::{RunSnapshot, RunStatus};
 use crate::contexts::project_run_record::service::{
@@ -1816,11 +1817,58 @@ where
         }
     }
 
+    fn missing_workflow_run_id_failure(
+        &self,
+        project_dir: &Path,
+        task: &DaemonTask,
+        task_source: &crate::contexts::project_run_record::model::TaskSource,
+    ) -> (String, String) {
+        let reason = format!(
+            "task '{}' cannot reconcile success because workflow_run_id is missing; \
+             persist_workflow_run_id did not record a durable task-to-run binding, so \
+             the daemon cannot safely determine which workflow attempt to reconcile. \
+             Operator intervention required before retrying reconciliation",
+            task.task_id
+        );
+
+        let reason = match crate::contexts::milestone_record::model::MilestoneId::new(
+            &task_source.milestone_id,
+        ) {
+            Ok(milestone_id) => {
+                let request = milestone_controller::ControllerTransitionRequest::new(
+                    milestone_controller::MilestoneControllerState::NeedsOperator,
+                    reason.clone(),
+                )
+                .with_bead(&task_source.bead_id)
+                .with_task(&task.task_id);
+                match milestone_controller::sync_controller_state(
+                    &FsMilestoneControllerStore,
+                    project_dir,
+                    &milestone_id,
+                    request,
+                    Utc::now(),
+                ) {
+                    Ok(_) => reason,
+                    Err(error) => format!(
+                        "{reason}; additionally failed to persist needs_operator controller state: {error}"
+                    ),
+                }
+            }
+            Err(error) => format!(
+                "{reason}; additionally could not parse milestone_id '{}': {error}",
+                task_source.milestone_id
+            ),
+        };
+
+        ("reconciliation_no_run_binding".to_owned(), reason)
+    }
+
     /// Attempt success reconciliation for a completed milestone task.
     ///
     /// Closes the bead in `br`, syncs, updates milestone state, and captures
-    /// next-step hints. Best-effort: failures are logged and transition the
-    /// milestone to Failed (needs-operator) rather than blocking task completion.
+    /// next-step hints. If the daemon cannot prove which workflow run belongs
+    /// to this task, it fails closed, moves the milestone controller to
+    /// needs-operator, and returns an error so the task is marked Failed.
     ///
     /// `project_dir` is the workspace root where project records, milestone
     /// files, and the `.beads/` graph live. In single-repo mode this is
@@ -1875,21 +1923,28 @@ where
             None => return Ok(()), // Not a milestone task, nothing to reconcile.
         };
 
-        // NOTE: We intentionally do NOT transition the milestone to Failed on
-        // reconciliation errors. MilestoneStatus::Failed is terminal — once set,
-        // record_bead_start rejects all future bead starts, permanently wedging
-        // the milestone with no automated recovery path. Instead, we leave the
-        // milestone Running and return Err so the *task* is marked Failed. The
-        // operator can then retry_task, which re-dispatches reconciliation against
-        // the still-Running milestone. All reconciliation steps are idempotent:
-        // br close checks bead status, sync is unconditional, and
-        // record_bead_completion handles replays.
+        // NOTE: We intentionally do NOT transition the milestone snapshot to
+        // Failed on reconciliation errors. MilestoneStatus::Failed is terminal
+        // — once set, record_bead_start rejects all future bead starts,
+        // permanently wedging the milestone with no automated recovery path.
+        // Instead, we leave the milestone snapshot Running and return Err so
+        // the *task* is marked Failed. The operator can then retry_task, which
+        // re-dispatches reconciliation against the still-Running milestone.
+        // For safety-critical metadata failures such as a missing durable
+        // workflow_run_id binding, we additionally move the milestone
+        // controller to needs-operator so the ambiguity is visible.
 
-        // Extract run_id and started_at. Prefer the durable workflow_run_id
-        // persisted on the task (set after dispatch completes) over scanning
-        // the journal for the latest RunStarted event. The journal-based
-        // fallback is kept for backwards compatibility with tasks dispatched
-        // before workflow_run_id was introduced.
+        // Extract run_id and started_at. Only reconcile against the durable
+        // workflow_run_id persisted on the task after dispatch. Guessing from
+        // the latest RunStarted journal event is unsafe because a newer manual
+        // re-run may have appended its own run identity.
+        let run_id_from_task = match task.workflow_run_id.as_deref() {
+            Some(run_id) => run_id,
+            None => {
+                return Err(self.missing_workflow_run_id_failure(project_dir, task, task_source))
+            }
+        };
+
         let journal_events = match self.journal_store.read_journal(project_dir, &project_id) {
             Ok(events) => events,
             Err(e) => {
@@ -1900,54 +1955,15 @@ where
             }
         };
 
-        let run_id_from_task = task.workflow_run_id.as_deref();
-        if run_id_from_task.is_none() {
-            if task.attempt_count > 0 {
-                // Fail-closed: on retries without a durable task→run
-                // binding, the journal's latest RunStarted may belong to a
-                // different manual re-run started between the original
-                // failure and this retry. Guessing the wrong run would
-                // close/sync the bead and rewrite milestone lineage for the
-                // wrong attempt. Surface a needs-operator condition instead;
-                // the operator can re-dispatch with a correct run binding.
-                return Err((
-                    "reconciliation_no_run_binding".to_owned(),
-                    format!(
-                        "task '{}' has no workflow_run_id on retry \
-                         (attempt_count={}); cannot safely determine which \
-                         run to reconcile — operator intervention required",
-                        task.task_id, task.attempt_count,
-                    ),
-                ));
-            }
-            // First dispatch (attempt_count == 0): the journal's RunStarted
-            // was written by this dispatch and is correct.
-            // persist_workflow_run_id should have set the binding, but the
-            // write may have failed transiently. Falling back to the latest
-            // RunStarted is safe because no retry window exists for a manual
-            // re-run to have overwritten it.
-            eprintln!(
-                "daemon: try_reconcile_success for task '{}' has no workflow_run_id — \
-                 falling back to latest RunStarted journal event (first dispatch, safe)",
-                task.task_id,
-            );
-        }
         let run_started = journal_events.iter().rev().find(|event| {
             if event.event_type != JournalEventType::RunStarted {
                 return false;
             }
-            match run_id_from_task {
-                // When workflow_run_id is set, match the specific RunStarted
-                // event rather than blindly taking the latest one.
-                Some(target) => {
-                    event
-                        .details
-                        .get("run_id")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(target)
-                }
-                None => true,
-            }
+            event
+                .details
+                .get("run_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(run_id_from_task)
         });
 
         let (run_id, started_at) = match run_started {
@@ -4302,10 +4318,10 @@ mod tests {
     };
     use crate::adapters::fs::{
         FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
-        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
-        FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRequirementsStore,
-        FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
-        RunBackendProcessRecord, RunPidOwner, RunPidRecord,
+        FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+        FsMilestoneSnapshotStore, FsMilestoneStore, FsPayloadArtifactWriteStore, FsProjectStore,
+        FsRawOutputStore, FsRequirementsStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
+        FsRuntimeLogWriteStore, FsSessionStore, RunBackendProcessRecord, RunPidOwner, RunPidRecord,
     };
     use crate::adapters::github::InMemoryGithubClient;
     use crate::adapters::stub_backend::StubBackendAdapter;
@@ -4321,10 +4337,14 @@ mod tests {
         DaemonStorePort, LeaseRecord, ResourceCleanupOutcome, WorktreeCleanupOutcome,
         WorktreeLease, WorktreePort, WriterLockReleaseOutcome,
     };
+    use crate::contexts::milestone_record::controller::{self as milestone_controller};
     use crate::contexts::milestone_record::service::{
         create_milestone, update_status, CreateMilestoneInput, MilestoneSnapshotPort,
     };
-    use crate::contexts::project_run_record::model::{ActiveRun, RunSnapshot, RunStatus};
+    use crate::contexts::project_run_record::journal;
+    use crate::contexts::project_run_record::model::{
+        ActiveRun, RunSnapshot, RunStatus, TaskOrigin, TaskSource,
+    };
     use crate::contexts::project_run_record::service::{
         create_project, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
     };
@@ -4336,7 +4356,7 @@ mod tests {
     };
     use crate::contexts::workspace_governance::initialize_workspace;
     use crate::shared::domain::FlowPreset;
-    use crate::shared::domain::{ProjectId, StageCursor, StageId};
+    use crate::shared::domain::{ProjectId, RunId, StageCursor, StageId};
     use crate::shared::error::{AppError, AppResult};
 
     fn sample_waiting_task(task_id: &str, run_id: &str) -> DaemonTask {
@@ -7770,6 +7790,161 @@ mod tests {
         assert!(
             result.is_ok(),
             "RunStatus::Completed must return Ok(()) for reconciliation retries, got: {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn try_reconcile_success_missing_workflow_run_id_fails_closed_and_signals_operator() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        let now = Utc::now();
+        initialize_workspace(base, now).expect("init workspace");
+
+        let milestone = create_milestone(
+            &FsMilestoneStore,
+            base,
+            CreateMilestoneInput {
+                id: "ms-missing-run-binding".to_owned(),
+                name: "Missing run binding".to_owned(),
+                description: "Reconciliation should fail closed".to_owned(),
+            },
+            now,
+        )
+        .expect("create milestone");
+        let task_source = TaskSource {
+            milestone_id: milestone.id.to_string(),
+            bead_id: "ms-missing-run-binding.bead-1".to_owned(),
+            parent_epic_id: None,
+            origin: TaskOrigin::Milestone,
+            plan_hash: Some("plan-v1".to_owned()),
+            plan_version: Some(1),
+        };
+        let project_id = ProjectId::new("missing-run-binding-project").expect("project id");
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Missing run binding project".to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt"),
+                created_at: now,
+                task_source: Some(task_source.clone()),
+            },
+        )
+        .expect("create project");
+
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base,
+            &milestone.id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::Running,
+                "bead execution started",
+            )
+            .with_bead(&task_source.bead_id)
+            .with_task("task-missing-run-binding"),
+            now - chrono::Duration::seconds(1),
+        )
+        .expect("mark controller running");
+
+        let journal_events = FsJournalStore
+            .read_journal(base, &project_id)
+            .expect("read initial journal");
+        let manual_rerun_id = RunId::new("run-newer-manual-rerun").expect("run id");
+        let run_started = journal::run_started_event(
+            journal::last_sequence(&journal_events) + 1,
+            now + chrono::Duration::seconds(2),
+            &manual_rerun_id,
+            StageId::Implementation,
+            1,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&run_started).expect("serialize run_started"),
+            )
+            .expect("append newer run_started");
+        let run_completed = journal::run_completed_event(
+            run_started.sequence + 1,
+            now + chrono::Duration::seconds(3),
+            &manual_rerun_id,
+            1,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&run_completed).expect("serialize run_completed"),
+            )
+            .expect("append newer run_completed");
+
+        let mut task = sample_pending_task("task-missing-run-binding", &project_id);
+        task.status = TaskStatus::Active;
+        task.attempt_count = 1;
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .try_reconcile_success(base, &task)
+            .await
+            .expect_err("missing workflow_run_id must fail closed");
+        assert_eq!(error.0, "reconciliation_no_run_binding");
+        assert!(
+            error.1.contains("workflow_run_id is missing"),
+            "error should explain the missing run binding: {}",
+            error.1
+        );
+        assert!(
+            error.1.contains("Operator intervention required"),
+            "error should require operator action: {}",
+            error.1
+        );
+
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &milestone.id)
+                .expect("load controller")
+                .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator
+        );
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some(task_source.bead_id.as_str())
+        );
+        assert_eq!(
+            controller.active_task_id.as_deref(),
+            Some(task.task_id.as_str())
+        );
+        assert!(
+            controller
+                .last_transition_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("workflow_run_id is missing")),
+            "controller should carry the operator-facing missing-binding reason: {controller:?}"
         );
     }
 

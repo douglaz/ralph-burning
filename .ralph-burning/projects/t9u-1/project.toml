@@ -1,0 +1,7 @@
+id = "t9u-1"
+name = "fail-closed-reconcile"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "0ff347afd84e17177e4726467193eefde619d3ada35bca9f495c1b61d480b47d"
+created_at = "2026-04-14T21:35:36.105439897Z"
+status_summary = "created"
