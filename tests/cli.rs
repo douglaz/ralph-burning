@@ -769,7 +769,7 @@ fn write_requirements_milestone_run_fixture(
                 flow_override: Some(FlowPreset::Standard),
             }],
         }],
-        default_flow: FlowPreset::Standard,
+        default_flow: FlowPreset::Minimal,
         agents_guidance: Some("Preserve the bundle structure.".to_owned()),
     };
     let payload_id = format!("{run_id}-milestone-bundle-1");
@@ -789,7 +789,7 @@ fn write_requirements_milestone_run_fixture(
             "milestone_bundle": bundle,
             "output_kind": "milestone_bundle",
             "pending_question_count": null,
-            "recommended_flow": "standard",
+            "recommended_flow": "minimal",
             "created_at": "2026-04-02T10:00:00Z",
             "updated_at": "2026-04-02T10:05:00Z",
             "status_summary": "completed",
@@ -1976,6 +1976,42 @@ fn project_create_succeeds_and_writes_all_canonical_files() {
     assert!(project_root.join("runtime/temp").is_dir());
     assert!(project_root.join("amendments").is_dir());
     assert!(project_root.join("rollback").is_dir());
+}
+
+#[test]
+fn project_create_defaults_to_minimal_flow_without_flag() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "minimal-default",
+            "--name",
+            "Minimal Default",
+            "--prompt",
+            prompt.to_str().unwrap(),
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Created project 'minimal-default'"));
+    assert!(stdout.contains("minimal"));
+
+    let project_toml =
+        fs::read_to_string(project_root(temp_dir.path(), "minimal-default").join("project.toml"))
+            .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"minimal\""));
 }
 
 #[test]

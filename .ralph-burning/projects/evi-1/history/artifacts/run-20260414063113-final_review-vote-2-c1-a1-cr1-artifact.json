@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414063113-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414063113-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T06:49:25.614944045Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed amendment fr-1-45c0b42f regarding `handle_create` hardcoding `FlowPreset::Minimal` instead of using the workspace-resolved default flow. Verified the code: line 196 in project.rs falls back to `Minimal` when `--flow` is omitted, while the canonical default at config.rs:22 is `QuickDev` and the full resolution logic (config.rs:173-179) consults workspace and project config layers. The workspace config is loaded on line 185 but only used for version validation — its `default_flow` field is ignored. This is a genuine configuration bypass bug.\n\n## Votes\n\n- `fr-1-45c0b42f`: Accept\n  Confirmed by reading the code: `handle_create` (project.rs:191-196) hardcodes `FlowPreset::Minimal` as the fallback when `--flow` is omitted, while the canonical default is `FlowPreset::QuickDev` (config.rs:22) and the proper resolution path (config.rs:173-179) cascades through workspace → project → hardcoded default. The workspace config is already loaded on line 185 and has `settings.default_flow` available, but the code ignores it entirely. This means a user who configures `default_flow` in their workspace or project config will have that setting silently overridden during project creation, producing a real inconsistency between what `config get default_flow` reports and what flow is actually written into the new project. This is a legitimate configuration bypass bug that can cause unexpected stage plans.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

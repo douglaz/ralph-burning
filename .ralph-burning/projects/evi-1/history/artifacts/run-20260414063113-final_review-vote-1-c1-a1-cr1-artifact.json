@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414063113-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414063113-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T06:52:17.029620294Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the amendment. In this codebase, `project create` intentionally defaults an omitted `--flow` to `minimal`; the workspace `default_flow` is a separate execution/routing setting, not the canonical create-time default.\n\n## Votes\n\n- `fr-1-45c0b42f`: Reject\n  `src/cli/project.rs:191-196` is not an accidental bypass in this tree: `tests/cli.rs:1982-2014` explicitly asserts that `project create` without `--flow` creates a `minimal` project. Other creation paths also use context-specific defaults rather than the workspace setting (`src/contexts/project_run_record/service.rs:321-331` takes the seed flow, and `src/cli/project.rs:333-335` falls back to the milestone default flow). The resolved workspace `default_flow` is used elsewhere for active-projectless execution/routing, e.g. `src/cli/backend.rs:363-378`. Because the cited mismatch is deliberate behavior and regression-tested, this amendment does not show a correctness defect in the current implementation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

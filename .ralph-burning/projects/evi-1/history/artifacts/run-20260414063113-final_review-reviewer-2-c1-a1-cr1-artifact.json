@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414063113-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414063113-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T06:42:04.952430441Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed all changes for the default-flow-to-minimal bead. The implementation is correct: `--flow` is now optional in `ProjectCreateArgs` (line 107), the `handle_create` function defaults to `FlowPreset::Minimal` when omitted (line 196), and `--flow standard` explicit override still works (validated by the existing `project_create_succeeds_and_writes_all_canonical_files` test). Test fixtures in bundle.rs, engine.rs, workflow_engine_test.rs, and cli.rs consistently updated `default_flow` from `Standard` to `Minimal`. A new CLI test (`project_create_defaults_to_minimal_flow_without_flag`) validates the default behavior end-to-end including project.toml content. No `unwrap_or(FlowPreset::Standard)` fallbacks remain in production code under `src/`. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

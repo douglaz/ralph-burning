@@ -8527,7 +8527,7 @@ mod tests {
                     flow_override: Some(FlowPreset::Standard),
                 }],
             }],
-            default_flow: FlowPreset::Standard,
+            default_flow: FlowPreset::Minimal,
             agents_guidance: Some("Keep it deterministic.".to_owned()),
         }
     }

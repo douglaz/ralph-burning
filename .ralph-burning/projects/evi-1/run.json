@@ -1,0 +1,24 @@
+{
+  "active_run": null,
+  "status": "completed",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [],
+    "processed_count": 0
+  },
+  "status_summary": "completed",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-14T06:31:13.391830300Z",
+    "primary_target": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-high"
+    }
+  }
+}
