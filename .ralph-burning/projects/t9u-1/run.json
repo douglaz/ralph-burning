@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260414213536",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-d6eb874a",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: The patch still lets the daemon guess a run identity in `persist_workflow_run_id`, so a manual rerun between dispatch completion and persistence can stamp the newer run onto the task and bypass the new fail-closed reconciliation guard.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs:1779-1810\n- src/contexts/automation_runtime/daemon_loop.rs:1941-1944\n- src/contexts/automation_runtime/daemon_loop.rs:7797-7948\nremediation_hint: Stop deriving `workflow_run_id` from the latest `RunStarted` event. Persist the authoritative run id from the dispatch/result path or another deterministic artifact of the just-finished attempt; if that binding cannot be proven, leave the field unset so `try_reconcile_success` takes the new `reconciliation_no_run_binding` path.",
-        "created_at": "2026-04-14T22:06:04.593835228Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "3f903e987e406b5f294a2e2589c15747eb6efd8810ce96e585e9f8a5d58e240a"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-14T21:58:25.974161221Z",

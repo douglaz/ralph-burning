@@ -80,16 +80,16 @@ type ConfiguredRequirementsServiceBuilder = Box<
         + Sync,
 >;
 
-fn aborted_dispatch_cleanup_error(outcome: AppResult<()>) -> Option<AppError> {
+fn aborted_dispatch_cleanup_error<T>(outcome: AppResult<T>) -> Option<AppError> {
     match outcome {
-        Ok(()) | Err(AppError::InvocationCancelled { .. }) => None,
+        Ok(_) | Err(AppError::InvocationCancelled { .. }) => None,
         Err(error) => Some(error),
     }
 }
 
-fn finish_aborted_dispatch_task_cleanup(
+fn finish_aborted_dispatch_task_cleanup<T>(
     task_id: &str,
-    outcome: AppResult<()>,
+    outcome: AppResult<T>,
     lease_release_result: AppResult<()>,
 ) -> AppResult<()> {
     match (
@@ -984,19 +984,13 @@ where
         }
 
         match outcome {
-            Ok(()) => {
-                // Persist the workflow run_id on the task after dispatch
-                // so reconciliation retries use the correct run rather
-                // than re-reading the journal (which may have been
-                // appended to by a manual re-run). Skip for
-                // post-completion retries: no new RunStarted was written
-                // (dispatch was a no-op for Completed), so the journal's
-                // latest RunStarted may belong to a newer manual re-run.
-                // Storing that would permanently bind the wrong run_id.
-                // Tasks that already have workflow_run_id from the
-                // original dispatch are unaffected (persist returns early).
+            Ok(run_id) => {
+                // Persist only the authoritative run_id captured from the
+                // dispatch/resume path. If dispatch cannot prove the run
+                // identity, leave the binding unset so reconciliation fails
+                // closed instead of guessing from the journal.
                 if !is_post_completion_retry {
-                    self.persist_workflow_run_id(store_dir, repo_root, &active_task);
+                    self.persist_workflow_run_id(store_dir, &active_task, run_id.as_deref());
                 }
 
                 // Reconciliation-only retries (reconciliation_*) skip the PR
@@ -1681,11 +1675,12 @@ where
         }
 
         match outcome {
-            Ok(()) => {
-                // Persist workflow run_id after dispatch — skip for
-                // post-completion retries (see multi-repo path comment).
+            Ok(run_id) => {
+                // Persist only the authoritative run_id captured from the
+                // dispatch/resume path — skip for post-completion retries
+                // (see multi-repo path comment).
                 if !is_post_completion_retry {
-                    self.persist_workflow_run_id(base_dir, base_dir, &active_task);
+                    self.persist_workflow_run_id(base_dir, &active_task, run_id.as_deref());
                 }
 
                 // Skip PR handler for reconciliation-only retries — see
@@ -1772,48 +1767,29 @@ where
         Ok(())
     }
 
-    /// Best-effort: persist the workflow run_id extracted from the journal
-    /// onto the task so that reconciliation retries can identify the correct
-    /// run without re-reading the journal. `store_dir` is the daemon store
-    /// root; `project_dir` is where journal files live.
-    fn persist_workflow_run_id(&self, store_dir: &Path, project_dir: &Path, task: &DaemonTask) {
+    /// Best-effort: persist the authoritative workflow run_id captured from
+    /// the dispatch path onto the task so reconciliation retries bind to the
+    /// exact attempt the daemon just executed.
+    fn persist_workflow_run_id(&self, store_dir: &Path, task: &DaemonTask, run_id: Option<&str>) {
         // Skip if already set (reconciliation retry of a task that
         // previously had its run_id persisted).
         if task.workflow_run_id.is_some() {
             return;
         }
-        let Ok(project_id) = crate::shared::domain::ProjectId::new(&task.project_id) else {
-            return;
-        };
-        let Ok(events) = self.journal_store.read_journal(project_dir, &project_id) else {
-            return;
-        };
-        let run_id = events
-            .iter()
-            .rev()
-            .find(|e| {
-                e.event_type
-                    == crate::contexts::project_run_record::model::JournalEventType::RunStarted
-            })
-            .and_then(|e| e.details.get("run_id").and_then(serde_json::Value::as_str));
-        if let Some(run_id) = run_id {
-            // The task had no workflow_run_id — we're binding it to the latest
-            // RunStarted event. If another run was started on this project
-            // between the original dispatch and this call, this may bind the
-            // wrong run_id. Log so operators can correlate suspect bindings.
-            tracing::debug!(
+        let Some(run_id) = run_id else {
+            tracing::warn!(
                 task_id = %task.task_id,
-                run_id,
-                "persist_workflow_run_id: binding run_id from latest RunStarted journal event",
+                "persist_workflow_run_id: no authoritative run_id available; leaving task unbound",
             );
-            if let Err(e) =
-                DaemonTaskService::set_workflow_run_id(self.store, store_dir, &task.task_id, run_id)
-            {
-                eprintln!(
-                    "daemon: failed to persist workflow_run_id on task '{}' (non-blocking): {e}",
-                    task.task_id
-                );
-            }
+            return;
+        };
+        if let Err(e) =
+            DaemonTaskService::set_workflow_run_id(self.store, store_dir, &task.task_id, run_id)
+        {
+            eprintln!(
+                "daemon: failed to persist workflow_run_id on task '{}' (non-blocking): {e}",
+                task.task_id
+            );
         }
     }
 
@@ -2699,7 +2675,7 @@ where
         shutdown: CancellationToken,
         task_cancel: CancellationToken,
         github: &G,
-    ) -> AppResult<()> {
+    ) -> AppResult<Option<String>> {
         let project_id = ProjectId::new(task.project_id.clone())?;
         let flow = task
             .resolved_flow
@@ -2792,7 +2768,7 @@ where
         config: &DaemonLoopConfig,
         shutdown: CancellationToken,
         task_cancel: CancellationToken,
-    ) -> AppResult<()> {
+    ) -> AppResult<Option<String>> {
         let project_id = ProjectId::new(task.project_id.clone())?;
         let flow = task
             .resolved_flow
@@ -2873,7 +2849,7 @@ where
         worktree_path: &Path,
         writer_owner: Option<&str>,
         cancellation_token: CancellationToken,
-    ) -> AppResult<()> {
+    ) -> AppResult<Option<String>> {
         if let Some(builder) = self.configured_agent_service_builder {
             let agent_service = builder(effective_config)?;
             return dispatch_in_worktree_with_service(
@@ -3237,9 +3213,9 @@ where
         dispatch_future: &mut std::pin::Pin<&mut F>,
         summary: &'static str,
         log_message: &'static str,
-    ) -> AppResult<()>
+    ) -> AppResult<Option<String>>
     where
-        F: Future<Output = AppResult<()>>,
+        F: Future<Output = AppResult<Option<String>>>,
     {
         let interrupted_handoff = self.prepare_cancelled_dispatch_handoff(
             base_dir,
@@ -4032,58 +4008,54 @@ async fn dispatch_in_worktree_with_service<A, R, S>(
     worktree_path: &Path,
     writer_owner: Option<&str>,
     cancellation_token: CancellationToken,
-) -> AppResult<()>
+) -> AppResult<Option<String>>
 where
     A: AgentExecutionPort + Sync,
     R: RawOutputPort + Sync,
     S: SessionStorePort + Sync,
 {
     match run_status {
-        RunStatus::NotStarted => {
-            engine::execute_run_with_retry(
-                agent_service,
-                run_snapshot_read,
-                run_snapshot_write,
-                journal_store,
-                artifact_write,
-                log_write,
-                amendment_queue,
-                base_dir,
-                Some(worktree_path),
-                project_id,
-                writer_owner,
-                flow,
-                effective_config,
-                &RetryPolicy::default_policy().with_max_remediation_cycles(
-                    effective_config.run_policy().max_review_iterations,
-                ),
-                cancellation_token,
-            )
-            .await
-        }
-        RunStatus::Failed | RunStatus::Paused => {
-            engine::resume_run_with_retry(
-                agent_service,
-                run_snapshot_read,
-                run_snapshot_write,
-                journal_store,
-                artifact_store,
-                artifact_write,
-                log_write,
-                amendment_queue,
-                base_dir,
-                Some(worktree_path),
-                project_id,
-                writer_owner,
-                flow,
-                effective_config,
-                &RetryPolicy::default_policy().with_max_remediation_cycles(
-                    effective_config.run_policy().max_review_iterations,
-                ),
-                cancellation_token,
-            )
-            .await
-        }
+        RunStatus::NotStarted => engine::execute_run_with_retry_and_capture_run_id(
+            agent_service,
+            run_snapshot_read,
+            run_snapshot_write,
+            journal_store,
+            artifact_write,
+            log_write,
+            amendment_queue,
+            base_dir,
+            Some(worktree_path),
+            project_id,
+            writer_owner,
+            flow,
+            effective_config,
+            &RetryPolicy::default_policy()
+                .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations),
+            cancellation_token,
+        )
+        .await
+        .map(Some),
+        RunStatus::Failed | RunStatus::Paused => engine::resume_run_with_retry_and_capture_run_id(
+            agent_service,
+            run_snapshot_read,
+            run_snapshot_write,
+            journal_store,
+            artifact_store,
+            artifact_write,
+            log_write,
+            amendment_queue,
+            base_dir,
+            Some(worktree_path),
+            project_id,
+            writer_owner,
+            flow,
+            effective_config,
+            &RetryPolicy::default_policy()
+                .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations),
+            cancellation_token,
+        )
+        .await
+        .map(Some),
         RunStatus::Running => Err(AppError::TaskStateTransitionInvalid {
             task_id: project_id.to_string(),
             from: "run_running".to_owned(),
@@ -4095,11 +4067,11 @@ where
             // (e.g., reconciliation_br_failed, reconciliation_metadata_error,
             // reconciliation_milestone_update_failed). The run succeeded but
             // post-run bookkeeping (bead close, sync, milestone update) failed.
-            // Returning Ok(()) lets the caller fall through to the success
+            // Returning Ok(None) lets the caller fall through to the success
             // path where try_reconcile_success runs again. All reconciliation
             // steps are idempotent: br close checks bead status, sync is
             // unconditional, and record_bead_completion handles replays.
-            Ok(())
+            Ok(None)
         }
     }
 }
@@ -5297,7 +5269,7 @@ mod tests {
         );
 
         let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
-        let dispatch_future = std::future::pending::<AppResult<()>>();
+        let dispatch_future = std::future::pending::<AppResult<Option<String>>>();
         tokio::pin!(dispatch_future);
         let mut cleanup_future = std::pin::pin!(daemon.finish_cancelled_dispatch(
             base,
@@ -5754,7 +5726,7 @@ mod tests {
         );
 
         let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
-        let dispatch_future = std::future::pending::<AppResult<()>>();
+        let dispatch_future = std::future::pending::<AppResult<Option<String>>>();
         tokio::pin!(dispatch_future);
         let mut cleanup_future = std::pin::pin!(daemon.finish_cancelled_dispatch(
             base,
@@ -5935,7 +5907,7 @@ mod tests {
         );
 
         let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
-        let dispatch_future = std::future::ready(Ok(()));
+        let dispatch_future = std::future::ready(Ok(Some("run-cleanup-missing-pid".to_owned())));
         tokio::pin!(dispatch_future);
         let error = daemon
             .finish_cancelled_dispatch(
@@ -7696,9 +7668,10 @@ mod tests {
     #[test]
     fn aborted_dispatch_cleanup_allows_successful_outcomes() {
         assert!(
-            super::finish_aborted_dispatch_task_cleanup("task-aborted", Ok(()), Ok(())).is_ok()
+            super::finish_aborted_dispatch_task_cleanup::<()>("task-aborted", Ok(()), Ok(()))
+                .is_ok()
         );
-        assert!(super::finish_aborted_dispatch_task_cleanup(
+        assert!(super::finish_aborted_dispatch_task_cleanup::<()>(
             "task-aborted",
             Err(AppError::InvocationCancelled {
                 backend: "daemon".to_owned(),
@@ -7711,7 +7684,7 @@ mod tests {
 
     #[test]
     fn aborted_dispatch_cleanup_propagates_dispatch_errors_after_lease_release() {
-        let error = super::finish_aborted_dispatch_task_cleanup(
+        let error = super::finish_aborted_dispatch_task_cleanup::<()>(
             "task-aborted",
             Err(AppError::Io(std::io::Error::other(
                 "backend cleanup failed",
@@ -7727,7 +7700,7 @@ mod tests {
 
     #[test]
     fn aborted_dispatch_cleanup_prioritizes_lease_cleanup_failures() {
-        let error = super::finish_aborted_dispatch_task_cleanup(
+        let error = super::finish_aborted_dispatch_task_cleanup::<()>(
             "task-aborted",
             Err(AppError::Io(std::io::Error::other(
                 "backend cleanup failed",
@@ -7787,9 +7760,10 @@ mod tests {
         )
         .await;
 
-        assert!(
-            result.is_ok(),
-            "RunStatus::Completed must return Ok(()) for reconciliation retries, got: {result:?}"
+        assert_eq!(
+            result.expect("dispatch completed status should not error"),
+            None,
+            "RunStatus::Completed must return Ok(None) for reconciliation retries"
         );
     }
 
@@ -7945,6 +7919,114 @@ mod tests {
                 .as_deref()
                 .is_some_and(|reason| reason.contains("workflow_run_id is missing")),
             "controller should carry the operator-facing missing-binding reason: {controller:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_workflow_run_id_requires_authoritative_binding() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        let now = Utc::now();
+        initialize_workspace(base, now).expect("init workspace");
+
+        let project_id = ProjectId::new("persist-run-binding-project").expect("project id");
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Persist run binding project".to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt"),
+                created_at: now,
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let original_run_id = RunId::new("run-original-dispatch").expect("original run id");
+        let original_started = journal::run_started_event(
+            2,
+            now + chrono::Duration::seconds(1),
+            &original_run_id,
+            StageId::Implementation,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&original_started).expect("serialize original run"),
+            )
+            .expect("append original run");
+
+        let manual_rerun_id = RunId::new("run-manual-rerun").expect("manual rerun id");
+        let manual_started = journal::run_started_event(
+            3,
+            now + chrono::Duration::seconds(2),
+            &manual_rerun_id,
+            StageId::Implementation,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&manual_started).expect("serialize manual rerun"),
+            )
+            .expect("append manual rerun");
+
+        let store = FsDaemonStore;
+        let task_without_binding =
+            sample_pending_task("task-no-authoritative-binding", &project_id);
+        store
+            .create_task(base, &task_without_binding)
+            .expect("create task without binding");
+
+        let task_with_binding = sample_pending_task("task-authoritative-binding", &project_id);
+        store
+            .create_task(base, &task_with_binding)
+            .expect("create task with binding");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &store,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        daemon.persist_workflow_run_id(base, &task_without_binding, None);
+        let unchanged = store
+            .read_task(base, &task_without_binding.task_id)
+            .expect("read unchanged task");
+        assert!(
+            unchanged.workflow_run_id.is_none(),
+            "missing authoritative binding must leave workflow_run_id unset"
+        );
+
+        daemon.persist_workflow_run_id(base, &task_with_binding, Some(original_run_id.as_str()));
+        let persisted = store
+            .read_task(base, &task_with_binding.task_id)
+            .expect("read persisted task");
+        assert_eq!(
+            persisted.workflow_run_id.as_deref(),
+            Some(original_run_id.as_str()),
+            "persisted binding must use the authoritative dispatch run_id, not the latest journal event"
         );
     }
 

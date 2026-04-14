@@ -1177,7 +1177,7 @@ where
     )
     .await;
     let _ = FileSystem::remove_pid_file(base_dir, project_id);
-    result
+    result.map(|_| ())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1198,6 +1198,50 @@ pub async fn execute_run_with_retry<A, R, S>(
     retry_policy: &RetryPolicy,
     cancellation_token: CancellationToken,
 ) -> AppResult<()>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    execute_run_with_retry_and_capture_run_id(
+        agent_service,
+        run_snapshot_read,
+        run_snapshot_write,
+        journal_store,
+        artifact_write,
+        log_write,
+        amendment_queue_port,
+        base_dir,
+        execution_cwd,
+        project_id,
+        writer_owner,
+        preset,
+        effective_config,
+        retry_policy,
+        cancellation_token,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_run_with_retry_and_capture_run_id<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    run_snapshot_read: &dyn RunSnapshotPort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    execution_cwd: Option<&Path>,
+    project_id: &ProjectId,
+    writer_owner: Option<&str>,
+    preset: FlowPreset,
+    effective_config: &EffectiveConfig,
+    retry_policy: &RetryPolicy,
+    cancellation_token: CancellationToken,
+) -> AppResult<String>
 where
     A: AgentExecutionPort,
     R: RawOutputPort,
@@ -1246,7 +1290,7 @@ async fn execute_run_with_retry_internal<A, R, S>(
     effective_config: &EffectiveConfig,
     retry_policy: &RetryPolicy,
     cancellation_token: CancellationToken,
-) -> AppResult<()>
+) -> AppResult<String>
 where
     A: AgentExecutionPort,
     R: RawOutputPort,
@@ -1352,7 +1396,7 @@ where
     let run_started_line = journal::serialize_event(&run_started)?;
     if let Err(error) = journal_store.append_event(base_dir, project_id, &run_started_line) {
         seq -= 1;
-        return fail_run(
+        return fail_run_result(
             &AppError::RunStartFailed {
                 reason: format!("failed to persist run_started event: {}", error),
             },
@@ -1372,7 +1416,7 @@ where
     if let Err(error) =
         sync_milestone_bead_start(&project_record, base_dir, project_id, &run_id, now)
     {
-        return fail_run(
+        return fail_run_result(
             &AppError::RunStartFailed {
                 reason: format!("failed to sync milestone bead start: {error}"),
             },
@@ -1429,7 +1473,7 @@ where
     )
     .await?;
 
-    Ok(())
+    Ok(run_id.as_str().to_owned())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1553,7 +1597,7 @@ where
     )
     .await;
     let _ = FileSystem::remove_pid_file(base_dir, project_id);
-    result
+    result.map(|_| ())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1575,6 +1619,52 @@ pub async fn resume_run_with_retry<A, R, S>(
     retry_policy: &RetryPolicy,
     cancellation_token: CancellationToken,
 ) -> AppResult<()>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    resume_run_with_retry_and_capture_run_id(
+        agent_service,
+        run_snapshot_read,
+        run_snapshot_write,
+        journal_store,
+        artifact_store,
+        artifact_write,
+        log_write,
+        amendment_queue_port,
+        base_dir,
+        execution_cwd,
+        project_id,
+        writer_owner,
+        preset,
+        effective_config,
+        retry_policy,
+        cancellation_token,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn resume_run_with_retry_and_capture_run_id<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    run_snapshot_read: &dyn RunSnapshotPort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    artifact_store: &dyn ArtifactStorePort,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    execution_cwd: Option<&Path>,
+    project_id: &ProjectId,
+    writer_owner: Option<&str>,
+    preset: FlowPreset,
+    effective_config: &EffectiveConfig,
+    retry_policy: &RetryPolicy,
+    cancellation_token: CancellationToken,
+) -> AppResult<String>
 where
     A: AgentExecutionPort,
     R: RawOutputPort,
@@ -1625,7 +1715,7 @@ async fn resume_run_with_retry_internal<A, R, S>(
     effective_config: &EffectiveConfig,
     retry_policy: &RetryPolicy,
     cancellation_token: CancellationToken,
-) -> AppResult<()>
+) -> AppResult<String>
 where
     A: AgentExecutionPort,
     R: RawOutputPort,
@@ -2095,7 +2185,7 @@ where
     let run_resumed_line = journal::serialize_event(&run_resumed)?;
     if let Err(error) = journal_store.append_event(base_dir, project_id, &run_resumed_line) {
         seq -= 1;
-        return fail_run(
+        return fail_run_result(
             &AppError::ResumeFailed {
                 reason: format!("failed to persist run_resumed event: {}", error),
             },
@@ -2119,7 +2209,7 @@ where
         &resume_state.run_id,
         resumed_at,
     ) {
-        return fail_run(
+        return fail_run_result(
             &AppError::ResumeFailed {
                 reason: format!("failed to sync milestone bead start: {error}"),
             },
@@ -2179,7 +2269,7 @@ where
     )
     .await?;
 
-    Ok(())
+    Ok(resume_run_id.as_str().to_owned())
 }
 
 #[allow(clippy::too_many_arguments)]
