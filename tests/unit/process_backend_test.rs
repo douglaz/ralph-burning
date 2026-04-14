@@ -2445,14 +2445,27 @@ async fn spawn_and_wait_timeout_returns_timeout_failure() {
 
     match error {
         AppError::InvocationFailed {
-            failure_class: FailureClass::Timeout,
+            failure_class,
             details,
             ..
         } => {
             assert!(
+                matches!(
+                    failure_class,
+                    FailureClass::Timeout | FailureClass::TransportFailure
+                ),
+                "timeout path should surface Timeout or teardown TransportFailure, got {failure_class:?}"
+            );
+            assert!(
                 details.contains("exceeded timeout"),
                 "should mention timeout: {details}"
             );
+            if failure_class == FailureClass::TransportFailure {
+                assert!(
+                    details.contains("teardown not confirmed"),
+                    "unclean timeout should explain why it was downgraded: {details}"
+                );
+            }
         }
         other => panic!("expected Timeout, got: {other:?}"),
     }

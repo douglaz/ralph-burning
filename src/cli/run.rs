@@ -2178,7 +2178,7 @@ pub(crate) fn interrupted_handoff_cleanup_candidate_with_dirs(
     // During the SIGTERM or daemon-cancellation grace period the snapshot is
     // already marked interrupted but the engine future is still settling.
     if let Ok(Some(pid_record)) = FileSystem::read_pid_file(workspace_dir, project_id) {
-        if FileSystem::is_pid_alive(&pid_record) {
+        if FileSystem::pid_record_matches_live_process(&pid_record) {
             return Ok(InterruptedHandoffCleanupCandidate::WaitingForLiveOwner);
         }
     } else if daemon_handoff
@@ -7399,6 +7399,70 @@ mod tests {
                 .any(|event| event.event_type == JournalEventType::RunFailed),
             "repair must not append run_failed while the daemon handoff process is still alive"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interrupted_handoff_cleanup_candidate_waits_for_live_legacy_pid_record() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("legacy-live-pid-handoff").expect("project id");
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-live".to_owned(),
+                stage_cursor: StageCursor::new(StageId::Implementation, 1, 1, 1)
+                    .expect("stage cursor"),
+                started_at,
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed (interrupted by termination signal)".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        let project_root = FileSystem::live_project_root(base_dir, &project_id);
+        std::fs::create_dir_all(&project_root).expect("create project root");
+        let legacy_pid_record = crate::adapters::fs::RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: crate::adapters::fs::RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+        std::fs::write(
+            project_root.join("run.pid"),
+            serde_json::to_string_pretty(&legacy_pid_record).expect("serialize pid record"),
+        )
+        .expect("write pid file");
+
+        let candidate = super::interrupted_handoff_cleanup_candidate_with_dirs(
+            base_dir,
+            base_dir,
+            &project_id,
+            &snapshot,
+        )
+        .expect("compute cleanup candidate");
+
+        assert!(matches!(
+            candidate,
+            super::InterruptedHandoffCleanupCandidate::WaitingForLiveOwner
+        ));
     }
 
     #[test]
