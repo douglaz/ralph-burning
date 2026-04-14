@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-arbiter-c1-a1-cr7-artifact",
+  "payload_id": "run-20260414160444-final_review-arbiter-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T19:29:00.972687416Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected the amendment. The code correctly applies different liveness policies to primary pid_records (conservative: RunningUnverified blocks) versus cleanup handoffs (permissive: only Live blocks). Cleanup handoffs are secondary records consulted only when the pid_record is already gone, so treating ambiguous ones as reclaimable prevents permanent deadlocks from legacy/degraded-data scenarios without compromising the safety of primary liveness checks.\n\n## Rulings\n\n- `fr-7-54d90245`: Reject\n  After reading all cited code paths, the amendment's characterization is inaccurate. The `!matches!(..., Live)` pattern that treats `RunningUnverified` as reclaimable is NOT applied to primary pid_record liveness — it is only applied to cleanup handoffs, which are secondary fallback records consulted only after the primary pid_record is already gone. Specifically: (1) `observed_cli_cleanup_owner_has_dead_pid` (run.rs:1809-1823) checks the authoritative pid_record FIRST and only returns true for `Stale` there — the non-`Live` catch-all at lines 1831-1839 only fires for the cleanup_handoff fallback when no pid_record exists. (2) `interrupted_handoff_cleanup_candidate_with_dirs` (run.rs:2232-2238) treats BOTH `Live` and `RunningUnverified` pid_records as blocking (`WaitingForLiveOwner`); `daemon_handoff_process_death_proven` is only consulted when there is NO pid_record AND it is a daemon handoff. (3) All primary liveness checks — `orchestrator_process_is_alive` (engine.rs:771-781) and `live_pid_record_blocks_failed_or_paused_resume` (run.rs:1884-1887) — conservatively treat `RunningUnverified` as alive. The cleanup handoff is by definition a record left behind after the original process has begun terminating and removed its pid_record. Two explicit tests (run.rs:9215, 9266) with clear rationale assert this behavior is intentional: permanently blocking on ambiguous handoffs from legacy processes (no `recorded_at`, no `proc_start_ticks`) would create unrecoverable deadlocks. New handoffs persist `recorded_at: Some(Utc::now())` (run.rs:2444, daemon_loop.rs:3122), so `RunningUnverified` only triggers within the sub-second WholeSeconds ambiguity window on macOS/BSD — a negligible risk compared to the permanent-deadlock alternative.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 7
+}

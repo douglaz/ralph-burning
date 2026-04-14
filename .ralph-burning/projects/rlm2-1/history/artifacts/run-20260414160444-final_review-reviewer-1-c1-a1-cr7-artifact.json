@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260414160444-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T19:16:51.154335485Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the non-.ralph-burning implementation diff around PID liveness and cleanup handoffs. Found 1 fix-now safety regression: unverified cleanup handoffs are being treated as proof of process death.\n\n## Amendments\n\n1. finding_summary: `observed_cli_cleanup_owner_has_dead_pid` and `daemon_handoff_process_death_proven` now treat every non-`Live` cleanup handoff as proof that the old orchestrator is gone, so `RunningUnverified` handoffs can be reclaimed while the original process is still alive. That is unsafe for the exact legacy/coarse cases this bead is supposed to treat conservatively: `src/adapters/fs.rs:245-254` and `src/adapters/fs.rs:298-304` classify same-second marker matches or missing `recorded_at` as `RunningUnverified`, but `src/cli/run.rs:1829-1839` and `src/cli/run.rs:2115-2123` convert that state into \"dead, reclaimable\" instead of \"not proven either way\". On macOS/BSD a short-lived run can still hit this with the newly persisted `recorded_at` at `src/cli/run.rs:2442-2448` / `src/contexts/automation_runtime/daemon_loop.rs:3120-3127`, and legacy handoffs with no `recorded_at` are always misclassified. severity: high. affected_files: [`src/cli/run.rs`, `src/adapters/fs.rs`, `src/contexts/automation_runtime/daemon_loop.rs`]. remediation_hint: only treat cleanup handoffs as dead when `process_snapshot_live_state(...)` returns `Stale`; keep `RunningUnverified` in the waiting/blocking path until an authoritative identity or lease staleness proves the owner exited.\n   Rationale: This can release the writer lock and repair interrupted snapshots while the original CLI/daemon process still owns the project, which risks concurrent orchestrators and state corruption. The new tests at `src/cli/run.rs:9215-9307` explicitly lock in the unsafe reclaim behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

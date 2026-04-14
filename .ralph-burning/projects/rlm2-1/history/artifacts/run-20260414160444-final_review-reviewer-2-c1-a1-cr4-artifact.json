@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T17:50:01.961151142Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed the PID liveness safety changes across 4 files (fs.rs, run.rs, cli_writer_lease.rs, engine.rs). The core logic is sound: `compare_legacy_pid_record` correctly introduces a three-way `PidRecordLiveState` (Live/Stale/RunningUnverified) that handles WholeSeconds precision on macOS/BSD safely, and all callers are updated to handle the new tri-state appropriately. The conservative treatment of `RunningUnverified` (blocking reclaim, treating as legacy) is correct. One test regression found: an existing macOS-only test now contradicts the new semantics.\n\n## Amendments\n\n1. Test `legacy_pid_liveness_accepts_same_second_live_process_on_non_linux_unix` at `src/adapters/fs.rs:6056` would fail on macOS/BSD. It asserts `FileSystem::legacy_pid_record_matches_live_process(&record)` returns `true`, but the new `compare_legacy_pid_record` returns `RunningUnverified` for same-second WholeSeconds matches, and `legacy_pid_record_matches_live_process` only accepts `PidRecordLiveState::Live`. The test should be updated to assert the live state is `RunningUnverified` (or at least not `Stale`) using `legacy_pid_record_live_state` directly, and the test name should reflect the new semantics (e.g., `legacy_pid_liveness_marks_same_second_live_process_as_unverified_on_non_linux_unix`). Affected file: `src/adapters/fs.rs` lines 6056-6075.\n   Rationale: This is a test regression within the bead's scope. The semantic change from bool-returning `matches_legacy_pid_record` to tri-state `compare_legacy_pid_record` was applied to unit tests for the Precise and WholeSeconds-specific paths, but this pre-existing macOS integration-style test was left unchanged. On macOS, the assertion `assert!(FileSystem::legacy_pid_record_matches_live_process(&record))` will fail because `RunningUnverified` is not `Live`. Severity: medium — the test only runs on non-Linux Unix so CI may not catch it, but it represents an incorrect assertion about intended behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 4
+}

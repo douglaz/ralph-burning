@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T17:19:01.212154670Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe implementation is solid and correct. The core change — introducing PidRecordLiveState::RunningUnverified to handle legacy pid records where the process is running but its identity cannot be verified — is well-designed and conservative. All production call sites treat RunningUnverified appropriately (blocking reclaim, blocking resume, waiting for the process rather than assuming stale). The behavioral change from the old code (which treated unverifiable legacy records as stale/not-matching) to the new code (which treats them as running-but-unverified) fixes the safety issue described in the bead: the old behavior could incorrectly reclaim a still-running process's lock after PID reuse. Tests pass, clippy is clean, formatting is clean. One minor test gating issue found.\n\n## Amendments\n\n1. Test `legacy_pid_liveness_marks_running_process_without_start_time_as_unverified` at src/adapters/fs.rs:5934 is missing a `#[cfg(unix)]` gate. The test creates a legacy pid record using `std::process::id()` and expects `RunningUnverified`, but on non-unix platforms `is_pid_running_unchecked` unconditionally returns `false`, so `legacy_pid_record_live_state` would return `Stale` instead, causing the assertion to fail. All peer tests that rely on the current process being detectable as running (e.g., lines 5917, 5953, 5973, 7420) are gated by `#[cfg(target_os = \"linux\")]` or `#[cfg(unix)]`. Add `#[cfg(unix)]` before this test to match.\n   Rationale: Without the cfg gate, the test would fail on any non-unix platform where `is_pid_running_unchecked` returns false. While this project primarily targets Linux, the test's implicit platform assumption is inconsistent with the rest of the test suite and technically incorrect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}

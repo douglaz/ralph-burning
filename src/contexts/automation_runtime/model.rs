@@ -328,6 +328,8 @@ impl WorktreeLease {
 pub struct CliWriterCleanupHandoff {
     pub pid: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_started_at: Option<DateTime<Utc>>,

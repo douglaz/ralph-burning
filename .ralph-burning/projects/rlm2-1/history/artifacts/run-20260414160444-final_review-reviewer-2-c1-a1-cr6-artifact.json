@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr6-artifact",
+  "payload_id": "run-20260414160444-final_review-reviewer-2-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T18:40:37.555821199Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe changes correctly implement the 3-state PID liveness model (Live/Stale/RunningUnverified) across both fs.rs and run.rs. The core logic in compare_legacy_pid_record, marker_only_pid_record_live_state, and the pid_record_live_state dispatch is sound: non-Linux platforms now honor proc_start_marker when proc_start_ticks is unavailable, same-second ambiguity is properly classified as RunningUnverified, and callers (resume, stop, stale-owner reclaim) correctly handle the three states. All 788 tests pass and clippy is clean. Two minor issues found: a double pid file read that creates unnecessary TOCTOU exposure, and a misleading error message for RunningUnverified on the stop path.\n\n## Amendments\n\n1. In observed_resume_recovery_owner (src/cli/run.rs ~line 2046-2067), the pid file is read twice in the Failed|Paused branch: once at line 2048 for the liveness check and again at line 2057 for writer_owner extraction. Between the two reads, a new process could start with the same PID and overwrite the pid file, causing the second read to return a different record than what was checked for liveness. Fix by reading the pid file once and reusing the record for both the liveness gate and the writer_owner extraction.\n   Rationale: The double read creates a TOCTOU window where the liveness check validates one record but the writer_owner is extracted from a potentially different record. While downstream writer lock acquisition provides a secondary guard, the inconsistency is avoidable by reading once and reusing the result.\n2. In open_stop_process_handle (src/cli/run.rs ~line 2781), the RunningUnverified error message says 'only matches coarse proc_start_marker data' but RunningUnverified can also be reached for legacy records with NO marker at all (ticks=None, marker=None, via the legacy_pid_record_live_state path where the process is running but no start time is available). The message should distinguish the two cases or use a more generic phrasing like 'cannot definitively verify process identity'.\n   Rationale: On non-Linux Unix, a legacy pid record with neither proc_start_ticks nor proc_start_marker that has a running process at its PID will reach RunningUnverified through legacy_pid_record_live_state. The current error message incorrectly claims marker data is present, which would confuse users troubleshooting the stop failure.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 6
+}

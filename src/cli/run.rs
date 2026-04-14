@@ -1560,38 +1560,53 @@ fn classify_running_snapshot_liveness_with_ignored_cli_lease_owner(
 ) -> AppResult<RunningSnapshotLiveness> {
     let pid_record = FileSystem::read_pid_file(base_dir, project_id)?;
     if let Some(record) = pid_record.as_ref() {
-        if FileSystem::pid_record_matches_live_process(record) {
-            if FileSystem::pid_record_is_authoritative(record) {
-                return Ok(
-                    match (
-                        record.owner.clone(),
-                        pid_record_has_attempt_metadata(record),
-                    ) {
-                        (crate::adapters::fs::RunPidOwner::Cli, true) => {
-                            RunningSnapshotLiveness::CliProcess(record.clone())
-                        }
-                        (crate::adapters::fs::RunPidOwner::Daemon, true) => {
-                            RunningSnapshotLiveness::DaemonProcess(record.clone())
-                        }
-                        (crate::adapters::fs::RunPidOwner::Cli, false) => {
-                            RunningSnapshotLiveness::LegacyCliProcess
-                        }
-                        (crate::adapters::fs::RunPidOwner::Daemon, false) => {
-                            RunningSnapshotLiveness::LegacyDaemonProcess
-                        }
-                    },
-                );
-            }
-            return Ok(match record.owner {
-                crate::adapters::fs::RunPidOwner::Cli => RunningSnapshotLiveness::LegacyCliProcess,
-                crate::adapters::fs::RunPidOwner::Daemon => {
-                    RunningSnapshotLiveness::LegacyDaemonProcess
+        match FileSystem::pid_record_live_state(record) {
+            crate::adapters::fs::PidRecordLiveState::Live => {
+                if FileSystem::pid_record_is_authoritative(record) {
+                    return Ok(
+                        match (
+                            record.owner.clone(),
+                            pid_record_has_attempt_metadata(record),
+                        ) {
+                            (crate::adapters::fs::RunPidOwner::Cli, true) => {
+                                RunningSnapshotLiveness::CliProcess(record.clone())
+                            }
+                            (crate::adapters::fs::RunPidOwner::Daemon, true) => {
+                                RunningSnapshotLiveness::DaemonProcess(record.clone())
+                            }
+                            (crate::adapters::fs::RunPidOwner::Cli, false) => {
+                                RunningSnapshotLiveness::LegacyCliProcess
+                            }
+                            (crate::adapters::fs::RunPidOwner::Daemon, false) => {
+                                RunningSnapshotLiveness::LegacyDaemonProcess
+                            }
+                        },
+                    );
                 }
-            });
-        }
-
-        if FileSystem::pid_record_is_authoritative(record) {
-            return Ok(RunningSnapshotLiveness::Stale);
+                return Ok(match record.owner {
+                    crate::adapters::fs::RunPidOwner::Cli => {
+                        RunningSnapshotLiveness::LegacyCliProcess
+                    }
+                    crate::adapters::fs::RunPidOwner::Daemon => {
+                        RunningSnapshotLiveness::LegacyDaemonProcess
+                    }
+                });
+            }
+            crate::adapters::fs::PidRecordLiveState::RunningUnverified => {
+                return Ok(match record.owner {
+                    crate::adapters::fs::RunPidOwner::Cli => {
+                        RunningSnapshotLiveness::LegacyCliProcess
+                    }
+                    crate::adapters::fs::RunPidOwner::Daemon => {
+                        RunningSnapshotLiveness::LegacyDaemonProcess
+                    }
+                });
+            }
+            crate::adapters::fs::PidRecordLiveState::Stale => {
+                if FileSystem::pid_record_is_authoritative(record) {
+                    return Ok(RunningSnapshotLiveness::Stale);
+                }
+            }
         }
     }
 
@@ -1802,23 +1817,25 @@ fn observed_cli_cleanup_owner_has_dead_pid(
             return Ok(false);
         }
 
-        return Ok(!FileSystem::is_pid_alive(&pid_record));
+        return Ok(matches!(
+            FileSystem::pid_record_live_state(&pid_record),
+            crate::adapters::fs::PidRecordLiveState::Stale
+        ));
     }
 
     let Some(handoff) = lease.cleanup_handoff.as_ref() else {
         return Ok(false);
     };
-    if !FileSystem::process_identity_is_authoritative(
-        handoff.proc_start_ticks,
-        handoff.proc_start_marker.as_deref(),
-    ) {
-        return Ok(false);
-    }
-
-    Ok(!FileSystem::process_identity_matches_live_process(
-        handoff.pid,
-        handoff.proc_start_ticks,
-        handoff.proc_start_marker.as_deref(),
+    // Cleanup handoffs are only used to decide whether stale recovery may
+    // proceed. Ambiguous coarse marker matches must not block reclaim forever.
+    Ok(!matches!(
+        FileSystem::process_snapshot_live_state(
+            handoff.pid,
+            handoff.recorded_at,
+            handoff.proc_start_ticks,
+            handoff.proc_start_marker.as_deref(),
+        ),
+        crate::adapters::fs::PidRecordLiveState::Live
     ))
 }
 
@@ -1848,13 +1865,41 @@ fn observed_stale_running_owner_still_matches_attempt(
         }
 
         if FileSystem::pid_record_is_authoritative(&pid_record)
-            && FileSystem::is_pid_alive(&pid_record)
+            && matches!(
+                FileSystem::pid_record_live_state(&pid_record),
+                crate::adapters::fs::PidRecordLiveState::Live
+                    | crate::adapters::fs::PidRecordLiveState::RunningUnverified
+            )
         {
             return Ok(false);
         }
     }
 
     observed_writer_owner_is_stale(base_dir, project_id, expected_owner)
+}
+
+fn live_pid_record_blocks_failed_or_paused_resume(
+    record: &crate::adapters::fs::RunPidRecord,
+) -> Option<AppError> {
+    if !matches!(
+        FileSystem::pid_record_live_state(record),
+        crate::adapters::fs::PidRecordLiveState::Live
+            | crate::adapters::fs::PidRecordLiveState::RunningUnverified
+    ) {
+        return None;
+    }
+
+    Some(match (record.owner.clone(), pid_record_has_attempt_metadata(record)) {
+        (crate::adapters::fs::RunPidOwner::Cli, true) => AppError::ResumeFailed {
+            reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
+        },
+        (crate::adapters::fs::RunPidOwner::Cli, false) => AppError::ResumeFailed {
+            reason: "project has a legacy CLI-owned running run without current-version attempt tracking; wait for it to finish or for stale recovery to become safe before resuming".to_owned(),
+        },
+        (crate::adapters::fs::RunPidOwner::Daemon, _) => AppError::ResumeFailed {
+            reason: "project has a daemon-owned running run; wait for the daemon task to finish or stop it through daemon controls".to_owned(),
+        },
+    })
 }
 
 fn acquire_recovery_writer_guard(
@@ -1998,19 +2043,29 @@ fn observed_resume_recovery_owner(
             }
         }
         RunStatus::Failed | RunStatus::Paused => Ok(ResumeRecoveryObservation {
-            observed_owner: reconcile_observed_recovery_owners(project_id, {
-                let mut owners = Vec::new();
-                if let Some(pid_record) = FileSystem::read_pid_file(base_dir, project_id)? {
-                    owners.extend(pid_record.writer_owner);
+            observed_owner: {
+                let pid_record = FileSystem::read_pid_file(base_dir, project_id)?;
+                if let Some(ref pid_record) = pid_record {
+                    if let Some(error) = live_pid_record_blocks_failed_or_paused_resume(pid_record)
+                    {
+                        return Err(error);
+                    }
                 }
-                if let Some(owner) = read_project_writer_lock_owner(base_dir, project_id)? {
-                    owners.push(owner);
-                }
-                owners.extend(detached_project_writer_owners_for_recovery(
-                    base_dir, project_id,
-                )?);
-                owners
-            })?,
+
+                reconcile_observed_recovery_owners(project_id, {
+                    let mut owners = Vec::new();
+                    if let Some(pid_record) = pid_record {
+                        owners.extend(pid_record.writer_owner);
+                    }
+                    if let Some(owner) = read_project_writer_lock_owner(base_dir, project_id)? {
+                        owners.push(owner);
+                    }
+                    owners.extend(detached_project_writer_owners_for_recovery(
+                        base_dir, project_id,
+                    )?);
+                    owners
+                })?
+            },
             should_reconcile_claimed_running_snapshot: false,
             allow_dead_cli_cleanup_reclaim: true,
         }),
@@ -2057,17 +2112,14 @@ fn daemon_handoff_process_death_proven(
     else {
         return Ok(false);
     };
-    if !FileSystem::process_identity_is_authoritative(
-        handoff.proc_start_ticks,
-        handoff.proc_start_marker.as_deref(),
-    ) {
-        return Ok(false);
-    }
-
-    Ok(!FileSystem::process_identity_matches_live_process(
-        handoff.pid,
-        handoff.proc_start_ticks,
-        handoff.proc_start_marker.as_deref(),
+    Ok(!matches!(
+        FileSystem::process_snapshot_live_state(
+            handoff.pid,
+            handoff.recorded_at,
+            handoff.proc_start_ticks,
+            handoff.proc_start_marker.as_deref(),
+        ),
+        crate::adapters::fs::PidRecordLiveState::Live
     ))
 }
 
@@ -2178,7 +2230,11 @@ pub(crate) fn interrupted_handoff_cleanup_candidate_with_dirs(
     // During the SIGTERM or daemon-cancellation grace period the snapshot is
     // already marked interrupted but the engine future is still settling.
     if let Ok(Some(pid_record)) = FileSystem::read_pid_file(workspace_dir, project_id) {
-        if FileSystem::is_pid_alive(&pid_record) {
+        if matches!(
+            FileSystem::pid_record_live_state(&pid_record),
+            crate::adapters::fs::PidRecordLiveState::Live
+                | crate::adapters::fs::PidRecordLiveState::RunningUnverified
+        ) {
             return Ok(InterruptedHandoffCleanupCandidate::WaitingForLiveOwner);
         }
     } else if daemon_handoff
@@ -2385,6 +2441,7 @@ fn persist_signal_cleanup_handoff(
         writer_owner,
         CliWriterCleanupHandoff {
             pid: pid_record.pid,
+            recorded_at: Some(Utc::now()),
             run_id: pid_record.run_id.clone(),
             run_started_at: pid_record.run_started_at,
             proc_start_ticks: pid_record.proc_start_ticks,
@@ -2714,10 +2771,20 @@ fn open_stop_process_handle(
 
     #[cfg(not(target_os = "linux"))]
     {
-        if !FileSystem::is_pid_alive(record) {
-            return Ok(None);
+        match FileSystem::pid_record_live_state(record) {
+            crate::adapters::fs::PidRecordLiveState::Live => {
+                Ok(Some(StopProcessHandle::Legacy(record.clone())))
+            }
+            crate::adapters::fs::PidRecordLiveState::Stale => Ok(None),
+            crate::adapters::fs::PidRecordLiveState::RunningUnverified => {
+                Err(AppError::RunStopFailed {
+                    reason: format!(
+                        "run.pid for pid {} cannot definitively verify process identity; refusing unsafe stop of an unverified pid record",
+                        record.pid
+                    ),
+                })
+            }
         }
-        Ok(Some(StopProcessHandle::Legacy(record.clone())))
     }
 }
 
@@ -2918,16 +2985,11 @@ impl TrackedProcess {
     }
 
     fn matches_live_process(&self) -> bool {
-        FileSystem::is_pid_alive(&crate::adapters::fs::RunPidRecord {
-            pid: self.pid,
-            started_at: Utc::now(),
-            owner: crate::adapters::fs::RunPidOwner::Cli,
-            writer_owner: None,
-            run_id: None,
-            run_started_at: None,
-            proc_start_ticks: self.proc_start_ticks,
-            proc_start_marker: self.proc_start_marker.clone(),
-        })
+        FileSystem::process_identity_matches_live_process(
+            self.pid,
+            self.proc_start_ticks,
+            self.proc_start_marker.as_deref(),
+        )
     }
 }
 
@@ -3004,7 +3066,11 @@ fn kill_stale_backend_process_group(
     record: &crate::adapters::fs::RunBackendProcessRecord,
 ) -> AppResult<(bool, Vec<TrackedProcess>)> {
     let leader_is_authoritative = FileSystem::backend_process_is_authoritative(record);
-    let leader_matches_record = FileSystem::is_backend_process_alive(record);
+    let leader_live_state = FileSystem::backend_process_live_state(record);
+    let leader_matches_record = matches!(
+        leader_live_state,
+        crate::adapters::fs::PidRecordLiveState::Live
+    );
     let raw_pid_running = FileSystem::is_pid_running_unchecked(record.pid);
 
     let mut tracked_group_members = unix_process_group_members(record.pid)?
@@ -3024,6 +3090,15 @@ fn kill_stale_backend_process_group(
     if !leader_is_authoritative && raw_pid_running {
         return Err(AppError::Io(std::io::Error::other(format!(
             "refusing stale backend cleanup for pid {} because the recorded process identity is not authoritative and the pid is still live",
+            record.pid
+        ))));
+    }
+    if matches!(
+        leader_live_state,
+        crate::adapters::fs::PidRecordLiveState::RunningUnverified
+    ) {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing stale backend cleanup for pid {} because coarse process-start data cannot definitively rule out backend PID reuse",
             record.pid
         ))));
     }
@@ -7248,6 +7323,7 @@ mod tests {
             .expect("write interrupted run snapshot");
         let dead_handoff = CliWriterCleanupHandoff {
             pid: std::process::id().saturating_add(100_000),
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-1".to_owned()),
             run_started_at: Some(started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -7352,6 +7428,7 @@ mod tests {
 
         let live_handoff = CliWriterCleanupHandoff {
             pid: std::process::id(),
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-live".to_owned()),
             run_started_at: Some(started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -7399,6 +7476,70 @@ mod tests {
                 .any(|event| event.event_type == JournalEventType::RunFailed),
             "repair must not append run_failed while the daemon handoff process is still alive"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interrupted_handoff_cleanup_candidate_waits_for_live_legacy_pid_record() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("legacy-live-pid-handoff").expect("project id");
+        let started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse started_at")
+            .with_timezone(&Utc);
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-live".to_owned(),
+                stage_cursor: StageCursor::new(StageId::Implementation, 1, 1, 1)
+                    .expect("stage cursor"),
+                started_at,
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed (interrupted by termination signal)".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        let project_root = FileSystem::live_project_root(base_dir, &project_id);
+        std::fs::create_dir_all(&project_root).expect("create project root");
+        let legacy_pid_record = crate::adapters::fs::RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: crate::adapters::fs::RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+        std::fs::write(
+            project_root.join("run.pid"),
+            serde_json::to_string_pretty(&legacy_pid_record).expect("serialize pid record"),
+        )
+        .expect("write pid file");
+
+        let candidate = super::interrupted_handoff_cleanup_candidate_with_dirs(
+            base_dir,
+            base_dir,
+            &project_id,
+            &snapshot,
+        )
+        .expect("compute cleanup candidate");
+
+        assert!(matches!(
+            candidate,
+            super::InterruptedHandoffCleanupCandidate::WaitingForLiveOwner
+        ));
     }
 
     #[test]
@@ -7449,6 +7590,7 @@ mod tests {
 
         let dead_handoff = CliWriterCleanupHandoff {
             pid: std::process::id().saturating_add(100_000),
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-detached".to_owned()),
             run_started_at: Some(started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -7545,6 +7687,7 @@ mod tests {
 
         let dead_handoff = CliWriterCleanupHandoff {
             pid: std::process::id().saturating_add(100_000),
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-detached".to_owned()),
             run_started_at: Some(started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -7664,6 +7807,7 @@ mod tests {
 
         let dead_handoff = CliWriterCleanupHandoff {
             pid: std::process::id().saturating_add(100_000),
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-dead".to_owned()),
             run_started_at: Some(started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -8800,6 +8944,127 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn observed_resume_recovery_owner_blocks_failed_snapshot_on_live_legacy_pid_without_owner_metadata(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("failed-live-legacy-pid").expect("project id");
+
+        let legacy_pid_record = crate::adapters::fs::RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+        FileSystem::write_atomic(
+            &FileSystem::live_project_root(base_dir, &project_id).join("run.pid"),
+            &serde_json::to_string_pretty(&legacy_pid_record).expect("serialize pid file"),
+        )
+        .expect("write legacy pid file");
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: None,
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let error = match super::observed_resume_recovery_owner(base_dir, &project_id, &snapshot) {
+            Ok(_) => panic!("live legacy pid must block failed-snapshot resume recovery"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            AppError::ResumeFailed { reason }
+                if reason == "project has a legacy CLI-owned running run without current-version attempt tracking; wait for it to finish or for stale recovery to become safe before resuming"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn observed_resume_recovery_owner_does_not_reclaim_stale_owner_while_legacy_pid_may_still_be_running(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("failed-live-legacy-pid-stale-owner").expect("project id");
+        let owner = "cli-live-legacy-failed-owner";
+        let stale_at =
+            Utc::now() - chrono::Duration::seconds((super::CLI_LEASE_TTL_SECONDS + 5) as i64);
+
+        let legacy_pid_record = crate::adapters::fs::RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: RunPidOwner::Cli,
+            writer_owner: Some(owner.to_owned()),
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+        FileSystem::write_atomic(
+            &FileSystem::live_project_root(base_dir, &project_id).join("run.pid"),
+            &serde_json::to_string_pretty(&legacy_pid_record).expect("serialize pid file"),
+        )
+        .expect("write legacy pid file");
+
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::CliWriter(CliWriterLease {
+                lease_id: owner.to_owned(),
+                project_id: project_id.to_string(),
+                owner: "cli".to_owned(),
+                acquired_at: stale_at,
+                ttl_seconds: super::CLI_LEASE_TTL_SECONDS,
+                last_heartbeat: stale_at,
+                cleanup_handoff: None,
+            }),
+        )
+        .expect("write stale cli lease");
+        <FsDaemonStore as DaemonStorePort>::acquire_writer_lock(
+            &FsDaemonStore,
+            base_dir,
+            &project_id,
+            owner,
+        )
+        .expect("acquire stale writer lock");
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: None,
+            status: RunStatus::Paused,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "paused".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let error = match super::observed_resume_recovery_owner(base_dir, &project_id, &snapshot) {
+            Ok(_) => panic!("live legacy pid must block paused-snapshot stale-owner reclaim"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            AppError::ResumeFailed { reason }
+                if reason == "project has a legacy CLI-owned running run without current-version attempt tracking; wait for it to finish or for stale recovery to become safe before resuming"
+        ));
+    }
+
     #[test]
     fn stop_target_pid_record_is_unchanged_rejects_pid_handoff_to_new_attempt() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -8875,6 +9140,7 @@ mod tests {
 
         let live_handoff = CliWriterCleanupHandoff {
             pid: pid_record.pid,
+            recorded_at: Some(Utc::now()),
             run_id: pid_record.run_id.clone(),
             run_started_at: pid_record.run_started_at,
             proc_start_ticks: pid_record.proc_start_ticks,
@@ -8941,6 +9207,104 @@ mod tests {
             )
             .expect("dead cleanup handoff should be reclaimable"),
             "cleanup handoff must let recovery reclaim the lock after run.pid is removed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn observed_cli_cleanup_owner_reclaims_when_cleanup_handoff_is_running_but_unverified() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let project_id = ProjectId::new("signal-handoff-unverified").expect("project id");
+        std::fs::create_dir_all(FileSystem::live_project_root(base_dir, &project_id))
+            .expect("ensure project root");
+
+        let unverified_handoff = CliWriterCleanupHandoff {
+            pid: std::process::id(),
+            recorded_at: None,
+            run_id: Some("run-signal-handoff".to_owned()),
+            run_started_at: Some(Utc::now()),
+            proc_start_ticks: None,
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+        let lease = CliWriterLease {
+            lease_id: "cli-signal-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            owner: "cli".to_owned(),
+            acquired_at: Utc::now(),
+            ttl_seconds: super::CLI_LEASE_TTL_SECONDS,
+            last_heartbeat: Utc::now(),
+            cleanup_handoff: Some(unverified_handoff),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            base_dir,
+            &LeaseRecord::CliWriter(lease),
+        )
+        .expect("write cli lease");
+        <FsDaemonStore as DaemonStorePort>::acquire_writer_lock(
+            &FsDaemonStore,
+            base_dir,
+            &project_id,
+            "cli-signal-handoff",
+        )
+        .expect("acquire writer lock");
+
+        assert!(
+            super::observed_cli_cleanup_owner_has_dead_pid(
+                base_dir,
+                &project_id,
+                "cli-signal-handoff",
+            )
+            .expect("unverified cleanup handoff should be reclaimable"),
+            "cleanup handoffs without enough identity precision must not block stale recovery forever"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_handoff_process_death_proven_accepts_running_but_unverified_cleanup_handoff() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let daemon_dir = base_dir;
+        let project_id = ProjectId::new("daemon-handoff-unverified").expect("project id");
+        let started_at = Utc::now();
+        let expected_attempt =
+            crate::contexts::workflow_composition::engine::RunningAttemptIdentity {
+                run_id: "run-unverified".to_owned(),
+                started_at,
+            };
+
+        let handoff = CliWriterCleanupHandoff {
+            pid: std::process::id(),
+            recorded_at: None,
+            run_id: Some(expected_attempt.run_id.clone()),
+            run_started_at: Some(expected_attempt.started_at),
+            proc_start_ticks: None,
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(std::process::id()),
+        };
+        let lease = WorktreeLease {
+            lease_id: "lease-daemon-handoff".to_owned(),
+            task_id: "task-daemon-handoff".to_owned(),
+            project_id: project_id.to_string(),
+            worktree_path: base_dir.join("worktrees/daemon-handoff"),
+            branch_name: "rb/daemon-handoff".to_owned(),
+            acquired_at: started_at,
+            ttl_seconds: 300,
+            last_heartbeat: started_at,
+            cleanup_handoff: Some(handoff),
+        };
+        <FsDaemonStore as DaemonStorePort>::write_lease_record(
+            &FsDaemonStore,
+            daemon_dir,
+            &LeaseRecord::Worktree(lease),
+        )
+        .expect("write daemon handoff lease");
+
+        assert!(
+            super::daemon_handoff_process_death_proven(daemon_dir, &project_id, &expected_attempt)
+                .expect("check daemon handoff liveness"),
+            "ambiguous cleanup handoffs must not block interrupted-handoff recovery indefinitely"
         );
     }
 
@@ -9215,6 +9579,13 @@ mod tests {
         assert!(!mismatched.matches_live_process());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn tracked_descendant_process_matches_live_current_identity() {
+        let tracked = super::TrackedProcess::from_pid(std::process::id());
+        assert!(tracked.matches_live_process());
+    }
+
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn classify_running_snapshot_liveness_treats_marker_only_current_pid_file_as_cli_process() {
@@ -9241,6 +9612,44 @@ mod tests {
                 assert_eq!(record.run_id.as_deref(), Some("run-1"));
             }
             _ => panic!("expected marker-only pid file to be treated as the live CLI process"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_running_snapshot_liveness_treats_live_legacy_pid_file_as_cli_process() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let project_id =
+            ProjectId::new("legacy-live-running-liveness".to_owned()).expect("project id");
+        let legacy_pid_record = crate::adapters::fs::RunPidRecord {
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            owner: crate::adapters::fs::RunPidOwner::Cli,
+            writer_owner: None,
+            run_id: None,
+            run_started_at: None,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+        FileSystem::write_atomic(
+            &FileSystem::live_project_root(temp_dir.path(), &project_id).join("run.pid"),
+            &serde_json::to_string_pretty(&legacy_pid_record).expect("serialize pid file"),
+        )
+        .expect("write legacy pid file");
+
+        assert!(
+            !matches!(
+                FileSystem::pid_record_live_state(&legacy_pid_record),
+                crate::adapters::fs::PidRecordLiveState::Stale
+            ),
+            "test fixture must exercise a legacy pid record that still points at a running process"
+        );
+
+        match super::classify_running_snapshot_liveness(temp_dir.path(), &project_id)
+            .expect("classify liveness")
+        {
+            super::RunningSnapshotLiveness::LegacyCliProcess => {}
+            _ => panic!("expected legacy live pid file to block reclaim as a legacy CLI process"),
         }
     }
 }

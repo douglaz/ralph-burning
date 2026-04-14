@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260414160444-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T19:27:17.857289971Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe amendment identifies a real safety regression: ambiguous cleanup handoffs are being treated as proof of process death even when the codebase’s own liveness model marks them as unverified.\n\n## Votes\n\n- `fr-7-54d90245`: Accept\n  `src/adapters/fs.rs` explicitly uses `PidRecordLiveState::RunningUnverified` for cases where the pid may still belong to the original process but identity cannot be proven, including missing `recorded_at` and same-second marker-only matches on non-Linux Unix. Most of the surrounding code handles that state conservatively: `live_pid_record_blocks_failed_or_paused_resume`, `interrupted_handoff_cleanup_candidate_with_dirs`, and `orchestrator_process_is_alive` all treat `RunningUnverified` as still-live / not-safe-to-reclaim. In contrast, `observed_cli_cleanup_owner_has_dead_pid` and `daemon_handoff_process_death_proven` currently collapse every non-`Live` result into dead, which allows writer-lock reclaim or interrupted-handoff repair while the original orchestrator may still be running. That can tear down ownership under a live process and create concurrent mutation of run state. Legacy handoffs without `recorded_at` are especially affected because they become unverified by construction. The amendment’s suggested fix—only accepting `Stale` as proof of death and leaving `RunningUnverified` in the wait/block path—is the technically correct behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

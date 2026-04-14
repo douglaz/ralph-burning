@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414160444-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T17:33:08.609035260Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nHardened legacy PID liveness in `src/adapters/fs.rs` by making whole-second process start timestamps conservative: same-second legacy comparisons now return `RunningUnverified` instead of `Live`, while only records written at least one full second after the rounded live start are treated as definite matches. Also gated the live-current-process legacy regression with `#[cfg(unix)]` so it only runs where unchecked PID liveness is supported, and updated/addded regression coverage for the new coarse-precision behavior.\n\n## Steps\n\n1. [Completed] Inspected the remaining legacy PID start-time comparison path in `src/adapters/fs.rs` and confirmed that whole-second `proc_start_marker` timestamps could still misclassify same-second PID reuse as definitively live on non-Linux Unix platforms.\n2. [Completed] Patched `ProcessStartTime` legacy comparison to return tri-state liveness for coarse timestamps, wiring same-second comparisons to `RunningUnverified` and preserving definite `Live` only for unambiguous matches at least one second after the rounded start; also added the missing `#[cfg(unix)]` gate to the legacy running-process regression.\n3. [Completed] Expanded regression coverage for coarse start-time precision and reran the required verification suite through the repository’s authoritative `nix build` gate.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test coarse_process_start_precision_marks_same_second_legacy_recovery_unverified -- --nocapture` passed.\n- `cargo test coarse_process_start_precision_accepts_unambiguously_later_legacy_recovery -- --nocapture` passed.\n- `cargo test legacy_pid_liveness_marks_running_process_without_start_time_as_unverified -- --nocapture` passed.\n- `cargo test` passed: lib 835 passed / 0 failed / 1 ignored, CLI integration 212 passed / 0 failed, unit integration 788 passed / 0 failed, doc-tests 0 passed / 0 failed / 9 ignored.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

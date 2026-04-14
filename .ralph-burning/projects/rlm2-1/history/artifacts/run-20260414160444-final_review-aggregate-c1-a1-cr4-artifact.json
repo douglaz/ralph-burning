@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260414160444-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414160444-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T17:51:58.851130872Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 2\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-68d89039`\n- `fr-4-8b58ceb2`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-68d89039`\n\nfinding_summary: `src/adapters/fs.rs:235-255` now classifies coarse non-Linux legacy matches that land in the same second as `PidRecordLiveState::RunningUnverified`, but the non-Linux unit test at `src/adapters/fs.rs:6054-6074` still expects `legacy_pid_record_matches_live_process()` to return `true` for that exact case. On macOS/BSD, `cargo test` will therefore fail even though Linux stays green, so the cross-platform acceptance criteria are not met.\nseverity: medium\naffected_files:\n- src/adapters/fs.rs\nremediation_hint: Update the non-Linux test and any remaining boolean expectations tied to same-second legacy recovery to assert the new three-state behavior (`RunningUnverified` / legacy-process classification) instead of expecting a boolean live match.\n\n### `fr-4-8b58ceb2`\n\nTest `legacy_pid_liveness_accepts_same_second_live_process_on_non_linux_unix` at `src/adapters/fs.rs:6056` would fail on macOS/BSD. It asserts `FileSystem::legacy_pid_record_matches_live_process(&record)` returns `true`, but the new `compare_legacy_pid_record` returns `RunningUnverified` for same-second WholeSeconds matches, and `legacy_pid_record_matches_live_process` only accepts `PidRecordLiveState::Live`. The test should be updated to assert the live state is `RunningUnverified` (or at least not `Stale`) using `legacy_pid_record_live_state` directly, and the test name should reflect the new semantics (e.g., `legacy_pid_liveness_marks_same_second_live_process_as_unverified_on_non_linux_unix`). Affected file: `src/adapters/fs.rs` lines 6056-6075.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

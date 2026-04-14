@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414160444-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T16:33:32.519709279Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the HEAD diff against `origin/master` and read the changed liveness path in `src/cli/run.rs` plus the related PID identity helpers in `src/adapters/fs.rs` and the updated timeout test. I found 1 fix-now correctness gap: interrupted-handoff cleanup now relies on a boolean legacy-PID matcher that returns `false` for both 'definitely dead' and 'could not determine', which is unsafe for the bead's legacy-record recovery goal.\n\n## Amendments\n\n1. finding_summary: In `src/cli/run.rs:2180-2188`, `interrupted_handoff_cleanup_candidate_with_dirs()` now treats `FileSystem::pid_record_matches_live_process()` returning `false` as proof that the interrupted owner is gone. That is not true for legacy pid files: `src/adapters/fs.rs:795-804` also returns `false` when `process_started_at()` cannot be obtained, and that lookup depends on `/proc/stat` on Linux or `ps` output parsing on BSD/macOS (`src/adapters/fs.rs:294-318`). In those environments a still-running legacy owner can be misclassified as dead and have its interrupted-state cleanup run early.\nseverity: medium\naffected_files: src/cli/run.rs, src/adapters/fs.rs\nremediation_hint: Keep waiting when the pid record is non-authoritative and start-time comparison is unavailable; only proceed once the process is definitively gone or PID reuse is positively detected.\n   Rationale: The function comment says cleanup should happen only when the orchestrator is definitively gone, but the new boolean check collapses 'indeterminate legacy record' into 'dead'. That can finalize or clean up an interrupted run while the original process is still settling.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

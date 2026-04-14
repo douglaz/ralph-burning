@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260414160444-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414160444-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T17:21:03.021032159Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 3/25\n**Effective Min Reviewers:** 2\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-3-b97a2bb7`\n- `fr-3-ed328f2a`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-b97a2bb7`\n\nfinding_summary: `src/adapters/fs.rs:235-238` drops `ProcessStartPrecision` on the floor, and `legacy_pid_record_live_state()` (`src/adapters/fs.rs:820-845`) treats any live process whose derived start time is `<= record.started_at` as definitively `Live`. On macOS/BSD, `process_started_at()` only has whole-second precision (`src/adapters/fs.rs:323-328`), so a PID reused later in the same second as the original `run.pid` write is still accepted as the original process. That means legacy pid files can still be misclassified as live after PID reuse on the non-Linux platforms this bead is supposed to harden, causing resume/recovery/cleanup to wait on an unrelated process.\nseverity: medium\naffected_files: [\"src/adapters/fs.rs\"]\nremediation_hint: Make the coarse-grained path conservative. When the live start time is only known to whole-second precision, same-second comparisons should return `RunningUnverified` (or equivalent) rather than `Live`; only timestamps at least one full second after the rounded start should be treated as a definite match.\n\n### `fr-3-ed328f2a`\n\nTest `legacy_pid_liveness_marks_running_process_without_start_time_as_unverified` at src/adapters/fs.rs:5934 is missing a `#[cfg(unix)]` gate. The test creates a legacy pid record using `std::process::id()` and expects `RunningUnverified`, but on non-unix platforms `is_pid_running_unchecked` unconditionally returns `false`, so `legacy_pid_record_live_state` would return `Stale` instead, causing the assertion to fail. All peer tests that rely on the current process being detectable as running (e.g., lines 5917, 5953, 5973, 7420) are gated by `#[cfg(target_os = \"linux\")]` or `#[cfg(unix)]`. Add `#[cfg(unix)]` before this test to match.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

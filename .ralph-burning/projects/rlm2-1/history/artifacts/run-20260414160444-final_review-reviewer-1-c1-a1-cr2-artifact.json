@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414160444-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414160444-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T16:53:15.617227381Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the diff and the key PID-liveness implementation paths. I found one high-severity correctness gap: the new `RunningUnverified` state is only used in interrupted-handoff cleanup, while other liveness and reclamation paths still collapse it to stale/dead and can recover over a live legacy process.\n\n## Amendments\n\n1. finding_summary: `PidRecordLiveState::RunningUnverified` is only honored in `interrupted_handoff_cleanup_candidate_with_dirs`; the rest of the liveness/recovery stack still collapses that state back to `false`/`Stale`, so a live legacy run can still be reclaimed when the process start time cannot be read.\nseverity: high\naffected_files: [\"src/adapters/fs.rs\", \"src/cli/run.rs\", \"src/contexts/workflow_composition/engine.rs\", \"src/contexts/automation_runtime/cli_writer_lease.rs\"]\nremediation_hint: Thread the tri-state through every caller that makes reclaim/recovery decisions. `RunningUnverified` should block resume/stop reconciliation and PID-file reclamation the same way the new interrupted-handoff path does, rather than being treated as safely stale.\n\nEvidence:\n- `src/adapters/fs.rs:806-816` maps `RunningUnverified` to `false` in `pid_record_matches_live_process`, so existing bool-based callers cannot distinguish \"unknown\" from \"dead\".\n- `src/cli/run.rs:1563-1627` uses that bool to classify running snapshots; when it is `false` for a legacy record, the code falls through to `RunningSnapshotLiveness::Stale`.\n- `src/contexts/workflow_composition/engine.rs:771-773` and `:1676-1695` then treat the orchestrator as dead and reconcile a running snapshot to failed during resume.\n- `src/cli/run.rs:3722-3755` and `:4000-4012` allow `run stop` to take the stale-recovery path instead of refusing to touch a live-but-unverifiable legacy owner.\n- `src/contexts/automation_runtime/cli_writer_lease.rs:176-185` treats `!pid_record_matches_live_process(pid_record)` as reclaimable, so daemon lease cleanup can still delete `run.pid` for a live process in this state.\n   Rationale: This bead is specifically about making PID liveness safe when start-time identity is missing or unavailable. Leaving other reclaim/recovery paths on the old boolean API preserves the unsafe behavior in resume/stop/lease cleanup even though the new enum was introduced.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

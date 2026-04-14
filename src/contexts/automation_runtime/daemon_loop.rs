@@ -3119,6 +3119,7 @@ where
         let pid = std::process::id();
         lease.cleanup_handoff = Some(CliWriterCleanupHandoff {
             pid,
+            recorded_at: Some(Utc::now()),
             run_id: Some(expected_attempt.run_id.clone()),
             run_started_at: Some(expected_attempt.started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(pid),
@@ -5500,6 +5501,7 @@ mod tests {
             .expect("write interrupted snapshot");
         let dead_handoff = CliWriterCleanupHandoff {
             pid: std::process::id().saturating_add(100_000),
+            recorded_at: Some(Utc::now()),
             run_id: Some("run-daemon-handoff-repair".to_owned()),
             run_started_at: Some(started_at),
             proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -6553,6 +6555,7 @@ mod tests {
             last_heartbeat: started_at,
             cleanup_handoff: Some(CliWriterCleanupHandoff {
                 pid: std::process::id().saturating_add(100_000),
+                recorded_at: Some(Utc::now()),
                 run_id: Some("run-phase0-handoff".to_owned()),
                 run_started_at: Some(started_at),
                 proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
@@ -7465,6 +7468,7 @@ mod tests {
             last_heartbeat: started_at,
             cleanup_handoff: Some(CliWriterCleanupHandoff {
                 pid: std::process::id().saturating_add(100_000),
+                recorded_at: Some(Utc::now()),
                 run_id: Some("run-multi-repo-recovered-terminal".to_owned()),
                 run_started_at: Some(started_at),
                 proc_start_ticks: FileSystem::proc_start_ticks_for_pid(std::process::id()),
