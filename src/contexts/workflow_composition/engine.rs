@@ -8718,6 +8718,30 @@ mod tests {
     }
 
     #[test]
+    fn prompt_review_drift_requirements_accept_none_override_when_quorum_is_met() {
+        let config = final_review_effective_config();
+        let min_reviewers = config.prompt_review_policy().min_reviewers;
+        let validators = (0..min_reviewers)
+            .map(|idx| ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(
+                    BackendFamily::Codex,
+                    format!("validator-{idx}-model"),
+                ),
+                required: true,
+                configured_index: idx,
+            })
+            .collect();
+        let panel = crate::contexts::agent_execution::policy::PromptReviewPanelResolution {
+            refiner: ResolvedBackendTarget::new(BackendFamily::Claude, "refiner-model"),
+            validators,
+        };
+        let snapshot = build_prompt_review_snapshot(StageId::PromptReview, &panel);
+
+        drift_still_satisfies_requirements(&snapshot, StageId::PromptReview, &config, None)
+            .expect("prompt-review should accept a met quorum without override");
+    }
+
+    #[test]
     fn milestone_lineage_plan_hash_does_not_reattach_unconfirmed_beads_to_snapshot_plan() {
         let temp_dir = tempdir().expect("create temp dir");
         let base_dir = temp_dir.path();
