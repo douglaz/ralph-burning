@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414040114-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414040114-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T04:12:59.530954962Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAudited the run-status reconciliation paths and confirmed the repository already contains the attempt-aware fix in `src/contexts/project_run_record/queries.rs`, with `handle_status`, `handle_resume`, and related stale-running reconciliation paths calling the corrected helper logic. No source edits were needed in this turn.\n\n## Steps\n\n1. [Completed] Inspect `reconcile_snapshot_status`, `terminal_status_for_running_attempt`, `terminal_status_for_attempt`, `handle_status`, and `handle_resume` to verify whether reconciliation is scoped to the current attempt boundary.\n2. [Completed] Confirm the implementation uses the latest `run_started`/`run_resumed` boundary, falls back to the snapshot `started_at` boundary when resume is not yet durable, and still handles the missing-`run_started` plus terminal-event edge case.\n3. [Completed] Verify regression coverage for resumed runs with stale earlier terminal events and for terminal reconciliation when `run_started` is missing.\n4. [Completed] Run validation: targeted regression tests, `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, and `nix build`.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo test` passed.\n- `cargo test run_queries_test::reconcile_snapshot_status_repairs_terminal_run_without_run_started_event --test unit -- --exact` passed.\n- `cargo test run_status_ignores_terminal_journal_events_before_latest_resume_for_same_run_id --test cli -- --exact` passed.\n- `cargo test run_status_ignores_terminal_journal_events_before_unjournaled_resume_snapshot_started_at --test cli -- --exact` passed.\n- `timeout 300 nix build -L` reached the timeout during the long-running Nix test/build phase after successful compile and substantial test progress, so it did not produce a clean success result.\n\n## Outstanding Risks\n\n- `nix build` did not complete within the 300-second timeout, so the repository's full authoritative gate is still unconfirmed.\n- The worktree already had unrelated changes in `.beads/issues.jsonl` and `.ralph-burning/projects/rlm1-1/`; those were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}
