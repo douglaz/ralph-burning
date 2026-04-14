@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414202007-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414202007-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T20:48:22.112970603Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThorough review of bead ralph-burning-rlm.3 implementation. The attempt-binding infrastructure (run_id/run_started_at in RunPidRecord, RunningAttemptIdentity, pid_record_matches_attempt, observed_stale_running_owner_still_matches_attempt) was established in the parent rlm bead. The rlm.3 commit (5517524e) added the critical stop_target_pid_record_is_unchanged revalidation before SIGTERM delivery in handle_stop's CliProcess branch, plus a dedicated test. Combined, these prevent: (1) run stop from killing a freshly-resumed orchestrator via PID record + attempt revalidation, (2) run resume from reclaiming a fresh writer lease via attempt-bound staleness checks, (3) reconcile_or_recover_claimed_running_snapshot detecting AttemptChanged when the snapshot moved between lock acquisition and recovery. All acceptance criteria verified: run.pid includes run_id/run_started_at, run stop aborts on PID handoff, run resume aborts lease reclaim on owner change, race condition tests exist, cargo test (788 passed), cargo clippy -D warnings clean, cargo fmt --check clean, nix build succeeds.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

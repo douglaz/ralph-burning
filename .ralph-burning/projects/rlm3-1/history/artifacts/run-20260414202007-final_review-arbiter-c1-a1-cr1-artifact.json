@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414202007-final_review-arbiter-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414202007-final_review-arbiter-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T20:50:54.568439633Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected amendment fr-1-aff4311c. The asymmetric handling of RunningUnverified (blocking for primary PID records, reclaimable for cleanup handoffs) is an intentional design decision with explicit documentation, not a liveness bug. Legacy/non-Linux handoffs can be permanently stuck in RunningUnverified due to insufficient identity data; treating them as blocking would create unrecoverable deadlocks. Modern code paths avoid the issue entirely via proc_start_ticks.\n\n## Rulings\n\n- `fr-1-aff4311c`: Reject\n  The asymmetric treatment of RunningUnverified between primary PID records (blocking) and cleanup handoffs (reclaimable) is a deliberate, well-documented design decision, not a bug. The comment at line 1829-1830 ('Ambiguous coarse marker matches must not block reclaim forever') explicitly explains the rationale. The core issue: legacy handoffs lacking `recorded_at` (and non-Linux handoffs with coarse timestamps) can be permanently stuck in `RunningUnverified` — they will never resolve to `Live` or `Stale` because the identity data is insufficient. The proposed remediation (only reclaim on `Stale`) would create unrecoverable deadlocks where no `run resume` could ever proceed for these handoffs. Modern code writes `proc_start_ticks` (fs.rs:284-290) which always resolves to definitively `Live` or `Stale`, bypassing the `RunningUnverified` path entirely, so this only affects transitional/legacy handoffs. Additionally, the interrupted-handoff recovery at line 2232-2237 already checks the primary PID record first with `RunningUnverified` treated as blocking — the weaker handoff check at line 2240-2243 only fires after the primary PID record is gone, providing defense-in-depth. The tests at lines 9215-9307 correctly lock in the intentional design, not unsafe behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

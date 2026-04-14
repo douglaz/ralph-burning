@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414202007-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414202007-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T20:50:05.625123856Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted 1/1 amendments. fr-1-aff4311c identifies a real liveness-classification bug: cleanup-handoff recovery currently treats `RunningUnverified` as reclaimable, which can let recovery steal the writer lease from a still-running cleanup process when handoff identity is ambiguous.\n\n## Votes\n\n- `fr-1-aff4311c`: Accept\n  `observed_cli_cleanup_owner_has_dead_pid` and `daemon_handoff_process_death_proven` both interpret `!Live` as safe to reclaim or repair, so `PidRecordLiveState::RunningUnverified` is treated the same as `Stale`. That is inconsistent with nearby recovery code, which already treats `RunningUnverified` as a blocking live state when checking `run.pid`. `process_snapshot_live_state` explicitly returns `RunningUnverified` for still-running processes when identity is ambiguous, including legacy handoffs with no `recorded_at` and same-second marker-only matches on non-Linux. In those cases the current code can reclaim the writer lock or run interrupted-handoff repair while the original cleanup owner is still alive, which is a real concurrency and state-integrity defect. The cited tests lock in that unsafe behavior rather than validating a safe one.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
