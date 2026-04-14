@@ -1,0 +1,7 @@
+id = "rlm3-1"
+name = "bind-stale-recovery"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "4609dd057513912d836ef0b952d0ec9b691e34682f7d900ffbc963b63c411cc8"
+created_at = "2026-04-14T20:20:07.288326569Z"
+status_summary = "created"

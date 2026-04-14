@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414202007-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414202007-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-14T20:32:13.762596029Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nInspected the requested stale-run recovery paths and confirmed the current source tree already implements the fix: `RunPidRecord` persists run identity metadata (`run_id`, `run_started_at`), `run stop` revalidates the observed `run.pid` before signaling, and stale `run resume` recovery only reclaims a writer lease when the current owner still matches the stale attempt. No source edits were required in `src/`, `tests/`, `docs/`, or config files.\n\n## Steps\n\n1. [Completed] Searched the codebase for `RunPidRecord`, `run.pid`, `writer_lease`, and reclaim/recovery paths, excluding `.ralph-burning/`, to confirm where stale-stop and stale-resume safety checks live.\n2. [Completed] Verified the persisted PID schema and runtime checks in the existing implementation: `src/adapters/fs.rs` records attempt identity in `run.pid`, and `src/cli/run.rs` revalidates attempt ownership before stop signaling and before stale resume lease reclaim.\n3. [Completed] Verified race-condition coverage already present in the tree, including `tests/cli.rs::run_stop_refuses_pid_for_different_running_attempt`, `tests/cli.rs::run_resume_does_not_reclaim_live_worktree_owner_for_failed_snapshot`, `src/cli/run.rs::tests::stop_target_pid_record_is_unchanged_rejects_pid_handoff_to_new_attempt`, and `src/cli/run.rs::tests::acquire_recovery_writer_guard_does_not_reclaim_fresh_worktree_owner_for_stale_running_attempt`.\n4. [Completed] Ran the required validation suite on the existing tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo test` passed.\n- Targeted stop race coverage passed: `cargo test run_stop_refuses_pid_for_different_running_attempt -- --nocapture`.\n- Targeted resume race coverage passed: `cargo test run_resume_does_not_reclaim_live_worktree_owner_for_failed_snapshot -- --nocapture`.\n- Targeted unit revalidation passed: `cargo test stop_target_pid_record_is_unchanged_rejects_pid_handoff_to_new_attempt -- --nocapture`.\n- Targeted unit reclaim guard passed: `cargo test acquire_recovery_writer_guard_does_not_reclaim_fresh_worktree_owner_for_stale_running_attempt -- --nocapture`.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}
