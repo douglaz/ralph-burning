@@ -412,7 +412,6 @@ async fn tmux_adapter_cancel_cleans_up_session_and_allows_attach_while_running()
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires gsp bead fix: stdout-only exhaustion not yet classified as BackendExhausted"]
 async fn tmux_adapter_classifies_stdout_only_exhaustion_as_backend_exhausted() {
     let bin_dir = tempdir().expect("create bin dir");
     let state_dir = tempdir().expect("create state dir");

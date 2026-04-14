@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260414001056",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 6
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-5-61c8456d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "finding_summary: The tmux-specific regression test for stdout-only exhaustion is still disabled with `#[ignore]`, so normal `cargo test` runs do not cover the exact adapter path that now falls back to raw stdout in `src/adapters/tmux.rs:633-643`.\nseverity: low\naffected_files:\n- tests/unit/tmux_adapter_test.rs:414-416\n- src/adapters/tmux.rs:633-643\nremediation_hint: Remove the `#[ignore]` on `tmux_adapter_classifies_stdout_only_exhaustion_as_backend_exhausted`; it already passes when run explicitly, so the shipped suite can enforce the intended `BackendExhausted` classification on the tmux path.",
-        "created_at": "2026-04-14T14:38:24.600349638Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "2036541602d586745c9485c038e1e62ccd9118012b18015a8e73b10927283ef8"
-      },
-      {
-        "amendment_id": "fr-5-ce60c997",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "The tmux test `tmux_adapter_classifies_stdout_only_exhaustion_as_backend_exhausted` at tests/unit/tmux_adapter_test.rs:415 has `#[ignore = \"requires gsp bead fix: stdout-only exhaustion not yet classified as BackendExhausted\"]`. This IS the gsp bead — the fix is fully implemented in tmux.rs (lines 633-636 now use stdout_for_exit_failure_classification). The #[ignore] must be removed so the regression test actually runs. Without this, the acceptance criterion 'Regression test covers stdout-only exhaustion path' is only half-met: the process_backend integration test runs, but the tmux adapter path is never exercised.",
-        "created_at": "2026-04-14T14:38:24.600352353Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "a30e958640f9ece7fa99f400197fdde803be7989db9cc0545173dd5a0d3915c8"
-      }
-    ],
-    "processed_count": 9
+    "pending": [],
+    "processed_count": 11
   },
-  "status_summary": "running: final review restart round 6 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-14T14:33:18.097449545Z",
