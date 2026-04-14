@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260414001056",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 4
@@ -23,66 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-3-635ab8d4",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "finding_summary: `ProcessBackendAdapter` and `TmuxAdapter` still pass an empty stdout string into `classify_exit_failure_with_output()` whenever `extract_stdout_error()` returns `None`, so backends that print exhaustion text only to plain stdout are still classified as `TransportFailure` and retried instead of degrading. severity: high affected_files: [\"src/adapters/process_backend.rs:1562-1585\", \"src/adapters/process_backend.rs:1626-1638\", \"src/adapters/tmux.rs:632-646\"] remediation_hint: When there is no structured stdout error, pass a bounded plain-text stdout tail into the classifier in both the normal path and the retry-without-resume path.",
-        "created_at": "2026-04-14T01:36:15.235519079Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "02f1afd274a45e76f633fc371d407e064873b6abaf03878e4d1f0d9811f4cd12"
-      },
-      {
-        "amendment_id": "fr-3-c3dbda29",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "finding_summary: The exhaustion matcher still misses common plain-text quota wording such as `insufficient credits`; `BACKEND_EXHAUSTED_PATTERNS` only matches narrower phrases like `credits exhausted`, `credits depleted`, `purchase more credits`, and `insufficient_quota`. severity: medium affected_files: [\"src/adapters/process_backend.rs:1942-1952\"] remediation_hint: Broaden the plain-text exhaustion patterns used for stdout/stderr classification to cover unstructured credit-insufficiency wording without weakening the existing transient-rate-limit safeguards.",
-        "created_at": "2026-04-14T01:36:15.235521133Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "03c79fefdaf0b3e88a56f8dfa2afe7760fe473c861db3bdbb8490a70c098c3d4"
-      },
-      {
-        "amendment_id": "fr-3-93e191ce",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "finding_summary: Regression coverage for stdout-only exhaustion classification is still missing. The process-backend tests cover structured stdout JSON and stderr fallback, but not a plain-text stdout-only exhaustion case, and the tmux adapter tests contain no failure-classification coverage for this path. severity: medium affected_files: [\"tests/unit/process_backend_test.rs:2131-2200\", \"tests/unit/tmux_adapter_test.rs:1-626\"] remediation_hint: Add adapter-level tests where stderr is empty and stdout contains a plain-text exhaustion message, then assert `BackendExhausted` so graceful degradation avoids retries.",
-        "created_at": "2026-04-14T01:36:15.235523287Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "375daf1710daa9922a392ed9fbb61301be0468f4e5d90229089d50e9241470f1"
-      },
-      {
-        "amendment_id": "fr-3-237ad494",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "The core implementation for the bead is completely missing. No source files have been modified (verified via git diff and git status). Both call sites — process_backend.rs:1633 and tmux.rs:638 — still use `stdout_error.as_deref().unwrap_or_default()` which falls back to an empty string when `extract_stdout_error()` returns `None`. This means stdout-only exhaustion messages (e.g., \"You've hit your usage limit\" printed to stdout without a structured JSON envelope) are still classified as TransportFailure instead of BackendExhausted.\n\nAll five acceptance criteria are unmet:\n1. Backends printing exhaustion messages only to stdout are NOT classified as BackendExhausted\n2. No new graceful degradation path for stdout-only messages\n3. (N/A — no changes to break stderr-based classification)\n4. No regression test for stdout-only exhaustion path\n5. No code changes to pass cargo test/clippy/fmt checks against\n\nRemediation: In both process_backend.rs (around line 1633) and tmux.rs (around line 638), when `extract_stdout_error()` returns `None`, pass a bounded tail of the raw stdout text (e.g., via `truncate_str_tail(&stdout_text, STDERR_EXHAUSTION_SCAN_LIMIT)`) as the stdout parameter to `classify_exit_failure_with_output`. Update the `classify_exit_failure_with_output` docstring to reflect this new fallback behavior. Add a regression test that constructs a non-zero exit with a plain-text stdout containing an exhaustion keyword (no JSON envelope) and verifies classification as BackendExhausted.",
-        "created_at": "2026-04-14T01:36:15.235528457Z",
-        "batch_sequence": 4,
-        "source": "workflow_stage",
-        "dedup_key": "bd758bd4dc3527b96201c4587b9972356012fbb83db4ac2446c99b03d111f05d"
-      },
-      {
-        "amendment_id": "fr-3-0529a182",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "Critical path still misses plain-stdout exhaustion detection. In `src/adapters/process_backend.rs`, both non-zero-exit paths pass `stdout_for_class` as `stdout_error.as_deref().unwrap_or_default()` (lines `~1562`, `~1575`, and `~1633`), and `src/adapters/tmux.rs` does the same at lines `~632-642`. If `extract_stdout_error()` fails (plain text on stdout, not JSON), `classify_exit_failure_with_output()` receives `stdout=\"\"` and backends that emit `usage limit`, `quota exceeded`, etc. only to stdout are classified as `TransportFailure` instead of `BackendExhausted` and retried. Add bounded raw stdout tail fallback (similar to `STDERR_EXHAUSTION_SCAN_LIMIT`) for classification when `extract_stdout_error` is `None`, and pass that to `classify_exit_failure_with_output()`.",
-        "created_at": "2026-04-14T01:36:15.235530741Z",
-        "batch_sequence": 5,
-        "source": "workflow_stage",
-        "dedup_key": "0bf7776933446c1cc5dffe7a4c5f2f837dd12039e58c0d024b67d35c4a1053ab"
-      }
-    ],
-    "processed_count": 3
+    "pending": [],
+    "processed_count": 8
   },
-  "status_summary": "running: final review restart round 4 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-14T01:27:19.363353812Z",

@@ -18,8 +18,9 @@ use tokio::sync::Mutex;
 
 use crate::adapters::fs::FileSystem;
 use crate::adapters::process_backend::{
-    classify_exit_failure_with_output, extract_stdout_error, truncate_str_tail, ChildOutput,
-    ProcessBackendAdapter, STDERR_EXHAUSTION_SCAN_LIMIT,
+    classify_exit_failure_with_output, extract_stdout_error,
+    stdout_for_exit_failure_classification, truncate_str_tail, ChildOutput, ProcessBackendAdapter,
+    STDERR_EXHAUSTION_SCAN_LIMIT,
 };
 use crate::contexts::agent_execution::model::{
     InvocationContract, InvocationEnvelope, InvocationRequest,
@@ -630,12 +631,9 @@ impl AgentExecutionPort for TmuxAdapter {
 
             prepared.cleanup().await;
             let stdout_error = extract_stdout_error(&output.stdout);
-            // Only use extracted error text for classification.
-            // Raw stdout is NOT used as fallback — model conversation
-            // output may coincidentally contain exhaustion keywords.
-            // Trade-off: plain-text-only stdout errors won't be detected;
-            // stderr scanning covers all known backends.
-            let stdout_for_class = stdout_error.as_deref().unwrap_or_default();
+            let stdout_text = String::from_utf8_lossy(&output.stdout);
+            let stdout_for_class =
+                stdout_for_exit_failure_classification(stdout_error.as_deref(), &stdout_text);
             // Narrow stderr to its tail — codex backends may echo
             // user prompts at the start of stderr.
             let stderr_for_class = truncate_str_tail(&stderr, STDERR_EXHAUSTION_SCAN_LIMIT);

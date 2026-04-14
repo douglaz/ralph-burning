@@ -2200,6 +2200,37 @@ async fn invalid_stdout_json_falls_back_to_stderr() {
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn stdout_plain_text_exhaustion_without_stderr_is_backend_exhausted() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    write_executable(
+        &bin_dir.path().join("claude"),
+        "#!/bin/sh\ncat > /dev/null\necho 'Your account has insufficient credits remaining.'\nexit 1\n",
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+
+    let error = adapter.invoke(request).await.expect_err("should fail");
+
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::BackendExhausted,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("insufficient credits"),
+                "should retain stdout tail detail: {details}"
+            );
+        }
+        other => panic!("expected BackendExhausted, got: {other:?}"),
+    }
+}
+
 // ── Failure artifact preservation for finish()-path errors ───────────────────
 
 #[tokio::test(flavor = "current_thread")]

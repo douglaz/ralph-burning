@@ -1560,20 +1560,15 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     if !fresh_output.status.success() {
                         let fresh_stderr = String::from_utf8_lossy(&fresh_output.stderr);
                         let fresh_stdout_error = extract_stdout_error(&fresh_output.stdout);
+                        let fresh_stdout_text = String::from_utf8_lossy(&fresh_output.stdout);
                         let code = fresh_output
                             .status
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
-                        // Only use extracted error text for classification.
-                        // Raw stdout is NOT used as fallback because model
-                        // conversation output may coincidentally contain
-                        // exhaustion keywords, causing false BackendExhausted
-                        // classification of transient failures.  Trade-off:
-                        // a backend that prints exhaustion as plain text to
-                        // stdout (no JSON envelope, no stderr) won't be
-                        // detected — stderr scanning covers all known backends.
-                        let fresh_stdout_for_class =
-                            fresh_stdout_error.as_deref().unwrap_or_default();
+                        let fresh_stdout_for_class = stdout_for_exit_failure_classification(
+                            fresh_stdout_error.as_deref(),
+                            &fresh_stdout_text,
+                        );
                         // Narrow stderr to its tail — codex backends may
                         // echo user prompts at the start of stderr.
                         let fresh_stderr_for_class =
@@ -1592,7 +1587,6 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                         // output is preserved in runtime/failed/<id>.failed.raw.
                         let fresh_stderr_tail =
                             truncate_str_tail(&fresh_stderr, STDERR_DETAIL_LIMIT);
-                        let fresh_stdout_text = String::from_utf8_lossy(&fresh_output.stdout);
                         let fresh_stdout_tail =
                             truncate_str_tail(&fresh_stdout_text, STDERR_DETAIL_LIMIT);
                         let detail = match (fresh_stderr.is_empty(), fresh_stdout_error) {
@@ -1624,13 +1618,10 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 }
 
                 let stdout_error = extract_stdout_error(&output.stdout);
+                let stdout_text = String::from_utf8_lossy(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
-                // Only use extracted error text for classification.
-                // Raw stdout is NOT used as fallback — model conversation
-                // output may coincidentally contain exhaustion keywords.
-                // Trade-off: plain-text-only stdout errors won't be detected;
-                // stderr scanning covers all known backends.
-                let stdout_for_class = stdout_error.as_deref().unwrap_or_default();
+                let stdout_for_class =
+                    stdout_for_exit_failure_classification(stdout_error.as_deref(), &stdout_text);
                 // Narrow stderr to its tail — codex backends may echo
                 // user prompts at the start of stderr.
                 let stderr_for_class = truncate_str_tail(&stderr, STDERR_EXHAUSTION_SCAN_LIMIT);
@@ -1641,7 +1632,6 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 // the error message with large verbose/prompt-echo payloads.
                 // Full output is in runtime/failed/<id>.failed.raw.
                 let stderr_tail = truncate_str_tail(&stderr, STDERR_DETAIL_LIMIT);
-                let stdout_text = String::from_utf8_lossy(&output.stdout);
                 let stdout_tail = truncate_str_tail(&stdout_text, STDERR_DETAIL_LIMIT);
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => {
@@ -1944,6 +1934,8 @@ const BACKEND_EXHAUSTED_PATTERNS: &[&str] = &[
     "hit your usage limit",
     "quota exceeded",
     "exceeded your current quota",
+    "insufficient credits",
+    "insufficient credit",
     "credits exhausted",
     "credits depleted",
     "purchase more credits",
@@ -1992,6 +1984,16 @@ pub(crate) fn truncate_str_tail(s: &str, max_bytes: usize) -> &str {
         start += 1;
     }
     &s[start..]
+}
+
+/// Prefer the structured stdout error when available; otherwise return a
+/// bounded raw-stdout tail so plain-text exhaustion messages still
+/// participate in exit classification.
+pub(crate) fn stdout_for_exit_failure_classification<'a>(
+    stdout_error: Option<&'a str>,
+    stdout_text: &'a str,
+) -> &'a str {
+    stdout_error.unwrap_or_else(|| truncate_str_tail(stdout_text, STDERR_EXHAUSTION_SCAN_LIMIT))
 }
 
 /// Check whether error output text contains patterns indicating
@@ -2128,9 +2130,9 @@ pub(crate) fn is_backend_exhausted(stderr: &str, stdout: &str) -> bool {
 /// error output indicates a persistent usage/billing limit.
 ///
 /// The `stdout` parameter should contain extracted error text
-/// (via [`extract_stdout_error`]), or an empty string when no structured
-/// error envelope is present.  Raw stdout must NOT be passed because
-/// model conversation output may coincidentally contain exhaustion keywords.
+/// (via [`extract_stdout_error`]) when available; otherwise callers should
+/// pass a bounded raw-stdout tail so plain-text exhaustion messages still
+/// classify correctly without scanning unbounded model output.
 ///
 /// Exit code 127 (command not found) always wins as `BinaryNotFound`
 /// regardless of output content — a missing binary cannot be a quota issue.
@@ -4128,6 +4130,7 @@ mod tests {
     mod backend_exhausted_tests {
         use super::super::{
             classify_exit_failure_with_output, extract_stdout_error, is_backend_exhausted,
+            stdout_for_exit_failure_classification, STDERR_EXHAUSTION_SCAN_LIMIT,
         };
         use crate::shared::domain::FailureClass;
 
@@ -4398,6 +4401,29 @@ mod tests {
             assert!(!is_backend_exhausted("", ""));
         }
 
+        #[test]
+        fn stdout_for_exit_failure_classification_falls_back_to_bounded_stdout_tail() {
+            let prefix = "x".repeat(STDERR_EXHAUSTION_SCAN_LIMIT + 32);
+            let stdout = format!("{prefix} insufficient credits");
+
+            let classified = stdout_for_exit_failure_classification(None, &stdout);
+
+            assert!(classified.ends_with("insufficient credits"));
+            assert!(classified.len() <= STDERR_EXHAUSTION_SCAN_LIMIT);
+            assert_ne!(classified, stdout);
+        }
+
+        #[test]
+        fn stdout_for_exit_failure_classification_prefers_structured_stdout_error() {
+            let stdout = "plain stdout usage limit";
+            let classified = stdout_for_exit_failure_classification(
+                Some("structured insufficient_quota"),
+                stdout,
+            );
+
+            assert_eq!(classified, "structured insufficient_quota");
+        }
+
         #[cfg(unix)]
         #[test]
         fn classify_with_output_upgrades_to_backend_exhausted() {
@@ -4410,6 +4436,23 @@ mod tests {
                     status,
                     "ERROR: You've hit your usage limit.",
                     "",
+                ),
+                FailureClass::BackendExhausted
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn classify_with_plain_stdout_only_exhaustion_upgrades_to_backend_exhausted() {
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::ExitStatus;
+
+            let status = ExitStatus::from_raw(1 << 8);
+            assert_eq!(
+                classify_exit_failure_with_output(
+                    status,
+                    "",
+                    "billing failure: insufficient credits remaining",
                 ),
                 FailureClass::BackendExhausted
             );
