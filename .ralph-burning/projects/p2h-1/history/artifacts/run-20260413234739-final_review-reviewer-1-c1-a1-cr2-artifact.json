@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260413234739-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260413234739-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T00:09:29.730893801Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe implementation correctly guards `drift_still_satisfies_requirements` against PromptReview quorum override. The PromptReview arm now explicitly rejects non-None `effective_min_override` with a clear error, the doc comment is updated, and two regression tests cover the invariant (rejection of override, acceptance of None with met quorum). All current call sites are safe — `resume_effective_min` is never set for the PromptReview path. Both tests pass, `cargo fmt --check` passes. Clippy has 17 pre-existing errors (dead code, too-many-arguments, etc.) — none introduced by this change. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260413234739-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260413234739-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T00:01:41.603436408Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 3\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-5090fa33`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-5090fa33`\n\nMissing positive-path unit test: there is no test that calls `drift_still_satisfies_requirements(&snapshot, StageId::PromptReview, &config, None)` and asserts success. The new test only covers the rejection path (`Some(1)`). A complementary test exercising the happy path (None override, sufficient validators) would strengthen confidence that the refactored PromptReview arm still works correctly for normal resume scenarios. This is low severity — the code path is exercised by the integration resume flow — but adding a 5-line test is cheap insurance.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}
