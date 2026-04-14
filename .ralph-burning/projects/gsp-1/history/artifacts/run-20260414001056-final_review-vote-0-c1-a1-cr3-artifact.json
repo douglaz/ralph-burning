@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-vote-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414001056-final_review-vote-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:35:38.118415619Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nI agree with all five amendments. Local inspection shows the current code still deliberately drops raw stdout when `extract_stdout_error()` returns `None`, so stdout-only plain-text exhaustion is not classified; `BACKEND_EXHAUSTED_PATTERNS` still omits `insufficient credits`; process-backend coverage only exercises structured-stdout and stderr cases; tmux tests do not cover this classification path; and there are no relevant source edits in the worktree beyond an untracked `.ralph-burning` directory. Several amendments overlap on the same underlying defect, but each is technically valid.\n\n## Votes\n\n- `fr-3-635ab8d4`: Accept\n  `src/adapters/process_backend.rs` still uses `fresh_stdout_error.as_deref().unwrap_or_default()` at line 1576 and `stdout_error.as_deref().unwrap_or_default()` at line 1633, and `src/adapters/tmux.rs` does the same at line 638. When stdout contains only plain text and no structured error envelope, the classifier receives `\"\"` and cannot detect exhaustion, so the finding is correct. Passing a bounded stdout tail is the right fix.\n- `fr-3-c3dbda29`: Accept\n  `BACKEND_EXHAUSTED_PATTERNS` at `src/adapters/process_backend.rs:1942-1953` includes `credits exhausted`, `credits depleted`, `purchase more credits`, and `insufficient_quota`, but not `insufficient credits`. That wording gap is real and materially relevant for plain-text provider errors. Expanding the matcher to cover it is maintainable and low risk.\n- `fr-3-93e191ce`: Accept\n  The process-backend tests around `tests/unit/process_backend_test.rs:2131-2200` cover structured stdout JSON plus stderr fallback, but not a stderr-empty, plain-text-stdout exhaustion case. A search in `tests/unit/tmux_adapter_test.rs` finds no failure-classification coverage for this path. The regression gap is real, so the amendment is valid.\n- `fr-3-237ad494`: Accept\n  The worktree shows no relevant source modifications: `git diff --stat` is empty, and `git status --short` only reports an untracked `.ralph-burning/projects/gsp-1/`. The cited call sites still fall back to an empty stdout string, so the bead's core implementation is indeed missing. The detailed remediation is consistent with the existing stderr-tail handling.\n- `fr-3-0529a182`: Accept\n  This is substantively the same core defect as `fr-3-635ab8d4`, but it is still accurate. The non-zero-exit paths in `process_backend.rs` and `tmux.rs` continue to pass an empty stdout string whenever structured extraction fails, so stdout-only exhaustion messages are misclassified as transport failures and retried. A bounded raw-stdout fallback is the appropriate correction.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

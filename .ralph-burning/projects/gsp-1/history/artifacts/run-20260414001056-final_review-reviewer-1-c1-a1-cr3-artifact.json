@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414001056-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:31:42.878483625Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the codebase for the stdout-only exhaustion classification bead. Found that zero implementation has been applied: no source files were modified (confirmed via git diff and git status), both call sites in process_backend.rs and tmux.rs still fall back to empty string when extract_stdout_error() returns None, and no regression tests were added. The entire bead scope needs to be implemented.\n\n## Amendments\n\n1. The core implementation for the bead is completely missing. No source files have been modified (verified via git diff and git status). Both call sites — process_backend.rs:1633 and tmux.rs:638 — still use `stdout_error.as_deref().unwrap_or_default()` which falls back to an empty string when `extract_stdout_error()` returns `None`. This means stdout-only exhaustion messages (e.g., \"You've hit your usage limit\" printed to stdout without a structured JSON envelope) are still classified as TransportFailure instead of BackendExhausted.\n\nAll five acceptance criteria are unmet:\n1. Backends printing exhaustion messages only to stdout are NOT classified as BackendExhausted\n2. No new graceful degradation path for stdout-only messages\n3. (N/A — no changes to break stderr-based classification)\n4. No regression test for stdout-only exhaustion path\n5. No code changes to pass cargo test/clippy/fmt checks against\n\nRemediation: In both process_backend.rs (around line 1633) and tmux.rs (around line 638), when `extract_stdout_error()` returns `None`, pass a bounded tail of the raw stdout text (e.g., via `truncate_str_tail(&stdout_text, STDERR_EXHAUSTION_SCAN_LIMIT)`) as the stdout parameter to `classify_exit_failure_with_output`. Update the `classify_exit_failure_with_output` docstring to reflect this new fallback behavior. Add a regression test that constructs a non-zero exit with a plain-text stdout containing an exhaustion keyword (no JSON envelope) and verifies classification as BackendExhausted.\n   Rationale: The bead's entire implementation scope is unimplemented — no code changes exist in the working tree or in recent commits for this bead. Without this fix, backends that report exhaustion only via stdout continue to be retried indefinitely instead of gracefully degrading.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

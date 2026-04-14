@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414001056-final_review-reviewer-0-c1-a1-cr3-artifact",
+  "payload_id": "run-20260414001056-final_review-reviewer-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T01:30:44.208047223Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the current tree after running `git diff` (there was no tracked diff to inspect). The requested stdout-only exhaustion fix is still incomplete: both adapters still discard plain stdout before classification, the matcher still misses common credit-insufficiency wording, and the regression coverage for this path is absent.\n\n## Amendments\n\n1. finding_summary: `ProcessBackendAdapter` and `TmuxAdapter` still pass an empty stdout string into `classify_exit_failure_with_output()` whenever `extract_stdout_error()` returns `None`, so backends that print exhaustion text only to plain stdout are still classified as `TransportFailure` and retried instead of degrading. severity: high affected_files: [\"src/adapters/process_backend.rs:1562-1585\", \"src/adapters/process_backend.rs:1626-1638\", \"src/adapters/tmux.rs:632-646\"] remediation_hint: When there is no structured stdout error, pass a bounded plain-text stdout tail into the classifier in both the normal path and the retry-without-resume path.\n   Rationale: This is the core bug described by the bead. The current comments explicitly document the incorrect trade-off, so acceptance criteria 1 and 2 are still unmet.\n2. finding_summary: The exhaustion matcher still misses common plain-text quota wording such as `insufficient credits`; `BACKEND_EXHAUSTED_PATTERNS` only matches narrower phrases like `credits exhausted`, `credits depleted`, `purchase more credits`, and `insufficient_quota`. severity: medium affected_files: [\"src/adapters/process_backend.rs:1942-1952\"] remediation_hint: Broaden the plain-text exhaustion patterns used for stdout/stderr classification to cover unstructured credit-insufficiency wording without weakening the existing transient-rate-limit safeguards.\n   Rationale: Even after wiring raw stdout fallback, a backend that says `insufficient credits` would still retry. The project prompt explicitly calls for broader stdout-only exhaustion keyword detection.\n3. finding_summary: Regression coverage for stdout-only exhaustion classification is still missing. The process-backend tests cover structured stdout JSON and stderr fallback, but not a plain-text stdout-only exhaustion case, and the tmux adapter tests contain no failure-classification coverage for this path. severity: medium affected_files: [\"tests/unit/process_backend_test.rs:2131-2200\", \"tests/unit/tmux_adapter_test.rs:1-626\"] remediation_hint: Add adapter-level tests where stderr is empty and stdout contains a plain-text exhaustion message, then assert `BackendExhausted` so graceful degradation avoids retries.\n   Rationale: Acceptance criterion 4 is not satisfied, and without adapter-level regression coverage this exact failure mode can return unnoticed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
