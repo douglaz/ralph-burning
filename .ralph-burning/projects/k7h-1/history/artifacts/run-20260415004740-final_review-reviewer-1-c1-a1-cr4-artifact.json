@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415004740-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415004740-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T02:18:07.562738639Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the in-scope branch delta in `src/adapters/process_backend.rs` and `tests/unit/process_backend_test.rs` (excluding `.ralph-burning/` per instructions). I verified the command-construction paths for Codex vs. OpenRouter, checked local `codex exec --help`/config parsing behavior, and ran the targeted fast-suffix tests. I did not find any correctness, safety, or robustness issues that warrant an amendment.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
