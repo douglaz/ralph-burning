@@ -2807,6 +2807,71 @@ mod tests {
     }
 
     #[test]
+    fn show_project_omits_plan_metadata_when_task_source_has_no_plan_hash(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base)?;
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 15, 0)
+            .single()
+            .unwrap();
+        let milestone = materialize_bundle(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &sample_bundle("ms-alpha", "Alpha"),
+            now,
+        )?;
+
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: ProjectId::new("task-alpha")?,
+                name: "Task Alpha".to_owned(),
+                flow: FlowPreset::QuickDev,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: "hash".to_owned(),
+                created_at: now,
+                task_source: Some(TaskSource {
+                    milestone_id: milestone.id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    parent_epic_id: None,
+                    origin: TaskOrigin::Milestone,
+                    plan_hash: None,
+                    plan_version: Some(1),
+                }),
+            },
+        )?;
+
+        let detail = show_project(
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsJournalStore,
+            &FsActiveProjectStore,
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            base,
+            &ProjectId::new("task-alpha")?,
+        )?;
+
+        let lineage = detail
+            .task_lineage
+            .expect("milestone lineage should still exist");
+        assert_eq!(lineage.milestone_id, "ms-alpha");
+        assert_eq!(lineage.milestone_name, "Alpha");
+        assert_eq!(lineage.bead_id, "bead-1");
+        assert_eq!(lineage.bead_title, None);
+        assert!(lineage.acceptance_criteria.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn show_project_preserves_fallback_lineage_when_plan_is_missing(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;

@@ -25,6 +25,7 @@ use crate::contexts::automation_runtime::repo_registry::{
     parse_repo_slug, RepoRegistration, RepoRegistryPort,
 };
 use crate::contexts::automation_runtime::DaemonStorePort;
+use crate::contexts::milestone_record::bead_refs::milestone_bead_refs_match;
 use crate::contexts::milestone_record::controller::{
     MilestoneControllerPort, MilestoneControllerRecord, MilestoneControllerTransitionEvent,
 };
@@ -5167,7 +5168,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let mut runs: Vec<TaskRunEntry> =
             collapse_task_run_attempts(self.read_task_runs(base_dir, milestone_id)?)
                 .into_iter()
-                .filter(|entry| entry.bead_id == bead_id)
+                .filter(|entry| milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id))
                 .collect();
         runs.sort_by(|left, right| {
             left.started_at

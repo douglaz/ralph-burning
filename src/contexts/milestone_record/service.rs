@@ -12,8 +12,9 @@ use crate::contexts::project_run_record::service::ProjectStorePort;
 use crate::shared::error::{AppError, AppResult};
 
 use super::bundle::{
-    explicit_id_hints, progress_shape_signature, progress_shape_signature_with_explicit_id_hints,
-    render_plan_json, render_plan_md_checked, MilestoneBundle,
+    bead_matches_implicit_slot, explicit_id_hints, progress_shape_signature,
+    progress_shape_signature_with_explicit_id_hints, render_plan_json, render_plan_md_checked,
+    MilestoneBundle,
 };
 use super::model::{
     collapse_task_run_attempts, latest_task_runs_per_bead, CompletionJournalDetails,
@@ -2069,11 +2070,51 @@ fn load_plan_bundle(
 ) -> AppResult<(MilestoneBundle, String)> {
     let plan_json = plan_store.read_plan_json(base_dir, milestone_id)?;
     let plan_hash = hash_text(&plan_json);
-    let bundle = serde_json::from_str(&plan_json).map_err(|error| AppError::CorruptRecord {
-        file: format!("milestones/{}/plan.json", milestone_id),
-        details: error.to_string(),
-    })?;
+    let mut bundle: MilestoneBundle =
+        serde_json::from_str(&plan_json).map_err(|error| AppError::CorruptRecord {
+            file: format!("milestones/{}/plan.json", milestone_id),
+            details: error.to_string(),
+        })?;
+    if bundle.identity.id != milestone_id.as_str() {
+        return Err(AppError::CorruptRecord {
+            file: format!("milestones/{}/plan.json", milestone_id),
+            details: format!(
+                "bundle identity '{}' does not match milestone '{}'",
+                bundle.identity.id, milestone_id
+            ),
+        });
+    }
+    backfill_legacy_explicit_bead_flags(&mut bundle, milestone_id);
+    bundle
+        .validate()
+        .map_err(|errors| AppError::CorruptRecord {
+            file: format!("milestones/{}/plan.json", milestone_id),
+            details: errors.join("; "),
+        })?;
     Ok((bundle, plan_hash))
+}
+
+fn backfill_legacy_explicit_bead_flags(bundle: &mut MilestoneBundle, milestone_id: &MilestoneId) {
+    let mut next_implicit_bead = 1usize;
+
+    for workstream in &mut bundle.workstreams {
+        for proposal in &mut workstream.beads {
+            let implicit_bead_id = format!("{}.bead-{}", milestone_id.as_str(), next_implicit_bead);
+            next_implicit_bead += 1;
+
+            if proposal.explicit_id.is_some() {
+                continue;
+            }
+
+            if let Some(candidate) = proposal.bead_id.as_deref() {
+                proposal.explicit_id = Some(!bead_matches_implicit_slot(
+                    candidate,
+                    milestone_id.as_str(),
+                    &implicit_bead_id,
+                ));
+            }
+        }
+    }
 }
 
 fn resolve_bead_plan_details(
@@ -2144,22 +2185,29 @@ fn build_bead_lineage_from_current_plan(
     bead_id: &str,
     expected_plan_hash: Option<&str>,
 ) -> BeadLineageView {
+    let Some(expected_plan_hash) = expected_plan_hash else {
+        return build_fallback_bead_lineage_view(milestone, bead_id);
+    };
     let Some((bundle, current_plan_hash)) = current_plan else {
         return build_fallback_bead_lineage_view(milestone, bead_id);
     };
-
-    if let Some(expected_plan_hash) = expected_plan_hash {
-        if expected_plan_hash != current_plan_hash {
-            return build_fallback_bead_lineage_view(milestone, bead_id);
-        }
+    if expected_plan_hash != current_plan_hash {
+        return build_fallback_bead_lineage_view(milestone, bead_id);
     }
 
     build_bead_lineage_view(milestone, bundle, bead_id)
 }
 
 fn shared_plan_hash_for_runs(runs: &[TaskRunEntry]) -> Result<Option<&str>, ()> {
+    if runs.is_empty() {
+        return Ok(None);
+    }
+
     let mut shared_plan_hash = None;
-    for plan_hash in runs.iter().filter_map(|entry| entry.plan_hash.as_deref()) {
+    for entry in runs {
+        let Some(plan_hash) = entry.plan_hash.as_deref() else {
+            return Err(());
+        };
         match shared_plan_hash {
             Some(existing) if existing != plan_hash => return Err(()),
             Some(_) => {}
@@ -2222,18 +2270,26 @@ pub fn bead_execution_history(
     bead_id: &str,
 ) -> AppResult<BeadExecutionHistoryView> {
     let runs = find_runs_for_bead(lineage_store, base_dir, milestone_id, bead_id)?;
-    let lineage = match shared_plan_hash_for_runs(&runs) {
-        Ok(expected_plan_hash) => read_bead_lineage(
-            store,
-            plan_store,
-            base_dir,
-            milestone_id,
-            bead_id,
-            expected_plan_hash,
-        )?,
-        Err(()) => {
-            let milestone = store.read_milestone_record(base_dir, milestone_id)?;
-            build_fallback_bead_lineage_view(&milestone, bead_id)
+    let lineage = if runs.is_empty() {
+        let milestone = store.read_milestone_record(base_dir, milestone_id)?;
+        match load_plan_bundle(plan_store, base_dir, milestone_id) {
+            Ok((bundle, _)) => build_bead_lineage_view(&milestone, &bundle, bead_id),
+            Err(_) => build_fallback_bead_lineage_view(&milestone, bead_id),
+        }
+    } else {
+        match shared_plan_hash_for_runs(&runs) {
+            Ok(expected_plan_hash) => read_bead_lineage(
+                store,
+                plan_store,
+                base_dir,
+                milestone_id,
+                bead_id,
+                expected_plan_hash,
+            )?,
+            Err(()) => {
+                let milestone = store.read_milestone_record(base_dir, milestone_id)?;
+                build_fallback_bead_lineage_view(&milestone, bead_id)
+            }
         }
     };
     let runs = runs
@@ -2302,15 +2358,19 @@ pub fn list_tasks_for_milestone(
             status_summary: record.status_summary,
             created_at: record.created_at,
             bead_id: task_source.bead_id.clone(),
-            bead_title: build_bead_lineage_from_current_plan(
-                &milestone,
-                current_plan
-                    .as_ref()
-                    .map(|(bundle, plan_hash)| (bundle, plan_hash.as_str())),
-                &task_source.bead_id,
-                task_source.plan_hash.as_deref(),
-            )
-            .bead_title,
+            bead_title: if task_source.plan_hash.is_some() {
+                build_bead_lineage_from_current_plan(
+                    &milestone,
+                    current_plan
+                        .as_ref()
+                        .map(|(bundle, plan_hash)| (bundle, plan_hash.as_str())),
+                    &task_source.bead_id,
+                    task_source.plan_hash.as_deref(),
+                )
+                .bead_title
+            } else {
+                None
+            },
         });
     }
     tasks.sort_by(|left, right| {
@@ -9914,6 +9974,172 @@ mod tests {
     }
 
     #[test]
+    fn bead_execution_history_omits_plan_details_when_any_run_lacks_plan_hash(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 12, 45, 0)
+            .single()
+            .unwrap();
+        let record = create_milestone_with_plan(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            "ms-alpha",
+            "Alpha",
+            now,
+        )?;
+        let current_plan_hash = hash_text(&FsMilestonePlanStore.read_plan_json(base, &record.id)?);
+
+        let first_started = now + chrono::Duration::minutes(1);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base,
+            &record.id,
+            "bead-1",
+            "task-alpha",
+            "run-1",
+            &current_plan_hash,
+            first_started,
+        )?;
+        record_bead_completion(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base,
+            &record.id,
+            "bead-1",
+            "task-alpha",
+            "run-1",
+            Some(&current_plan_hash),
+            TaskRunOutcome::Failed,
+            Some("first attempt failed"),
+            first_started,
+            first_started + chrono::Duration::seconds(15),
+        )?;
+
+        let second_started = now + chrono::Duration::minutes(3);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base,
+            &record.id,
+            "bead-1",
+            "task-alpha",
+            "run-2",
+            &current_plan_hash,
+            second_started,
+        )?;
+        let task_runs_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("task-runs.ndjson");
+        let task_runs = std::fs::read_to_string(&task_runs_path)?.replace(
+            &format!(r#""plan_hash":"{current_plan_hash}""#),
+            r#""plan_hash":null"#,
+        );
+        std::fs::write(&task_runs_path, task_runs)?;
+
+        let history = bead_execution_history(
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            &FsTaskRunLineageStore,
+            base,
+            &record.id,
+            "bead-1",
+        )?;
+
+        assert_eq!(history.runs.len(), 2);
+        assert_eq!(history.lineage.milestone_id, "ms-alpha");
+        assert_eq!(history.lineage.bead_id, "bead-1");
+        assert_eq!(history.lineage.bead_title, None);
+        assert!(history.lineage.acceptance_criteria.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn bead_execution_history_matches_short_and_qualified_bead_ids(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 12, 50, 0)
+            .single()
+            .unwrap();
+        let record = create_milestone_with_plan(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            "ms-alpha",
+            "Alpha",
+            now,
+        )?;
+        let current_plan_hash = hash_text(&FsMilestonePlanStore.read_plan_json(base, &record.id)?);
+
+        let first_started = now + chrono::Duration::minutes(1);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base,
+            &record.id,
+            "bead-1",
+            "task-alpha",
+            "run-1",
+            &current_plan_hash,
+            first_started,
+        )?;
+        record_bead_completion(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base,
+            &record.id,
+            "bead-1",
+            "task-alpha",
+            "run-1",
+            Some(&current_plan_hash),
+            TaskRunOutcome::Succeeded,
+            Some("completed"),
+            first_started,
+            first_started + chrono::Duration::seconds(30),
+        )?;
+
+        let short_history = bead_execution_history(
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            &FsTaskRunLineageStore,
+            base,
+            &record.id,
+            "bead-1",
+        )?;
+        let qualified_history = bead_execution_history(
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            &FsTaskRunLineageStore,
+            base,
+            &record.id,
+            "ms-alpha.bead-1",
+        )?;
+
+        assert_eq!(short_history.runs.len(), 1);
+        assert_eq!(qualified_history.runs.len(), 1);
+        assert_eq!(short_history.runs[0].run_id.as_deref(), Some("run-1"));
+        assert_eq!(qualified_history.runs[0].run_id.as_deref(), Some("run-1"));
+        Ok(())
+    }
+
+    #[test]
     fn list_tasks_for_milestone_returns_only_linked_projects(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
@@ -10084,6 +10310,160 @@ mod tests {
         );
         assert_eq!(listing.tasks[1].project_id, "task-stale");
         assert_eq!(listing.tasks[1].bead_title, None);
+        Ok(())
+    }
+
+    #[test]
+    fn list_tasks_for_milestone_omits_titles_when_task_plan_hash_is_missing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 13, 45, 0)
+            .single()
+            .unwrap();
+        let record = create_milestone_with_plan(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            "ms-alpha",
+            "Alpha",
+            now,
+        )?;
+
+        crate::contexts::project_run_record::service::create_project(
+            &crate::adapters::fs::FsProjectStore,
+            &crate::adapters::fs::FsJournalStore,
+            base,
+            crate::contexts::project_run_record::service::CreateProjectInput {
+                id: crate::shared::domain::ProjectId::new("task-missing-hash")?,
+                name: "Project task-missing-hash".to_owned(),
+                flow: crate::shared::domain::FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: "hash".to_owned(),
+                created_at: now + chrono::Duration::seconds(10),
+                task_source: Some(crate::contexts::project_run_record::model::TaskSource {
+                    milestone_id: record.id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    parent_epic_id: None,
+                    origin: crate::contexts::project_run_record::model::TaskOrigin::Milestone,
+                    plan_hash: None,
+                    plan_version: Some(1),
+                }),
+            },
+        )?;
+
+        let listing = list_tasks_for_milestone(
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            &crate::adapters::fs::FsProjectStore,
+            base,
+            &record.id,
+        )?;
+
+        assert_eq!(listing.tasks.len(), 1);
+        assert_eq!(listing.tasks[0].project_id, "task-missing-hash");
+        assert_eq!(listing.tasks[0].bead_title, None);
+        Ok(())
+    }
+
+    #[test]
+    fn read_bead_lineage_falls_back_when_plan_bundle_identity_is_wrong(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 0, 0)
+            .single()
+            .unwrap();
+        let record = create_milestone_with_plan(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            "ms-alpha",
+            "Alpha",
+            now,
+        )?;
+        let plan_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("plan.json");
+        let mut bundle: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&plan_path)?).expect("parse plan json");
+        bundle["identity"]["id"] = serde_json::json!("ms-other");
+        let raw = serde_json::to_string_pretty(&bundle)?;
+        let expected_hash = hash_text(&raw);
+        std::fs::write(&plan_path, raw)?;
+
+        let lineage = read_bead_lineage(
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            base,
+            &record.id,
+            "bead-1",
+            Some(&expected_hash),
+        )?;
+
+        assert_eq!(lineage.milestone_id, "ms-alpha");
+        assert_eq!(lineage.milestone_name, "Alpha");
+        assert_eq!(lineage.bead_id, "bead-1");
+        assert_eq!(lineage.bead_title, None);
+        assert!(lineage.acceptance_criteria.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn read_bead_lineage_falls_back_when_plan_bundle_is_semantically_invalid(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 5, 0)
+            .single()
+            .unwrap();
+        let record = create_milestone_with_plan(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            "ms-alpha",
+            "Alpha",
+            now,
+        )?;
+        let plan_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("plan.json");
+        let mut bundle: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&plan_path)?).expect("parse plan json");
+        bundle["workstreams"][0]["name"] = serde_json::json!("");
+        let raw = serde_json::to_string_pretty(&bundle)?;
+        let expected_hash = hash_text(&raw);
+        std::fs::write(&plan_path, raw)?;
+
+        let lineage = read_bead_lineage(
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            base,
+            &record.id,
+            "bead-1",
+            Some(&expected_hash),
+        )?;
+
+        assert_eq!(lineage.milestone_id, "ms-alpha");
+        assert_eq!(lineage.milestone_name, "Alpha");
+        assert_eq!(lineage.bead_id, "bead-1");
+        assert_eq!(lineage.bead_title, None);
+        assert!(lineage.acceptance_criteria.is_empty());
         Ok(())
     }
 }

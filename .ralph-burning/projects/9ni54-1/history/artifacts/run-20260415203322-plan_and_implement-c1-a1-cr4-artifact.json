@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415203322-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T22:33:05.562852139Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining lineage gaps in milestone/run queries. Plan-derived milestone/bead metadata now only projects when persisted provenance is explicit and matches the current validated milestone plan; missing or mixed plan hashes degrade cleanly to durable milestone/bead IDs. Milestone plan loading now rejects parseable-but-wrong or semantically invalid `plan.json` content before exposing bead titles or acceptance criteria, and bead execution history now matches short and fully qualified bead refs consistently. Added regression coverage for missing task/run plan hashes, invalid plan bundles, and mixed bead-ref query forms, plus updated unit expectations for task-detail lineage provenance.\n\n## Steps\n\n1. [Completed] Hardened milestone lineage resolution so plan metadata is exposed only when task/run provenance includes an explicit matching plan hash, while validated plan loading now enforces bundle identity and semantic validation before query projection.\n2. [Completed] Canonicalized bead execution-history filtering across short and fully qualified bead refs, and updated task-detail and milestone task-list lineage paths to fall back cleanly when provenance is missing or invalid.\n3. [Completed] Added regression tests for missing plan hashes, invalid plan bundles, and canonical bead-ref matching, then reran the required Rust and Nix validation gates on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo test` passed on the final tree.\n- `nix build` passed and updated `result` to `/nix/store/9lcx1cvdbysghdcjjb2d2l0fzma024ij-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`.\n\n## Outstanding Risks\n\n- Historical bead titles and acceptance criteria are still unavailable after a milestone replan because the system does not persist versioned plan snapshots; when persisted provenance no longer matches the live plan, lineage intentionally falls back to durable milestone/bead IDs without reconstructing old plan metadata.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 4
+}

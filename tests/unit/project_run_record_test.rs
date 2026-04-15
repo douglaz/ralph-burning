@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use chrono::{TimeZone, Utc};
+use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 
 use ralph_burning::contexts::milestone_record::bundle::{
@@ -2210,13 +2211,22 @@ fn show_project_fails_for_missing_project() {
 
 #[test]
 fn show_project_returns_task_lineage_for_milestone_tasks() {
+    let plan_json = make_milestone_plan_json(
+        "ms-alpha",
+        "Alpha Milestone",
+        "ms-alpha.bead-1",
+        "Implement feature",
+    );
+    let mut plan_hash = Sha256::new();
+    plan_hash.update(plan_json.as_bytes());
+
     let mut record = make_project_record("alpha");
     record.task_source = Some(TaskSource {
         milestone_id: "ms-alpha".to_owned(),
         bead_id: "ms-alpha.bead-1".to_owned(),
         parent_epic_id: None,
         origin: TaskOrigin::Milestone,
-        plan_hash: None,
+        plan_hash: Some(format!("{:x}", plan_hash.finalize())),
         plan_version: Some(2),
     });
     let store = FakeProjectStore::with_records(vec![record]);
@@ -2231,14 +2241,7 @@ fn show_project_returns_task_lineage_for_milestone_tasks() {
             test_timestamp(),
         ),
     };
-    let plan_store = FakeMilestonePlanStore {
-        plan_json: make_milestone_plan_json(
-            "ms-alpha",
-            "Alpha Milestone",
-            "ms-alpha.bead-1",
-            "Implement feature",
-        ),
-    };
+    let plan_store = FakeMilestonePlanStore { plan_json };
     let base_dir = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
