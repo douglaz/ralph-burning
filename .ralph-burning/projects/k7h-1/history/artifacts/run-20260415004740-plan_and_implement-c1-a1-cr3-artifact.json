@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415004740-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415004740-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T01:50:53.281227493Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented Codex fast-mode suffix support in the process backend by parsing an optional trailing `-fast` suffix alongside existing reasoning-effort suffixes, stripping `-fast` from the model passed to Codex CLI, and adding `-c service_tier=\"fast\"` to both new-session and resume invocations. Added direct parser coverage in `src/adapters/process_backend.rs` plus invocation-level regressions in `tests/unit/process_backend_test.rs` for standard and spark Codex model variants.\n\n## Steps\n\n1. [Completed] Inspect the existing Codex backend adapter and current Codex CLI help output to confirm how fast mode should be expressed and where model suffix parsing happens.\n2. [Completed] Update `src/adapters/process_backend.rs` so Codex model parsing peels an optional trailing `-fast` suffix, preserves reasoning-effort extraction, and adds `-c service_tier=\"fast\"` to new-session and resume argv construction.\n3. [Completed] Add regression tests covering combined reasoning-effort and fast suffix parsing plus Codex new-session and resume command construction for fast-mode model IDs.\n4. [Completed] Run the repository validation gates and targeted smoke checks for the supported Codex fast-mode invocation shape.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed and produced `/nix/store/3y0yndx72bqg9s4g3p24s3c5h93c00cm-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`.\n- Targeted regressions passed: `cargo test codex_model_suffix_parses_reasoning_effort_and_fast_mode -- --nocapture`, `cargo test codex_new_session_fast_suffix_adds_service_tier_override -- --nocapture`, and `cargo test codex_resume_fast_suffix_adds_service_tier_override -- --nocapture`.\n- CLI help smoke checks passed with the supported fast-mode config form: `codex exec -c 'service_tier=\"fast\"' --help` and `codex exec resume -c 'service_tier=\"fast\"' --help`.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 3
+}

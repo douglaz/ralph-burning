@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415004740-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415004740-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T01:59:00.459535789Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nVerified the amendment's claims against the actual codebase. All three assertions are confirmed: (1) OpenRouter model IDs are passed through codex_new_session_args/codex_resume_args (lines 985, 991), (2) those helpers unconditionally strip -fast suffixes and inject service_tier=\"fast\" via codex_model_reasoning_effort_and_fast (lines 1319-1335) with zero backend gating, and (3) tests for -fast handling only exist for Codex paths (lines 943-1202), with no OpenRouter regression coverage. This is a real coupling defect where Codex-specific conventions are applied to a different provider's model namespace.\n\n## Votes\n\n- `fr-3-9c8192c4`: Accept\n  The bug is confirmed and real. The codex_model_reasoning_effort_and_fast helper (line 1319) strips -fast suffixes unconditionally, and both codex_new_session_args (line 1356) and codex_resume_args (line 1389) call it without any backend discrimination. Since build_command routes OpenRouter through these same helpers (lines 985, 991), any OpenRouter model whose legitimate ID ends in -fast would be silently truncated and have service_tier=\"fast\" injected — potentially 404ing or targeting the wrong model. This is not theoretical: the code paths are shared and exercised in production. The remediation (gate -fast parsing to BackendFamily::Codex and add an OpenRouter regression test) is straightforward and proportionate to the medium severity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}

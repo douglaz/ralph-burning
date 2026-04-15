@@ -1479,8 +1479,14 @@ fn default_implementer_backend() -> BackendSelection {
 
 fn default_final_review_backends() -> Vec<PanelBackendSpec> {
     vec![
-        PanelBackendSpec::required(BackendFamily::Codex),
-        PanelBackendSpec::optional(BackendFamily::Claude),
+        PanelBackendSpec::required_selection(BackendSelection::new(
+            BackendFamily::Codex,
+            Some("gpt-5.4-xhigh".to_owned()),
+        )),
+        PanelBackendSpec::optional_selection(BackendSelection::new(
+            BackendFamily::Claude,
+            Some("claude-opus-4-6-max".to_owned()),
+        )),
         PanelBackendSpec::optional_selection(BackendSelection::new(
             BackendFamily::Codex,
             Some("gpt-5.3-codex-spark-xhigh".to_owned()),
@@ -1531,7 +1537,7 @@ fn default_backend_runtime_settings(backend_name: &str) -> AppResult<BackendRunt
                 ..Default::default()
             },
             "claude" => BackendRoleModels {
-                final_reviewer: Some("claude-opus-4-6".to_owned()),
+                final_reviewer: Some("claude-opus-4-6-max".to_owned()),
                 ..Default::default()
             },
             _ => BackendRoleModels::default(),

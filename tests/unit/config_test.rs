@@ -51,8 +51,8 @@ fn effective_config_loads_compiled_defaults() {
     );
     assert_eq!(
         vec![
-            "codex".to_owned(),
-            "?claude".to_owned(),
+            "codex/gpt-5.4-xhigh".to_owned(),
+            "?claude/claude-opus-4-6-max".to_owned(),
             "?codex/gpt-5.3-codex-spark-xhigh".to_owned(),
         ],
         match config

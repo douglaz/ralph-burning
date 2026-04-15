@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415004740-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415004740-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T01:58:54.479413016Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment: the new `-fast` handling is incorrectly applied to OpenRouter model IDs, which can corrupt exact model routing without any OpenRouter regression test covering it.\n\n## Votes\n\n- `fr-3-9c8192c4`: Accept\n  `BackendFamily::OpenRouter` currently builds commands via `codex_new_session_args` / `codex_resume_args`, and those helpers unconditionally call `codex_model_reasoning_effort_and_fast`, which strips a trailing `-fast` and injects `service_tier=\"fast\"`. OpenRouter model IDs are opaque identifiers that should be passed through exactly; the repo’s OpenRouter conformance coverage also treats exact model injection as the contract. As written, an OpenRouter model like `provider/model-fast` would be rewritten to `provider/model`, which can target the wrong model or fail outright. The existing added tests only validate Codex paths, so this regression is not covered. Gating the suffix parsing to Codex and adding an OpenRouter passthrough test is technically correct.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

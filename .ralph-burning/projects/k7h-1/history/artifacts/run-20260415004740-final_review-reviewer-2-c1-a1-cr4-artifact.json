@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415004740-final_review-reviewer-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415004740-final_review-reviewer-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T02:14:46.017490993Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed the Codex fast mode toggle implementation. The change correctly extends model ID parsing to detect a `-fast` suffix, strips it before passing to Codex CLI, and adds `-c service_tier=\"fast\"` to the args. Parsing order is correct (strip fast, then effort). OpenRouter is correctly excluded via `supports_fast_mode=false`. Tests are comprehensive: unit test for parsing (5 cases), integration tests for new/resume sessions with fast mode, and OpenRouter passthrough tests. All tests pass, clippy clean, fmt clean. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 4
+}

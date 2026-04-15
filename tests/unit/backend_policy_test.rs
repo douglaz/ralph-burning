@@ -78,7 +78,10 @@ fn compiled_defaults_use_codex_high_implementer_and_cross_model_final_review_pan
         BackendFamily::Claude,
         panel.reviewers[1].target.backend.family
     );
-    assert_eq!("claude-opus-4-6", panel.reviewers[1].target.model.model_id);
+    assert_eq!(
+        "claude-opus-4-6-max",
+        panel.reviewers[1].target.model.model_id
+    );
     assert!(!panel.reviewers[1].required);
     assert_eq!(
         BackendFamily::Codex,
@@ -196,16 +199,17 @@ fn compiled_default_final_review_panel_honors_role_model_overrides() {
         BackendFamily::Codex,
         panel.reviewers[0].target.backend.family
     );
-    assert_eq!(
-        "project-codex-reviewer",
-        panel.reviewers[0].target.model.model_id
-    );
+    // First reviewer has an inline model override (gpt-5.4-xhigh) that is not
+    // affected by role_models overrides.
+    assert_eq!("gpt-5.4-xhigh", panel.reviewers[0].target.model.model_id);
     assert_eq!(
         BackendFamily::Claude,
         panel.reviewers[1].target.backend.family
     );
+    // Second reviewer has an inline model override (claude-opus-4-6-max) that
+    // is not affected by role_models overrides.
     assert_eq!(
-        "workspace-claude-reviewer",
+        "claude-opus-4-6-max",
         panel.reviewers[1].target.model.model_id
     );
     // Third reviewer has an inline model override that is not affected by
@@ -243,11 +247,15 @@ fn explicit_default_model_overrides_compiled_codex_role_defaults() {
         .resolve_final_review_panel(1)
         .expect("resolve final review panel");
     assert_eq!(3, panel.reviewers.len());
+    // First reviewer has an inline model override (gpt-5.4-xhigh), unaffected
+    // by default_model.
+    assert_eq!("gpt-5.4-xhigh", panel.reviewers[0].target.model.model_id);
+    // Second reviewer has an inline model override (claude-opus-4-6-max),
+    // unaffected by default_model.
     assert_eq!(
-        "workspace-default-model",
-        panel.reviewers[0].target.model.model_id
+        "claude-opus-4-6-max",
+        panel.reviewers[1].target.model.model_id
     );
-    assert_eq!("claude-opus-4-6", panel.reviewers[1].target.model.model_id);
     // Third reviewer has an inline model override, unaffected by default_model.
     assert_eq!(
         "gpt-5.3-codex-spark-xhigh",
