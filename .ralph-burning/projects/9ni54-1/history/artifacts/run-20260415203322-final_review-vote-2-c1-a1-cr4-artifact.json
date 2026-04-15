@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-vote-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415203322-final_review-vote-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T22:41:17.505385734Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real defects confirmed by code inspection. Amendment fr-4-63ec00b8 exposes a genuine inconsistency between milestone-aware filtering (milestone_bead_refs_match canonicalizes IDs) and raw-equality collapsing (same_attempt, group_matches_named_attempt use exact bead_id strings), which can produce duplicate execution history entries when short and fully-qualified bead IDs coexist. Amendment fr-4-e2a3f015 correctly identifies that the blanket Err(_) => Ok(None) conversion in load_task_lineage_detail masks real failures from read_milestone_record (corrupt milestone.toml, IO errors), since plan.json errors are already handled internally via fallback — the remaining errors that escape are genuine corruption signals that should not be silenced.\n\n## Votes\n\n- `fr-4-63ec00b8`: Accept\n  Verified by code inspection. find_runs_for_bead filters with milestone_bead_refs_match (which canonicalizes bead IDs before comparison), but collapse_task_run_attempts and its helpers (group_matches_named_attempt at line 646, legacy_group_accepts_completion at line 679) use exact bead_id string equality. If a running row uses 'bead-1' and the terminal row uses 'ms-alpha.bead-1', collapse won't merge them (different strings), but the post-collapse filter returns both (canonicalized match). This produces duplicate entries for a single execution attempt, corrupting retry/history reporting. The remediation hint — canonicalize bead refs before grouping or make collapse helpers use milestone-aware comparison — is the correct fix.\n- `fr-4-e2a3f015`: Accept\n  Verified by code inspection. read_bead_lineage already handles missing/corrupt plan.json internally via .ok() and fallback lineage construction (lines 2231, 2236-2241), so errors that escape it are real failures from store.read_milestone_record() — corrupt milestone.toml, IO errors, etc. The blanket Err(_) => Ok(None) in load_task_lineage_detail (line 1388) converts these genuine corruption signals into a silent 'no lineage found' result, making a broken bead-backed task indistinguishable from a standalone task in project show / task show output. The fix should propagate hard milestone-store errors or return an explicit degraded lineage state rather than collapsing them to None.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 4
+}

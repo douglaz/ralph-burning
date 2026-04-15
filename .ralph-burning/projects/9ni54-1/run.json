@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260415203322",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
     "started_at": "2026-04-15T20:33:22.775220229Z",
     "prompt_hash_at_cycle_start": "114c5c4c96be38bce1fad837b98c1556dd8e6c3226fb6705a6716b84f71843fa",
     "prompt_hash_at_stage_start": "114c5c4c96be38bce1fad837b98c1556dd8e6c3226fb6705a6716b84f71843fa",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-63ec00b8",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "finding_summary: `bead_execution_history` can report one execution attempt twice when the underlying start/completion rows use short vs fully-qualified bead IDs. severity: medium. affected_files: [\"src/adapters/fs.rs\", \"src/contexts/milestone_record/model.rs\"]. evidence: the new query path filters rows with `milestone_bead_refs_match` in `FsTaskRunLineageStore::find_runs_for_bead` (`src/adapters/fs.rs:5168-5172`), but attempt collapsing still keys on raw `bead_id` equality because `TaskRunEntry::same_attempt` requires `left.bead_id == right.bead_id` (`src/contexts/milestone_record/model.rs:393-405`) and `collapse_task_run_attempts` relies on that matcher (`src/contexts/milestone_record/model.rs:611-698`). If a running row was written as `bead-1` and the terminal replay/repair row was written as `ms-alpha.bead-1` for the same `project_id`/`run_id`, collapse leaves two entries and the new filter returns both, so retries/history become incorrect. remediation_hint: canonicalize bead refs before grouping, or make the collapse/matching helpers use milestone-aware bead comparison consistently.",
+        "created_at": "2026-04-15T22:42:47.105355678Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "77d15c35e6b785231dcc213de20a2628a682eb871243b342774563376b6e5ce9"
+      },
+      {
+        "amendment_id": "fr-4-e2a3f015",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "finding_summary: task detail lookups now silently hide lineage whenever milestone lookup fails, so a broken bead-backed task becomes indistinguishable from a standalone project/task. severity: medium. affected_files: [\"src/contexts/project_run_record/service.rs\", \"src/contexts/milestone_record/service.rs\"]. evidence: `load_task_lineage_detail` converts every `read_bead_lineage` error into `Ok(None)` at `src/contexts/project_run_record/service.rs:1379-1389`. But `read_bead_lineage` already downgrades missing/corrupt `plan.json` into a fallback lineage internally (`src/contexts/milestone_record/service.rs:2230-2241`), so the remaining errors are real failures such as a missing/unreadable milestone record. In those cases `project show` / `task show` now succeed with no lineage at all, which defeats the new feature and masks on-disk corruption. remediation_hint: keep the internal plan fallback, but propagate hard milestone-store errors (or return an explicit degraded lineage state) instead of collapsing them to `None`.",
+        "created_at": "2026-04-15T22:42:47.105358884Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "ac93712626f7b60266c0d2366173c824ba992da3ceaa4914491a13d2f6162154"
+      }
+    ],
     "processed_count": 8
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-15T22:02:52.342952667Z",
+    "resolved_at": "2026-04-15T22:33:05.680783538Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
