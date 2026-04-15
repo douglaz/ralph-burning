@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414233544-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414233544-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T00:44:24.590227447Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed amendment fr-1-4fcad17c against the actual source code. The amendment claims default Codex reviewer/arbiter entries should be pinned to gpt-5.4-xhigh but aren't. However, the code intentionally uses family-only BackendSelection defaults (no model pinned), and the existing test 'explicit_default_model_overrides_compiled_codex_role_defaults' at backend_policy_test.rs:224 explicitly asserts and validates that workspace default_model overrides these compiled defaults — confirming this is intended behavior, not a bug. The resolution precedence in policy.rs is by design: workspace settings > compiled defaults, with explicitly pinned models (like reviewer[2]'s gpt-5.3-codex-spark-xhigh) preserved. The amendment conflates workspace-level configuration (.ralph/ralph.toml) with compiled defaults.\n\n## Votes\n\n- `fr-1-4fcad17c`: Reject\n  The behavior described as a bug is explicitly tested and intended. The test 'explicit_default_model_overrides_compiled_codex_role_defaults' (backend_policy_test.rs:224) passes and asserts that workspace default_model overrides family-only compiled defaults for Codex roles — the test name itself declares this is the design. The compiled defaults in config.rs:1480-1493 are intentionally family-only (no pinned model) to allow workspace customization. The claimed 'requested default panel contract of codex/gpt-5.4-xhigh' does not exist in the compiled defaults — that model comes from workspace-level config (.ralph/ralph.toml), which correctly flows through the resolution chain in policy.rs:301-324. Pinning compiled defaults to specific models would break the configurability model and contradict the existing, passing test. Reviewer[2]'s explicit gpt-5.3-codex-spark-xhigh pin already demonstrates the mechanism works correctly when explicit pinning is intended.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

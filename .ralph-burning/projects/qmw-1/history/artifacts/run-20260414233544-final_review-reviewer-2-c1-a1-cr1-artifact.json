@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414233544-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414233544-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T00:35:47.819305836Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed all code changes (config.rs, 4 test files, 1 conformance file). The implementation correctly: (1) splits DEFAULT_MIN_REVIEWERS into prompt-review (2) and final-review (1) constants with each usage site referencing the correct one, (2) changes default final review backends to required Codex + optional Claude + optional Spark, (3) adds a default arbiter backed by Codex/gpt-5.4-xhigh via or_else fallback, (4) adds Codex arbiter role model, (5) adjusts Claude final_reviewer from -max to standard per spec. All tests and conformance scenarios are updated consistently. The nix build gate passed per the artifact. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

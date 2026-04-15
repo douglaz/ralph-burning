@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414233544-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414233544-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T00:44:04.128064878Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe amendment identifies a real backend-resolution defect: the default final-review Codex entries are not pinned when a workspace sets `default_backend = \"codex\"` with `default_model`, so the stronger reviewer/arbiter defaults can be silently replaced.\n\n## Votes\n\n- `fr-1-4fcad17c`: Accept\n  `target_for_family` applies `base_backend.model` before non-explicit role defaults, and the compiled final-review reviewer[0] plus arbiter are configured as family-only Codex selections. The existing regression test already proves reviewer[0] resolves to `workspace-default-model` under `default_backend=codex` + `default_model`; the arbiter goes through the same precedence path, so it is affected too. That means the intended `codex/gpt-5.4-xhigh` final-review contract is not reliably enforced and can be silently weakened by a common workspace setting.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

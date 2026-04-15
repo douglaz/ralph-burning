@@ -1,0 +1,7 @@
+id = "qmw-1"
+name = "panel-defaults"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "e6572c3b489dc85fb9ef42413999a4c030daf7ab2a930466ee579e54ae36caf7"
+created_at = "2026-04-14T23:35:44.857697899Z"
+status_summary = "created"

@@ -78,10 +78,8 @@ fn compiled_defaults_use_codex_high_implementer_and_cross_model_final_review_pan
         BackendFamily::Claude,
         panel.reviewers[1].target.backend.family
     );
-    assert_eq!(
-        "claude-opus-4-6-max",
-        panel.reviewers[1].target.model.model_id
-    );
+    assert_eq!("claude-opus-4-6", panel.reviewers[1].target.model.model_id);
+    assert!(!panel.reviewers[1].required);
     assert_eq!(
         BackendFamily::Codex,
         panel.reviewers[2].target.backend.family
@@ -90,6 +88,9 @@ fn compiled_defaults_use_codex_high_implementer_and_cross_model_final_review_pan
         "gpt-5.3-codex-spark-xhigh",
         panel.reviewers[2].target.model.model_id
     );
+    assert!(!panel.reviewers[2].required);
+    assert_eq!(BackendFamily::Codex, panel.arbiter.backend.family);
+    assert_eq!("gpt-5.4-xhigh", panel.arbiter.model.model_id);
 }
 
 #[test]
@@ -246,10 +247,7 @@ fn explicit_default_model_overrides_compiled_codex_role_defaults() {
         "workspace-default-model",
         panel.reviewers[0].target.model.model_id
     );
-    assert_eq!(
-        "claude-opus-4-6-max",
-        panel.reviewers[1].target.model.model_id
-    );
+    assert_eq!("claude-opus-4-6", panel.reviewers[1].target.model.model_id);
     // Third reviewer has an inline model override, unaffected by default_model.
     assert_eq!(
         "gpt-5.3-codex-spark-xhigh",
@@ -504,7 +502,8 @@ fn final_review_panel_resolution_includes_reviewers_and_arbiter() {
         panel.reviewers.len(),
         "final-review reviewers should resolve"
     );
-    assert_eq!(BackendFamily::Claude, panel.arbiter.backend.family);
+    assert_eq!(BackendFamily::Codex, panel.arbiter.backend.family);
+    assert_eq!("gpt-5.4-xhigh", panel.arbiter.model.model_id);
 }
 
 #[test]

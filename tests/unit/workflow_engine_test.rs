@@ -5543,7 +5543,7 @@ async fn resume_warns_when_final_review_arbiter_drifts() {
         .clone()
         .expect("baseline failing run should capture the final-review arbiter");
 
-    EffectiveConfig::set(base_dir, "final_review.arbiter_backend", "codex").unwrap();
+    EffectiveConfig::set(base_dir, "final_review.arbiter_backend", "claude").unwrap();
     let drift_config = EffectiveConfig::load(base_dir).unwrap();
 
     let resume_result = engine::resume_standard_run(
@@ -5602,7 +5602,7 @@ async fn resume_warns_when_final_review_arbiter_drifts() {
     );
     assert_eq!(
         new_arbiter.get("backend_family").and_then(Value::as_str),
-        Some(BackendFamily::Codex.as_str())
+        Some(BackendFamily::Claude.as_str())
     );
     assert_ne!(
         old_arbiter, new_arbiter,

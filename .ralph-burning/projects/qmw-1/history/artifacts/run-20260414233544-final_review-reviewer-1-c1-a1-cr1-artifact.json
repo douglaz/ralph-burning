@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414233544-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414233544-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T00:42:11.822601753Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 fix-now issue: the new default Codex reviewer/arbiter are configured as family-only selections, so `default_model` can silently override the promised `gpt-5.4-xhigh` final-review defaults.\n\n## Amendments\n\n1. finding_summary: The new default Codex reviewer/arbiter entries are not actually pinned to `gpt-5.4-xhigh`; any workspace that sets `settings.default_backend = \"codex\"` plus `settings.default_model` will silently downgrade them.\nseverity: medium\naffected_files:\n- src/contexts/workspace_governance/config.rs\n- src/contexts/agent_execution/policy.rs\nremediation_hint: Encode the new defaults as explicit `BackendSelection`s with model IDs (`codex/gpt-5.4-xhigh`, `?claude/claude-opus-4-6`, `codex/gpt-5.4-xhigh` for the arbiter), or otherwise make the compiled final-review role defaults win over `default_model` for these default panel members.\n\nDetails: `src/contexts/workspace_governance/config.rs:1480-1492` stores reviewer[0], reviewer[1], and the arbiter as family-only selections, while `src/contexts/agent_execution/policy.rs:301-323` applies `default_backend`/`default_model` before non-explicit role defaults. The existing regression test at `tests/unit/backend_policy_test.rs:224-249` already shows reviewer[0] resolving to `workspace-default-model` instead of `gpt-5.4-xhigh`; the new arbiter default goes through the same precedence path. That means the requested default panel contract (`codex/gpt-5.4-xhigh` reviewer + arbiter) is lost as soon as a workspace tunes Codex's base model for implementation.\n   Rationale: This change is supposed to set a stable default final-review panel, but under common explicit config overrides the required reviewer and arbiter no longer resolve to the advertised xhigh model. That weakens review quality and makes the new defaults non-deterministic.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

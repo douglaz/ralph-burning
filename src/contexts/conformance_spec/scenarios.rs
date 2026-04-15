@@ -13429,7 +13429,7 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&out)?;
 
         let config_out = run_cli(
-            &["config", "set", "final_review.arbiter_backend", "codex"],
+            &["config", "set", "final_review.arbiter_backend", "claude"],
             ws.path(),
         )?;
         assert_success(&config_out)?;
@@ -19362,7 +19362,7 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
         // Verify probe failure semantics: disabled required backend exits non-zero
         std::fs::write(
             workspace_config_path(ws.path()),
-            "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
+            "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[final_review]\narbiter_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
         ).map_err(|e| format!("write config: {e}"))?;
 
         let out = run_cli(
