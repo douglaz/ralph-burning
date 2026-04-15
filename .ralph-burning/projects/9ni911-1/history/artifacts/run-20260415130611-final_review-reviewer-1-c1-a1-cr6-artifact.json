@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260415130611-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T15:59:45.978895897Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master...HEAD` outside `.ralph-burning/` and found two medium correctness issues in the new milestone handlers: snapshot semantics are not validated before use, and pending requirements pointers are not checked for milestone-mode compatibility.\n\n## Amendments\n\n1. finding_summary: `milestone show`, `milestone status`, and `milestone plan` never validate `MilestoneSnapshot` semantics before using `status.json`, so they can present or act on impossible milestone states instead of rejecting corrupt state.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:447-467\n- src/cli/milestone.rs:627-639\n- src/contexts/milestone_record/service.rs:1466-1471\n- src/contexts/milestone_record/model.rs:208-225\nremediation_hint: After loading the snapshot, call `MilestoneSnapshot::validate_semantics()` and surface a milestone-scoped error before rendering fields like `active_bead` or allowing replanning.\n   Rationale: The new handlers currently trust any deserialized snapshot. A `status.json` with `status = \"planning\"` and `active_bead` set is treated as valid: `milestone show --json` prints the impossible `active_bead`, and `milestone plan` can continue from that corrupt state. The model already defines these combinations as invalid, so the CLI should reject them instead of exposing misleading state or mutating through it.\n2. finding_summary: Pending requirements runs are accepted purely by `RequirementsStatus`; the handlers never verify that the referenced run is actually a milestone-mode / milestone-bundle run, so an unrelated draft/quick requirements run can be mistaken for milestone planning.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:167-174\n- src/cli/milestone.rs:471-517\n- src/cli/milestone.rs:709-750\nremediation_hint: When loading a pending requirements run for either inspection or planning, require `run.mode == Milestone` and `run.output_kind == MilestoneBundle`; otherwise raise a milestone-scoped error and avoid telling the user to continue an incompatible run.\n   Rationale: With `pending_requirements_run_id` pointing at a normal project-seed run in `awaiting_answers`, `milestone plan` exits successfully and tells the user to run `requirements answer` on that unrelated run, and `show/status` also report it as milestone planning state. That run can never produce a milestone bundle, so the current behavior is incorrect and sends the operator down the wrong workflow instead of flagging the bad pointer immediately.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

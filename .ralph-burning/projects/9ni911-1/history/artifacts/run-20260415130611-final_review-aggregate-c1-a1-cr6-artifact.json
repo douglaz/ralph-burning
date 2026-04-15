@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260415130611-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260415130611-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T16:01:45.328754915Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 3\n**Unique Amendments:** 2\n**Final Review Restarts:** 6/25\n\n## Accepted\n\n- `fr-6-226a0170`\n- `fr-6-17f28451`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-226a0170`\n\nfinding_summary: `milestone show`, `milestone status`, and `milestone plan` never validate `MilestoneSnapshot` semantics before using `status.json`, so they can present or act on impossible milestone states instead of rejecting corrupt state.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:447-467\n- src/cli/milestone.rs:627-639\n- src/contexts/milestone_record/service.rs:1466-1471\n- src/contexts/milestone_record/model.rs:208-225\nremediation_hint: After loading the snapshot, call `MilestoneSnapshot::validate_semantics()` and surface a milestone-scoped error before rendering fields like `active_bead` or allowing replanning.\n\n### `fr-6-17f28451`\n\nfinding_summary: Pending requirements runs are accepted purely by `RequirementsStatus`; the handlers never verify that the referenced run is actually a milestone-mode / milestone-bundle run, so an unrelated draft/quick requirements run can be mistaken for milestone planning.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:167-174\n- src/cli/milestone.rs:471-517\n- src/cli/milestone.rs:709-750\nremediation_hint: When loading a pending requirements run for either inspection or planning, require `run.mode == Milestone` and `run.output_kind == MilestoneBundle`; otherwise raise a milestone-scoped error and avoid telling the user to continue an incompatible run.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}
