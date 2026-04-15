@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
+use super::bead_refs::milestone_bead_refs_match;
 use crate::shared::error::{AppError, AppResult};
 
 /// Current milestone record schema version.
@@ -391,7 +392,7 @@ pub struct TaskRunEntry {
 
 impl TaskRunEntry {
     pub fn same_attempt(left: &Self, right: &Self) -> bool {
-        if left.bead_id != right.bead_id || left.project_id != right.project_id {
+        if !task_run_entries_share_bead(left, right) || left.project_id != right.project_id {
             return false;
         }
 
@@ -445,6 +446,24 @@ impl TaskRunEntry {
             self.outcome_detail.as_deref(),
             self.task_id.as_deref(),
         )
+    }
+}
+
+fn task_run_entries_share_bead(left: &TaskRunEntry, right: &TaskRunEntry) -> bool {
+    if left.milestone_id != right.milestone_id {
+        return false;
+    }
+
+    match MilestoneId::new(left.milestone_id.clone()) {
+        Ok(milestone_id) => milestone_bead_refs_match(&milestone_id, &left.bead_id, &right.bead_id),
+        Err(_) => left.bead_id == right.bead_id,
+    }
+}
+
+fn task_run_entry_matches_bead(entry: &TaskRunEntry, bead_id: &str) -> bool {
+    match MilestoneId::new(entry.milestone_id.clone()) {
+        Ok(milestone_id) => milestone_bead_refs_match(&milestone_id, &entry.bead_id, bead_id),
+        Err(_) => entry.bead_id == bead_id,
     }
 }
 
@@ -571,7 +590,7 @@ pub fn find_matching_running_task_run(
     entries
         .iter()
         .filter(|entry| {
-            entry.bead_id == bead_id
+            task_run_entry_matches_bead(entry, bead_id)
                 && entry.project_id == project_id
                 && !entry.outcome.is_terminal()
         })
@@ -588,7 +607,7 @@ pub fn matching_finalized_task_runs(
     entries
         .iter()
         .filter(|entry| {
-            entry.bead_id == bead_id
+            task_run_entry_matches_bead(entry, bead_id)
                 && entry.project_id == project_id
                 && entry.outcome.is_terminal()
         })
@@ -643,7 +662,7 @@ fn find_collapse_group_index(groups: &[Vec<TaskRunEntry>], entry: &TaskRunEntry)
 
 fn group_matches_named_attempt(group: &[TaskRunEntry], entry: &TaskRunEntry, run_id: &str) -> bool {
     group.iter().any(|existing| {
-        existing.bead_id == entry.bead_id
+        task_run_entries_share_bead(existing, entry)
             && existing.project_id == entry.project_id
             && existing.run_id.as_deref() == Some(run_id)
     })
@@ -676,7 +695,7 @@ fn unique_open_legacy_group_index(
 fn legacy_group_accepts_completion(group: &[TaskRunEntry], entry: &TaskRunEntry) -> bool {
     !group.iter().any(|existing| existing.outcome.is_terminal())
         && group.iter().any(|existing| {
-            existing.bead_id == entry.bead_id
+            task_run_entries_share_bead(existing, entry)
                 && existing.project_id == entry.project_id
                 && existing.run_id.is_none()
                 && !existing.outcome.is_terminal()
@@ -1077,6 +1096,46 @@ mod tests {
     }
 
     #[test]
+    fn collapse_task_run_attempts_merges_short_and_qualified_bead_refs(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let finished_at = started_at + chrono::Duration::seconds(5);
+        let collapsed = collapse_task_run_attempts(vec![
+            TaskRunEntry {
+                milestone_id: "ms-1".to_owned(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at,
+                finished_at: None,
+                task_id: None,
+            },
+            TaskRunEntry {
+                milestone_id: "ms-1".to_owned(),
+                bead_id: "ms-1.bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: Some("completed".to_owned()),
+                started_at,
+                finished_at: Some(finished_at),
+                task_id: None,
+            },
+        ]);
+
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(collapsed[0].run_id.as_deref(), Some("run-1"));
+        assert_eq!(collapsed[0].plan_hash.as_deref(), Some("plan-v1"));
+        assert_eq!(collapsed[0].outcome_detail.as_deref(), Some("completed"));
+        Ok(())
+    }
+
+    #[test]
     fn same_attempt_prefers_run_id_when_present() -> Result<(), Box<dyn std::error::Error>> {
         let started_at = Utc::now();
         let first = TaskRunEntry {
@@ -1098,6 +1157,33 @@ mod tests {
         };
 
         assert!(!TaskRunEntry::same_attempt(&first, &second));
+        Ok(())
+    }
+
+    #[test]
+    fn same_attempt_accepts_short_and_qualified_bead_refs() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let started_at = Utc::now();
+        let first = TaskRunEntry {
+            milestone_id: "ms-1".to_owned(),
+            bead_id: "bead-1".to_owned(),
+            project_id: "project-1".to_owned(),
+            run_id: Some("run-1".to_owned()),
+            plan_hash: None,
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: None,
+            started_at,
+            finished_at: None,
+            task_id: None,
+        };
+        let second = TaskRunEntry {
+            bead_id: "ms-1.bead-1".to_owned(),
+            outcome: TaskRunOutcome::Succeeded,
+            finished_at: Some(started_at + chrono::Duration::seconds(1)),
+            ..first.clone()
+        };
+
+        assert!(TaskRunEntry::same_attempt(&first, &second));
         Ok(())
     }
 

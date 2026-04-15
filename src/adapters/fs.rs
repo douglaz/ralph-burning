@@ -4362,11 +4362,15 @@ impl FsTaskRunLineageStore {
 
     fn running_task_runs_for_bead<'a>(
         entries: &'a [TaskRunEntry],
+        milestone_id: &MilestoneId,
         bead_id: &str,
     ) -> Vec<&'a TaskRunEntry> {
         entries
             .iter()
-            .filter(|entry| entry.bead_id == bead_id && !entry.outcome.is_terminal())
+            .filter(|entry| {
+                milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id)
+                    && !entry.outcome.is_terminal()
+            })
             .collect()
     }
 
@@ -4979,13 +4983,15 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         }
         let canonical_task_runs = collapse_task_run_attempts(entries.clone());
         let running_attempts_for_bead =
-            Self::running_task_runs_for_bead(&canonical_task_runs, bead_id);
+            Self::running_task_runs_for_bead(&canonical_task_runs, milestone_id, bead_id);
 
         if let Some(other_active_bead) = canonical_task_runs
             .iter()
             .filter(|entry| !entry.outcome.is_terminal())
             .map(|entry| entry.bead_id.as_str())
-            .find(|active_bead_id| *active_bead_id != bead_id)
+            .find(|active_bead_id| {
+                !milestone_bead_refs_match(milestone_id, active_bead_id, bead_id)
+            })
         {
             return Err(AppError::RunStartFailed {
                 reason: format!(

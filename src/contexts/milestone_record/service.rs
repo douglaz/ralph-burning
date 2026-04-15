@@ -2227,6 +2227,12 @@ pub fn read_bead_lineage(
     bead_id: &str,
     expected_plan_hash: Option<&str>,
 ) -> AppResult<BeadLineageView> {
+    if !store.milestone_exists(base_dir, milestone_id)? {
+        return Err(AppError::MilestoneNotFound {
+            milestone_id: milestone_id.to_string(),
+        });
+    }
+
     let milestone = store.read_milestone_record(base_dir, milestone_id)?;
     let current_plan = load_plan_bundle(plan_store, base_dir, milestone_id).ok();
     let current_plan = current_plan
@@ -7136,6 +7142,70 @@ mod tests {
             runs[0].outcome_detail.as_deref(),
             Some("replayed completion")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn find_runs_for_bead_collapses_short_and_qualified_refs_for_same_attempt(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "mixed-bead-ref-query-test".to_owned(),
+                name: "Mixed Bead Ref Query Test".to_owned(),
+                description: "short and qualified bead refs should collapse to one attempt"
+                    .to_owned(),
+            },
+            now,
+        )?;
+
+        let task_runs_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("task-runs.ndjson");
+        let finished_at = now + chrono::Duration::seconds(5);
+        let raw_lines = [
+            serde_json::to_string(&TaskRunEntry {
+                milestone_id: record.id.to_string(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now,
+                finished_at: None,
+                task_id: None,
+            })?,
+            serde_json::to_string(&TaskRunEntry {
+                milestone_id: record.id.to_string(),
+                bead_id: format!("{}.bead-1", record.id),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: Some("completed".to_owned()),
+                started_at: now,
+                finished_at: Some(finished_at),
+                task_id: None,
+            })?,
+        ]
+        .join("\n");
+        std::fs::write(&task_runs_path, format!("{raw_lines}\n"))?;
+
+        let runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v1"));
+        assert_eq!(runs[0].outcome_detail.as_deref(), Some("completed"));
         Ok(())
     }
 

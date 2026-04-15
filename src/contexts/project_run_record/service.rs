@@ -1370,23 +1370,19 @@ fn load_task_lineage_detail(
         return Ok(None);
     };
 
-    let Ok(milestone_id) = crate::contexts::milestone_record::model::MilestoneId::new(
+    let milestone_id = crate::contexts::milestone_record::model::MilestoneId::new(
         task_source.milestone_id.clone(),
-    ) else {
-        return Ok(None);
-    };
+    )?;
 
-    match crate::contexts::milestone_record::service::read_bead_lineage(
+    crate::contexts::milestone_record::service::read_bead_lineage(
         milestone_store,
         plan_store,
         base_dir,
         &milestone_id,
         &task_source.bead_id,
         task_source.plan_hash.as_deref(),
-    ) {
-        Ok(lineage) => Ok(Some(lineage)),
-        Err(_) => Ok(None),
-    }
+    )
+    .map(Some)
 }
 
 /// Show detailed project information.
@@ -3011,6 +3007,61 @@ mod tests {
         assert_eq!(lineage.bead_id, "bead-1");
         assert_eq!(lineage.bead_title, None);
         assert!(lineage.acceptance_criteria.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn show_project_propagates_missing_milestone_lineage_errors(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base)?;
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 15, 15, 0)
+            .single()
+            .unwrap();
+
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: ProjectId::new("task-alpha")?,
+                name: "Task Alpha".to_owned(),
+                flow: FlowPreset::QuickDev,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: "hash".to_owned(),
+                created_at: now,
+                task_source: Some(TaskSource {
+                    milestone_id: "ms-missing".to_owned(),
+                    bead_id: "bead-1".to_owned(),
+                    parent_epic_id: None,
+                    origin: TaskOrigin::Milestone,
+                    plan_hash: Some("plan-hash".to_owned()),
+                    plan_version: Some(1),
+                }),
+            },
+        )?;
+
+        let err = show_project(
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsJournalStore,
+            &FsActiveProjectStore,
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            base,
+            &ProjectId::new("task-alpha")?,
+        )
+        .expect_err("missing milestone lineage should be surfaced");
+
+        match err {
+            AppError::MilestoneNotFound { milestone_id } => {
+                assert_eq!(milestone_id, "ms-missing");
+            }
+            other => panic!("expected MilestoneNotFound, got {other:?}"),
+        }
         Ok(())
     }
 }
