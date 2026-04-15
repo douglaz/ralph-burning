@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260415164250-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T19:21:37.781731724Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real defects in the current implementation. One path can incorrectly bind a milestone bead to an unrelated non-bead project, and the other regresses bead lookup by misclassifying milestone-local dotted short refs as fully qualified IDs.\n\n## Votes\n\n- `fr-5-0d97dc42`: Accept\n  `find_existing_bead_project` falls back to the default-derived project ID even when that project's `task_source` is absent, and `milestone run` then claims and executes it as the bead's project. That is unsafe because `task_source` is the persisted milestone linkage, and the run-side milestone preparation and terminal reconciliation paths both explicitly short-circuit when `task_source` is missing. The result is that an unrelated manual or legacy-unmarked project can be run under a milestone bead while bypassing the bead-backed controller and lineage invariants. If recovery for older projects is needed, it still requires an explicit marker or migration path; the current heuristic conflates unrelated projects with bead-backed ones.\n- `fr-5-7f7fe3e3`: Accept\n  The new canonicalization rule is too broad: any ref containing `.` is treated as already fully qualified, so a milestone-local short ref like `2.1` no longer canonicalizes to `ms-alpha.2.1`. That breaks `milestone_bead_refs_match`, and the `project` and `milestone` loaders also branch on `bead_id.contains('.')` to demand exact equality from `br show`, which means a valid short dotted ref is rejected when `br` returns the fully qualified bead ID. `run` resume shares the same broken matcher, so controllers that persist the short dotted form can incorrectly report the bead missing. This is a real regression for hierarchical bead IDs and needs a more precise distinction between foreign fully qualified IDs and local dotted suffixes.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}
