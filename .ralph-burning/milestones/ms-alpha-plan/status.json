@@ -1,0 +1,13 @@
+{
+  "status": "planning",
+  "plan_version": 0,
+  "progress": {
+    "total_beads": 0,
+    "completed_beads": 0,
+    "in_progress_beads": 0,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 0
+  },
+  "updated_at": "2026-04-15T13:12:47.103968518Z"
+}

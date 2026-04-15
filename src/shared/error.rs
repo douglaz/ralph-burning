@@ -45,6 +45,16 @@ pub enum AppError {
     EditorFailed { editor: String, details: String },
     #[error("project '{project_id}' already exists")]
     DuplicateProject { project_id: String },
+    #[error("milestone '{milestone_id}' already exists")]
+    DuplicateMilestone { milestone_id: String },
+    #[error("milestone '{milestone_id}' was not found under .ralph-burning/milestones/")]
+    MilestoneNotFound { milestone_id: String },
+    #[error("milestone '{milestone_id}' {action} failed: {details}")]
+    MilestoneOperationFailed {
+        milestone_id: String,
+        action: String,
+        details: String,
+    },
     #[error("corrupt record in {file}: {details}")]
     CorruptRecord { file: String, details: String },
     #[error("invalid prompt file '{path}': {reason}")]

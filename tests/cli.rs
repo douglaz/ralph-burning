@@ -817,6 +817,170 @@ fn milestone_plan_hash(base_dir: &std::path::Path, milestone_id: &str) -> String
     format!("{:x}", hasher.finalize())
 }
 
+#[test]
+fn milestone_create_generates_slugged_id_and_planning_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "milestone",
+            "create",
+            "Alpha Launch",
+            "--from-idea",
+            "Plan the alpha launch milestone.",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone create");
+
+    assert!(
+        output.status.success(),
+        "milestone create should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Created milestone 'ms-alpha-launch'"));
+
+    let record = fs::read_to_string(
+        milestone_root(temp_dir.path(), "ms-alpha-launch").join("milestone.toml"),
+    )
+    .expect("read milestone record");
+    assert!(record.contains("name = \"Alpha Launch\""));
+    assert!(record.contains("description = \"Plan the alpha launch milestone.\""));
+
+    let status: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(milestone_root(temp_dir.path(), "ms-alpha-launch").join("status.json"))
+            .expect("read milestone status"),
+    )
+    .expect("parse milestone status");
+    assert_eq!(status["status"], "planning");
+    assert_eq!(status["plan_version"], 0);
+}
+
+#[test]
+fn milestone_show_json_reports_detail_from_live_state() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+
+    let output = Command::new(binary())
+        .args(["milestone", "show", "ms-alpha", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone show");
+
+    assert!(
+        output.status.success(),
+        "milestone show should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse milestone show json");
+    assert_eq!(json["id"], "ms-alpha");
+    assert_eq!(json["status"], "ready");
+    assert_eq!(json["bead_count"], 3);
+    assert_eq!(json["progress"]["completed_beads"], 1);
+    assert_eq!(json["progress"]["in_progress_beads"], 1);
+    assert_eq!(json["plan_version"], 2);
+}
+
+#[test]
+fn milestone_status_lists_all_milestones_in_json() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    write_milestone_fixture(temp_dir.path(), "ms-beta");
+
+    let output = Command::new(binary())
+        .args(["milestone", "status", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone status");
+
+    assert!(
+        output.status.success(),
+        "milestone status should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse milestone status json");
+    let milestones = json["milestones"].as_array().expect("milestones array");
+    assert_eq!(milestones.len(), 2);
+    assert_eq!(milestones[0]["id"], "ms-alpha");
+    assert_eq!(milestones[1]["id"], "ms-beta");
+}
+
+#[test]
+fn milestone_status_for_missing_id_reports_clear_error() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["milestone", "status", "ms-missing"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone status");
+
+    assert!(!output.status.success(), "missing milestone should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-missing' was not found"));
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn milestone_plan_runs_requirements_and_materializes_plan() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let create_output = Command::new(binary())
+        .args([
+            "milestone",
+            "create",
+            "Alpha Plan",
+            "--from-idea",
+            "Plan the alpha milestone in milestone mode.",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone create");
+    assert!(
+        create_output.status.success(),
+        "milestone create should succeed: {}",
+        String::from_utf8_lossy(&create_output.stderr)
+    );
+
+    let plan_output = Command::new(binary())
+        .args(["milestone", "plan", "ms-alpha-plan"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone plan");
+
+    assert!(
+        plan_output.status.success(),
+        "milestone plan should succeed: {}",
+        String::from_utf8_lossy(&plan_output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&plan_output.stdout);
+    assert!(stdout.contains("Planned milestone 'ms-alpha-plan'"));
+
+    let status: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(milestone_root(temp_dir.path(), "ms-alpha-plan").join("status.json"))
+            .expect("read milestone status"),
+    )
+    .expect("parse milestone status");
+    assert_eq!(status["status"], "ready");
+    assert_eq!(status["plan_version"], 1);
+
+    let plan: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(milestone_root(temp_dir.path(), "ms-alpha-plan").join("plan.json"))
+            .expect("read plan json"),
+    )
+    .expect("parse plan json");
+    assert_eq!(plan["identity"]["id"], "ms-alpha-plan");
+    assert_eq!(plan["identity"]["name"], "Alpha Plan");
+}
+
 fn write_daemon_task(base_dir: &std::path::Path, task: &DaemonTask) {
     let path = daemon_root(base_dir)
         .join("tasks")

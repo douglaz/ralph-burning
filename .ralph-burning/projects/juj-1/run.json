@@ -1,5 +1,6 @@
 {
-  "active_run": {
+  "active_run": null,
+  "interrupted_run": {
     "run_id": "run-20260415043544",
     "stage_cursor": {
       "stage": "plan_and_implement",
@@ -12,9 +13,17 @@
     "prompt_hash_at_stage_start": "511b19a5433bad63b4d7df91c28b7c8b65333bbbfc3cd4462727254fbdef8cb5",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 2,
+    "stage_resolution_snapshot": {
+      "stage_id": "plan_and_implement",
+      "resolved_at": "2026-04-15T05:54:23.388265782Z",
+      "primary_target": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-high"
+      }
+    }
   },
-  "status": "running",
+  "status": "failed",
   "cycle_history": [],
   "completion_rounds": 3,
   "max_completion_rounds": 25,
@@ -49,27 +58,13 @@
     ],
     "processed_count": 2
   },
-  "status_summary": "running: final review restart round 3 -> Plan and Implement",
+  "status_summary": "failed at Plan and Implement: backend invocation cancelled for contract 'plan_and_implement' via 'codex'",
   "last_stage_resolution_snapshot": {
-    "stage_id": "final_review",
-    "resolved_at": "2026-04-15T05:45:08.065093508Z",
-    "final_review_reviewers": [
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.4-xhigh"
-      },
-      {
-        "backend_family": "claude",
-        "model_id": "claude-opus-4-6-max"
-      },
-      {
-        "backend_family": "codex",
-        "model_id": "gpt-5.3-codex-spark-xhigh"
-      }
-    ],
-    "final_review_arbiter": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-15T05:54:23.388265782Z",
+    "primary_target": {
       "backend_family": "codex",
-      "model_id": "gpt-5.4-xhigh"
+      "model_id": "gpt-5.4-high"
     }
   }
 }

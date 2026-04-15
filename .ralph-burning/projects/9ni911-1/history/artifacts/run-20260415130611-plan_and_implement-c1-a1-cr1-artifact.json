@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415130611-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T13:23:47.533837638Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded a new `milestone` CLI module with `create`, `plan`, `show`, and `status` handlers, wired it into the top-level CLI, introduced milestone-specific user-facing errors, and added tests covering creation, JSON inspection/status output, missing-id failures, and milestone planning/materialization behavior.\n\n## Steps\n\n1. [Completed] Inspected the existing CLI, milestone storage, requirements handoff, and adapter patterns to match the current command architecture and output conventions.\n2. [Completed] Implemented milestone command parsing and handlers, including slugged milestone ID creation, plan execution through milestone-mode requirements, plan bundle retargeting to the requested milestone, and text/JSON read models for show/status.\n3. [Completed] Validated the changes with formatting, tests, clippy, an end-to-end milestone planning run, and the repository’s `nix build` gate.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo test` passed.\n- Focused milestone command coverage passed via `cargo test milestone_ -- --nocapture`.\n- End-to-end milestone planning succeeded in a temporary workspace via `cargo run --manifest-path /home/master/p/ralphs/ralph-burning/Cargo.toml --features test-stub -- milestone create ...` followed by `milestone plan ms-alpha-plan`, which produced a ready snapshot and retargeted `plan.json` for `ms-alpha-plan`.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 1
+}
