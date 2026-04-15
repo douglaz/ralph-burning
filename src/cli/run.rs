@@ -3373,6 +3373,13 @@ fn reconcile_or_recover_claimed_running_snapshot(
 }
 
 async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
+    execute_start(overrides, true).await
+}
+
+pub(crate) async fn execute_start(
+    overrides: RunBackendOverrideArgs,
+    emit_output: bool,
+) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
     // Validate workspace version
@@ -3446,7 +3453,9 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let log_write = FsRuntimeLogWriteStore;
     let cancellation_token = CancellationToken::new();
 
-    println!("Starting run for project '{}'...", project_id);
+    if emit_output {
+        println!("Starting run for project '{}'...", project_id);
+    }
 
     let amendment_queue = FsAmendmentQueueStore;
     let retry_policy = RetryPolicy::default_policy()
@@ -3527,15 +3536,24 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     }
     close_result?;
 
-    match final_snapshot.status {
-        RunStatus::Completed => println!("Run completed successfully."),
-        RunStatus::Paused => println!("{}", final_snapshot.status_summary),
-        status => println!("Run finished with status '{}'.", status),
+    if emit_output {
+        match final_snapshot.status {
+            RunStatus::Completed => println!("Run completed successfully."),
+            RunStatus::Paused => println!("{}", final_snapshot.status_summary),
+            status => println!("Run finished with status '{}'.", status),
+        }
     }
     Ok(())
 }
 
 async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
+    execute_resume(overrides, true).await
+}
+
+pub(crate) async fn execute_resume(
+    overrides: RunBackendOverrideArgs,
+    emit_output: bool,
+) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
     let config = workspace_governance::load_workspace_config(&current_dir)?;
@@ -3681,7 +3699,9 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let log_write = FsRuntimeLogWriteStore;
     let cancellation_token = CancellationToken::new();
 
-    println!("Resuming run for project '{}'...", project_id);
+    if emit_output {
+        println!("Resuming run for project '{}'...", project_id);
+    }
 
     let amendment_queue = FsAmendmentQueueStore;
     let retry_policy = RetryPolicy::default_policy()
@@ -3765,10 +3785,12 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     }
     close_result?;
 
-    match final_snapshot.status {
-        RunStatus::Completed => println!("Run completed successfully."),
-        RunStatus::Paused => println!("{}", final_snapshot.status_summary),
-        status => println!("Run finished with status '{}'.", status),
+    if emit_output {
+        match final_snapshot.status {
+            RunStatus::Completed => println!("Run completed successfully."),
+            RunStatus::Paused => println!("{}", final_snapshot.status_summary),
+            status => println!("Run finished with status '{}'.", status),
+        }
     }
 
     Ok(())
@@ -4162,6 +4184,10 @@ async fn handle_stop() -> AppResult<()> {
 }
 
 async fn handle_sync_milestone() -> AppResult<()> {
+    execute_sync_milestone(true).await
+}
+
+pub(crate) async fn execute_sync_milestone(emit_output: bool) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
     let project_record = FsProjectStore.read_project_record(&current_dir, &project_id)?;
@@ -4179,13 +4205,15 @@ async fn handle_sync_milestone() -> AppResult<()> {
         chrono::Utc::now(),
     )
     .await?;
-    if synced {
-        println!("Milestone task state synced for project '{}'.", project_id);
-    } else {
-        println!(
-            "No terminal milestone sync needed for project '{}'.",
-            project_id
-        );
+    if emit_output {
+        if synced {
+            println!("Milestone task state synced for project '{}'.", project_id);
+        } else {
+            println!(
+                "No terminal milestone sync needed for project '{}'.",
+                project_id
+            );
+        }
     }
 
     Ok(())

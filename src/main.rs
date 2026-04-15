@@ -26,5 +26,6 @@ fn init_tracing() {
         .compact()
         .with_target(false)
         .without_time()
+        .with_writer(std::io::stderr)
         .try_init();
 }

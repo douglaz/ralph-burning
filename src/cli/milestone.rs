@@ -2,15 +2,24 @@ use std::io::ErrorKind;
 
 use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::adapters::br_models::{BeadDetail, BeadStatus, ReadyBead};
+use crate::adapters::br_process::BrAdapter;
+use crate::adapters::bv_process::BvAdapter;
 use crate::adapters::fs::{
-    FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
-    FsRequirementsStore,
+    FileSystem, FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+    FsMilestoneSnapshotStore, FsMilestoneStore, FsProjectStore, FsRequirementsStore,
+    FsRunSnapshotStore,
 };
+use crate::cli::{project, run};
 use crate::composition::agent_execution_builder;
 use crate::contexts::milestone_record::bundle::MilestoneBundle;
+use crate::contexts::milestone_record::controller::{
+    self as milestone_controller, ControllerBeadStatus, ControllerTaskStatus,
+    MilestoneControllerResumePort, MilestoneControllerState,
+};
 use crate::contexts::milestone_record::model::{
     MilestoneId, MilestoneProgress, MilestoneRecord, MilestoneSnapshot, MilestoneStatus,
 };
@@ -18,6 +27,8 @@ use crate::contexts::milestone_record::service::{
     self as milestone_service, CreateMilestoneInput, MilestonePlanPort, MilestoneSnapshotPort,
     MilestoneStorePort,
 };
+use crate::contexts::project_run_record::model::RunStatus;
+use crate::contexts::project_run_record::service::{ProjectStorePort, RunSnapshotPort};
 use crate::contexts::requirements_drafting::model::{
     RequirementsMode, RequirementsOutputKind, RequirementsRun, RequirementsStatus,
 };
@@ -30,6 +41,8 @@ use crate::shared::error::{AppError, AppResult};
 const PENDING_REQUIREMENTS_START_PREFIX: &str = "__starting__:";
 const PENDING_REQUIREMENTS_START_STALE_AFTER_SECONDS: i64 = 30;
 const PENDING_REQUIREMENTS_DRAFTING_STALE_AFTER_SECONDS: i64 = 300;
+const ACTIVE_MILESTONE_FILE: &str = "active-milestone";
+const MAX_MILESTONE_RUN_STEPS: usize = 256;
 
 #[derive(Debug, Args)]
 pub struct MilestoneCommand {
@@ -42,6 +55,16 @@ pub enum MilestoneSubcommand {
     Create(MilestoneCreateArgs),
     Plan {
         milestone_id: String,
+    },
+    Next {
+        milestone_id: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Run {
+        milestone_id: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     Show {
         milestone_id: String,
@@ -109,10 +132,57 @@ struct MilestoneListView {
     milestones: Vec<MilestoneSummaryView>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MilestoneCommandStatus {
+    Success,
+    Blocked,
+    NeedsOperator,
+    Completed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MilestoneBeadView {
+    id: String,
+    title: String,
+    priority: String,
+    readiness: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MilestoneNextView {
+    milestone_id: String,
+    status: MilestoneCommandStatus,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bead: Option<MilestoneBeadView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MilestoneRunView {
+    milestone_id: String,
+    status: MilestoneCommandStatus,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bead: Option<MilestoneBeadView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
+enum BrShowResponse {
+    Single(BeadDetail),
+    Many(Vec<BeadDetail>),
+}
+
 pub async fn handle(command: MilestoneCommand) -> AppResult<()> {
     match command.command {
         MilestoneSubcommand::Create(args) => handle_create(args).await,
         MilestoneSubcommand::Plan { milestone_id } => handle_plan(milestone_id).await,
+        MilestoneSubcommand::Next { milestone_id, json } => handle_next(milestone_id, json).await,
+        MilestoneSubcommand::Run { milestone_id, json } => handle_run(milestone_id, json).await,
         MilestoneSubcommand::Show { milestone_id, json } => handle_show(milestone_id, json).await,
         MilestoneSubcommand::Status { milestone_id, json } => {
             handle_status(milestone_id, json).await
@@ -140,6 +210,7 @@ async fn handle_create(args: MilestoneCreateArgs) -> AppResult<()> {
         Utc::now(),
     )
     .map_err(|error| map_create_error(&milestone_id, error))?;
+    set_active_milestone(&current_dir, &record.id)?;
 
     println!("Created milestone '{}' ({})", record.id, record.name);
     Ok(())
@@ -252,11 +323,59 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
         &current_dir,
         &milestone_id,
     )?;
+    set_active_milestone(&current_dir, &milestone_id)?;
     println!(
         "Planned milestone '{}' from requirements run '{}' ({} beads, status: {})",
         detail.id, run_id, detail.bead_count, detail.status
     );
     Ok(())
+}
+
+async fn handle_next(milestone_id: Option<String>, json: bool) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    validate_workspace(&current_dir)?;
+
+    let store = FsMilestoneStore;
+    let milestone_id = resolve_requested_milestone(&store, &current_dir, milestone_id)?;
+    set_active_milestone(&current_dir, &milestone_id)?;
+
+    let outcome = inspect_next_milestone_action(&current_dir, &milestone_id).await?;
+    let failure =
+        milestone_command_failure(&milestone_id, "next", outcome.status, &outcome.message);
+
+    if json {
+        print_json(&outcome)?;
+    } else {
+        print_milestone_next(&outcome);
+    }
+
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+async fn handle_run(milestone_id: Option<String>, json: bool) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    validate_workspace(&current_dir)?;
+
+    let store = FsMilestoneStore;
+    let milestone_id = resolve_requested_milestone(&store, &current_dir, milestone_id)?;
+    set_active_milestone(&current_dir, &milestone_id)?;
+
+    let outcome = execute_milestone_run(&current_dir, &milestone_id).await?;
+    let failure = milestone_command_failure(&milestone_id, "run", outcome.status, &outcome.message);
+
+    if json {
+        print_json(&outcome)?;
+    } else {
+        print_milestone_run(&outcome);
+    }
+
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 async fn handle_show(milestone_id: String, json: bool) -> AppResult<()> {
@@ -282,6 +401,7 @@ async fn handle_show(milestone_id: String, json: bool) -> AppResult<()> {
     } else {
         print_milestone_detail(&detail);
     }
+    set_active_milestone(&current_dir, &milestone_id)?;
     Ok(())
 }
 
@@ -343,6 +463,631 @@ async fn handle_status(milestone_id: Option<String>, json: bool) -> AppResult<()
         }
     }
     Ok(())
+}
+
+fn resolve_requested_milestone(
+    store: &impl MilestoneStorePort,
+    base_dir: &std::path::Path,
+    milestone_id: Option<String>,
+) -> AppResult<MilestoneId> {
+    match milestone_id {
+        Some(milestone_id) => {
+            let milestone_id = MilestoneId::new(milestone_id)?;
+            load_existing_milestone(store, base_dir, &milestone_id)?;
+            Ok(milestone_id)
+        }
+        None => resolve_active_milestone(store, base_dir),
+    }
+}
+
+fn resolve_active_milestone(
+    store: &impl MilestoneStorePort,
+    base_dir: &std::path::Path,
+) -> AppResult<MilestoneId> {
+    let raw = read_active_milestone(base_dir)?.ok_or(AppError::NoActiveMilestone)?;
+    let milestone_id = MilestoneId::new(raw)?;
+    load_existing_milestone(store, base_dir, &milestone_id)?;
+    Ok(milestone_id)
+}
+
+fn read_active_milestone(base_dir: &std::path::Path) -> AppResult<Option<String>> {
+    let path = FileSystem::workspace_root_path(base_dir).join(ACTIVE_MILESTONE_FILE);
+    match std::fs::read_to_string(path) {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_owned()))
+            }
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn set_active_milestone(base_dir: &std::path::Path, milestone_id: &MilestoneId) -> AppResult<()> {
+    let contents = milestone_id.as_str();
+    FileSystem::write_atomic(
+        &FileSystem::live_workspace_root_path(base_dir).join(ACTIVE_MILESTONE_FILE),
+        contents,
+    )?;
+    let _ = FileSystem::write_atomic(
+        &FileSystem::audit_workspace_root_path(base_dir).join(ACTIVE_MILESTONE_FILE),
+        contents,
+    );
+    Ok(())
+}
+
+async fn inspect_next_milestone_action(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<MilestoneNextView> {
+    let controller = resolve_controller_for_next(base_dir, milestone_id).await?;
+    let milestone_id_text = milestone_id.to_string();
+
+    match controller.state {
+        MilestoneControllerState::Claimed
+        | MilestoneControllerState::Running
+        | MilestoneControllerState::Reconciling => {
+            let bead_id = controller.active_bead_id.as_deref().ok_or_else(|| {
+                AppError::MilestoneOperationFailed {
+                    milestone_id: milestone_id_text.clone(),
+                    action: "next".to_owned(),
+                    details: format!(
+                        "controller state '{}' is missing an active bead identifier",
+                        controller_state_label(controller.state)
+                    ),
+                }
+            })?;
+            let bead = load_bead_view(base_dir, milestone_id, bead_id, controller.state)?;
+            Ok(MilestoneNextView {
+                milestone_id: milestone_id_text,
+                status: MilestoneCommandStatus::Success,
+                message: format!(
+                    "next bead is '{}' ({})",
+                    bead.id,
+                    controller_state_readiness(controller.state)
+                ),
+                bead: Some(bead),
+            })
+        }
+        MilestoneControllerState::Completed => Ok(MilestoneNextView {
+            milestone_id: milestone_id_text,
+            status: MilestoneCommandStatus::Completed,
+            message: "milestone is already completed".to_owned(),
+            bead: None,
+        }),
+        MilestoneControllerState::Blocked => Ok(MilestoneNextView {
+            milestone_id: milestone_id_text,
+            status: MilestoneCommandStatus::Blocked,
+            message: controller
+                .last_transition_reason
+                .unwrap_or_else(|| "milestone has no ready beads to execute".to_owned()),
+            bead: None,
+        }),
+        MilestoneControllerState::NeedsOperator => Ok(MilestoneNextView {
+            milestone_id: milestone_id_text,
+            status: MilestoneCommandStatus::NeedsOperator,
+            message: controller.last_transition_reason.unwrap_or_else(|| {
+                "milestone controller requires operator intervention".to_owned()
+            }),
+            bead: None,
+        }),
+        MilestoneControllerState::Idle | MilestoneControllerState::Selecting => {
+            Err(AppError::MilestoneOperationFailed {
+                milestone_id: milestone_id_text,
+                action: "next".to_owned(),
+                details: format!(
+                    "controller remained in '{}' after next-bead selection",
+                    controller_state_label(controller.state)
+                ),
+            })
+        }
+    }
+}
+
+async fn resolve_controller_for_next(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<milestone_controller::MilestoneControllerRecord> {
+    let runtime = MilestoneCommandControllerRuntime {
+        base_dir,
+        milestone_id,
+    };
+    let now = Utc::now();
+    let controller = milestone_controller::resume_controller(
+        &FsMilestoneControllerStore,
+        &runtime,
+        base_dir,
+        milestone_id,
+        now,
+    )?;
+
+    if matches!(
+        controller.state,
+        MilestoneControllerState::Idle
+            | MilestoneControllerState::Selecting
+            | MilestoneControllerState::Blocked
+    ) {
+        let br = BrAdapter::new().with_working_dir(base_dir.to_path_buf());
+        let bv = BvAdapter::new().with_working_dir(base_dir.to_path_buf());
+        return run::select_next_milestone_bead(base_dir, milestone_id, &br, &bv, now).await;
+    }
+
+    Ok(controller)
+}
+
+async fn execute_milestone_run(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<MilestoneRunView> {
+    for _step in 0..MAX_MILESTONE_RUN_STEPS {
+        let controller = resolve_controller_for_next(base_dir, milestone_id).await?;
+        match controller.state {
+            MilestoneControllerState::Completed => {
+                return Ok(MilestoneRunView {
+                    milestone_id: milestone_id.to_string(),
+                    status: MilestoneCommandStatus::Completed,
+                    message: "milestone execution completed".to_owned(),
+                    bead: None,
+                    project_id: None,
+                });
+            }
+            MilestoneControllerState::Blocked => {
+                return Ok(MilestoneRunView {
+                    milestone_id: milestone_id.to_string(),
+                    status: MilestoneCommandStatus::Blocked,
+                    message: controller
+                        .last_transition_reason
+                        .unwrap_or_else(|| "milestone has no ready beads to execute".to_owned()),
+                    bead: None,
+                    project_id: None,
+                });
+            }
+            MilestoneControllerState::NeedsOperator => {
+                return Ok(MilestoneRunView {
+                    milestone_id: milestone_id.to_string(),
+                    status: MilestoneCommandStatus::NeedsOperator,
+                    message: controller.last_transition_reason.unwrap_or_else(|| {
+                        "milestone controller requires operator intervention".to_owned()
+                    }),
+                    bead: None,
+                    project_id: None,
+                });
+            }
+            MilestoneControllerState::Claimed
+            | MilestoneControllerState::Running
+            | MilestoneControllerState::Reconciling => {
+                let bead_id = controller.active_bead_id.as_deref().ok_or_else(|| {
+                    AppError::MilestoneOperationFailed {
+                        milestone_id: milestone_id.to_string(),
+                        action: "run".to_owned(),
+                        details: format!(
+                            "controller state '{}' is missing an active bead identifier",
+                            controller_state_label(controller.state)
+                        ),
+                    }
+                })?;
+                let bead = load_bead_view(base_dir, milestone_id, bead_id, controller.state)?;
+                let project_id =
+                    ensure_project_for_controller(base_dir, milestone_id, &controller).await?;
+                workspace_governance::set_active_project(base_dir, &project_id)?;
+
+                match load_run_action(base_dir, &project_id)? {
+                    MilestoneRunAction::SyncMilestone => {
+                        run::execute_sync_milestone(false).await?;
+                    }
+                    MilestoneRunAction::Start => {
+                        run::execute_start(run::RunBackendOverrideArgs::default(), false).await?;
+                    }
+                    MilestoneRunAction::Resume => {
+                        run::execute_resume(run::RunBackendOverrideArgs::default(), false).await?;
+                    }
+                }
+
+                let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &project_id)?;
+                match snapshot.status {
+                    RunStatus::Completed => continue,
+                    RunStatus::Paused => {
+                        return Ok(MilestoneRunView {
+                            milestone_id: milestone_id.to_string(),
+                            status: MilestoneCommandStatus::Blocked,
+                            message: snapshot.status_summary,
+                            bead: Some(bead),
+                            project_id: Some(project_id.to_string()),
+                        });
+                    }
+                    RunStatus::Failed => {
+                        return Ok(MilestoneRunView {
+                            milestone_id: milestone_id.to_string(),
+                            status: MilestoneCommandStatus::NeedsOperator,
+                            message: snapshot.status_summary,
+                            bead: Some(bead),
+                            project_id: Some(project_id.to_string()),
+                        });
+                    }
+                    RunStatus::NotStarted | RunStatus::Running => {
+                        return Ok(MilestoneRunView {
+                            milestone_id: milestone_id.to_string(),
+                            status: MilestoneCommandStatus::NeedsOperator,
+                            message: format!(
+                                "run command left project '{}' in unexpected '{}' state",
+                                project_id, snapshot.status
+                            ),
+                            bead: Some(bead),
+                            project_id: Some(project_id.to_string()),
+                        });
+                    }
+                }
+            }
+            MilestoneControllerState::Idle | MilestoneControllerState::Selecting => {
+                return Err(AppError::MilestoneOperationFailed {
+                    milestone_id: milestone_id.to_string(),
+                    action: "run".to_owned(),
+                    details: format!(
+                        "controller remained in '{}' while preparing milestone execution",
+                        controller_state_label(controller.state)
+                    ),
+                });
+            }
+        }
+    }
+
+    Err(AppError::MilestoneOperationFailed {
+        milestone_id: milestone_id.to_string(),
+        action: "run".to_owned(),
+        details: format!(
+            "aborted after {} milestone execution steps to avoid an infinite loop",
+            MAX_MILESTONE_RUN_STEPS
+        ),
+    })
+}
+
+async fn ensure_project_for_controller(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    controller: &milestone_controller::MilestoneControllerRecord,
+) -> AppResult<crate::shared::domain::ProjectId> {
+    let bead_id =
+        controller
+            .active_bead_id
+            .as_deref()
+            .ok_or_else(|| AppError::MilestoneOperationFailed {
+                milestone_id: milestone_id.to_string(),
+                action: "run".to_owned(),
+                details: "controller is missing an active bead identifier".to_owned(),
+            })?;
+
+    if let Some(task_id) = controller.active_task_id.as_deref() {
+        let project_id = crate::shared::domain::ProjectId::new(task_id.to_owned())?;
+        if !FsProjectStore.project_exists(base_dir, &project_id)? {
+            return Err(AppError::MilestoneOperationFailed {
+                milestone_id: milestone_id.to_string(),
+                action: "run".to_owned(),
+                details: format!(
+                    "controller references project '{}' for bead '{}', but that project does not exist",
+                    project_id, bead_id
+                ),
+            });
+        }
+        return Ok(project_id);
+    }
+
+    project::execute_create_from_bead(project::CreateFromBeadArgs {
+        milestone_id: milestone_id.to_string(),
+        bead_id: bead_id.to_owned(),
+        project_id: None,
+        prompt_file: None,
+        flow: None,
+    })
+    .await
+}
+
+enum MilestoneRunAction {
+    Start,
+    Resume,
+    SyncMilestone,
+}
+
+fn load_run_action(
+    base_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+) -> AppResult<MilestoneRunAction> {
+    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, project_id)?;
+    Ok(match snapshot.status {
+        RunStatus::NotStarted => MilestoneRunAction::Start,
+        RunStatus::Completed => MilestoneRunAction::SyncMilestone,
+        RunStatus::Paused | RunStatus::Failed | RunStatus::Running => MilestoneRunAction::Resume,
+    })
+}
+
+fn milestone_command_failure(
+    milestone_id: &MilestoneId,
+    action: &str,
+    status: MilestoneCommandStatus,
+    message: &str,
+) -> Option<AppError> {
+    match status {
+        MilestoneCommandStatus::Success | MilestoneCommandStatus::Completed => None,
+        MilestoneCommandStatus::Blocked | MilestoneCommandStatus::NeedsOperator => {
+            Some(AppError::MilestoneOperationFailed {
+                milestone_id: milestone_id.to_string(),
+                action: action.to_owned(),
+                details: message.to_owned(),
+            })
+        }
+    }
+}
+
+fn print_milestone_next(outcome: &MilestoneNextView) {
+    match outcome.status {
+        MilestoneCommandStatus::Success => {
+            if let Some(bead) = &outcome.bead {
+                println!(
+                    "Next bead for milestone '{}': {} ({}, {}) - {}",
+                    outcome.milestone_id, bead.id, bead.priority, bead.readiness, bead.title
+                );
+            } else {
+                println!("Milestone '{}': {}", outcome.milestone_id, outcome.message);
+            }
+        }
+        MilestoneCommandStatus::Completed => {
+            println!("Milestone '{}': {}", outcome.milestone_id, outcome.message);
+        }
+        MilestoneCommandStatus::Blocked => {
+            println!(
+                "Milestone '{}' is blocked: {}",
+                outcome.milestone_id, outcome.message
+            );
+        }
+        MilestoneCommandStatus::NeedsOperator => {
+            println!(
+                "Milestone '{}' needs operator intervention: {}",
+                outcome.milestone_id, outcome.message
+            );
+        }
+    }
+}
+
+fn print_milestone_run(outcome: &MilestoneRunView) {
+    match outcome.status {
+        MilestoneCommandStatus::Completed => {
+            println!("Milestone '{}': {}", outcome.milestone_id, outcome.message);
+        }
+        MilestoneCommandStatus::Success => {
+            let project_suffix = outcome
+                .project_id
+                .as_deref()
+                .map(|project_id| format!(" via project '{project_id}'"))
+                .unwrap_or_default();
+            println!(
+                "Milestone '{}' advanced{}: {}",
+                outcome.milestone_id, project_suffix, outcome.message
+            );
+        }
+        MilestoneCommandStatus::Blocked => {
+            println!(
+                "Milestone '{}' is blocked: {}",
+                outcome.milestone_id, outcome.message
+            );
+        }
+        MilestoneCommandStatus::NeedsOperator => {
+            println!(
+                "Milestone '{}' needs operator intervention: {}",
+                outcome.milestone_id, outcome.message
+            );
+        }
+    }
+}
+
+fn controller_state_label(state: MilestoneControllerState) -> &'static str {
+    match state {
+        MilestoneControllerState::Idle => "idle",
+        MilestoneControllerState::Selecting => "selecting",
+        MilestoneControllerState::Claimed => "claimed",
+        MilestoneControllerState::Running => "running",
+        MilestoneControllerState::Reconciling => "reconciling",
+        MilestoneControllerState::Blocked => "blocked",
+        MilestoneControllerState::NeedsOperator => "needs_operator",
+        MilestoneControllerState::Completed => "completed",
+    }
+}
+
+fn controller_state_readiness(state: MilestoneControllerState) -> &'static str {
+    match state {
+        MilestoneControllerState::Claimed => "ready",
+        MilestoneControllerState::Running => "running",
+        MilestoneControllerState::Reconciling => "reconciling",
+        MilestoneControllerState::Idle
+        | MilestoneControllerState::Selecting
+        | MilestoneControllerState::Blocked
+        | MilestoneControllerState::NeedsOperator
+        | MilestoneControllerState::Completed => "unknown",
+    }
+}
+
+fn load_bead_view(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    controller_state: MilestoneControllerState,
+) -> AppResult<MilestoneBeadView> {
+    let detail = load_bead_detail_from_br(base_dir, bead_id)?;
+    if !bead_belongs_to_milestone(milestone_id, &detail.id) {
+        return Err(AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "next".to_owned(),
+            details: format!(
+                "active bead '{}' is not part of milestone '{}'",
+                detail.id, milestone_id
+            ),
+        });
+    }
+    Ok(MilestoneBeadView {
+        id: detail.id,
+        title: detail.title,
+        priority: detail.priority.to_string(),
+        readiness: controller_state_readiness(controller_state).to_owned(),
+    })
+}
+
+fn bead_belongs_to_milestone(milestone_id: &MilestoneId, bead_id: &str) -> bool {
+    bead_id == milestone_id.as_str()
+        || bead_id.starts_with(&format!("{}.", milestone_id.as_str()))
+        || !bead_id.contains('.')
+}
+
+fn load_bead_detail_from_br(base_dir: &std::path::Path, bead_id: &str) -> AppResult<BeadDetail> {
+    let output = std::process::Command::new("br")
+        .args(["show", bead_id, "--json"])
+        .current_dir(base_dir)
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let details = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("exit status {}", output.status)
+        };
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "br show {bead_id} --json failed: {details}"
+        ))));
+    }
+
+    let response: BrShowResponse =
+        serde_json::from_slice(&output.stdout).map_err(|error| AppError::CorruptRecord {
+            file: format!("br show {bead_id} --json"),
+            details: format!("failed to parse bead JSON: {error}"),
+        })?;
+    match response {
+        BrShowResponse::Single(detail) => Ok(detail),
+        BrShowResponse::Many(mut details) => details.pop().ok_or_else(|| {
+            AppError::Io(std::io::Error::other(format!(
+                "br show {bead_id} --json returned no bead detail"
+            )))
+        }),
+    }
+}
+
+struct MilestoneCommandControllerRuntime<'a> {
+    base_dir: &'a std::path::Path,
+    milestone_id: &'a MilestoneId,
+}
+
+impl MilestoneCommandControllerRuntime<'_> {
+    fn query_br_json<T: serde::de::DeserializeOwned>(
+        &self,
+        args: &[&str],
+        context: &str,
+    ) -> AppResult<T> {
+        let output = std::process::Command::new("br")
+            .args(args)
+            .current_dir(self.base_dir)
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            let details = if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                format!("exit status {}", output.status)
+            };
+            return Err(AppError::ResumeFailed {
+                reason: format!("{context}: br {} failed: {details}", args.join(" ")),
+            });
+        }
+
+        serde_json::from_slice(&output.stdout).map_err(|error| AppError::ResumeFailed {
+            reason: format!(
+                "{context}: failed to parse br {} JSON: {error}",
+                args.join(" ")
+            ),
+        })
+    }
+
+    fn planned_bead_membership_refs(&self) -> AppResult<std::collections::HashSet<String>> {
+        let plan_json = FsMilestonePlanStore.read_plan_json(self.base_dir, self.milestone_id)?;
+        let bundle: MilestoneBundle =
+            serde_json::from_str(&plan_json).map_err(|error| AppError::CorruptRecord {
+                file: format!("milestones/{}/plan.json", self.milestone_id),
+                details: error.to_string(),
+            })?;
+
+        crate::contexts::milestone_record::bundle::planned_bead_membership_refs(&bundle)
+            .map(|refs| refs.into_iter().collect())
+            .map_err(|errors| AppError::CorruptRecord {
+                file: format!("milestones/{}/plan.json", self.milestone_id),
+                details: errors.join("; "),
+            })
+    }
+}
+
+impl MilestoneControllerResumePort for MilestoneCommandControllerRuntime<'_> {
+    fn bead_status(&self, bead_id: &str) -> AppResult<ControllerBeadStatus> {
+        let detail = load_bead_detail_from_br(self.base_dir, bead_id)?;
+        Ok(match detail.status {
+            BeadStatus::Closed => ControllerBeadStatus::Closed,
+            _ => ControllerBeadStatus::Open,
+        })
+    }
+
+    fn task_status(&self, task_id: &str) -> AppResult<ControllerTaskStatus> {
+        let project_id =
+            crate::shared::domain::ProjectId::new(task_id.to_owned()).map_err(|error| {
+                AppError::ResumeFailed {
+                    reason: format!("controller task identifier '{task_id}' is invalid: {error}"),
+                }
+            })?;
+        if !FsProjectStore.project_exists(self.base_dir, &project_id)? {
+            return Ok(ControllerTaskStatus::Missing);
+        }
+
+        let snapshot = FsRunSnapshotStore.read_run_snapshot(self.base_dir, &project_id)?;
+        Ok(match snapshot.status {
+            RunStatus::Running => ControllerTaskStatus::Running,
+            RunStatus::Completed => ControllerTaskStatus::Succeeded,
+            RunStatus::NotStarted | RunStatus::Paused | RunStatus::Failed => {
+                ControllerTaskStatus::Pending
+            }
+        })
+    }
+
+    fn has_ready_beads(&self) -> AppResult<bool> {
+        let ready: Vec<ReadyBead> =
+            self.query_br_json(&["ready", "--json"], "milestone controller resume")?;
+        let planned_refs = self.planned_bead_membership_refs()?;
+        Ok(ready.iter().any(|bead| {
+            planned_refs.contains(&bead.id)
+                || planned_refs.contains(&format!("{}.{}", self.milestone_id, bead.id))
+                || bead
+                    .id
+                    .strip_prefix(&format!("{}.", self.milestone_id))
+                    .is_some_and(|short_ref| planned_refs.contains(short_ref))
+        }))
+    }
+
+    fn all_beads_closed(&self) -> AppResult<bool> {
+        let snapshot = milestone_service::load_snapshot(
+            &FsMilestoneSnapshotStore,
+            self.base_dir,
+            self.milestone_id,
+        )?;
+        let closed_beads = snapshot
+            .progress
+            .completed_beads
+            .saturating_add(snapshot.progress.skipped_beads);
+        Ok(snapshot.status == MilestoneStatus::Completed
+            || (snapshot.progress.total_beads > 0
+                && closed_beads >= snapshot.progress.total_beads
+                && snapshot.progress.in_progress_beads == 0
+                && snapshot.progress.failed_beads == 0))
+    }
 }
 
 fn load_existing_milestone(
