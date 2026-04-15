@@ -3,6 +3,7 @@ use std::io::ErrorKind;
 use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::adapters::fs::{
     FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
@@ -10,7 +11,9 @@ use crate::adapters::fs::{
 };
 use crate::composition::agent_execution_builder;
 use crate::contexts::milestone_record::bundle::MilestoneBundle;
-use crate::contexts::milestone_record::model::{MilestoneId, MilestoneProgress, MilestoneRecord};
+use crate::contexts::milestone_record::model::{
+    MilestoneId, MilestoneProgress, MilestoneRecord, MilestoneSnapshot,
+};
 use crate::contexts::milestone_record::service::{
     self as milestone_service, CreateMilestoneInput, MilestonePlanPort, MilestoneSnapshotPort,
     MilestoneStorePort,
@@ -137,28 +140,14 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
 
     let milestone_id = MilestoneId::new(milestone_id)?;
     let record = load_existing_milestone(&store, &current_dir, &milestone_id)?;
-
-    let effective_config = EffectiveConfig::load(&current_dir)?;
-    let requirements_cli_service =
-        agent_execution_builder::build_requirements_service(&effective_config)?;
-    let run_id = requirements_cli_service
-        .draft_milestone(&current_dir, &record.description, Utc::now(), None)
-        .await
-        .map_err(|error| AppError::MilestoneOperationFailed {
-            milestone_id: milestone_id.to_string(),
-            action: "planning".to_owned(),
-            details: error.to_string(),
-        })?;
-    let run = requirements_store
-        .read_run(&current_dir, &run_id)
-        .map_err(|error| AppError::MilestoneOperationFailed {
-            milestone_id: milestone_id.to_string(),
-            action: "planning".to_owned(),
-            details: format!(
-                "requirements run '{}' could not be inspected: {}",
-                run_id, error
-            ),
-        })?;
+    let (run_id, run) = load_or_start_milestone_requirements_run(
+        &snapshot_store,
+        &requirements_store,
+        &current_dir,
+        &milestone_id,
+        &record,
+    )
+    .await?;
 
     match run.status {
         RequirementsStatus::Completed => {}
@@ -168,6 +157,22 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
                 milestone_id, run_id, run_id, milestone_id
             );
             return Ok(());
+        }
+        RequirementsStatus::Failed => {
+            clear_pending_requirements_run(
+                &snapshot_store,
+                &current_dir,
+                &milestone_id,
+                Some(&run_id),
+            )?;
+            return Err(AppError::MilestoneOperationFailed {
+                milestone_id: milestone_id.to_string(),
+                action: "planning".to_owned(),
+                details: format!(
+                    "requirements run '{}' failed: {}",
+                    run_id, run.status_summary
+                ),
+            });
         }
         status => {
             return Err(AppError::MilestoneOperationFailed {
@@ -211,6 +216,7 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
         action: "planning".to_owned(),
         details: error.to_string(),
     })?;
+    clear_pending_requirements_run(&snapshot_store, &current_dir, &milestone_id, Some(&run_id))?;
 
     let detail = load_milestone_detail(
         &store,
@@ -329,7 +335,12 @@ fn load_milestone_summary(
 ) -> AppResult<MilestoneSummaryView> {
     let record = load_existing_milestone(store, base_dir, milestone_id)?;
     let snapshot = milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
-    let bead_count = load_bead_count(plan_store, base_dir, milestone_id)?;
+    let plan = load_live_plan_bundle(plan_store, base_dir, milestone_id, &snapshot)
+        .map_err(|error| map_inspection_error(milestone_id, error))?;
+    let bead_count = plan
+        .as_ref()
+        .map(|plan| plan.bundle.bead_count() as u32)
+        .unwrap_or(0);
 
     Ok(MilestoneSummaryView {
         id: record.id.to_string(),
@@ -352,10 +363,11 @@ fn load_milestone_detail(
 ) -> AppResult<MilestoneDetailView> {
     let record = load_existing_milestone(store, base_dir, milestone_id)?;
     let snapshot = milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
-    let plan_bundle = load_plan_bundle(plan_store, base_dir, milestone_id)?;
+    let plan_bundle = load_live_plan_bundle(plan_store, base_dir, milestone_id, &snapshot)
+        .map_err(|error| map_inspection_error(milestone_id, error))?;
     let bead_count = plan_bundle
         .as_ref()
-        .map(|bundle| bundle.bead_count() as u32)
+        .map(|bundle| bundle.bundle.bead_count() as u32)
         .unwrap_or(0);
     let has_plan = plan_bundle.is_some();
 
@@ -375,29 +387,106 @@ fn load_milestone_detail(
     })
 }
 
-fn load_bead_count(
+#[derive(Debug)]
+struct LoadedMilestoneBundle {
+    bundle: MilestoneBundle,
+}
+
+fn load_live_plan_bundle(
     plan_store: &impl MilestonePlanPort,
     base_dir: &std::path::Path,
     milestone_id: &MilestoneId,
-) -> AppResult<u32> {
-    match load_plan_bundle(plan_store, base_dir, milestone_id)? {
-        Some(bundle) => Ok(bundle.bead_count() as u32),
-        None => Ok(0),
+    snapshot: &MilestoneSnapshot,
+) -> AppResult<Option<LoadedMilestoneBundle>> {
+    match plan_store.read_plan_json(base_dir, milestone_id) {
+        Ok(raw) => {
+            let bundle: MilestoneBundle =
+                serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+                    file: format!("milestones/{}/plan.json", milestone_id),
+                    details: error.to_string(),
+                })?;
+
+            if bundle.identity.id != milestone_id.as_str() {
+                return Err(AppError::CorruptRecord {
+                    file: format!("milestones/{}/plan.json", milestone_id),
+                    details: format!(
+                        "bundle identity '{}' does not match milestone '{}'",
+                        bundle.identity.id, milestone_id
+                    ),
+                });
+            }
+
+            bundle
+                .validate()
+                .map_err(|errors| AppError::CorruptRecord {
+                    file: format!("milestones/{}/plan.json", milestone_id),
+                    details: errors.join("; "),
+                })?;
+
+            let mut hasher = Sha256::new();
+            hasher.update(raw.as_bytes());
+            let plan_hash = format!("{:x}", hasher.finalize());
+            validate_live_plan_snapshot(
+                milestone_id,
+                snapshot.plan_hash.as_deref(),
+                snapshot.plan_version,
+                &plan_hash,
+            )?;
+
+            Ok(Some(LoadedMilestoneBundle { bundle }))
+        }
+        Err(AppError::Io(error)) if error.kind() == ErrorKind::NotFound => {
+            if snapshot.plan_hash.is_some() || snapshot.plan_version > 0 {
+                return Err(AppError::CorruptRecord {
+                    file: format!("milestones/{}/status.json", milestone_id),
+                    details: format!(
+                        "status.json references a live plan, but milestones/{}/plan.json is missing",
+                        milestone_id
+                    ),
+                });
+            }
+            Ok(None)
+        }
+        Err(error) => Err(error),
     }
 }
 
-fn load_plan_bundle(
-    plan_store: &impl MilestonePlanPort,
-    base_dir: &std::path::Path,
+fn validate_live_plan_snapshot(
     milestone_id: &MilestoneId,
-) -> AppResult<Option<MilestoneBundle>> {
-    match plan_store.read_plan_json(base_dir, milestone_id) {
-        Ok(raw) => serde_json::from_str(&raw)
-            .map(Some)
-            .map_err(AppError::SerdeJson),
-        Err(AppError::Io(error)) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
+    snapshot_plan_hash: Option<&str>,
+    snapshot_plan_version: u32,
+    bundle_plan_hash: &str,
+) -> AppResult<Option<u32>> {
+    let status_file = format!("milestones/{}/status.json", milestone_id);
+    match snapshot_plan_hash {
+        Some(snapshot_plan_hash) => {
+            if snapshot_plan_version == 0 {
+                return Err(AppError::CorruptRecord {
+                    file: status_file,
+                    details: "status snapshot has plan_hash but plan_version is 0".to_owned(),
+                });
+            }
+            if snapshot_plan_hash != bundle_plan_hash {
+                return Err(AppError::CorruptRecord {
+                    file: status_file,
+                    details: format!(
+                        "plan metadata is stale: status.json hash '{}' does not match plan.json hash '{}'",
+                        snapshot_plan_hash, bundle_plan_hash
+                    ),
+                });
+            }
+        }
+        None if snapshot_plan_version > 0 => {
+            return Err(AppError::CorruptRecord {
+                file: status_file,
+                details: "status snapshot is missing plan_hash for the current plan.json"
+                    .to_owned(),
+            });
+        }
+        None => return Ok(None),
     }
+
+    Ok((snapshot_plan_version > 0).then_some(snapshot_plan_version))
 }
 
 fn print_json<T: Serialize>(value: &T) -> AppResult<()> {
@@ -408,6 +497,104 @@ fn print_json<T: Serialize>(value: &T) -> AppResult<()> {
 fn validate_workspace(base_dir: &std::path::Path) -> AppResult<()> {
     let config = workspace_governance::load_workspace_config(base_dir)?;
     workspace_governance::ensure_supported_workspace_version(&config)
+}
+
+fn map_inspection_error(milestone_id: &MilestoneId, error: AppError) -> AppError {
+    match error {
+        AppError::MilestoneNotFound { .. } => error,
+        other => AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "inspection".to_owned(),
+            details: other.to_string(),
+        },
+    }
+}
+
+async fn load_or_start_milestone_requirements_run(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    requirements_store: &impl RequirementsStorePort,
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    record: &MilestoneRecord,
+) -> AppResult<(
+    String,
+    crate::contexts::requirements_drafting::model::RequirementsRun,
+)> {
+    let snapshot = milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
+    if let Some(run_id) = snapshot.pending_requirements_run_id {
+        let run = requirements_store
+            .read_run(base_dir, &run_id)
+            .map_err(|error| AppError::MilestoneOperationFailed {
+                milestone_id: milestone_id.to_string(),
+                action: "planning".to_owned(),
+                details: format!(
+                    "pending requirements run '{}' could not be inspected: {}",
+                    run_id, error
+                ),
+            })?;
+        return Ok((run_id, run));
+    }
+
+    let effective_config = EffectiveConfig::load(base_dir)?;
+    let requirements_cli_service =
+        agent_execution_builder::build_requirements_service(&effective_config)?;
+    let run_id = requirements_cli_service
+        .draft_milestone(base_dir, &record.description, Utc::now(), None)
+        .await
+        .map_err(|error| AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "planning".to_owned(),
+            details: error.to_string(),
+        })?;
+    set_pending_requirements_run(snapshot_store, base_dir, milestone_id, Some(&run_id))?;
+    let run = requirements_store
+        .read_run(base_dir, &run_id)
+        .map_err(|error| AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "planning".to_owned(),
+            details: format!(
+                "requirements run '{}' could not be inspected: {}",
+                run_id, error
+            ),
+        })?;
+
+    Ok((run_id, run))
+}
+
+fn clear_pending_requirements_run(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    expected_run_id: Option<&str>,
+) -> AppResult<()> {
+    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
+        let mut snapshot =
+            milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
+        if expected_run_id.is_none()
+            || snapshot.pending_requirements_run_id.as_deref() == expected_run_id
+        {
+            snapshot.pending_requirements_run_id = None;
+            snapshot.updated_at = Utc::now();
+            snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
+        }
+        Ok(())
+    })
+}
+
+fn set_pending_requirements_run(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    run_id: Option<&str>,
+) -> AppResult<()> {
+    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
+        let mut snapshot =
+            milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
+        snapshot.pending_requirements_run_id = run_id.map(str::to_owned);
+        snapshot.updated_at = Utc::now();
+        snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
+        Ok(())
+    })
 }
 
 fn print_milestone_detail(detail: &MilestoneDetailView) {

@@ -170,6 +170,9 @@ impl MilestoneRecord {
 pub struct MilestoneSnapshot {
     /// Current lifecycle status.
     pub status: MilestoneStatus,
+    /// Requirements run currently drafting or awaiting milestone clarification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_requirements_run_id: Option<String>,
     /// SHA-256 hash of the current plan.json content (if planned).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_hash: Option<String>,
@@ -192,6 +195,7 @@ impl MilestoneSnapshot {
     pub fn initial(now: DateTime<Utc>) -> Self {
         Self {
             status: MilestoneStatus::Planning,
+            pending_requirements_run_id: None,
             plan_hash: None,
             plan_version: 0,
             active_bead: None,

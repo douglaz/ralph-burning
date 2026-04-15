@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260415130611",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 3
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-2-66b860a6",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 2,
-        "body": "finding_summary: \"`milestone plan` cannot complete the documented clarification workflow. In `src/cli/milestone.rs:141-170`, every invocation immediately starts a fresh `draft_milestone()` run and only then inspects that new run's status, yet the `awaiting_answers` branch tells the operator to run `requirements answer <run_id>` and rerun `milestone plan`. After answers are submitted, rerunning `milestone plan` ignores the answered run and launches a new requirements run instead of materializing the completed bundle.\"\nseverity: high\naffected_files:\n- src/cli/milestone.rs\nremediation_hint: \"Persist the milestone's in-flight requirements run ID, and on rerun inspect that existing run first: if it is now completed, materialize its bundle; if it is still awaiting answers, keep pointing the user at that same run instead of redrafting.\"",
-        "created_at": "2026-04-15T14:02:18.849152260Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "e39f07de14cf15d80f129cd97ae2e9598572b0b5c271cd77c9183d54ef0a1a10"
-      },
-      {
-        "amendment_id": "fr-2-5a4a19dc",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 2,
-        "body": "finding_summary: \"`milestone show` and `milestone status` trust raw `plan.json` without validating that it matches the current snapshot. In `src/cli/milestone.rs:353-399`, the commands parse `plan.json` directly and derive `bead_count`/`has_plan` from it, but they do not perform the plan-hash check or bundle validation that `project create-from-bead` already uses in `src/cli/project.rs:721-819`. A stale or semantically corrupt plan can therefore be reported as live milestone state instead of surfacing corruption.\"\nseverity: medium\naffected_files:\n- src/cli/milestone.rs\nremediation_hint: \"Route show/status through the same validated milestone-plan loader used by project creation, so these commands either report a snapshot-consistent plan or fail with a milestone-specific corruption error.\"",
-        "created_at": "2026-04-15T14:02:18.849155146Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "7ac931fda5f0e278671d16b306473f70d111b2ebc3f0a8d467c0e4eb03f0c598"
-      }
-    ],
-    "processed_count": 3
+    "pending": [],
+    "processed_count": 5
   },
-  "status_summary": "running: final review restart round 3 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-15T13:47:33.671330046Z",
