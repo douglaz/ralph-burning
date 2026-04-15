@@ -2,29 +2,85 @@
   "active_run": {
     "run_id": "run-20260415203322",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-15T20:33:22.775220229Z",
     "prompt_hash_at_cycle_start": "114c5c4c96be38bce1fad837b98c1556dd8e6c3226fb6705a6716b84f71843fa",
     "prompt_hash_at_stage_start": "114c5c4c96be38bce1fad837b98c1556dd8e6c3226fb6705a6716b84f71843fa",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-b7e02139",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: Historical lineage is resolved from the live milestone plan instead of the plan hash/version captured on the task/run.\nseverity: medium\naffected_files: [\"src/contexts/project_run_record/service.rs\", \"src/contexts/milestone_record/service.rs\"]\nremediation_hint: Use the persisted `plan_hash`/`plan_version` (or persist a bead-title/acceptance snapshot) when filling lineage metadata, and fall back to durable IDs instead of projecting today's plan onto old runs/tasks.\n\nEvidence: `load_task_lineage_detail` always reparses the current `plan.json` (`src/contexts/project_run_record/service.rs:1364-1426`), and `read_bead_lineage` / `bead_execution_history` / `list_tasks_for_milestone` do the same (`src/contexts/milestone_record/service.rs:2065-2218`). Those lookups ignore provenance already stored on `TaskSource` and `TaskRunEntry` (`src/contexts/project_run_record/model.rs:25-41`, `src/contexts/milestone_record/model.rs:364-376`). After any milestone replan or bead rename/removal, these queries will silently relabel historical tasks/runs with the current bead title and acceptance criteria, or return empty lineage details for runs that were valid under the earlier plan version.",
+        "created_at": "2026-04-15T21:13:02.568645646Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "bb70914a92e8ef8aaa535ac79bae7b7317589277479719a34f2271c60ec4417c"
+      },
+      {
+        "amendment_id": "fr-1-cb791f9b",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Bug: `load_task_lineage_detail` (project_run_record/service.rs:1364-1427) propagates errors from `milestone_store.read_milestone_record()` and `plan_store.read_plan_json()` via `?`. If a project has a `task_source` pointing to a milestone whose record or plan.json has been deleted or is corrupt, `show_project` returns an error — breaking `project show` and `task show` entirely for that project. Lineage is supplemental display data; it should gracefully degrade to `Ok(None)` when the milestone/plan cannot be loaded. Fix: catch errors from the milestone/plan loading path and return `Ok(None)` instead of propagating. Affected files: src/contexts/project_run_record/service.rs (load_task_lineage_detail, lines 1377-1383).",
+        "created_at": "2026-04-15T21:13:02.568648531Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "8dcd7da3fcc03ac40827f8cffc507eb5ed00b8d6ef5f5a5becb92ac48618f355"
+      },
+      {
+        "amendment_id": "fr-1-e123f109",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Maintainability: `load_task_lineage_detail` (project_run_record/service.rs:1386-1418) reimplements the bead-in-plan lookup logic (workstream iteration, bead ID matching with milestone prefix stripping, acceptance criteria resolution from acceptance_map) that is already factored out as `resolve_bead_plan_details` + `build_bead_lineage_view` in milestone_record/service.rs:2077-2127, and exposed via the public `read_bead_lineage` function. The two implementations could diverge if matching rules change. Fix: replace the body of `load_task_lineage_detail` with a call to `crate::contexts::milestone_record::service::read_bead_lineage(milestone_store, plan_store, base_dir, &milestone_id, &task_source.bead_id)`, which already does the same work. This also simplifies adding the graceful degradation from the first amendment. Affected files: src/contexts/project_run_record/service.rs (load_task_lineage_detail).",
+        "created_at": "2026-04-15T21:13:02.568651076Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "1fa3b77780cbb8087940b02c7624cf24644c143ea9542ef6bc546009ca47f754"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-15T20:57:52.113447116Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
 }
