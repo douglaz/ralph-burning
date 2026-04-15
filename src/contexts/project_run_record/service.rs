@@ -1374,15 +1374,18 @@ fn load_task_lineage_detail(
         task_source.milestone_id.clone(),
     )?;
 
-    crate::contexts::milestone_record::service::read_bead_lineage(
+    match crate::contexts::milestone_record::service::read_bead_lineage(
         milestone_store,
         plan_store,
         base_dir,
         &milestone_id,
         &task_source.bead_id,
         task_source.plan_hash.as_deref(),
-    )
-    .map(Some)
+    ) {
+        Ok(lineage) => Ok(Some(lineage)),
+        Err(AppError::MilestoneNotFound { .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Show detailed project information.
@@ -3011,8 +3014,7 @@ mod tests {
     }
 
     #[test]
-    fn show_project_propagates_missing_milestone_lineage_errors(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn show_project_ignores_missing_milestone_lineage() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         setup_workspace(base)?;
@@ -3044,7 +3046,7 @@ mod tests {
             },
         )?;
 
-        let err = show_project(
+        let detail = show_project(
             &FsProjectStore,
             &FsRunSnapshotStore,
             &FsJournalStore,
@@ -3053,15 +3055,13 @@ mod tests {
             &FsMilestonePlanStore,
             base,
             &ProjectId::new("task-alpha")?,
-        )
-        .expect_err("missing milestone lineage should be surfaced");
+        )?;
 
-        match err {
-            AppError::MilestoneNotFound { milestone_id } => {
-                assert_eq!(milestone_id, "ms-missing");
-            }
-            other => panic!("expected MilestoneNotFound, got {other:?}"),
-        }
+        assert_eq!(
+            detail.record.task_source.unwrap().milestone_id,
+            "ms-missing"
+        );
+        assert_eq!(detail.task_lineage, None);
         Ok(())
     }
 }

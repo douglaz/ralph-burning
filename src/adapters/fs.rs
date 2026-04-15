@@ -4525,8 +4525,10 @@ impl FsTaskRunLineageStore {
         Ok(changed)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reopen_failed_exact_attempt(
         entries: &mut Vec<TaskRunEntry>,
+        milestone_id: &MilestoneId,
         canonical_entry: &TaskRunEntry,
         bead_id: &str,
         project_id: &str,
@@ -4542,7 +4544,7 @@ impl FsTaskRunLineageStore {
             .iter()
             .enumerate()
             .filter_map(|(index, entry)| {
-                (entry.bead_id == bead_id
+                (milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id)
                     && entry.project_id == project_id
                     && entry.run_id.as_deref() == Some(run_id))
                 .then_some(index)
@@ -4694,7 +4696,9 @@ impl FsTaskRunLineageStore {
             .iter()
             .enumerate()
             .filter_map(|(index, entry)| {
-                (entry.bead_id == bead_id && entry.project_id == project_id).then_some(index)
+                (milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id)
+                    && entry.project_id == project_id)
+                    .then_some(index)
             })
             .collect();
         if matching_indices.is_empty() {
@@ -5007,6 +5011,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             [entry] => {
                 if let Some(reopened_entry) = Self::reopen_failed_exact_attempt(
                     &mut entries,
+                    milestone_id,
                     entry,
                     bead_id,
                     project_id,

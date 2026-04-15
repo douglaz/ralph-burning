@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use super::bead_refs::milestone_bead_refs_match;
+use super::bead_refs::{canonicalize_milestone_bead_ref, milestone_bead_refs_match};
 use crate::shared::error::{AppError, AppResult};
 
 /// Current milestone record schema version.
@@ -467,6 +467,13 @@ fn task_run_entry_matches_bead(entry: &TaskRunEntry, bead_id: &str) -> bool {
     }
 }
 
+fn canonical_task_run_bead_ref(entry: &TaskRunEntry) -> String {
+    match MilestoneId::new(entry.milestone_id.clone()) {
+        Ok(milestone_id) => canonicalize_milestone_bead_ref(&milestone_id, &entry.bead_id),
+        Err(_) => entry.bead_id.clone(),
+    }
+}
+
 /// Canonical owned representation of start journal details.
 /// Used for both serialization (render) and deserialization (parse) so the
 /// field set cannot drift between the model layer and the adapter layer.
@@ -556,7 +563,7 @@ pub fn latest_task_runs_per_bead(entries: &[TaskRunEntry]) -> Vec<TaskRunEntry> 
 
     for (index, entry) in entries.iter().enumerate() {
         latest_by_bead
-            .entry(entry.bead_id.clone())
+            .entry(canonical_task_run_bead_ref(entry))
             .and_modify(|current: &mut (usize, TaskRunEntry)| {
                 let ordering = compare_task_run_recency(entry, &current.1);
                 if ordering != Ordering::Less {
@@ -1289,6 +1296,44 @@ mod tests {
         let active_beads = active_bead_ids(&entries);
         assert_eq!(active_beads.len(), 1);
         assert!(active_beads.contains("bead-1"));
+        Ok(())
+    }
+
+    #[test]
+    fn latest_task_runs_per_bead_collapses_short_and_qualified_refs(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let entries = vec![
+            TaskRunEntry {
+                milestone_id: "ms-1".to_owned(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at,
+                finished_at: None,
+                task_id: None,
+            },
+            TaskRunEntry {
+                milestone_id: "ms-1".to_owned(),
+                bead_id: "ms-1.bead-1".to_owned(),
+                project_id: "project-2".to_owned(),
+                run_id: Some("run-2".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: Some("retry passed".to_owned()),
+                started_at: started_at + chrono::Duration::seconds(10),
+                finished_at: Some(started_at + chrono::Duration::seconds(20)),
+                task_id: None,
+            },
+        ];
+
+        let latest = latest_task_runs_per_bead(&entries);
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].run_id.as_deref(), Some("run-2"));
+        assert_eq!(latest[0].outcome, TaskRunOutcome::Succeeded);
         Ok(())
     }
 

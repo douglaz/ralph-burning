@@ -7377,6 +7377,84 @@ mod tests {
     }
 
     #[test]
+    fn record_bead_start_reopens_failed_attempt_across_short_and_qualified_bead_refs(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "mixed-ref-reopen-test",
+            "Mixed Ref Reopen Test",
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now,
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Failed,
+            Some("first attempt failed"),
+            now,
+            now + chrono::Duration::seconds(5),
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            &format!("{}.bead-1", record.id),
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(10),
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
+        assert_eq!(runs[0].run_id.as_deref(), Some("run-1"));
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
+        assert_eq!(snapshot.progress.in_progress_beads, 1);
+        assert_eq!(snapshot.progress.failed_beads, 0);
+        assert!(snapshot.active_bead.is_some());
+        Ok(())
+    }
+
+    #[test]
     fn update_task_run_missing_milestone_does_not_block_future_create(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
@@ -7909,6 +7987,122 @@ mod tests {
         .expect_err("duplicate terminal updates should fail");
         assert!(error.to_string().contains("already finalized"));
         assert!(error.to_string().contains("run=run-1"));
+        Ok(())
+    }
+
+    #[test]
+    fn update_task_run_accepts_short_and_qualified_bead_refs_for_same_attempt(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "mixed-ref-finalize-test",
+            "Mixed Ref Finalize Test",
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now,
+        )?;
+
+        update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            &format!("{}.bead-1", record.id),
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            now,
+            TaskRunOutcome::Succeeded,
+            Some("completed through qualified ref".to_owned()),
+            now + chrono::Duration::seconds(5),
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(
+            runs[0].outcome_detail.as_deref(),
+            Some("completed through qualified ref")
+        );
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.progress.completed_beads, 1);
+        assert_eq!(snapshot.progress.in_progress_beads, 0);
+        assert_eq!(snapshot.active_bead, None);
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_snapshot_from_lineage_collapses_mixed_bead_refs(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = Utc::now();
+        let milestone_id = MilestoneId::new("ms-alpha")?;
+        let mut snapshot = MilestoneSnapshot::initial(now);
+        snapshot.status = MilestoneStatus::Running;
+        snapshot.progress.total_beads = 1;
+
+        reconcile_snapshot_from_lineage(
+            &mut snapshot,
+            &milestone_id,
+            vec![
+                TaskRunEntry {
+                    milestone_id: milestone_id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    project_id: "project-1".to_owned(),
+                    run_id: Some("run-1".to_owned()),
+                    plan_hash: Some("plan-v1".to_owned()),
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at: now,
+                    finished_at: None,
+                    task_id: None,
+                },
+                TaskRunEntry {
+                    milestone_id: milestone_id.to_string(),
+                    bead_id: format!("{}.bead-1", milestone_id),
+                    project_id: "project-2".to_owned(),
+                    run_id: Some("run-2".to_owned()),
+                    plan_hash: Some("plan-v1".to_owned()),
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at: now + chrono::Duration::seconds(10),
+                    finished_at: None,
+                    task_id: None,
+                },
+            ],
+        )?;
+
+        assert_eq!(snapshot.status, MilestoneStatus::Running);
+        assert_eq!(snapshot.active_bead.as_deref(), Some("ms-alpha.bead-1"));
+        assert_eq!(snapshot.progress.in_progress_beads, 1);
+        assert_eq!(snapshot.progress.completed_beads, 0);
+        assert_eq!(snapshot.progress.failed_beads, 0);
         Ok(())
     }
 
