@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T14:33:08.608000750Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real defects. Two are correctness issues around concurrent milestone planning and plan publication, and one is a genuine error-handling gap where snapshot read failures bypass milestone-specific context.\n\n## Votes\n\n- `fr-3-db6d9c9f`: Accept\n  `load_milestone_summary`, `load_milestone_detail`, and `load_or_start_milestone_requirements_run` all call `milestone_service::load_snapshot(...)` with a bare `?`, so snapshot I/O failures escape before `map_inspection_error` or any `MilestoneOperationFailed` wrapping runs. That means a missing or unreadable `status.json` for an existing milestone produces a raw filesystem error instead of an error that names the milestone and action. The finding matches the control flow in `src/cli/milestone.rs` and is a real robustness/usability defect.\n- `fr-3-a5330ad4`: Accept\n  The race is real. `load_or_start_milestone_requirements_run` reads the snapshot, checks `pending_requirements_run_id`, then launches `draft_milestone`, and only afterward stores the chosen run id under `with_milestone_write_lock`. That lock serializes the later write, but it does not protect the check-then-act decision, so two concurrent callers can both observe `None` and start distinct requirements runs. From there, `set_pending_requirements_run` and `clear_pending_requirements_run` become last-writer-wins bookkeeping, and both callers can proceed to materialize bundles, so the amendment correctly identifies a high-severity concurrency bug.\n- `fr-3-8988fcf3`: Accept\n  During replans, `persist_plan_locked` writes `plan.json`/`plan.md`/`plan.shape.json` before updating `snapshot.plan_hash` and `snapshot.plan_version`. Meanwhile `milestone show`/`status` load `status.json`, then read and hash `plan.json`, and `validate_live_plan_snapshot` treats any hash mismatch as corruption. Readers do not acquire the milestone write lock, and the snapshot store's recovery logic only covers the snapshot/journal sidecar commit path, not plan artifacts. So a concurrent read can legitimately see new plan files with the old snapshot metadata and falsely report stale plan metadata. That is a real publication-order bug, not just a theoretical one.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
