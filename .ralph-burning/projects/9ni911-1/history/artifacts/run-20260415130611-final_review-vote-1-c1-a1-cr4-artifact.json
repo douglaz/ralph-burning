@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T14:58:14.137865534Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments describe real milestone-planning state-management defects. The current flow reserves or reuses pending requirements state too early, clears it only on a subset of failures, and defers a running-status rejection until after expensive work has already run.\n\n## Votes\n\n- `fr-4-52f93cb6`: Accept\n  `reserve_pending_requirements_run()` persists the `__starting__:` marker before `EffectiveConfig::load()` and `build_requirements_service()` run. Both later calls use `?`, so those errors bypass cleanup. On the next invocation, `reserve_pending_requirements_run()` sees the stale reservation prefix and returns the \"already starting in another process\" error, with no timeout or normal recovery path.\n- `fr-4-d3f01aa9`: Accept\n  When `pending_requirements_run_id` already exists, `load_or_start_milestone_requirements_run()` only reads that run and never repairs stale state. If `read_run()` fails, if the run is stuck in an unusable status such as `drafting`, or if a completed run cannot yield a valid milestone bundle, `handle_plan()` returns an error without clearing the pointer, so every rerun hits the same failure again.\n- `fr-4-8cc51e5b`: Accept\n  `handle_plan()` does not reject a `running` milestone before reserving or starting requirements planning, and `reserve_pending_requirements_run()` does not check `snapshot.status` either. The status conflict is only enforced later inside `materialize_bundle()`, which rejects `MilestoneStatus::Running`, so the full requirements pass can run unnecessarily and then leave the pending run reference behind on failure.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

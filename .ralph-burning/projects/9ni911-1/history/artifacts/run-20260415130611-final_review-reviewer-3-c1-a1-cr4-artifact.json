@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-reviewer-3-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415130611-final_review-reviewer-3-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T14:48:30.984336323Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nI reviewed the current working-tree diff end-to-end. The only modified files are `.ralph-burning/projects/9ni911-1/journal.ndjson` and `.ralph-burning/projects/9ni911-1/run.json` (diff lines in this range), and these are explicitly excluded from review scope. No non-scope implementation files changed, so I found no reviewable correctness/safety/robustness defects in milestone command handler code for this change set.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}

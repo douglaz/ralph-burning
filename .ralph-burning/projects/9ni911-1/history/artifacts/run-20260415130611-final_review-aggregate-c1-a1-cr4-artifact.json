@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260415130611-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415130611-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T14:58:14.151792734Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 4/25\n\n## Accepted\n\n- `fr-4-52f93cb6`\n- `fr-4-d3f01aa9`\n- `fr-4-8cc51e5b`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-52f93cb6`\n\nfinding_summary: `milestone plan` leaks the `__starting__:` reservation when setup fails before `draft_milestone()` runs, permanently wedging the milestone until `status.json` is edited by hand.\nseverity: high\naffected_files:\n- src/cli/milestone.rs:567-570\n- src/cli/milestone.rs:623-640\nremediation_hint: Once the reservation has been written, clear it on every subsequent error path (`EffectiveConfig::load`, `build_requirements_service`, and any other pre-run setup failure), or replace the marker with a lease/timeout-backed reservation so stale startup markers self-heal.\n\n### `fr-4-d3f01aa9`\n\nfinding_summary: Once `pending_requirements_run_id` points at a missing or unusable requirements run, `milestone plan` has no recovery path and will repeat the same failure forever.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:154-188\n- src/cli/milestone.rs:190-221\n- src/cli/milestone.rs:553-565\n- src/cli/milestone.rs:678-695\nremediation_hint: Treat missing/invalid/nonterminal pending runs as stale state: clear the pointer (or allow an explicit restart path) before returning, and add a regression test for an interrupted milestone requirements run left in `drafting`.\n\n### `fr-4-8cc51e5b`\n\nfinding_summary: `milestone plan` starts a full milestone requirements run even when the milestone is already `running`, and only discovers the status conflict after the expensive planning pass finishes.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:145-152\n- src/cli/milestone.rs:553-573\n- src/cli/milestone.rs:618-640\n- src/contexts/milestone_record/service.rs:1377-1387\nremediation_hint: Reject `milestone plan` up front when the snapshot status is `running` (before reserving or invoking the requirements service), or at minimum clear the pending run when materialization is rejected for this reason.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}
