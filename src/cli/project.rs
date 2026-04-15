@@ -162,6 +162,11 @@ pub async fn handle(command: ProjectCommand) -> AppResult<()> {
             let current_dir = std::env::current_dir()?;
             let project_id = ProjectId::new(id)?;
             workspace_governance::set_active_project(&current_dir, &project_id)?;
+            let project_record = FsProjectStore.read_project_record(&current_dir, &project_id)?;
+            workspace_governance::sync_active_milestone_from_project_record(
+                &current_dir,
+                &project_record,
+            )?;
             println!("Selected project {}", project_id);
             Ok(())
         }

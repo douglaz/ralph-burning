@@ -110,6 +110,60 @@ status_summary = "created"
     }
 }
 
+fn create_bead_backed_project_fixture(
+    base_dir: &std::path::Path,
+    project_id: &str,
+    milestone_id: &str,
+    bead_id: &str,
+) {
+    let project_root = project_root(base_dir, project_id);
+    fs::create_dir_all(&project_root).expect("create project directory");
+    let prompt_contents = "# Fixture prompt\n";
+    let project_toml = format!(
+        r#"id = "{project_id}"
+name = "Fixture {project_id}"
+flow = "docs_change"
+prompt_reference = "prompt.md"
+prompt_hash = "{}"
+created_at = "2026-03-11T19:00:00Z"
+status_summary = "created"
+
+[task_source]
+milestone_id = "{milestone_id}"
+bead_id = "{bead_id}"
+origin = "milestone"
+"#,
+        ralph_burning::adapters::fs::FileSystem::prompt_hash(prompt_contents)
+    );
+    fs::write(project_root.join("project.toml"), project_toml).expect("write project");
+    fs::write(project_root.join("prompt.md"), prompt_contents).expect("write prompt");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"status":"not_started","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"not started"}"#,
+    )
+    .expect("write run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-11T19:00:00Z","event_type":"project_created","details":{{"project_id":"{}","flow":"docs_change","source":"milestone_bead","milestone_id":"{}","bead_id":"{}"}}}}"#,
+            project_id, milestone_id, bead_id
+        ),
+    )
+    .expect("write journal");
+    fs::write(project_root.join("sessions.json"), r#"{"sessions":[]}"#).expect("write sessions");
+    for subdir in &[
+        "history/payloads",
+        "history/artifacts",
+        "runtime/logs",
+        "runtime/backend",
+        "runtime/temp",
+        "amendments",
+        "rollback",
+    ] {
+        fs::create_dir_all(project_root.join(subdir)).expect("create project subdirectory");
+    }
+}
+
 fn project_root(base_dir: &std::path::Path, project_id: &str) -> std::path::PathBuf {
     live_workspace_root(base_dir)
         .join("projects")
@@ -1432,6 +1486,46 @@ fn milestone_next_selects_bead_and_uses_active_milestone_when_id_is_omitted() {
         serde_json::from_slice(&second.stdout).expect("parse milestone next json");
     assert_eq!(second_json["milestone_id"], "ms-alpha");
     assert_eq!(second_json["bead"]["id"], "ms-alpha.bead-2");
+}
+
+#[test]
+fn milestone_next_falls_back_to_active_project_milestone_when_pointer_is_missing() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    create_bead_backed_project_fixture(
+        temp_dir.path(),
+        "bead-alpha",
+        "ms-alpha",
+        "ms-alpha.bead-2",
+    );
+    fs::write(active_project_path(temp_dir.path()), "bead-alpha").expect("seed active project");
+
+    let ready_payload = r#"[{"id":"bead-2","title":"Bootstrap bead-backed task creation","priority":"P1","issue_type":"feature","labels":["creation"]}]"#;
+    let show_payload = r#"[{"id":"ms-alpha.bead-2","title":"Bootstrap bead-backed task creation","status":"open","priority":"P1","issue_type":"feature","description":"Create a Ralph project directly from milestone + bead context.","acceptance_criteria":"- Controller can create the project without manual setup","dependencies":[],"dependents":[]}]"#;
+    let list_payload = default_br_list_response();
+    write_br_milestone_selection_script(temp_dir.path(), ready_payload, show_payload, list_payload);
+    write_bv_next_script(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        "Bootstrap bead-backed task creation",
+    );
+
+    let output = Command::new(binary())
+        .args(["milestone", "next", "--json"])
+        .env("PATH", prepend_path(temp_dir.path()))
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone next without active milestone pointer");
+
+    assert!(
+        output.status.success(),
+        "milestone next without pointer should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse milestone next json");
+    assert_eq!(json["milestone_id"], "ms-alpha");
+    assert_eq!(json["bead"]["id"], "ms-alpha.bead-2");
 }
 
 #[test]
@@ -3594,6 +3688,31 @@ fn project_select_sets_active_project_and_rejects_missing_projects() {
         .expect("run missing project select");
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("project 'missing' was not found"));
+}
+
+#[test]
+fn project_select_updates_active_milestone_for_bead_backed_projects() {
+    let temp_dir = initialize_workspace_fixture();
+    create_bead_backed_project_fixture(temp_dir.path(), "bead-beta", "ms-beta", "ms-beta.bead-1");
+    fs::write(active_milestone_path(temp_dir.path()), "ms-alpha").expect("seed active milestone");
+
+    let output = Command::new(binary())
+        .args(["project", "select", "bead-beta"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project select");
+
+    assert!(
+        output.status.success(),
+        "project select should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(active_milestone_path(temp_dir.path()))
+            .expect("read active milestone")
+            .trim(),
+        "ms-beta"
+    );
 }
 
 #[test]
@@ -12383,6 +12502,63 @@ fn run_start_syncs_milestone_lineage_for_bead_backed_projects() {
             .expect("read milestone journal");
     assert!(milestone_journal.contains("\"bead_started\""));
     assert!(milestone_journal.contains("\"bead_completed\""));
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn run_start_refreshes_active_milestone_from_active_bead_backed_project() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--flow",
+            "standard",
+            "--project-id",
+            "bead-run-active",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    fs::write(active_milestone_path(temp_dir.path()), "ms-stale").expect("seed stale milestone");
+
+    let start = Command::new(binary())
+        .args(["run", "start"])
+        .env("PATH", path)
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+    assert!(
+        start.status.success(),
+        "run start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(active_milestone_path(temp_dir.path()))
+            .expect("read active milestone")
+            .trim(),
+        "ms-alpha"
+    );
 }
 
 #[test]

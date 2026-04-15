@@ -133,6 +133,40 @@ pub fn set_active_milestone(base_dir: &Path, milestone_id: &MilestoneId) -> AppR
     Ok(())
 }
 
+pub fn active_project_milestone_id(base_dir: &Path) -> AppResult<Option<MilestoneId>> {
+    let project_id = match resolve_active_project(base_dir) {
+        Ok(project_id) => project_id,
+        Err(AppError::NoActiveProject) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let config_path = FileSystem::project_root(base_dir, &project_id).join(PROJECT_CONFIG_FILE);
+    let raw = std::fs::read_to_string(&config_path).map_err(|error| AppError::CorruptRecord {
+        file: format!("projects/{}/project.toml", project_id),
+        details: format!("cannot read project.toml: {}", error),
+    })?;
+    let project_record: crate::contexts::project_run_record::model::ProjectRecord =
+        toml::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+            file: format!("projects/{}/project.toml", project_id),
+            details: format!("project.toml has invalid canonical structure: {}", error),
+        })?;
+
+    project_record
+        .milestone_id()
+        .map(MilestoneId::new)
+        .transpose()
+}
+
+pub fn sync_active_milestone_from_project_record(
+    base_dir: &Path,
+    project_record: &crate::contexts::project_run_record::model::ProjectRecord,
+) -> AppResult<()> {
+    let Some(milestone_id) = project_record.milestone_id() else {
+        return Ok(());
+    };
+    let milestone_id = MilestoneId::new(milestone_id)?;
+    set_active_milestone(base_dir, &milestone_id)
+}
+
 pub(crate) fn parse_workspace_config(raw: &str) -> AppResult<WorkspaceConfig> {
     let config: WorkspaceConfig = toml::from_str(raw)?;
     ensure_supported_workspace_version(&config)?;

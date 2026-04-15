@@ -488,9 +488,14 @@ fn resolve_active_milestone(
     store: &impl MilestoneStorePort,
     base_dir: &std::path::Path,
 ) -> AppResult<MilestoneId> {
-    let raw = workspace_governance::read_active_milestone(base_dir)?
+    if let Some(raw) = workspace_governance::read_active_milestone(base_dir)? {
+        let milestone_id = MilestoneId::new(raw)?;
+        load_existing_milestone(store, base_dir, &milestone_id)?;
+        return Ok(milestone_id);
+    }
+
+    let milestone_id = workspace_governance::active_project_milestone_id(base_dir)?
         .ok_or(AppError::NoActiveMilestone)?;
-    let milestone_id = MilestoneId::new(raw)?;
     load_existing_milestone(store, base_dir, &milestone_id)?;
     Ok(milestone_id)
 }
