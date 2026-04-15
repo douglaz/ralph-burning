@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260415203322",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-15T20:33:22.775220229Z",
     "prompt_hash_at_cycle_start": "114c5c4c96be38bce1fad837b98c1556dd8e6c3226fb6705a6716b84f71843fa",
     "prompt_hash_at_stage_start": "114c5c4c96be38bce1fad837b98c1556dd8e6c3226fb6705a6716b84f71843fa",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-83357f95",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: Missing plan hashes are treated as \"current plan\", so historical milestone tasks/runs with unknown provenance can be relabeled with today's bead title and acceptance criteria.\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/service.rs:2141-2169\n- src/contexts/milestone_record/service.rs:2224-2233\n- src/contexts/milestone_record/service.rs:2298-2313\n- src/contexts/project_run_record/service.rs:1379-1388\nremediation_hint: Only project plan-derived fields when every referenced task/run carries an explicit plan hash that matches the current plan; if any hash is missing or mixed, fall back to milestone/bead IDs with bead_title/acceptance_criteria omitted.",
+        "created_at": "2026-04-15T22:14:18.780602708Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "e649ac5dcfa287694b52fd8f4820248ca272c096b3f9b88199c38a750e28619a"
+      },
+      {
+        "amendment_id": "fr-3-69be8272",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: The new lineage readers trust any JSON-shaped `plan.json`; they do not verify `bundle.identity.id` or run bundle validation, so a parseable but wrong/corrupt plan can feed bogus bead titles and acceptance criteria into task detail and milestone queries.\nseverity: low\naffected_files:\n- src/contexts/milestone_record/service.rs:2065-2077\n- src/contexts/milestone_record/service.rs:2182-2188\n- src/contexts/milestone_record/service.rs:2285-2306\nremediation_hint: Reuse the validated loader pattern already used in `src/cli/project.rs:812-840` (identity check, legacy backfill, `bundle.validate()`), and treat any validation failure like the existing missing/corrupt-plan path so the query degrades to fallback lineage instead of returning potentially incorrect metadata.",
+        "created_at": "2026-04-15T22:14:18.780605343Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "102fc7f234ec589dd6ec14228129922d53324ed928f82da911deca20ffaba533"
+      },
+      {
+        "amendment_id": "fr-3-2301878d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: Bead execution history still filters task-run lineage rows with raw string equality, so `bead_execution_history(\"bead-1\")` and `bead_execution_history(\"ms-alpha.bead-1\")` are not equivalent even though milestone bead refs are canonicalized elsewhere.\nseverity: medium\naffected_files:\n- src/adapters/fs.rs:5161-5171\n- src/contexts/milestone_record/service.rs:2206-2224\n- src/contexts/milestone_record/bead_refs.rs:3-15\nremediation_hint: Canonicalize the requested bead ref and stored row ids (or compare via `milestone_bead_refs_match`) before filtering, and add a test that mixes short and fully qualified bead IDs.",
+        "created_at": "2026-04-15T22:14:18.780607367Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "a33c634f4542966435fc55b4cc1f57cef3b0f745a3e370e83948c53b9dd5354c"
+      }
+    ],
     "processed_count": 5
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-15T21:32:40.550230839Z",
+    "resolved_at": "2026-04-15T22:02:52.342952667Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

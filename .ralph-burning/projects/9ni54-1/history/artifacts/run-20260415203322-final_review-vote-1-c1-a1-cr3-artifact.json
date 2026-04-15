@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415203322-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T22:14:17.707155726Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments describe real correctness issues in lineage/history lookup code. Each one can cause query results to report misleading metadata or miss existing execution history, so they should be accepted.\n\n## Votes\n\n- `fr-3-83357f95`: Accept\n  `build_bead_lineage_from_current_plan` treats `expected_plan_hash == None` as permission to use the current plan, and `shared_plan_hash_for_runs` ignores missing hashes instead of treating them as unknown provenance. That means legacy or mixed-provenance task/run records can be annotated with today's bead title and acceptance criteria even when no matching persisted plan hash exists. This contradicts the function's stated contract and produces incorrect lineage data.\n- `fr-3-69be8272`: Accept\n  `load_plan_bundle` only parses and hashes `plan.json`; it does not verify `bundle.identity.id` against the requested milestone or run `MilestoneBundle::validate()`. Because lineage queries then trust that bundle for bead title/criteria resolution, a copied-from-another-milestone or otherwise semantically invalid but parseable plan can surface bogus metadata instead of degrading cleanly to fallback lineage. Reusing the validated loader is the safer and more correct behavior.\n- `fr-3-2301878d`: Accept\n  `FsTaskRunLineageStore::find_runs_for_bead` filters with raw string equality on `entry.bead_id == bead_id`, but the rest of the milestone/bead codebase already canonicalizes or equivalence-checks short and fully qualified bead refs. As written, `bead_execution_history(\"bead-1\")` and `bead_execution_history(\"ms-alpha.bead-1\")` can return different run sets, including an empty history for one form even when matching rows exist for the other. That is a real correctness bug, not just a cosmetic inconsistency.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
