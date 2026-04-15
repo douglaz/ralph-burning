@@ -52,8 +52,8 @@ fn effective_config_loads_compiled_defaults() {
     assert_eq!(
         vec![
             "codex".to_owned(),
-            "claude".to_owned(),
-            "codex/gpt-5.3-codex-spark-xhigh".to_owned(),
+            "?claude".to_owned(),
+            "?codex/gpt-5.3-codex-spark-xhigh".to_owned(),
         ],
         match config
             .get("final_review.backends")
@@ -73,6 +73,39 @@ fn effective_config_loads_compiled_defaults() {
         {
             ConfigValue::String(value) => value,
             other => panic!("expected string config value, got {other:?}"),
+        }
+    );
+    assert_eq!(
+        Some("codex".to_owned()),
+        match config
+            .get("final_review.arbiter_backend")
+            .expect("final review arbiter backend")
+            .value
+        {
+            ConfigValue::String(value) => value,
+            other => panic!("expected string config value, got {other:?}"),
+        }
+    );
+    assert_eq!(
+        Some("gpt-5.4-xhigh".to_owned()),
+        match config
+            .get("backends.codex.role_models.arbiter")
+            .expect("codex arbiter role model")
+            .value
+        {
+            ConfigValue::String(value) => value,
+            other => panic!("expected string config value, got {other:?}"),
+        }
+    );
+    assert_eq!(
+        Some(1_u64),
+        match config
+            .get("final_review.min_reviewers")
+            .expect("final review minimum reviewers")
+            .value
+        {
+            ConfigValue::Integer(value) => Some(value),
+            other => panic!("expected integer config value, got {other:?}"),
         }
     );
     assert_eq!(

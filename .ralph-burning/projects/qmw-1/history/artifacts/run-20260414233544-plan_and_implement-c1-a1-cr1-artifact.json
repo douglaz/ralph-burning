@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414233544-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414233544-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T00:31:52.396303437Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated final review defaults so the panel now resolves to required Codex reviewer plus optional Claude and Spark reviewers, sets the final review minimum to 1 without changing prompt review defaults, and makes the arbiter default to Codex with the gpt-5.4-xhigh arbiter role model. I also updated unit/conformance coverage to reflect the new default resolution and resume-drift behavior.\n\n## Steps\n\n1. [Completed] Inspected final review backend resolution, config loading, diagnostics, and conformance coverage to find where reviewer defaults, arbiter defaults, optional members, and minimum-reviewer enforcement are resolved.\n2. [Completed] Confirmed optional `?` panel backend parsing and `min_reviewers` support already existed, so the implementation focused on changing default final review behavior rather than adding new parsing paths.\n3. [Completed] Changed config defaults so prompt review keeps its 2-reviewer default, final review now defaults to `min_reviewers = 1`, final review reviewers are `codex` required plus optional `claude` and optional `codex/gpt-5.3-codex-spark-xhigh`, and the default arbiter resolves through `final_review.arbiter_backend = codex` with the Codex arbiter role model set to `gpt-5.4-xhigh`.\n4. [Completed] Adjusted unit tests and conformance scenarios to match the new defaults, including arbiter-source reporting, optional reviewer handling, and resume-drift cases that must now switch away from the new Codex arbiter default to trigger drift.\n5. [Completed] Ran formatting, tests, clippy, targeted conformance checks, and the nix build gate on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo test --test unit` passed (788 tests).\n- `cargo test` passed.\n- `cargo test --features test-stub --test unit workflow_engine_test::resume_warns_when_final_review_arbiter_drifts` passed.\n- `cargo run --features test-stub -- conformance run --filter workflow.resume.backend_drift_warns` passed.\n- `cargo run --features test-stub -- conformance run --filter parity_slice5_backend_probe_final_review_panel` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\n- The worktree still has unrelated pre-existing changes in `.beads/issues.jsonl`, `result`, and `.ralph-burning/projects/qmw-1/`; I left them untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

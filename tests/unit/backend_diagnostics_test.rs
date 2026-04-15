@@ -751,8 +751,28 @@ fn show_effective_reports_final_review_panel_members() {
         .find(|r| r.role == "final_review_panel.reviewer[1]")
         .expect("second final-review reviewer row should exist");
     assert_eq!("claude", reviewer1.backend_family);
-    assert_eq!("claude-opus-4-6-max", reviewer1.model_id);
+    assert_eq!("claude-opus-4-6", reviewer1.model_id);
     assert_eq!("final_review.backends (default)", reviewer1.override_source);
+    assert_eq!(
+        "backends.claude.role_models.final_reviewer (default)",
+        reviewer1.model_source
+    );
+
+    let arbiter = view
+        .roles
+        .iter()
+        .find(|r| r.role == "arbiter")
+        .expect("arbiter row should exist");
+    assert_eq!("codex", arbiter.backend_family);
+    assert_eq!("gpt-5.4-xhigh", arbiter.model_id);
+    assert_eq!(
+        "final_review.arbiter_backend (default)",
+        arbiter.override_source
+    );
+    assert_eq!(
+        "backends.codex.role_models.arbiter (default)",
+        arbiter.model_source
+    );
 }
 
 #[test]
@@ -867,7 +887,7 @@ fn show_effective_final_reviewer_skips_optional_disabled_first_member() {
         .find(|r| r.role == "final_reviewer")
         .expect("compatibility final_reviewer row should exist");
     assert_eq!("claude", final_reviewer.backend_family);
-    assert_eq!("claude-opus-4-6-max", final_reviewer.model_id);
+    assert_eq!("claude-opus-4-6", final_reviewer.model_id);
     assert!(
         final_reviewer.resolution_error.is_none(),
         "optional disabled reviewer should be skipped for final_reviewer alias: {:?}",
@@ -917,7 +937,7 @@ fn probe_singular_final_reviewer_skips_optional_disabled_first_member() {
         .target
         .expect("singular role probe should return a target");
     assert_eq!("claude", target.backend_family);
-    assert_eq!("claude-opus-4-6-max", target.model_id);
+    assert_eq!("claude-opus-4-6", target.model_id);
 }
 
 // ── structured panel failure tests ───────────────────────────────────────────
@@ -1886,10 +1906,10 @@ async fn probe_failure_includes_config_source_for_arbiter() {
         "probe should fail when arbiter is unavailable"
     );
     let err_msg = result.unwrap_err().to_string();
-    // No explicit arbiter override set, so the arbiter inherits from default_backend.
+    // The default arbiter is an explicit compiled final_review.arbiter_backend selection.
     assert!(
-        err_msg.contains("[source: default_backend]"),
-        "inherited arbiter failure should report default_backend, not workflow.planner_backend: {}",
+        err_msg.contains("[source: final_review.arbiter_backend]"),
+        "default arbiter failure should report final_review.arbiter_backend: {}",
         err_msg
     );
 }

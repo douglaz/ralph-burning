@@ -22,7 +22,8 @@ pub const DEFAULT_PROMPT_REVIEW_ENABLED: bool = true;
 pub const DEFAULT_FLOW_PRESET: FlowPreset = FlowPreset::QuickDev;
 pub const DEFAULT_MAX_QA_ITERATIONS: u32 = 3;
 pub const DEFAULT_MAX_REVIEW_ITERATIONS: u32 = 3;
-pub const DEFAULT_MIN_REVIEWERS: usize = 2;
+pub const DEFAULT_PROMPT_REVIEW_MIN_REVIEWERS: usize = 2;
+pub const DEFAULT_FINAL_REVIEW_MIN_REVIEWERS: usize = 1;
 pub const DEFAULT_MAX_REFINEMENT_RETRIES: u32 = 2;
 pub const DEFAULT_MIN_COMPLETERS: usize = 2;
 pub const DEFAULT_CONSENSUS_THRESHOLD: f64 = 0.66;
@@ -225,7 +226,7 @@ impl EffectiveConfig {
                 workspace_config.prompt_review.min_reviewers,
                 project_config.prompt_review.min_reviewers,
                 None,
-                DEFAULT_MIN_REVIEWERS,
+                DEFAULT_PROMPT_REVIEW_MIN_REVIEWERS,
             ),
             max_refinement_retries: resolve_scalar(
                 workspace_config.prompt_review.max_refinement_retries,
@@ -273,12 +274,13 @@ impl EffectiveConfig {
                 workspace_config.final_review.arbiter_backend.as_deref(),
                 project_config.final_review.arbiter_backend.as_deref(),
                 None,
-            )?,
+            )?
+            .or_else(default_final_review_arbiter_backend),
             min_reviewers: resolve_scalar(
                 workspace_config.final_review.min_reviewers,
                 project_config.final_review.min_reviewers,
                 None,
-                DEFAULT_MIN_REVIEWERS,
+                DEFAULT_FINAL_REVIEW_MIN_REVIEWERS,
             ),
             consensus_threshold: resolve_scalar(
                 workspace_config.final_review.consensus_threshold,
@@ -1477,19 +1479,17 @@ fn default_implementer_backend() -> BackendSelection {
 
 fn default_final_review_backends() -> Vec<PanelBackendSpec> {
     vec![
-        // First codex reviewer — model comes from role_models.final_reviewer
-        // default (gpt-5.4-xhigh), overridable by workspace/project config.
         PanelBackendSpec::required(BackendFamily::Codex),
-        // Claude reviewer — model comes from role_models.final_reviewer
-        // default, overridable by workspace/project config.
-        PanelBackendSpec::required(BackendFamily::Claude),
-        // Third reviewer uses inline model override since it needs a
-        // different model than the first codex reviewer.
-        PanelBackendSpec::required_selection(BackendSelection::new(
+        PanelBackendSpec::optional(BackendFamily::Claude),
+        PanelBackendSpec::optional_selection(BackendSelection::new(
             BackendFamily::Codex,
             Some("gpt-5.3-codex-spark-xhigh".to_owned()),
         )),
     ]
+}
+
+fn default_final_review_arbiter_backend() -> Option<BackendSelection> {
+    Some(BackendSelection::new(BackendFamily::Codex, None))
 }
 
 fn default_backend_enabled(backend_name: &str) -> AppResult<bool> {
@@ -1527,10 +1527,11 @@ fn default_backend_runtime_settings(backend_name: &str) -> AppResult<BackendRunt
             "codex" => BackendRoleModels {
                 implementer: Some("gpt-5.4-high".to_owned()),
                 final_reviewer: Some("gpt-5.4-xhigh".to_owned()),
+                arbiter: Some("gpt-5.4-xhigh".to_owned()),
                 ..Default::default()
             },
             "claude" => BackendRoleModels {
-                final_reviewer: Some("claude-opus-4-6-max".to_owned()),
+                final_reviewer: Some("claude-opus-4-6".to_owned()),
                 ..Default::default()
             },
             _ => BackendRoleModels::default(),
