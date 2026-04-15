@@ -305,11 +305,24 @@ pub fn create_project(
     base_dir: &Path,
     input: CreateProjectInput,
 ) -> AppResult<ProjectRecord> {
-    let initial_details = serde_json::json!({
-        "project_id": input.id.as_str(),
-        "flow": input.flow.as_str(),
-    });
-    create_project_with_initial_details(store, journal_store, base_dir, input, initial_details)
+    let mut initial_details = serde_json::Map::from_iter([
+        (
+            "project_id".to_owned(),
+            serde_json::Value::String(input.id.to_string()),
+        ),
+        (
+            "flow".to_owned(),
+            serde_json::Value::String(input.flow.as_str().to_owned()),
+        ),
+    ]);
+    inject_task_source_initial_details(&mut initial_details, input.task_source.as_ref());
+    create_project_with_initial_details(
+        store,
+        journal_store,
+        base_dir,
+        input,
+        serde_json::Value::Object(initial_details),
+    )
 }
 
 pub fn create_project_from_seed(
@@ -434,36 +447,21 @@ pub fn create_project_from_bead_context(
             serde_json::Value::String("milestone_bead".to_owned()),
         ),
         (
-            "milestone_id".to_owned(),
-            serde_json::Value::String(context.milestone_id.clone()),
-        ),
-        (
-            "bead_id".to_owned(),
-            serde_json::Value::String(context.bead_id.clone()),
-        ),
-        (
             "bead_title".to_owned(),
             serde_json::Value::String(context.bead_title.clone()),
         ),
     ]);
-    if let Some(parent_epic_id) = &context.parent_epic_id {
-        initial_details.insert(
-            "parent_epic_id".to_owned(),
-            serde_json::Value::String(parent_epic_id.clone()),
-        );
-    }
-    if let Some(plan_hash) = &context.plan_hash {
-        initial_details.insert(
-            "plan_hash".to_owned(),
-            serde_json::Value::String(plan_hash.clone()),
-        );
-    }
-    if let Some(plan_version) = context.plan_version {
-        initial_details.insert(
-            "plan_version".to_owned(),
-            serde_json::Value::Number(plan_version.into()),
-        );
-    }
+    inject_task_source_initial_details(
+        &mut initial_details,
+        Some(&TaskSource {
+            milestone_id: context.milestone_id.clone(),
+            bead_id: context.bead_id.clone(),
+            parent_epic_id: context.parent_epic_id.clone(),
+            origin: super::model::TaskOrigin::Milestone,
+            plan_hash: context.plan_hash.clone(),
+            plan_version: context.plan_version,
+        }),
+    );
 
     let project_name = format!("{}: {}", context.milestone_name, context.bead_title);
     let task_source = Some(TaskSource {
@@ -1334,6 +1332,61 @@ fn create_project_with_initial_details(
     Ok(record)
 }
 
+fn inject_task_source_initial_details(
+    details: &mut serde_json::Map<String, serde_json::Value>,
+    task_source: Option<&TaskSource>,
+) {
+    let Some(task_source) = task_source else {
+        return;
+    };
+
+    details.insert(
+        "milestone_id".to_owned(),
+        serde_json::Value::String(task_source.milestone_id.clone()),
+    );
+    details.insert(
+        "bead_id".to_owned(),
+        serde_json::Value::String(task_source.bead_id.clone()),
+    );
+    details.insert(
+        "origin".to_owned(),
+        serde_json::Value::String(
+            serde_json::to_string(&task_source.origin)
+                .expect("task origin should serialize")
+                .trim_matches('"')
+                .to_owned(),
+        ),
+    );
+    if let Some(parent_epic_id) = &task_source.parent_epic_id {
+        details.insert(
+            "parent_epic_id".to_owned(),
+            serde_json::Value::String(parent_epic_id.clone()),
+        );
+    }
+    if let Some(plan_hash) = &task_source.plan_hash {
+        details.insert(
+            "plan_hash".to_owned(),
+            serde_json::Value::String(plan_hash.clone()),
+        );
+    }
+    if let Some(plan_version) = task_source.plan_version {
+        details.insert(
+            "plan_version".to_owned(),
+            serde_json::Value::Number(plan_version.into()),
+        );
+    }
+}
+
+fn build_missing_task_lineage_detail(task_source: &TaskSource) -> BeadLineageView {
+    BeadLineageView {
+        milestone_id: task_source.milestone_id.clone(),
+        milestone_name: "<milestone metadata unavailable>".to_owned(),
+        bead_id: task_source.bead_id.clone(),
+        bead_title: None,
+        acceptance_criteria: Vec::new(),
+    }
+}
+
 /// List all projects with summary data.
 pub fn list_projects(
     store: &dyn ProjectStorePort,
@@ -1383,7 +1436,9 @@ fn load_task_lineage_detail(
         task_source.plan_hash.as_deref(),
     ) {
         Ok(lineage) => Ok(Some(lineage)),
-        Err(AppError::MilestoneNotFound { .. }) => Ok(None),
+        Err(AppError::MilestoneNotFound { .. }) => {
+            Ok(Some(build_missing_task_lineage_detail(task_source)))
+        }
         Err(error) => Err(error),
     }
 }
@@ -1558,14 +1613,28 @@ pub fn run_status_json_reconciled(
 
 /// Get run history (durable only, no runtime logs).
 pub fn run_history(
+    store: &dyn ProjectStorePort,
     journal_port: &dyn JournalStorePort,
     artifact_port: &dyn ArtifactStorePort,
     base_dir: &Path,
     project_id: &ProjectId,
 ) -> AppResult<RunHistoryView> {
+    let record = store.read_project_record(base_dir, project_id)?;
     let events =
         queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
     let (milestone_id, bead_id) = queries::history_lineage(&events);
+    let milestone_id = milestone_id.or_else(|| {
+        record
+            .task_source
+            .as_ref()
+            .map(|task_source| task_source.milestone_id.clone())
+    });
+    let bead_id = bead_id.or_else(|| {
+        record
+            .task_source
+            .as_ref()
+            .map(|task_source| task_source.bead_id.clone())
+    });
     let (payloads, artifacts) = queries::filter_history_records(
         &events,
         artifact_port.list_payloads(base_dir, project_id)?,
@@ -2680,8 +2749,9 @@ mod tests {
     use chrono::TimeZone;
 
     use crate::adapters::fs::{
-        FsActiveProjectStore, FsJournalStore, FsMilestoneJournalStore, FsMilestonePlanStore,
-        FsMilestoneSnapshotStore, FsMilestoneStore, FsProjectStore, FsRunSnapshotStore,
+        FsActiveProjectStore, FsArtifactStore, FsJournalStore, FsMilestoneJournalStore,
+        FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore, FsProjectStore,
+        FsRunSnapshotStore,
     };
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
@@ -3014,7 +3084,8 @@ mod tests {
     }
 
     #[test]
-    fn show_project_ignores_missing_milestone_lineage() -> Result<(), Box<dyn std::error::Error>> {
+    fn show_project_preserves_fallback_lineage_when_milestone_is_missing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         setup_workspace(base)?;
@@ -3061,7 +3132,73 @@ mod tests {
             detail.record.task_source.unwrap().milestone_id,
             "ms-missing"
         );
-        assert_eq!(detail.task_lineage, None);
+        let lineage = detail
+            .task_lineage
+            .expect("task lineage should preserve durable milestone/bead ids");
+        assert_eq!(lineage.milestone_id, "ms-missing");
+        assert_eq!(lineage.milestone_name, "<milestone metadata unavailable>");
+        assert_eq!(lineage.bead_id, "bead-1");
+        assert_eq!(lineage.bead_title, None);
+        assert!(lineage.acceptance_criteria.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn run_history_falls_back_to_task_source_lineage_when_journal_lacks_it(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base)?;
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 15, 30, 0)
+            .single()
+            .unwrap();
+
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: ProjectId::new("task-alpha")?,
+                name: "Task Alpha".to_owned(),
+                flow: FlowPreset::QuickDev,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: "hash".to_owned(),
+                created_at: now,
+                task_source: Some(TaskSource {
+                    milestone_id: "ms-alpha".to_owned(),
+                    bead_id: "bead-1".to_owned(),
+                    parent_epic_id: None,
+                    origin: TaskOrigin::Milestone,
+                    plan_hash: Some("plan-hash".to_owned()),
+                    plan_version: Some(1),
+                }),
+            },
+        )?;
+
+        let journal_path = base
+            .join(".ralph-burning/projects/task-alpha")
+            .join("journal.ndjson");
+        let journal = std::fs::read_to_string(&journal_path)?;
+        let journal = journal
+            .replace(r#","milestone_id":"ms-alpha""#, "")
+            .replace(r#","bead_id":"bead-1""#, "")
+            .replace(r#","origin":"milestone""#, "")
+            .replace(r#","plan_hash":"plan-hash""#, "")
+            .replace(r#","plan_version":1"#, "");
+        std::fs::write(&journal_path, journal)?;
+
+        let history = run_history(
+            &FsProjectStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            base,
+            &ProjectId::new("task-alpha")?,
+        )?;
+
+        assert_eq!(history.milestone_id.as_deref(), Some("ms-alpha"));
+        assert_eq!(history.bead_id.as_deref(), Some("bead-1"));
         Ok(())
     }
 }

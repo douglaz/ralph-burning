@@ -9850,8 +9850,13 @@ async fn handle_status(as_json: bool) -> AppResult<()> {
 
 async fn handle_history(verbose: bool, as_json: bool, stage: Option<String>) -> AppResult<()> {
     let (current_dir, project_id) = load_active_project_context()?;
-    let history =
-        service::run_history(&FsJournalStore, &FsArtifactStore, &current_dir, &project_id)?;
+    let history = service::run_history(
+        &FsProjectStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &current_dir,
+        &project_id,
+    )?;
     let history = maybe_filter_history_by_stage(history, stage)?;
 
     if as_json {

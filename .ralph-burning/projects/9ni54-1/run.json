@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260415203322",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 7
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-6-a9e76540",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "finding_summary: `run history` still returns `milestone_id`/`bead_id` as null for milestone-backed projects created through the generic `create_project` path. The canonical project record persists `task_source` (`src/contexts/project_run_record/service.rs:1292-1300`), but `run_history` derives lineage only from journal events (`src/contexts/project_run_record/service.rs:1560-1584`, `src/contexts/project_run_record/queries.rs:347-371`). `create_project` does not copy `input.task_source` into the initial `project_created` event (`src/contexts/project_run_record/service.rs:302-313`), so the new history fields are wrong whenever the journal lacks the duplicated lineage metadata.\nseverity: medium\naffected_files:\n- src/contexts/project_run_record/service.rs\n- src/contexts/project_run_record/queries.rs\nremediation_hint: Treat `ProjectRecord.task_source` as the source of truth for history lineage, or at minimum inject `task_source` into the initial journal details whenever `create_project` receives it.",
-        "created_at": "2026-04-15T23:45:40.978255571Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "bf9ceef4c9d779db6cbae1d948f70815018fa157cc9a4727167cc1c8fe9437f0"
-      },
-      {
-        "amendment_id": "fr-6-1efbb979",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "finding_summary: Task detail queries now silently drop lineage when the milestone record is missing. `load_task_lineage_detail` converts `MilestoneNotFound` into `None` (`src/contexts/project_run_record/service.rs:1377-1387`), and the text renderers only print lineage when `task_lineage` is present (`src/cli/project.rs:772-786`, `src/cli/task.rs:149-163`). A milestone-backed task whose milestone directory was deleted or not checked out therefore becomes indistinguishable from a standalone task even though `ProjectRecord.task_source` still contains the milestone/bead IDs.\nseverity: medium\naffected_files:\n- src/contexts/project_run_record/service.rs\n- src/cli/project.rs\n- src/cli/task.rs\nremediation_hint: Preserve a fallback lineage view from `task_source` (at least milestone_id/bead_id) and surface that the milestone metadata is missing instead of dropping lineage entirely.",
-        "created_at": "2026-04-15T23:45:40.978258497Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "771378faf81a1c1c844ef52fa372c7823620eeaa919c4c0124d87b9336638e99"
-      },
-      {
-        "amendment_id": "fr-6-2944cd7d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "finding_summary: The new milestone lineage queries accept unknown bead IDs as successful empty results instead of reporting an invalid lookup. `resolve_bead_plan_details` falls back to `(None, [])` when the bead is absent from the plan (`src/contexts/milestone_record/service.rs:2120-2154`), and both `read_bead_lineage` (`src/contexts/milestone_record/service.rs:2222-2247`) and the no-runs branch of `bead_execution_history` (`src/contexts/milestone_record/service.rs:2279-2284`) return that fallback. A typo or stale bead ID is therefore indistinguishable from a real bead with no metadata/history.\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/service.rs\nremediation_hint: When the plan loads successfully and the requested bead is not present in it, return a not-found/corrupt-record error rather than an empty lineage view.",
-        "created_at": "2026-04-15T23:45:40.978261232Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "34585c61e1a3c28c0a21705898323f84ef55b42d5741a3f56a109fb7e74ae82c"
-      }
-    ],
-    "processed_count": 14
+    "pending": [],
+    "processed_count": 17
   },
-  "status_summary": "running: final review restart round 7 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-15T23:26:58.104604861Z",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260415203322-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T23:53:30.035775723Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the remaining lineage query gaps across project and milestone views. `run history` now falls back to persisted `ProjectRecord.task_source` lineage and generic `create_project` now writes milestone/bead metadata into the initial journal event, so milestone-backed tasks created outside the bead bootstrap path keep correct `milestone_id`/`bead_id`. Task detail lineage now preserves durable milestone/bead IDs when the milestone record is missing by returning an explicit fallback lineage view instead of dropping lineage entirely. Milestone bead-lineage queries now treat unknown bead IDs in a valid plan as errors rather than successful empty results, and regression coverage was added for all three cases.\n\n## Steps\n\n1. [Completed] Patched project-run lineage creation and lookup so generic project creation persists task-source lineage into the initial journal event and run-history queries fall back to canonical `ProjectRecord.task_source` metadata when journal lineage is absent.\n2. [Completed] Changed task-detail lineage loading to preserve fallback milestone/bead lineage for missing milestone records, surfacing explicit placeholder metadata instead of treating the task as standalone.\n3. [Completed] Hardened milestone bead-lineage resolution to reject unknown bead IDs against validated plans, added regression tests for the new behaviors, and reran the required formatting, test, clippy, and Nix validation gates.\n\n## Validation Evidence\n\n- `cargo test -q run_history_falls_back_to_task_source_lineage_when_journal_lacks_it --lib` passed.\n- `cargo test -q show_project_preserves_fallback_lineage_when_milestone_is_missing --lib` passed.\n- `cargo test -q read_bead_lineage_errors_for_unknown_bead_in_valid_plan --lib` passed.\n- `cargo test -q bead_execution_history_errors_for_unknown_bead_without_runs --lib` passed.\n- `cargo fmt --check` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` populated `result` -> `/nix/store/wsvbhcsxyqwfi38qggqx5bilkiw9q0m4-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`.\n\n## Outstanding Risks\n\n- Historical bead titles and acceptance criteria are still unavailable after a milestone replan because the system does not persist versioned plan snapshots; when persisted provenance no longer matches the live plan, lineage intentionally falls back to durable milestone/bead IDs without reconstructing old plan metadata.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 7
+}
