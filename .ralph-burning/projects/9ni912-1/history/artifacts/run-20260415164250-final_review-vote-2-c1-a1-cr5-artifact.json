@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-vote-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260415164250-final_review-vote-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T19:19:55.875374583Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify genuine code defects with clear evidence in the source. Amendment fr-5-0d97dc42 correctly identifies that find_existing_bead_project auto-adopts manual projects based solely on default ID match when task_source is None, creating a silent misattribution path where the adopted project then bypasses milestone controller reconciliation. Amendment fr-5-7f7fe3e3 correctly identifies that the canonicalize_milestone_bead_ref function's contains('.') heuristic conflates foreign fully-qualified refs with local dotted short refs, causing match failures in project loading, milestone operations, and controller resume.\n\n## Votes\n\n- `fr-5-0d97dc42`: Accept\n  Verified at project.rs:582-587: when no task_source-matching project is found, the code returns any default-named project with task_source=None. This is a legitimate design flaw — the only guard is naming coincidence, and there is no validation that the adopted project was ever intended for this bead. The downstream effects are confirmed: milestone.rs:763-774 links it into the controller, but run.rs:1041-1043 and 1123-1125 both short-circuit on missing task_source, so the adopted project never participates in lineage sync or controller reconciliation. The result is a project silently claimed by a milestone with no ability to verify or reconcile it. The remediation to require task_source matching or an explicit recovery marker is sound.\n- `fr-5-7f7fe3e3`: Accept\n  Verified at bead_refs.rs:11: the condition `trimmed.contains('.')` treats ALL dotted strings as fully qualified, but a local bead ref like '2.1' contains a dot without being milestone-prefixed. This causes canonicalize to return '2.1' instead of 'ms-alpha.2.1'. The downstream impact is confirmed: project.rs:991-992 does an exact string match on dotted refs (`bead.id != bead_id`), so 'ms-alpha.2.1' != '2.1' causes a rejection error. milestone.rs:1011-1012 has the identical pattern. run.rs:962-963 calls milestone_bead_refs_match which canonicalizes both sides — '2.1' stays '2.1' and 'ms-alpha.2.1' stays 'ms-alpha.2.1', so the match fails and the bead is reported missing during controller resume. The existing test at line 36-56 only covers non-dotted short refs ('bead-2'), confirming this case was overlooked. The fix to distinguish foreign qualified IDs (which contain a known milestone prefix before the dot) from local dotted suffixes is the correct approach.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 5
+}

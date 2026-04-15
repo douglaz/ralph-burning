@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::shared::error::{AppError, AppResult};
 
+use super::bead_refs::milestone_bead_refs_match;
 use super::model::MilestoneId;
 
 pub const MILESTONE_CONTROLLER_SCHEMA_VERSION: u32 = 1;
@@ -585,13 +586,16 @@ fn checkpoint_existing_controller_locked(
 
 fn same_state_context_error_details(
     state: MilestoneControllerState,
+    milestone_id: &MilestoneId,
     current_bead_id: Option<&str>,
     current_task_id: Option<&str>,
     next_bead_id: Option<&str>,
     next_task_id: Option<&str>,
 ) -> Option<String> {
     match (current_bead_id, next_bead_id) {
-        (Some(current), Some(next)) if current != next => {
+        (Some(current), Some(next))
+            if !milestone_bead_ids_equivalent(milestone_id, current, next) =>
+        {
             return Some(format!(
                 "same-state sync for '{}' must preserve active bead identifier '{}'",
                 state_name(state),
@@ -663,6 +667,7 @@ fn sync_existing_state_locked(
 
     if let Some(details) = same_state_context_error_details(
         current.state,
+        milestone_id,
         current.active_bead_id.as_deref(),
         current.active_task_id.as_deref(),
         bead_id.as_deref(),
@@ -875,6 +880,7 @@ fn transition_from_current_locked(
 
     if let Some(details) = transition_context_error_details(
         current.state,
+        milestone_id,
         current.active_bead_id.as_deref(),
         current.active_task_id.as_deref(),
         request.to_state,
@@ -1186,6 +1192,7 @@ fn validate_transition_journal(
             let transition_error = if same_state_sync {
                 same_state_context_error_details(
                     event.to_state,
+                    milestone_id,
                     previous.bead_id.as_deref(),
                     previous.task_id.as_deref(),
                     event.bead_id.as_deref(),
@@ -1194,6 +1201,7 @@ fn validate_transition_journal(
             } else {
                 transition_context_error_details(
                     previous.to_state,
+                    milestone_id,
                     previous.bead_id.as_deref(),
                     previous.task_id.as_deref(),
                     event.to_state,
@@ -1277,6 +1285,7 @@ fn state_context_error_details(
 
 fn transition_context_error_details(
     from_state: MilestoneControllerState,
+    milestone_id: &MilestoneId,
     from_bead_id: Option<&str>,
     from_task_id: Option<&str>,
     to_state: MilestoneControllerState,
@@ -1292,7 +1301,10 @@ fn transition_context_error_details(
     }
 
     if let Some(bead_id) = from_bead_id {
-        if to_bead_id != Some(bead_id) {
+        if to_bead_id
+            .map(|next| !milestone_bead_ids_equivalent(milestone_id, bead_id, next))
+            .unwrap_or(true)
+        {
             return Some(format!(
                 "transition from '{}' must preserve active bead identifier '{}' until the controller clears it",
                 state_name(from_state),
@@ -1358,7 +1370,7 @@ fn validate_active_context_alignment(
     task_id: &str,
 ) -> AppResult<()> {
     if let Some(current_bead_id) = current.active_bead_id.as_deref() {
-        if current_bead_id != bead_id {
+        if !milestone_bead_ids_equivalent(milestone_id, current_bead_id, bead_id) {
             return Err(controller_corrupt_record(
                 milestone_id,
                 "controller.json",
@@ -1382,6 +1394,10 @@ fn validate_active_context_alignment(
         }
     }
     Ok(())
+}
+
+fn milestone_bead_ids_equivalent(milestone_id: &MilestoneId, left: &str, right: &str) -> bool {
+    milestone_bead_refs_match(milestone_id, left, right)
 }
 
 fn state_name(state: MilestoneControllerState) -> &'static str {

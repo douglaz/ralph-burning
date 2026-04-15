@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-vote-3-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415164250-final_review-vote-3-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T17:12:46.510389748Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll three amendments are technically valid and improve correctness/robustness. I accept each proposal; the first fixes real state- and ID-resolution failure modes, the second removes stale active-milestone state behavior, and the third fixes misreported action context in error handling.\n\n## Votes\n\n- `fr-1-fdf3369e`: Accept\n  This is a real correctness/safety issue: short/legacy bead refs can be re-resolved incorrectly across milestones, and the current strict id match in project loading can reject valid claimed beads once ids are expanded. Handling ambiguous `br show` results deterministically and mapping missing beads to `ControllerBeadStatus::Missing` aligns with existing resume semantics and prevents spurious hard failures.\n- `fr-1-ee39a8bd`: Accept\n  The explicit-milestone branches mutate runtime context only after potentially missing early-return paths, so subsequent no-id commands can operate on stale state. Persisting `active-milestone` as soon as a validated explicit ID is accepted is a clear state-consistency fix with low risk and direct user-visible impact.\n- `fr-1-168c812b`: Accept\n  `load_bead_view` currently emits a fixed action label, producing misleading `milestone next` errors when invoked from `run`. Threading the caller action is a bounded fix for diagnostic correctness and avoids operator confusion without altering behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

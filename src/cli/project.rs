@@ -19,6 +19,9 @@ use crate::composition::agent_execution_builder;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
+use crate::contexts::milestone_record::bead_refs::{
+    br_show_output_indicates_missing, milestone_bead_refs_match,
+};
 use crate::contexts::milestone_record::bundle::{bead_matches_implicit_slot, MilestoneBundle};
 use crate::contexts::milestone_record::controller::{
     self as milestone_controller, MilestoneControllerState,
@@ -159,6 +162,11 @@ pub async fn handle(command: ProjectCommand) -> AppResult<()> {
             let current_dir = std::env::current_dir()?;
             let project_id = ProjectId::new(id)?;
             workspace_governance::set_active_project(&current_dir, &project_id)?;
+            let project_record = FsProjectStore.read_project_record(&current_dir, &project_id)?;
+            workspace_governance::sync_active_milestone_from_project_record(
+                &current_dir,
+                &project_record,
+            )?;
             println!("Selected project {}", project_id);
             Ok(())
         }
@@ -278,6 +286,7 @@ async fn handle_create_from_requirements(run_id: String) -> AppResult<()> {
                 &handoff.bundle,
                 Utc::now(),
             )?;
+            set_active_milestone_after_command(&current_dir, &record.id)?;
             println!(
                 "Created milestone '{}' from requirements run '{}'",
                 record.id, handoff.requirements_run_id
@@ -314,7 +323,7 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
     let milestone = milestone_store.read_milestone_record(&current_dir, &milestone_id)?;
     let milestone_snapshot = snapshot_store.read_snapshot(&current_dir, &milestone_id)?;
     let milestone_bundle = load_milestone_bundle(&plan_store, &current_dir, &milestone_id)?;
-    let bead = load_bead_detail(&current_dir, &args.bead_id).await?;
+    let bead = load_bead_detail(&current_dir, &milestone_id, &args.bead_id).await?;
     let flow_override = parse_flow_override(args.flow.as_deref())?;
     ensure_bead_belongs_to_milestone(&milestone_id, &bead)?;
     ensure_bead_creation_targets_are_actionable(&milestone_id, milestone_snapshot.status, &bead)?;
@@ -516,8 +525,69 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
         return Err(link_error);
     }
 
+    set_active_milestone_after_command(&current_dir, &milestone_id)?;
     set_active_project_after_create(&current_dir, &record.id)?;
     Ok(record.id)
+}
+
+pub(crate) fn find_existing_bead_project(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> AppResult<Option<ProjectId>> {
+    let default_project_id = default_project_id_for_bead(&milestone_id.to_string(), bead_id)?;
+    let mut matching_task_source_projects = Vec::new();
+    let mut default_project_record = None;
+
+    for project_id in FsProjectStore.list_project_ids(base_dir)? {
+        let record = FsProjectStore.read_project_record(base_dir, &project_id)?;
+        if project_id == default_project_id {
+            default_project_record = Some(record.clone());
+        }
+
+        let Some(task_source) = record.task_source.as_ref() else {
+            continue;
+        };
+        if task_source.milestone_id == milestone_id.as_str()
+            && milestone_bead_refs_match(milestone_id, &task_source.bead_id, bead_id)
+        {
+            matching_task_source_projects.push(record.id);
+        }
+    }
+
+    if let Some(project_id) = matching_task_source_projects
+        .iter()
+        .find(|project_id| **project_id == default_project_id)
+        .cloned()
+    {
+        return Ok(Some(project_id));
+    }
+
+    match matching_task_source_projects.len() {
+        0 => {}
+        1 => return Ok(matching_task_source_projects.into_iter().next()),
+        _ => {
+            let project_ids = matching_task_source_projects
+                .iter()
+                .map(|project_id| project_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "multiple projects already reference bead '{}' in milestone '{}': {}",
+                bead_id, milestone_id, project_ids
+            ))));
+        }
+    }
+
+    let Some(default_record) = default_project_record else {
+        return Ok(None);
+    };
+
+    if default_record.task_source.is_none() {
+        return Ok(Some(default_record.id));
+    }
+
+    Ok(None)
 }
 
 async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
@@ -891,12 +961,23 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
     Ok(())
 }
 
-async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetail> {
+async fn load_bead_detail(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> AppResult<BeadDetail> {
     let response: BrShowResponse = BrAdapter::new()
         .with_working_dir(base_dir.to_path_buf())
         .exec_json(&BrCommand::show(bead_id))
         .await
         .map_err(|error| match error {
+            BrError::BrExitError { stderr, stdout, .. }
+                if br_show_output_indicates_missing(&stderr, &stdout) =>
+            {
+                AppError::Io(std::io::Error::other(format!(
+                    "failed to load bead '{bead_id}': bead not found"
+                )))
+            }
             BrError::BrExitError { stderr, .. } => AppError::Io(std::io::Error::other(format!(
                 "failed to load bead '{bead_id}': {stderr}"
             ))),
@@ -907,19 +988,44 @@ async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetai
 
     match response {
         BrShowResponse::Single(bead) => {
-            if bead.id != bead_id {
-                return Err(AppError::Io(std::io::Error::other(format!(
-                    "failed to load bead '{bead_id}': br show returned bead '{}'",
-                    bead.id
-                ))));
+            if bead_id.contains('.') {
+                if bead.id != bead_id {
+                    return Err(AppError::Io(std::io::Error::other(format!(
+                        "failed to load bead '{bead_id}': br show returned bead '{}'",
+                        bead.id
+                    ))));
+                }
+                return Ok(bead);
             }
-            Ok(bead)
+
+            if milestone_bead_refs_match(milestone_id, &bead.id, bead_id) {
+                return Ok(bead);
+            }
+
+            Err(AppError::Io(std::io::Error::other(format!(
+                "failed to load bead '{bead_id}': br show returned bead '{}'",
+                bead.id
+            ))))
         }
         BrShowResponse::Many(beads) => {
-            let mut matches = beads.into_iter().filter(|bead| bead.id == bead_id);
+            let mut matches = beads.into_iter().filter(|bead| {
+                if bead_id.contains('.') {
+                    bead.id == bead_id
+                } else {
+                    milestone_bead_refs_match(milestone_id, &bead.id, bead_id)
+                }
+            });
             let bead = matches.next().ok_or_else(|| {
+                let detail = if bead_id.contains('.') {
+                    "br show returned no matching bead".to_owned()
+                } else {
+                    format!(
+                        "br show returned no matching bead in milestone '{}'",
+                        milestone_id
+                    )
+                };
                 AppError::Io(std::io::Error::other(format!(
-                    "failed to load bead '{bead_id}': br show returned no matching bead"
+                    "failed to load bead '{bead_id}': {detail}"
                 )))
             })?;
             if matches.next().is_some() {
@@ -2018,6 +2124,18 @@ fn set_active_project_after_create(base_dir: &Path, project_id: &ProjectId) -> A
         AppError::Io(std::io::Error::other(format!(
             "Project '{}' was created successfully but could not be selected as active: {}. Use `ralph-burning project select {}` to select it manually.",
             project_id, error, project_id
+        )))
+    })
+}
+
+fn set_active_milestone_after_command(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<()> {
+    workspace_governance::set_active_milestone(base_dir, milestone_id).map_err(|error| {
+        AppError::Io(std::io::Error::other(format!(
+            "The command succeeded but could not record milestone '{}' as active: {}. Run `ralph-burning milestone next {}` or `ralph-burning milestone run {}` with the explicit milestone ID.",
+            milestone_id, error, milestone_id, milestone_id
         )))
     })
 }

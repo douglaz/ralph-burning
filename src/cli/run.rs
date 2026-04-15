@@ -47,6 +47,9 @@ use crate::contexts::automation_runtime::cli_writer_lease::{
 };
 use crate::contexts::automation_runtime::model::CliWriterCleanupHandoff;
 use crate::contexts::automation_runtime::{DaemonStorePort, LeaseRecord};
+use crate::contexts::milestone_record::bead_refs::{
+    br_show_output_indicates_missing, canonicalize_milestone_bead_ref, milestone_bead_refs_match,
+};
 use crate::contexts::milestone_record::bundle::{planned_bead_membership_refs, MilestoneBundle};
 use crate::contexts::milestone_record::controller::{
     self as milestone_controller, ControllerBeadStatus, ControllerTaskStatus,
@@ -314,16 +317,6 @@ fn load_planned_bead_membership_refs(
         })
 }
 
-fn canonicalize_milestone_bead_ref(milestone_id: &MilestoneId, bead_id: &str) -> String {
-    let trimmed = bead_id.trim();
-    let qualified_prefix = format!("{}.", milestone_id.as_str());
-    if trimmed.starts_with(&qualified_prefix) {
-        trimmed.to_owned()
-    } else {
-        format!("{qualified_prefix}{trimmed}")
-    }
-}
-
 fn milestone_planned_refs_contain(
     planned_refs: &HashSet<String>,
     milestone_id: &MilestoneId,
@@ -334,11 +327,6 @@ fn milestone_planned_refs_contain(
         || bead_id
             .strip_prefix(&format!("{}.", milestone_id.as_str()))
             .is_some_and(|short_ref| planned_refs.contains(short_ref))
-}
-
-fn milestone_bead_refs_match(milestone_id: &MilestoneId, left: &str, right: &str) -> bool {
-    canonicalize_milestone_bead_ref(milestone_id, left)
-        == canonicalize_milestone_bead_ref(milestone_id, right)
 }
 
 fn summarize_bead_ids(ids: &[String]) -> String {
@@ -357,16 +345,9 @@ fn summarize_bead_ids(ids: &[String]) -> String {
 }
 
 fn br_show_error_is_missing(error: &BrError) -> bool {
-    fn message_describes_missing_bead(message: &str) -> bool {
-        let message = message.to_ascii_lowercase();
-        (message.contains("bead not found") || message.contains("issue not found"))
-            || (message.contains("not found")
-                && (message.contains("bead") || message.contains("issue")))
-    }
-
     match error {
         BrError::BrExitError { stderr, stdout, .. } => {
-            message_describes_missing_bead(stderr) || message_describes_missing_bead(stdout)
+            br_show_output_indicates_missing(stderr, stdout)
         }
         _ => false,
     }
@@ -969,16 +950,36 @@ impl MilestoneControllerResumePort for ProjectMilestoneControllerRuntime<'_> {
             });
         }
 
-        let detail: BeadDetail = serde_json::from_slice::<BrShowResponse>(&output.stdout)
-            .map(|response| match response {
-                BrShowResponse::Single(detail) => detail,
-                BrShowResponse::Many(mut details) => details.remove(0),
-            })
-            .map_err(|error| AppError::ResumeFailed {
-                reason: format!(
-                    "milestone controller resume could not parse bead '{bead_id}': {error}"
-                ),
+        let response =
+            serde_json::from_slice::<BrShowResponse>(&output.stdout).map_err(|error| {
+                AppError::ResumeFailed {
+                    reason: format!(
+                        "milestone controller resume could not parse bead '{bead_id}': {error}"
+                    ),
+                }
             })?;
+        let detail = match response {
+            BrShowResponse::Single(detail) => {
+                milestone_bead_refs_match(self.milestone_id, &detail.id, bead_id).then_some(detail)
+            }
+            BrShowResponse::Many(details) => {
+                let mut matches = details.into_iter().filter(|detail| {
+                    milestone_bead_refs_match(self.milestone_id, &detail.id, bead_id)
+                });
+                let detail = matches.next();
+                if matches.next().is_some() {
+                    return Err(AppError::ResumeFailed {
+                        reason: format!(
+                            "milestone controller resume found multiple matching beads for '{bead_id}'"
+                        ),
+                    });
+                }
+                detail
+            }
+        };
+        let Some(detail) = detail else {
+            return Ok(ControllerBeadStatus::Missing);
+        };
         Ok(match detail.status {
             BeadStatus::Closed => ControllerBeadStatus::Closed,
             _ => ControllerBeadStatus::Open,
@@ -3373,6 +3374,13 @@ fn reconcile_or_recover_claimed_running_snapshot(
 }
 
 async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
+    execute_start(overrides, true).await
+}
+
+pub(crate) async fn execute_start(
+    overrides: RunBackendOverrideArgs,
+    emit_output: bool,
+) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
     // Validate workspace version
@@ -3385,6 +3393,7 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     // Validate canonical project record
     let project_store = FsProjectStore;
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
+    workspace_governance::sync_active_milestone_from_project_record(&current_dir, &project_record)?;
 
     // Validate run snapshot integrity
     let run_snapshot_read = FsRunSnapshotStore;
@@ -3446,7 +3455,9 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let log_write = FsRuntimeLogWriteStore;
     let cancellation_token = CancellationToken::new();
 
-    println!("Starting run for project '{}'...", project_id);
+    if emit_output {
+        println!("Starting run for project '{}'...", project_id);
+    }
 
     let amendment_queue = FsAmendmentQueueStore;
     let retry_policy = RetryPolicy::default_policy()
@@ -3527,15 +3538,24 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     }
     close_result?;
 
-    match final_snapshot.status {
-        RunStatus::Completed => println!("Run completed successfully."),
-        RunStatus::Paused => println!("{}", final_snapshot.status_summary),
-        status => println!("Run finished with status '{}'.", status),
+    if emit_output {
+        match final_snapshot.status {
+            RunStatus::Completed => println!("Run completed successfully."),
+            RunStatus::Paused => println!("{}", final_snapshot.status_summary),
+            status => println!("Run finished with status '{}'.", status),
+        }
     }
     Ok(())
 }
 
 async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
+    execute_resume(overrides, true).await
+}
+
+pub(crate) async fn execute_resume(
+    overrides: RunBackendOverrideArgs,
+    emit_output: bool,
+) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
     let config = workspace_governance::load_workspace_config(&current_dir)?;
@@ -3545,6 +3565,7 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
 
     let project_store = FsProjectStore;
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
+    workspace_governance::sync_active_milestone_from_project_record(&current_dir, &project_record)?;
     let run_snapshot_read = FsRunSnapshotStore;
     let mut run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
     let _ = repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot(
@@ -3681,7 +3702,9 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let log_write = FsRuntimeLogWriteStore;
     let cancellation_token = CancellationToken::new();
 
-    println!("Resuming run for project '{}'...", project_id);
+    if emit_output {
+        println!("Resuming run for project '{}'...", project_id);
+    }
 
     let amendment_queue = FsAmendmentQueueStore;
     let retry_policy = RetryPolicy::default_policy()
@@ -3765,10 +3788,12 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     }
     close_result?;
 
-    match final_snapshot.status {
-        RunStatus::Completed => println!("Run completed successfully."),
-        RunStatus::Paused => println!("{}", final_snapshot.status_summary),
-        status => println!("Run finished with status '{}'.", status),
+    if emit_output {
+        match final_snapshot.status {
+            RunStatus::Completed => println!("Run completed successfully."),
+            RunStatus::Paused => println!("{}", final_snapshot.status_summary),
+            status => println!("Run finished with status '{}'.", status),
+        }
     }
 
     Ok(())
@@ -4162,6 +4187,10 @@ async fn handle_stop() -> AppResult<()> {
 }
 
 async fn handle_sync_milestone() -> AppResult<()> {
+    execute_sync_milestone(true).await
+}
+
+pub(crate) async fn execute_sync_milestone(emit_output: bool) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
     let project_record = FsProjectStore.read_project_record(&current_dir, &project_id)?;
@@ -4179,13 +4208,15 @@ async fn handle_sync_milestone() -> AppResult<()> {
         chrono::Utc::now(),
     )
     .await?;
-    if synced {
-        println!("Milestone task state synced for project '{}'.", project_id);
-    } else {
-        println!(
-            "No terminal milestone sync needed for project '{}'.",
-            project_id
-        );
+    if emit_output {
+        if synced {
+            println!("Milestone task state synced for project '{}'.", project_id);
+        } else {
+            println!(
+                "No terminal milestone sync needed for project '{}'.",
+                project_id
+            );
+        }
     }
 
     Ok(())
@@ -4533,6 +4564,21 @@ mod tests {
             .expect("chmod fake br");
     }
 
+    #[cfg(unix)]
+    fn install_fake_br_show_script(base_dir: &std::path::Path, show_json: &str) {
+        let fake_bin = base_dir.join("fake-bin");
+        std::fs::create_dir_all(&fake_bin).expect("create fake bin");
+
+        let escaped_show_json = show_json.replace('\'', "'\"'\"'");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"show\" ] && [ \"$3\" = \"--json\" ]; then\n  printf '%s\\n' '{escaped_show_json}'\n  exit 0\nfi\nprintf 'unexpected br invocation: %s\\n' \"$*\" >&2\nexit 1\n"
+        );
+        let br_path = fake_bin.join("br");
+        std::fs::write(&br_path, script).expect("write fake br");
+        std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake br");
+    }
+
     #[test]
     fn prepare_milestone_controller_for_execution_initializes_claimed_state() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -4610,6 +4656,55 @@ mod tests {
         };
 
         assert!(runtime.has_ready_beads().expect("query ready beads"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn milestone_controller_bead_status_filters_multi_match_show_results_to_current_milestone() {
+        let _path_lock = lock_path_mutex();
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        install_fake_br_show_script(
+            base_dir,
+            r#"[
+  {
+    "id": "other-ms.bead-2",
+    "title": "Foreign bead",
+    "status": "closed",
+    "priority": 1,
+    "bead_type": "task",
+    "labels": [],
+    "dependencies": [],
+    "dependents": [],
+    "acceptance_criteria": []
+  },
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Current milestone bead",
+    "status": "open",
+    "priority": 1,
+    "bead_type": "task",
+    "labels": [],
+    "dependencies": [],
+    "dependents": [],
+    "acceptance_criteria": []
+  }
+]"#,
+        );
+        let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+        let runtime = ProjectMilestoneControllerRuntime {
+            base_dir,
+            milestone_id: &milestone.id,
+        };
+
+        assert_eq!(
+            runtime.bead_status("bead-2").expect("query bead status"),
+            milestone_controller::ControllerBeadStatus::Open
+        );
     }
 
     #[cfg(unix)]

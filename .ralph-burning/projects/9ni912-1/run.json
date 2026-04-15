@@ -1,0 +1,75 @@
+{
+  "active_run": {
+    "run_id": "run-20260415164250",
+    "stage_cursor": {
+      "stage": "plan_and_implement",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 6
+    },
+    "started_at": "2026-04-15T16:42:50.130698692Z",
+    "prompt_hash_at_cycle_start": "eae7b5e66239a4c94d32254e1e39b0f4330b81f8683df9749c5f62d8b789cf3f",
+    "prompt_hash_at_stage_start": "eae7b5e66239a4c94d32254e1e39b0f4330b81f8683df9749c5f62d8b789cf3f",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 5
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 6,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [
+      {
+        "amendment_id": "fr-5-0d97dc42",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: `find_existing_bead_project` can adopt an unrelated manual project that merely happens to use the bead's default-derived project ID, and `milestone run` will then execute that project as if it were bead-backed.\nseverity: high\naffected_files:\n- src/cli/project.rs\n- src/cli/milestone.rs\n- src/cli/run.rs\nevidence:\n- src/cli/project.rs:582-587 returns `Some(default_record.id)` whenever the default-named project exists and `task_source` is `None`.\n- src/cli/milestone.rs:763-799 treats that result as an existing bead project and links it into the milestone controller.\n- src/cli/run.rs:1041-1043 and 1123-1125 both short-circuit when `task_source` is missing, so the adopted project never participates in milestone lineage sync or controller reconciliation.\nremediation_hint: Only adopt projects whose `task_source` matches the milestone/bead, or require an explicit recovery marker/migration path before reusing a default-named project. Otherwise surface a duplicate/needs-operator error instead of auto-adopting the project ID.",
+        "created_at": "2026-04-15T19:21:37.796249648Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "93833915ee1d5c55a156583066e09394cdbda4cea233416580e8927e7dcca911"
+      },
+      {
+        "amendment_id": "fr-5-7f7fe3e3",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: The new shared bead-ref canonicalizer treats any dotted short ref as already fully qualified, so legitimate milestone-local refs like `2.1` no longer match `ms-alpha.2.1`; `milestone next`, controller resume, and `create-from-bead` then reject or misclassify those beads.\nseverity: high\naffected_files:\n- src/contexts/milestone_record/bead_refs.rs\n- src/cli/milestone.rs\n- src/cli/project.rs\n- src/cli/run.rs\nevidence:\n- src/contexts/milestone_record/bead_refs.rs:8-15 now returns any ref containing `.` unchanged instead of prefixing it with the active milestone.\n- src/cli/project.rs:991-1036 and src/cli/milestone.rs:1011-1044 both treat dotted input as an exact ID, so `br show 2.1 --json` returning `ms-alpha.2.1` is rejected.\n- src/cli/run.rs:962-981 uses the same matcher during controller resume and will report the bead missing when the controller persisted only the dotted short form.\nremediation_hint: Distinguish foreign fully-qualified IDs from milestone-local dotted suffixes instead of using `contains('.')` as the split. Add regression coverage for dotted short bead IDs (for example `2.1` vs `ms-alpha.2.1`).",
+        "created_at": "2026-04-15T19:21:37.796253756Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "903c5d55c2898f911b86c3840ff590f85c1136bb60dcef16fa2a3e8155c69259"
+      }
+    ],
+    "processed_count": 10
+  },
+  "status_summary": "running: final review restart round 6 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-15T19:10:49.480005200Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
+}

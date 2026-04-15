@@ -37,6 +37,8 @@ pub enum AppError {
     },
     #[error("no active project selected; run `ralph-burning project select <id>`")]
     NoActiveProject,
+    #[error("no active milestone selected; run `ralph-burning milestone next <id>` or `ralph-burning milestone run <id>`")]
+    NoActiveMilestone,
     #[error(
         "project '{project_id}' was not found under .ralph-burning/projects/ or is missing project.toml"
     )]

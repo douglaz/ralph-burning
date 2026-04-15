@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415164250-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T18:10:29.190478733Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nPersisted the active milestone in the milestone-producing project flows (`project create --from-requirements` for milestone bundles and `project create-from-bead`), moved milestone bead-ref canonicalization and missing-bead detection into a shared `milestone_record::bead_refs` helper that is now reused by the milestone/project/run/controller paths, tightened missing-bead matching to only accept explicit \"bead not found\" / \"issue not found\" signals, and added coverage for the new active-milestone follow-on flows plus helper behavior.\n\n## Steps\n\n1. [Completed] Inspected the milestone CLI, project creation flows, workspace pointer handling, and duplicated bead-ref/missing-bead helpers to scope the pending amendments.\n2. [Completed] Implemented shared active-milestone persistence and shared milestone bead-ref/missing-bead helpers, then rewired milestone/project/run/controller codepaths to use them.\n3. [Completed] Added regression coverage for omitted-ID milestone commands after milestone-producing project flows and ran the required validation commands.\n\n## Validation Evidence\n\n- `cargo test project_create_from_requirements_sets_active_milestone_for_next_without_id --test cli -- --exact` passed.\n- `cargo test project_create_from_bead_sets_active_milestone_for_run_without_id --test cli --features test-stub -- --exact` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo fmt --check` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 3
+}

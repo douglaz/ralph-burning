@@ -1,3 +1,4 @@
+pub mod bead_refs;
 pub mod bundle;
 pub mod controller;
 pub mod model;

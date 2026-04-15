@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415164250-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T17:07:25.192940510Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed the milestone next/run commands and active milestone selection implementation. The changes are well-structured: proper controller state machine integration, clear status codes (success/blocked/needs_operator/completed), --json support, active milestone file read/write consistency, tracing routed to stderr for clean JSON stdout, bounded run loop with MAX_MILESTONE_RUN_STEPS=256, and comprehensive tests. Found one correctness bug: load_bead_view hardcodes action='next' in its error path but is called from both 'next' and 'run' handlers. clippy, fmt, and tests all pass cleanly.\n\n## Amendments\n\n1. load_bead_view (src/cli/milestone.rs:920) hardcodes action: \"next\" in its MilestoneOperationFailed error, but it is called from both inspect_next_milestone_action (line 543, correct) and execute_milestone_run (line 672, incorrect — should say \"run\"). When the bead_belongs_to_milestone check fails during milestone run, users see 'milestone next failed' instead of 'milestone run failed'. Fix: add an action parameter to load_bead_view and pass the caller's action string.\n   Rationale: Wrong error action identifier makes the error message misleading for milestone run users, complicating debugging.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

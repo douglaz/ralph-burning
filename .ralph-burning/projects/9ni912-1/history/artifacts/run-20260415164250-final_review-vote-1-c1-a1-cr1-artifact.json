@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415164250-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T17:15:24.900398512Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real issues. `fr-1-fdf3369e` is a substantive correctness bug in milestone/controller bead resolution, `fr-1-ee39a8bd` is a real state-consistency defect in active milestone tracking, and `fr-1-168c812b` is a smaller but valid user-visible error-reporting bug.\n\n## Votes\n\n- `fr-1-fdf3369e`: Accept\n  The finding is technically sound. The controller intentionally preserves the raw bead ID from `br ready`, but `milestone run` forwards that raw ID into `project::execute_create_from_bead`, and `src/cli/project.rs` then requires `br show` to resolve back to an exact `detail.id == bead_id`. If `br ready` supplied a short ref and `br show` expands it to a canonical milestone-qualified ID, a valid claimed bead can fail to load. Separately, `src/cli/milestone.rs` resolves `BrShowResponse::Many` by blindly popping one entry instead of matching against the current milestone, so short refs can be misidentified when multiple beads share the suffix. The runtime in `src/cli/milestone.rs` also converts missing beads into hard errors instead of `ControllerBeadStatus::Missing`, which conflicts with the controller resume logic that explicitly treats `Missing` as recoverable external closure. This is a real correctness issue, not a theoretical one.\n- `fr-1-ee39a8bd`: Accept\n  The stale active-milestone behavior is real. `milestone next` and `milestone run` without an explicit ID resolve entirely through the persisted `active-milestone` file, but `handle_status(Some(id))` returns without updating that file and `handle_plan` only updates it after full planning success. That means an explicit `milestone status <id>` or a `milestone plan <id>` path that exits early in `AwaitingAnswers` can leave the old milestone active, so a later omitted-ID `next` or `run` can target the wrong milestone. Given that other explicit milestone commands such as `create`, `show`, `next`, and `run` do update active context, this is an inconsistent and user-visible state-management bug.\n- `fr-1-168c812b`: Accept\n  This is a valid defect, even though it is smaller in scope. `load_bead_view` hardcodes `action: \"next\"` when constructing `MilestoneOperationFailed`, but the helper is also called from `execute_milestone_run`. If the bead/milestone membership check fails during `milestone run`, the user gets an error saying `milestone next failed`, which is incorrect and makes diagnosis harder. Threading the caller action through the helper is the right fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-reviewer-3-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415164250-final_review-reviewer-3-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T18:11:45.794511027Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed the milestone next/run feature changes (including active milestone selection refactor) end-to-end against `src/cli/milestone.rs`, `src/cli/run.rs`, `src/cli/project.rs`, `src/contexts/milestone_record/{bead_refs.rs,controller.rs,mod.rs}`, `src/contexts/workspace_governance/mod.rs`, and the related tests. No fix-now, planned-elsewhere, or propose-new-bead findings with correctness/safety impact were identified in this patch.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415164250-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T18:27:04.748883765Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness issues in context resolution. One is a concrete bead identity bug during controller resume when `br show` returns multiple matches for a short bead ref, and the other is a persisted-state inconsistency where omitted milestone selection can drift from the active bead-backed project.\n\n## Votes\n\n- `fr-3-78e7fc68`: Accept\n  `src/cli/run.rs` does unconditionally take the first element of `BrShowResponse::Many` in `ProjectMilestoneControllerRuntime::bead_status`, while the controller intentionally preserves raw short bead IDs from `br ready`. That makes `br show bead-1 --json` a reachable path during `run start`/`run resume`, and if multiple milestones contain `bead-1` the runtime can read the wrong bead and derive the wrong `ControllerBeadStatus`. The repository already has matching logic (`milestone_bead_refs_match(...)`) and stricter multi-match handling in `request_bead_detail` and the milestone CLI loader, so this is a real correctness gap rather than a speculative concern.\n- `fr-3-8da55614`: Accept\n  `resolve_active_milestone` reads only the persisted `active-milestone` file, but `project select` updates only `active-project`, and `run start`/`run resume` operate on bead-backed project metadata without refreshing milestone state. That allows the workspace to hold an active project for milestone B while omitted `milestone next`/`milestone run` still resolve milestone A or fail with `NoActiveMilestone`. Given that bead-backed projects already carry `task_source.milestone_id` and creation flows explicitly record the active milestone, this is a genuine state-consistency bug with user-visible misrouting, not just a UX preference.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
