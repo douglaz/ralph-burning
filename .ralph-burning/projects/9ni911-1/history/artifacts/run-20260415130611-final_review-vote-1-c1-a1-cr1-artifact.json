@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T13:33:50.461516881Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the two findings that identify real CLI control-flow/governance defects, and rejected the snapshot-reporting finding because the current design treats `status.json` as authoritative milestone state for read-only reporting.\n\n## Votes\n\n- `fr-1-dab9eb88`: Reject\n  `src/cli/milestone.rs` is reading the persisted milestone snapshot for read-only reporting, not asserting that `plan.json` is currently present. `MilestoneSnapshot.progress.total_beads` and `plan_hash` are part of the live status model, and milestone-domain logic also treats snapshot plan metadata as sufficient evidence of a finalized plan (`has_finalized_plan` is snapshot-based). That makes this a semantics/UX preference about whether `show`/`status` should require plan artifacts, not a clear correctness or safety defect.\n- `fr-1-422d6518`: Accept\n  `handle_plan` calls `draft_milestone` and then immediately calls `extract_milestone_bundle_handoff`. But `draft_milestone` only guarantees the run was created and the pipeline reached a stable state; when validation opens a question round, `run_full_mode_pipeline` returns `Ok(())` with the run in `awaiting_answers`. `extract_milestone_bundle_handoff` then rejects that valid intermediate state because it requires `completed`, so `milestone plan` exits non-zero even though planning successfully started. That is a real control-flow bug.\n- `fr-1-95b67e72`: Accept\n  `handle_show` and `handle_status` are the outliers in this CLI: they skip workspace governance loading/version checks before touching workspace files, while the rest of the command surface validates first. Because `load_workspace_config` is the version gate, omitting it lets these commands bypass unsupported-workspace protection and fall through to lower-level filesystem behavior instead of consistently failing with the intended version error. The exact patch can be minimal, but the finding itself is valid.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
