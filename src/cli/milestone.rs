@@ -25,6 +25,8 @@ use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::shared::error::{AppError, AppResult};
 
+const PENDING_REQUIREMENTS_START_PREFIX: &str = "__starting__:";
+
 #[derive(Debug, Args)]
 pub struct MilestoneCommand {
     #[command(subcommand)]
@@ -334,9 +336,8 @@ fn load_milestone_summary(
     milestone_id: &MilestoneId,
 ) -> AppResult<MilestoneSummaryView> {
     let record = load_existing_milestone(store, base_dir, milestone_id)?;
-    let snapshot = milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
-    let plan = load_live_plan_bundle(plan_store, base_dir, milestone_id, &snapshot)
-        .map_err(|error| map_inspection_error(milestone_id, error))?;
+    let (snapshot, plan) =
+        load_inspection_snapshot_and_plan(snapshot_store, plan_store, base_dir, milestone_id)?;
     let bead_count = plan
         .as_ref()
         .map(|plan| plan.bundle.bead_count() as u32)
@@ -362,9 +363,8 @@ fn load_milestone_detail(
     milestone_id: &MilestoneId,
 ) -> AppResult<MilestoneDetailView> {
     let record = load_existing_milestone(store, base_dir, milestone_id)?;
-    let snapshot = milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
-    let plan_bundle = load_live_plan_bundle(plan_store, base_dir, milestone_id, &snapshot)
-        .map_err(|error| map_inspection_error(milestone_id, error))?;
+    let (snapshot, plan_bundle) =
+        load_inspection_snapshot_and_plan(snapshot_store, plan_store, base_dir, milestone_id)?;
     let bead_count = plan_bundle
         .as_ref()
         .map(|bundle| bundle.bundle.bead_count() as u32)
@@ -390,6 +390,21 @@ fn load_milestone_detail(
 #[derive(Debug)]
 struct LoadedMilestoneBundle {
     bundle: MilestoneBundle,
+}
+
+fn load_inspection_snapshot_and_plan(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    plan_store: &impl MilestonePlanPort,
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<(MilestoneSnapshot, Option<LoadedMilestoneBundle>)> {
+    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
+        let snapshot =
+            load_snapshot_for_action(snapshot_store, base_dir, milestone_id, "inspection")?;
+        let plan = load_live_plan_bundle(plan_store, base_dir, milestone_id, &snapshot)
+            .map_err(|error| map_inspection_error(milestone_id, error))?;
+        Ok((snapshot, plan))
+    })
 }
 
 fn load_live_plan_bundle(
@@ -499,9 +514,24 @@ fn validate_workspace(base_dir: &std::path::Path) -> AppResult<()> {
     workspace_governance::ensure_supported_workspace_version(&config)
 }
 
+fn load_snapshot_for_action(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    action: &str,
+) -> AppResult<MilestoneSnapshot> {
+    milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id).map_err(|error| {
+        AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: action.to_owned(),
+            details: error.to_string(),
+        }
+    })
+}
+
 fn map_inspection_error(milestone_id: &MilestoneId, error: AppError) -> AppError {
     match error {
-        AppError::MilestoneNotFound { .. } => error,
+        AppError::MilestoneNotFound { .. } | AppError::MilestoneOperationFailed { .. } => error,
         other => AppError::MilestoneOperationFailed {
             milestone_id: milestone_id.to_string(),
             action: "inspection".to_owned(),
@@ -520,45 +550,129 @@ async fn load_or_start_milestone_requirements_run(
     String,
     crate::contexts::requirements_drafting::model::RequirementsRun,
 )> {
-    let snapshot = milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
-    if let Some(run_id) = snapshot.pending_requirements_run_id {
-        let run = requirements_store
-            .read_run(base_dir, &run_id)
-            .map_err(|error| AppError::MilestoneOperationFailed {
-                milestone_id: milestone_id.to_string(),
-                action: "planning".to_owned(),
-                details: format!(
-                    "pending requirements run '{}' could not be inspected: {}",
-                    run_id, error
-                ),
-            })?;
-        return Ok((run_id, run));
+    match reserve_pending_requirements_run(snapshot_store, base_dir, milestone_id)? {
+        PendingRequirementsRunReservation::Existing(run_id) => {
+            let run = requirements_store
+                .read_run(base_dir, &run_id)
+                .map_err(|error| AppError::MilestoneOperationFailed {
+                    milestone_id: milestone_id.to_string(),
+                    action: "planning".to_owned(),
+                    details: format!(
+                        "pending requirements run '{}' could not be inspected: {}",
+                        run_id, error
+                    ),
+                })?;
+            Ok((run_id, run))
+        }
+        PendingRequirementsRunReservation::Reserved(reservation_id) => {
+            let effective_config = EffectiveConfig::load(base_dir)?;
+            let requirements_cli_service =
+                agent_execution_builder::build_requirements_service(&effective_config)?;
+            let run_id = match requirements_cli_service
+                .draft_milestone(base_dir, &record.description, Utc::now(), None)
+                .await
+            {
+                Ok(run_id) => run_id,
+                Err(error) => {
+                    clear_pending_requirements_run(
+                        snapshot_store,
+                        base_dir,
+                        milestone_id,
+                        Some(&reservation_id),
+                    )?;
+                    return Err(AppError::MilestoneOperationFailed {
+                        milestone_id: milestone_id.to_string(),
+                        action: "planning".to_owned(),
+                        details: error.to_string(),
+                    });
+                }
+            };
+            replace_pending_requirements_run(
+                snapshot_store,
+                base_dir,
+                milestone_id,
+                &reservation_id,
+                &run_id,
+            )?;
+            let run = requirements_store
+                .read_run(base_dir, &run_id)
+                .map_err(|error| AppError::MilestoneOperationFailed {
+                    milestone_id: milestone_id.to_string(),
+                    action: "planning".to_owned(),
+                    details: format!(
+                        "requirements run '{}' could not be inspected: {}",
+                        run_id, error
+                    ),
+                })?;
+            Ok((run_id, run))
+        }
     }
+}
 
-    let effective_config = EffectiveConfig::load(base_dir)?;
-    let requirements_cli_service =
-        agent_execution_builder::build_requirements_service(&effective_config)?;
-    let run_id = requirements_cli_service
-        .draft_milestone(base_dir, &record.description, Utc::now(), None)
-        .await
-        .map_err(|error| AppError::MilestoneOperationFailed {
-            milestone_id: milestone_id.to_string(),
-            action: "planning".to_owned(),
-            details: error.to_string(),
-        })?;
-    set_pending_requirements_run(snapshot_store, base_dir, milestone_id, Some(&run_id))?;
-    let run = requirements_store
-        .read_run(base_dir, &run_id)
-        .map_err(|error| AppError::MilestoneOperationFailed {
+#[derive(Debug)]
+enum PendingRequirementsRunReservation {
+    Existing(String),
+    Reserved(String),
+}
+
+fn reserve_pending_requirements_run(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<PendingRequirementsRunReservation> {
+    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
+        let mut snapshot = load_snapshot_for_action(snapshot_store, base_dir, milestone_id, "planning")?;
+        if let Some(run_id) = snapshot.pending_requirements_run_id.as_deref() {
+            if is_pending_requirements_start_reservation(run_id) {
+                return Err(AppError::MilestoneOperationFailed {
+                    milestone_id: milestone_id.to_string(),
+                    action: "planning".to_owned(),
+                    details: "planning is already starting in another process; rerun once the pending requirements run is recorded".to_owned(),
+                });
+            }
+            return Ok(PendingRequirementsRunReservation::Existing(run_id.to_owned()));
+        }
+
+        let reservation_id = pending_requirements_start_reservation();
+        snapshot.pending_requirements_run_id = Some(reservation_id.clone());
+        snapshot.updated_at = Utc::now();
+        planning_snapshot_write(snapshot_store, base_dir, milestone_id, &snapshot)?;
+        Ok(PendingRequirementsRunReservation::Reserved(reservation_id))
+    })
+}
+
+fn replace_pending_requirements_run(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    expected_run_id: &str,
+    next_run_id: &str,
+) -> AppResult<()> {
+    let replaced = snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
+        let mut snapshot =
+            load_snapshot_for_action(snapshot_store, base_dir, milestone_id, "planning")?;
+        if snapshot.pending_requirements_run_id.as_deref() != Some(expected_run_id) {
+            return Ok(false);
+        }
+
+        snapshot.pending_requirements_run_id = Some(next_run_id.to_owned());
+        snapshot.updated_at = Utc::now();
+        planning_snapshot_write(snapshot_store, base_dir, milestone_id, &snapshot)?;
+        Ok(true)
+    })?;
+
+    if replaced {
+        Ok(())
+    } else {
+        Err(AppError::MilestoneOperationFailed {
             milestone_id: milestone_id.to_string(),
             action: "planning".to_owned(),
             details: format!(
-                "requirements run '{}' could not be inspected: {}",
-                run_id, error
+                "pending requirements run changed before reservation '{}' could be finalized",
+                expected_run_id
             ),
-        })?;
-
-    Ok((run_id, run))
+        })
+    }
 }
 
 fn clear_pending_requirements_run(
@@ -569,32 +683,47 @@ fn clear_pending_requirements_run(
 ) -> AppResult<()> {
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
         let mut snapshot =
-            milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
+            load_snapshot_for_action(snapshot_store, base_dir, milestone_id, "planning")?;
         if expected_run_id.is_none()
             || snapshot.pending_requirements_run_id.as_deref() == expected_run_id
         {
             snapshot.pending_requirements_run_id = None;
             snapshot.updated_at = Utc::now();
-            snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
+            planning_snapshot_write(snapshot_store, base_dir, milestone_id, &snapshot)?;
         }
         Ok(())
     })
 }
 
-fn set_pending_requirements_run(
+fn pending_requirements_start_reservation() -> String {
+    let timestamp = Utc::now()
+        .timestamp_nanos_opt()
+        .unwrap_or_else(|| Utc::now().timestamp_micros() * 1_000);
+    format!(
+        "{}{}-{}",
+        PENDING_REQUIREMENTS_START_PREFIX,
+        std::process::id(),
+        timestamp
+    )
+}
+
+fn is_pending_requirements_start_reservation(run_id: &str) -> bool {
+    run_id.starts_with(PENDING_REQUIREMENTS_START_PREFIX)
+}
+
+fn planning_snapshot_write(
     snapshot_store: &impl MilestoneSnapshotPort,
     base_dir: &std::path::Path,
     milestone_id: &MilestoneId,
-    run_id: Option<&str>,
+    snapshot: &MilestoneSnapshot,
 ) -> AppResult<()> {
-    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
-        let mut snapshot =
-            milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
-        snapshot.pending_requirements_run_id = run_id.map(str::to_owned);
-        snapshot.updated_at = Utc::now();
-        snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
-        Ok(())
-    })
+    snapshot_store
+        .write_snapshot(base_dir, milestone_id, snapshot)
+        .map_err(|error| AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "planning".to_owned(),
+            details: error.to_string(),
+        })
 }
 
 fn print_milestone_detail(detail: &MilestoneDetailView) {
@@ -719,11 +848,21 @@ fn map_create_error(milestone_id: &str, error: AppError) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_planning_idea, derive_milestone_id, retarget_bundle};
+    use super::{
+        default_planning_idea, derive_milestone_id, reserve_pending_requirements_run,
+        retarget_bundle, PendingRequirementsRunReservation, PENDING_REQUIREMENTS_START_PREFIX,
+    };
+    use chrono::{TimeZone, Utc};
+    use tempfile::tempdir;
+
+    use crate::adapters::fs::{FsMilestoneSnapshotStore, FsMilestoneStore};
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
     };
     use crate::contexts::milestone_record::model::MilestoneId;
+    use crate::contexts::milestone_record::service::{
+        self as milestone_service, CreateMilestoneInput,
+    };
     use crate::shared::domain::FlowPreset;
 
     #[test]
@@ -797,5 +936,51 @@ mod tests {
             bundle.workstreams[0].beads[0].depends_on,
             vec!["ms-alpha.bead-0"]
         );
+    }
+
+    #[test]
+    fn reserve_pending_requirements_run_blocks_second_starter() {
+        let temp_dir = tempdir().expect("tempdir");
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 0, 0)
+            .single()
+            .expect("valid timestamp");
+
+        milestone_service::create_milestone(
+            &store,
+            temp_dir.path(),
+            CreateMilestoneInput {
+                id: milestone_id.to_string(),
+                name: "Alpha".to_owned(),
+                description: "Plan alpha".to_owned(),
+            },
+            now,
+        )
+        .expect("create milestone");
+
+        let first =
+            reserve_pending_requirements_run(&snapshot_store, temp_dir.path(), &milestone_id)
+                .expect("first reservation");
+        match first {
+            PendingRequirementsRunReservation::Reserved(run_id) => {
+                assert!(
+                    run_id.starts_with(PENDING_REQUIREMENTS_START_PREFIX),
+                    "reservation should use the startup marker"
+                );
+            }
+            PendingRequirementsRunReservation::Existing(run_id) => {
+                panic!("expected reservation, found existing run {run_id}");
+            }
+        }
+
+        let second =
+            reserve_pending_requirements_run(&snapshot_store, temp_dir.path(), &milestone_id)
+                .expect_err("second starter should be rejected");
+        let message = second.to_string();
+        assert!(message.contains("milestone 'ms-alpha' planning failed"));
+        assert!(message.contains("already starting in another process"));
     }
 }

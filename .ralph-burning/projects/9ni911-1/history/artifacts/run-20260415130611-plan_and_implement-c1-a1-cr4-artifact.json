@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415130611-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T14:48:21.959259146Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nHardened the milestone CLI by wrapping snapshot-read failures with milestone-specific `MilestoneOperationFailed` errors for `show`, `status`, and `plan`, moving `show`/`status` live-plan inspection under the milestone write lock so readers do not see transient plan/status mismatches during replans, and reserving the pending requirements slot before launching milestone planning so concurrent `milestone plan <id>` invocations cannot start duplicate requirements runs. Added regression coverage for wrapped missing-status failures and for the new startup reservation behavior.\n\n## Steps\n\n1. [Completed] Inspected the milestone CLI read path, pending requirements-run lifecycle, and milestone plan persistence ordering to map the three reported regressions onto the existing command architecture.\n2. [Completed] Patched `src/cli/milestone.rs` so inspection reads happen under the milestone lock, snapshot-load failures are normalized with milestone ids/actions, and planning reserves and finalizes `pending_requirements_run_id` atomically around requirements-run startup.\n3. [Completed] Added CLI and unit regressions for missing `status.json` wrapping and duplicate-start prevention, then ran the required verification gates on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test milestone_ --features test-stub -- --nocapture` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 4
+}

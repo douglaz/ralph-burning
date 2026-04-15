@@ -939,6 +939,25 @@ fn milestone_show_json_rejects_missing_live_plan_when_snapshot_claims_one() {
 }
 
 #[test]
+fn milestone_show_wraps_missing_status_snapshot_with_milestone_id() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    fs::remove_file(milestone_root(temp_dir.path(), "ms-alpha").join("status.json"))
+        .expect("remove status json");
+
+    let output = Command::new(binary())
+        .args(["milestone", "show", "ms-alpha", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone show");
+
+    assert!(!output.status.success(), "milestone show should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-alpha' inspection failed"));
+    assert!(stderr.contains("No such file or directory"));
+}
+
+#[test]
 fn milestone_status_lists_all_milestones_in_json() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
@@ -981,6 +1000,25 @@ fn milestone_status_json_rejects_missing_live_plan_when_snapshot_claims_one() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("milestone 'ms-alpha' inspection failed"));
     assert!(stderr.contains("plan.json is missing"));
+}
+
+#[test]
+fn milestone_status_wraps_missing_status_snapshot_with_milestone_id() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    fs::remove_file(milestone_root(temp_dir.path(), "ms-alpha").join("status.json"))
+        .expect("remove status json");
+
+    let output = Command::new(binary())
+        .args(["milestone", "status", "ms-alpha", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone status");
+
+    assert!(!output.status.success(), "milestone status should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-alpha' inspection failed"));
+    assert!(stderr.contains("No such file or directory"));
 }
 
 #[test]
@@ -1137,6 +1175,44 @@ fn milestone_plan_runs_requirements_and_materializes_plan() {
     .expect("parse plan json");
     assert_eq!(plan["identity"]["id"], "ms-alpha-plan");
     assert_eq!(plan["identity"]["name"], "Alpha Plan");
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn milestone_plan_wraps_missing_status_snapshot_with_milestone_id() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let create_output = Command::new(binary())
+        .args([
+            "milestone",
+            "create",
+            "Alpha Plan",
+            "--from-idea",
+            "Plan the alpha milestone in milestone mode.",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone create");
+    assert!(
+        create_output.status.success(),
+        "milestone create should succeed: {}",
+        String::from_utf8_lossy(&create_output.stderr)
+    );
+
+    fs::remove_file(milestone_root(temp_dir.path(), "ms-alpha-plan").join("status.json"))
+        .expect("remove status json");
+
+    let plan_output = Command::new(binary())
+        .args(["milestone", "plan", "ms-alpha-plan"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone plan");
+
+    assert!(!plan_output.status.success(), "milestone plan should fail");
+    let stderr = String::from_utf8_lossy(&plan_output.stderr);
+    assert!(stderr.contains("milestone 'ms-alpha-plan' planning failed"));
+    assert!(stderr.contains("No such file or directory"));
 }
 
 #[cfg(feature = "test-stub")]
