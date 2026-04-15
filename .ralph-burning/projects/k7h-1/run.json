@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260415004740",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 3
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-2-54112b84",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 2,
-        "body": "finding_summary: The Codex fast-mode suffix feature is still unimplemented. `codex_model_and_reasoning_effort()` only strips reasoning suffixes (`-xhigh`, `-high`, `-medium`, `-low`) and never recognizes `-fast`, so `codex/gpt-5.4-xhigh-fast` currently flows through `codex_new_session_args()` / `codex_resume_args()` as `--model gpt-5.4-xhigh-fast` with no fast-mode flag. That means the bead's core acceptance criteria fail for both fresh and resumed Codex invocations. severity: high. affected_files: src/adapters/process_backend.rs:1319-1399; tests/unit/process_backend_test.rs:751-822, 890-939, 1020-1082. remediation_hint: Add a Codex model parser that peels an optional `-fast` suffix in addition to reasoning effort, use it in both argument builders, and add command-construction tests for `...-fast` and non-fast variants.",
-        "created_at": "2026-04-15T01:38:32.505635208Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "d860ef1f245415db0d08241b22746e926f7d282767c3748c417ee134d51263ba"
-      },
-      {
-        "amendment_id": "fr-2-acc9174e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 2,
-        "body": "The plan_and_implement stage hallucinated its implementation. Zero lines of source code were changed between the last merged PR (fa1bae34) and HEAD. The artifact claims completion of 4 steps with 3 named tests and passing cargo test/clippy/nix build, but none of these tests exist and no code was written. The implementation must actually be performed: (1) extend codex_model_and_reasoning_effort() in src/adapters/process_backend.rs to detect and strip a trailing -fast suffix from the model ID, (2) wire the fast mode flag into codex_new_session_args() and codex_resume_session_args() as -c service_tier=\"fast\", (3) add regression tests covering model ID parsing with -fast suffix for standard and spark variants, (4) ensure the reasoning effort suffix parsing still works when combined with -fast (e.g. gpt-5.4-xhigh-fast should parse as model=gpt-5.4, effort=xhigh, fast=true).",
-        "created_at": "2026-04-15T01:38:32.505638705Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "d3bada634d7853d1b5688fbc603570e7f03f547e6ca90a5147d001a01433e975"
-      }
-    ],
-    "processed_count": 1
+    "pending": [],
+    "processed_count": 3
   },
-  "status_summary": "running: final review restart round 3 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-15T01:33:33.723100150Z",

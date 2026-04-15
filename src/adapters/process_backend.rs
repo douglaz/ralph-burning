@@ -1316,17 +1316,22 @@ impl ProcessBackendAdapter {
         }
     }
 
-    fn codex_model_and_reasoning_effort(model_id: &str) -> (&str, Option<&str>) {
+    fn codex_model_reasoning_effort_and_fast(model_id: &str) -> (&str, Option<&str>, bool) {
+        let (model_id, fast_mode) = match model_id.strip_suffix("-fast") {
+            Some(base_model_id) if !base_model_id.is_empty() => (base_model_id, true),
+            _ => (model_id, false),
+        };
+
         for effort in ["xhigh", "high", "medium", "low"] {
             let suffix = format!("-{effort}");
             if let Some(base_model) = model_id.strip_suffix(&suffix) {
                 if !base_model.is_empty() {
-                    return (base_model, Some(effort));
+                    return (base_model, Some(effort), fast_mode);
                 }
             }
         }
 
-        (model_id, None)
+        (model_id, None, fast_mode)
     }
 
     fn claude_model_and_reasoning_effort(model_id: &str) -> (&str, Option<&str>) {
@@ -1347,7 +1352,8 @@ impl ProcessBackendAdapter {
         schema_path: &Path,
         message_path: &Path,
     ) -> Vec<String> {
-        let (base_model_id, reasoning_effort) = Self::codex_model_and_reasoning_effort(model_id);
+        let (base_model_id, reasoning_effort, fast_mode) =
+            Self::codex_model_reasoning_effort_and_fast(model_id);
         let mut args = vec![
             "exec".to_owned(),
             "--dangerously-bypass-approvals-and-sandbox".to_owned(),
@@ -1358,6 +1364,10 @@ impl ProcessBackendAdapter {
         if let Some(reasoning_effort) = reasoning_effort {
             args.push("-c".to_owned());
             args.push(format!("model_reasoning_effort=\"{reasoning_effort}\""));
+        }
+        if fast_mode {
+            args.push("-c".to_owned());
+            args.push("service_tier=\"fast\"".to_owned());
         }
         args.extend([
             "--output-schema".to_owned(),
@@ -1375,7 +1385,8 @@ impl ProcessBackendAdapter {
         message_path: &Path,
         session_id: &str,
     ) -> Vec<String> {
-        let (base_model_id, reasoning_effort) = Self::codex_model_and_reasoning_effort(model_id);
+        let (base_model_id, reasoning_effort, fast_mode) =
+            Self::codex_model_reasoning_effort_and_fast(model_id);
         let mut args = vec![
             "exec".to_owned(),
             "resume".to_owned(),
@@ -1387,6 +1398,10 @@ impl ProcessBackendAdapter {
         if let Some(reasoning_effort) = reasoning_effort {
             args.push("-c".to_owned());
             args.push(format!("model_reasoning_effort=\"{reasoning_effort}\""));
+        }
+        if fast_mode {
+            args.push("-c".to_owned());
+            args.push("service_tier=\"fast\"".to_owned());
         }
         args.extend([
             "--output-schema".to_owned(),
@@ -2514,6 +2529,28 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn codex_model_suffix_parses_reasoning_effort_and_fast_mode() {
+        assert_eq!(
+            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.4-xhigh-fast"),
+            ("gpt-5.4", Some("xhigh"), true)
+        );
+        assert_eq!(
+            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast(
+                "gpt-5.3-codex-spark-xhigh-fast"
+            ),
+            ("gpt-5.3-codex-spark", Some("xhigh"), true)
+        );
+        assert_eq!(
+            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.4-fast"),
+            ("gpt-5.4", None, true)
+        );
+        assert_eq!(
+            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.4-xhigh"),
+            ("gpt-5.4", Some("xhigh"), false)
+        );
+    }
 
     #[test]
     fn enforce_strict_mode_adds_missing_required_fields() {
