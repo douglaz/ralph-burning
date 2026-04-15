@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260415164250",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 5
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-4-3d30bf16",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "finding_summary: `milestone run` cannot recover a bead-backed project that was already created before `active_task_id` was recorded in the controller.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:744-766\n- src/cli/project.rs:406-417\n- src/cli/project.rs:448-499\nremediation_hint: Before falling back to `project::execute_create_from_bead`, look for an existing project whose `task_source` matches `(milestone_id, bead_id)` or at least the computed `default_project_id_for_bead`, then adopt that project into the controller instead of erroring with `DuplicateProject`.",
-        "created_at": "2026-04-15T18:56:23.959836040Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "1400ca2a1b2c313168cb68bf76bc957cd6eaae48ce79beebbdedf33355d0cf10"
-      },
-      {
-        "amendment_id": "fr-4-de7bdf94",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "finding_summary: Omitted-ID `milestone next` and `milestone run` abort on a stale `active-milestone` pointer instead of falling back to the active project's milestone metadata.\nseverity: low\naffected_files:\n- src/cli/milestone.rs:491-499\nremediation_hint: If `read_active_milestone` yields an ID that is malformed or no longer exists, ignore that cached pointer and then try `active_project_milestone_id` before surfacing `NoActiveMilestone` or `MilestoneNotFound`.",
-        "created_at": "2026-04-15T18:56:23.959838144Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "0ddf8206ee79ba128e83253744a4c42191b62dec12009566babdeed3d5d20d58"
-      }
-    ],
-    "processed_count": 8
+    "pending": [],
+    "processed_count": 10
   },
-  "status_summary": "running: final review restart round 5 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-15T18:43:39.118970284Z",

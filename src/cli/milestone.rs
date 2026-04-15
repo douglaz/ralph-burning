@@ -489,9 +489,13 @@ fn resolve_active_milestone(
     base_dir: &std::path::Path,
 ) -> AppResult<MilestoneId> {
     if let Some(raw) = workspace_governance::read_active_milestone(base_dir)? {
-        let milestone_id = MilestoneId::new(raw)?;
-        load_existing_milestone(store, base_dir, &milestone_id)?;
-        return Ok(milestone_id);
+        if let Ok(milestone_id) = MilestoneId::new(raw) {
+            match load_existing_milestone(store, base_dir, &milestone_id) {
+                Ok(_) => return Ok(milestone_id),
+                Err(AppError::MilestoneNotFound { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     let milestone_id = workspace_governance::active_project_milestone_id(base_dir)?
@@ -756,7 +760,21 @@ async fn ensure_project_for_controller(
         return Ok(project_id);
     }
 
-    project::execute_create_from_bead(project::CreateFromBeadArgs {
+    if let Some(project_id) = project::find_existing_bead_project(base_dir, milestone_id, bead_id)?
+    {
+        milestone_controller::sync_controller_task_claimed(
+            &FsMilestoneControllerStore,
+            base_dir,
+            milestone_id,
+            bead_id,
+            project_id.as_str(),
+            "adopted existing bead-backed project",
+            Utc::now(),
+        )?;
+        return Ok(project_id);
+    }
+
+    match project::execute_create_from_bead(project::CreateFromBeadArgs {
         milestone_id: milestone_id.to_string(),
         bead_id: bead_id.to_owned(),
         project_id: None,
@@ -764,6 +782,35 @@ async fn ensure_project_for_controller(
         flow: None,
     })
     .await
+    {
+        Ok(project_id) => Ok(project_id),
+        Err(AppError::DuplicateProject { .. }) => {
+            if let Some(project_id) =
+                project::find_existing_bead_project(base_dir, milestone_id, bead_id)?
+            {
+                milestone_controller::sync_controller_task_claimed(
+                    &FsMilestoneControllerStore,
+                    base_dir,
+                    milestone_id,
+                    bead_id,
+                    project_id.as_str(),
+                    "adopted existing bead-backed project after duplicate project detection",
+                    Utc::now(),
+                )?;
+                Ok(project_id)
+            } else {
+                Err(AppError::MilestoneOperationFailed {
+                    milestone_id: milestone_id.to_string(),
+                    action: "run".to_owned(),
+                    details: format!(
+                        "controller could not recover the existing project for bead '{}'",
+                        bead_id
+                    ),
+                })
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 enum MilestoneRunAction {

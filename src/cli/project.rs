@@ -530,6 +530,66 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
     Ok(record.id)
 }
 
+pub(crate) fn find_existing_bead_project(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> AppResult<Option<ProjectId>> {
+    let default_project_id = default_project_id_for_bead(&milestone_id.to_string(), bead_id)?;
+    let mut matching_task_source_projects = Vec::new();
+    let mut default_project_record = None;
+
+    for project_id in FsProjectStore.list_project_ids(base_dir)? {
+        let record = FsProjectStore.read_project_record(base_dir, &project_id)?;
+        if project_id == default_project_id {
+            default_project_record = Some(record.clone());
+        }
+
+        let Some(task_source) = record.task_source.as_ref() else {
+            continue;
+        };
+        if task_source.milestone_id == milestone_id.as_str()
+            && milestone_bead_refs_match(milestone_id, &task_source.bead_id, bead_id)
+        {
+            matching_task_source_projects.push(record.id);
+        }
+    }
+
+    if let Some(project_id) = matching_task_source_projects
+        .iter()
+        .find(|project_id| **project_id == default_project_id)
+        .cloned()
+    {
+        return Ok(Some(project_id));
+    }
+
+    match matching_task_source_projects.len() {
+        0 => {}
+        1 => return Ok(matching_task_source_projects.into_iter().next()),
+        _ => {
+            let project_ids = matching_task_source_projects
+                .iter()
+                .map(|project_id| project_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "multiple projects already reference bead '{}' in milestone '{}': {}",
+                bead_id, milestone_id, project_ids
+            ))));
+        }
+    }
+
+    let Some(default_record) = default_project_record else {
+        return Ok(None);
+    };
+
+    if default_record.task_source.is_none() {
+        return Ok(Some(default_record.id));
+    }
+
+    Ok(None)
+}
+
 async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
     let project_id = execute_create_from_bead(args).await?;
     let current_dir = std::env::current_dir()?;
