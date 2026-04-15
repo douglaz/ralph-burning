@@ -1376,23 +1376,6 @@ fn load_task_lineage_detail(
         return Ok(None);
     };
 
-    if milestone_store
-        .read_milestone_record(base_dir, &milestone_id)
-        .is_err()
-    {
-        return Ok(None);
-    }
-    let Ok(plan_json) = plan_store.read_plan_json(base_dir, &milestone_id) else {
-        return Ok(None);
-    };
-    if serde_json::from_str::<crate::contexts::milestone_record::bundle::MilestoneBundle>(
-        &plan_json,
-    )
-    .is_err()
-    {
-        return Ok(None);
-    }
-
     match crate::contexts::milestone_record::service::read_bead_lineage(
         milestone_store,
         plan_store,
@@ -2824,7 +2807,7 @@ mod tests {
     }
 
     #[test]
-    fn show_project_gracefully_ignores_missing_plan_lineage(
+    fn show_project_preserves_fallback_lineage_when_plan_is_missing(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -2882,7 +2865,87 @@ mod tests {
         )?;
 
         assert_eq!(detail.record.task_source.unwrap().milestone_id, "ms-alpha");
-        assert_eq!(detail.task_lineage, None);
+        let lineage = detail
+            .task_lineage
+            .expect("milestone lineage should fall back without plan metadata");
+        assert_eq!(lineage.milestone_id, "ms-alpha");
+        assert_eq!(lineage.milestone_name, "Alpha");
+        assert_eq!(lineage.bead_id, "bead-1");
+        assert_eq!(lineage.bead_title, None);
+        assert!(lineage.acceptance_criteria.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn show_project_preserves_fallback_lineage_when_plan_is_corrupt(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base)?;
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 15, 0, 0)
+            .single()
+            .unwrap();
+        let milestone = materialize_bundle(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &sample_bundle("ms-alpha", "Alpha"),
+            now,
+        )?;
+        let current_plan_hash =
+            hash_text(&FsMilestonePlanStore.read_plan_json(base, &milestone.id)?);
+
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: ProjectId::new("task-alpha")?,
+                name: "Task Alpha".to_owned(),
+                flow: FlowPreset::QuickDev,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: "hash".to_owned(),
+                created_at: now,
+                task_source: Some(TaskSource {
+                    milestone_id: milestone.id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    parent_epic_id: None,
+                    origin: TaskOrigin::Milestone,
+                    plan_hash: Some(current_plan_hash),
+                    plan_version: Some(1),
+                }),
+            },
+        )?;
+
+        std::fs::write(
+            FileSystem::milestone_root(base, &milestone.id).join("plan.json"),
+            "{not valid json",
+        )?;
+
+        let detail = show_project(
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsJournalStore,
+            &FsActiveProjectStore,
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            base,
+            &ProjectId::new("task-alpha")?,
+        )?;
+
+        assert_eq!(detail.record.task_source.unwrap().milestone_id, "ms-alpha");
+        let lineage = detail
+            .task_lineage
+            .expect("milestone lineage should fall back when plan is corrupt");
+        assert_eq!(lineage.milestone_id, "ms-alpha");
+        assert_eq!(lineage.milestone_name, "Alpha");
+        assert_eq!(lineage.bead_id, "bead-1");
+        assert_eq!(lineage.bead_title, None);
+        assert!(lineage.acceptance_criteria.is_empty());
         Ok(())
     }
 }

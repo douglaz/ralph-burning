@@ -10763,9 +10763,7 @@ fn format_json_history(
     #[derive(Serialize)]
     struct HistoryJsonView {
         project_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
         milestone_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         bead_id: Option<String>,
         events: Vec<crate::contexts::project_run_record::model::JournalEvent>,
         payloads: Vec<HistoryPayloadJsonView>,

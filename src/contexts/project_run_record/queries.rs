@@ -291,9 +291,9 @@ impl RunStatusJsonView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunHistoryView {
     pub project_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub milestone_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub bead_id: Option<String>,
     pub events: Vec<JournalEvent>,
     pub payloads: Vec<PayloadRecord>,

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260415203322",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 3
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-2-d0058eb5",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 2,
-        "body": "finding_summary: Non-milestone `run history --json` responses omit `milestone_id` and `bead_id` entirely instead of emitting explicit `null` values. Both fields are marked with `skip_serializing_if = \"Option::is_none\"` in [src/contexts/project_run_record/queries.rs:292-297] and the CLI's JSON wrapper repeats the omission in [src/cli/run.rs:10764-10769]. That violates the stated backward-compat contract for standalone tasks and prevents JSON consumers from distinguishing \"standalone task\" from \"older binary that never exposed lineage\".\nseverity: medium\naffected_files:\n- src/contexts/project_run_record/queries.rs:292-297\n- src/cli/run.rs:10764-10769\nremediation_hint: Keep the fields optional in Rust, but remove `skip_serializing_if` on the JSON-facing history structs and add a regression test that asserts `\"milestone_id\": null` / `\"bead_id\": null` for a non-milestone project.",
-        "created_at": "2026-04-15T21:42:37.456109168Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "2bc2f4bf88167d62055be5fe8447cc5fb92d03d9ac9dda231b8fc7956c553693"
-      },
-      {
-        "amendment_id": "fr-2-80ff9e53",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 2,
-        "body": "finding_summary: Milestone-backed task detail queries lose all lineage when `plan.json` is missing or unreadable. `load_task_lineage_detail()` returns `None` as soon as `read_plan_json` or plan deserialization fails in [src/contexts/project_run_record/service.rs:1363-1405], even though `read_bead_lineage()` already has a fallback that preserves milestone name/id and bead id without current-plan metadata in [src/contexts/milestone_record/service.rs:2131-2193]. As a result, `project show` / `task show` make a milestone-linked task indistinguishable from a standalone task after plan loss or corruption, which defeats the new lineage query.\nseverity: medium\naffected_files:\n- src/contexts/project_run_record/service.rs:1363-1405\n- src/contexts/milestone_record/service.rs:2131-2193\nremediation_hint: Stop preemptively returning `None` on missing/corrupt plan artifacts; call `read_bead_lineage()` directly once the milestone exists and let its fallback path return milestone/bead lineage with empty title/acceptance details when plan metadata is unavailable.",
-        "created_at": "2026-04-15T21:42:37.456112985Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "649d83d3485726f409805885b07cde770c99de5f5dc0e4913645d486b574651c"
-      }
-    ],
-    "processed_count": 3
+    "pending": [],
+    "processed_count": 5
   },
-  "status_summary": "running: final review restart round 3 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-15T21:32:40.550230839Z",

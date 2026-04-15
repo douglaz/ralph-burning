@@ -11072,6 +11072,16 @@ fn run_history_json_outputs_parseable_json() {
     let value: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("history json should parse");
     assert_eq!(value["project_id"], "alpha");
+    assert!(
+        value.get("milestone_id").is_some(),
+        "history json should always include milestone_id"
+    );
+    assert!(
+        value.get("bead_id").is_some(),
+        "history json should always include bead_id"
+    );
+    assert!(value["milestone_id"].is_null());
+    assert!(value["bead_id"].is_null());
     assert_eq!(value["events"].as_array().expect("events array").len(), 5);
     assert_eq!(
         value["payloads"].as_array().expect("payloads array").len(),
