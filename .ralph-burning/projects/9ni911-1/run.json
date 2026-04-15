@@ -1,0 +1,86 @@
+{
+  "active_run": {
+    "run_id": "run-20260415130611",
+    "stage_cursor": {
+      "stage": "plan_and_implement",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 8
+    },
+    "started_at": "2026-04-15T13:06:11.671068234Z",
+    "prompt_hash_at_cycle_start": "e33f3f1f3e19ee2cdcf07293497164fd1ecef5862cfeb440d8e0402d978bddf9",
+    "prompt_hash_at_stage_start": "e33f3f1f3e19ee2cdcf07293497164fd1ecef5862cfeb440d8e0402d978bddf9",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 7
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 8,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [
+      {
+        "amendment_id": "fr-7-dbe8e49b",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "finding_summary: `start_reserved_requirements_run` swaps `pending_requirements_run_id` from the startup sentinel to the final `run_id` before `draft_milestone_with_run_id` has created `requirements/<run_id>/run.json`. In that gap, `milestone show/status` fails with \"pending requirements run ... could not be inspected\", and a concurrent `milestone plan` clears the pointer as \"run not found\" and starts a second planner.\nseverity: high\naffected_files: src/cli/milestone.rs:494-503, src/cli/milestone.rs:726-733, src/cli/milestone.rs:833-845, src/contexts/requirements_drafting/service.rs:201-213\nremediation_hint: Keep the `__starting__:` reservation in `status.json` until the requirements run directory and initial `run.json` write are durable, or make run creation itself return the committed `run_id` before exposing it in milestone state.",
+        "created_at": "2026-04-15T16:24:29.124196669Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "61ba389d114ef442094569edd8a52d8af56f3ab333f292f0a68c47a4db8888c9"
+      },
+      {
+        "amendment_id": "fr-7-b6a40eb3",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "finding_summary: A second `milestone plan` invocation automatically clears any `drafting` pending run older than five minutes, even though the first planner may still be inside a long backend stage. Because `run.updated_at` is only refreshed at stage boundaries before `invoke_stage(...).await`, a single slow research/synthesis/validation call can exceed the threshold and the second process will launch a duplicate requirements run.\nseverity: medium\naffected_files: src/cli/milestone.rs:747-758, src/cli/milestone.rs:997-1002, src/contexts/requirements_drafting/service.rs:640-652, src/contexts/requirements_drafting/service.rs:725-735\nremediation_hint: Tie stale recovery to positive liveness evidence (pid/lease/heartbeat) rather than elapsed wall-clock time, or require an explicit operator override before replacing a `drafting` run.",
+        "created_at": "2026-04-15T16:24:29.124199564Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "92ba99256fcabf9ca44a09c486b45fab582b9f041a96a06a3a771500c97811f5"
+      },
+      {
+        "amendment_id": "fr-7-01e93634",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "finding_summary: New milestone planning runs are seeded from `record.description`, but successful materialization rewrites that field to the generated `executive_summary`. After the first successful plan, rerunning `milestone plan` no longer uses the original `--from-idea` prompt and can silently drop scope-defining context from subsequent replans.\nseverity: medium\naffected_files: src/cli/milestone.rs:128-142, src/cli/milestone.rs:841-842, src/contexts/milestone_record/service.rs:1414-1452\nremediation_hint: Persist the original planning idea separately (for example `planning_idea`) and use that immutable field for new milestone-mode requirements runs, leaving the user-facing description free to track the current summary.",
+        "created_at": "2026-04-15T16:24:29.124201868Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "23a350f7c514f45a37b9639ac648fb1d10b78b00a18f340cf60a709fda8757bf"
+      }
+    ],
+    "processed_count": 16
+  },
+  "status_summary": "running: final review restart round 8 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-15T16:14:21.712942410Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
+}

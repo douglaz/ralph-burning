@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-3-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-3-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T14:30:43.849227181Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll three amendments are accepted. Each identifies a real correctness/robustness issue: two are user-facing error-quality and state-consistency flaws, and one is a concrete race condition that can corrupt planning behavior under concurrent commands. Addressing them improves safety and deterministic behavior.\n\n## Votes\n\n- `fr-3-db6d9c9f`: Accept\n  This is a correctness and operability gap: raw filesystem errors from snapshot reads omit milestone context and can mislead operators. Wrapping failures in milestone-scoped `AppError::MilestoneOperationFailed` is consistent with existing normalized plan inspection handling and materially improves diagnosability and robustness.\n- `fr-3-a5330ad4`: Accept\n  The check-then-start-then-record sequence is a classic race window. Concurrent `milestone plan <id>` runs can start duplicate requirement pipelines and overwrite shared pending state, producing inconsistent outcomes. A milestone-scoped critical section/CAS requirement is the right fix.\n- `fr-3-8988fcf3`: Accept\n  The reader’s strict plan-hash mismatch check can misclassify in-flight writes as corruption when artifact and snapshot metadata are not committed atomically. This can produce false stale errors during normal replans and should be made tolerant or publish atomically to avoid transient read inconsistency.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

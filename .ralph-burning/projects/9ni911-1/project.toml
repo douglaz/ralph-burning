@@ -1,0 +1,7 @@
+id = "9ni911-1"
+name = "milestone-commands"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "e33f3f1f3e19ee2cdcf07293497164fd1ecef5862cfeb440d8e0402d978bddf9"
+created_at = "2026-04-15T13:06:11.616432799Z"
+status_summary = "created"

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T16:24:29.110752689Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted all three amendments. They identify concrete defects in milestone planning: an exposed half-created run ID, an unsafe stale-run heuristic that can duplicate active planners, and loss of the original planning prompt across replans.\n\n## Votes\n\n- `fr-7-dbe8e49b`: Accept\n  `start_reserved_requirements_run` calls `replace_pending_requirements_run` before `draft_milestone_with_run_id` creates `requirements/<run_id>/run.json`. In that published-but-not-yet-materialized window, inspection paths fail on `read_run`, while the planning path treats the same missing file as \"requirements run not found\", clears `pending_requirements_run_id`, and allows a replacement run to start. That is a real interprocess race with user-visible failures and duplicate planning work.\n- `fr-7-b6a40eb3`: Accept\n  A drafting run is considered stale solely by `Utc::now() - run.updated_at >= 300s`. The full-mode pipeline refreshes `updated_at` only at stage boundaries immediately before `invoke_stage(...).await`, with no heartbeat during the awaited backend call. A slow research/synthesis/validation stage can therefore appear stale while still running, letting a second `milestone plan` clear the pointer and launch a duplicate planner. That is a real liveness/isolation bug, not a theoretical one.\n- `fr-7-01e93634`: Accept\n  New milestone planning runs are seeded from `record.description`, but `materialize_bundle` rewrites that field to `bundle.executive_summary`. After the first successful plan, replans no longer use the original `--from-idea` text and instead use a derived summary. Since no separate immutable planning-input field is preserved, replans can silently lose scope-defining context. That is a genuine data-model and behavior defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-2-c1-a1-cr6-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-2-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T16:01:43.113192930Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify genuine defensive validation gaps in the milestone CLI layer. Amendment fr-6-226a0170 correctly identifies that validate_semantics() is only called on write paths, leaving read/display paths exposed to corrupt snapshot state. Amendment fr-6-17f28451 identifies a missing mode/output_kind check, though the risk is lower since the pending_requirements_run_id is only set through controlled write paths that always create milestone-mode runs. Both are worth accepting as defensive improvements.\n\n## Votes\n\n- `fr-6-226a0170`: Accept\n  The finding is accurate: validate_semantics() exists and is rigorously called on all write paths (service.rs:410, 650, 1746) but load_snapshot_for_action() (milestone.rs:627-639) — used by load_inspection_state(), milestone show, status, and plan — returns the snapshot without any semantic validation. If status.json becomes corrupt on disk (manual edit, partial write, filesystem issue), the CLI will silently present impossible states like Planning with active_bead set, or terminal status with an active bead. Adding a validate_semantics() call after loading on read paths is a low-risk, high-value defensive check that catches corruption early with a clear error rather than propagating nonsensical state to the user or, worse, to plan operations.\n- `fr-6-17f28451`: Accept\n  The finding is technically correct: load_pending_requirements_view (line 471-517) and load_pending_requirements_run (line 709-750) dispatch purely on RequirementsStatus without checking run.mode or run.output_kind. The RequirementsRun model clearly distinguishes Draft/Quick/Milestone modes and ProjectSeed/MilestoneBundle output kinds. While the pending_requirements_run_id is only set through controlled internal paths (reserve_pending_requirements_run, draft_milestone_with_run_id) which inherently produce Milestone-mode runs, defensive validation is warranted: a future code change could introduce an incorrect run_id, or file-level corruption could cause a mismatch. Verifying mode == Milestone and output_kind == MilestoneBundle at the point of use is cheap and prevents the milestone system from silently misinterpreting an incompatible run — a type confusion that could lead to confusing user-facing errors or incorrect planning state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 6
+}

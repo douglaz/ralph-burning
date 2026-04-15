@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415043544-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260415043544-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T05:54:19.659112064Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real, verifiable issues. Amendment fr-2-ed6d00c2 correctly identifies that bead ralph-burning-lmm references three source paths that do not exist (src/contexts/engine/, src/contexts/cli/, src/contexts/conformance/), while the actual code lives at src/contexts/workflow_composition/engine.rs, src/cli/, and src/contexts/conformance_spec/. Amendment fr-2-a1b1458b correctly identifies that the tracked result symlink points to a machine-local /nix/store/ path, which is meaningless churn that will break on other machines.\n\n## Votes\n\n- `fr-2-ed6d00c2`: Accept\n  Verified: all three paths listed in the bead's Files section are wrong. src/contexts/engine/ does not exist (actual: src/contexts/workflow_composition/engine.rs), src/contexts/cli/ does not exist (actual: src/cli/), and src/contexts/conformance/ does not exist (actual: src/contexts/conformance_spec/). Since this bead is meant to guide profiling work, incorrect file pointers in the authoritative backlog will waste the implementor's time. The fix is straightforward — update the paths to match reality.\n- `fr-2-a1b1458b`: Accept\n  Verified: result is a symlink to /nix/store/wag10sk2src41jc50maj02q7svn03m0z-..., a machine-local Nix build artifact. The file is listed in .gitignore at line 5, confirming the intent to not track it, yet it remains tracked. Committing store-path updates is pure churn — the path is valid only on the build machine and will be a dangling symlink on every other checkout. The symlink change should be dropped from this branch, and ideally the file should be untracked entirely.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 2
+}

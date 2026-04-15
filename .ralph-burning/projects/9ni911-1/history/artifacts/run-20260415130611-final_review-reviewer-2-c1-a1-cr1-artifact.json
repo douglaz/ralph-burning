@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415130611-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T13:26:21.838739923Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe milestone CLI implementation is solid overall. All four commands (create, plan, show, status) are correctly wired up. derive_milestone_id handles edge cases properly. retarget_bundle rewrites all qualified references. Error variants are well-structured. Tests cover non-plan commands plus error cases, with the plan test properly gated behind test-stub feature. One correctness gap: handle_show and handle_status skip workspace version validation, inconsistent with every other CLI handler including project show/list.\n\n## Amendments\n\n1. handle_show (line 200) and handle_status (line 222) in src/cli/milestone.rs skip workspace governance validation (load_workspace_config / ensure_supported_workspace_version). Every other CLI handler in the codebase—including read-only ones like project show (project.rs:631) and project list (project.rs:599)—validates the workspace version first. Without this check, milestone show/status on a workspace with an unsupported version will produce confusing filesystem errors instead of the clear 'unsupported workspace version' message. Fix: add the same two-line validation block at the top of handle_show and handle_status, matching the pattern in handle_create.\n   Rationale: Inconsistent with the established pattern across all other CLI handlers. The bead's acceptance criteria include 'error handling with clear messages', and skipping version validation produces opaque errors when the workspace version is incompatible.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

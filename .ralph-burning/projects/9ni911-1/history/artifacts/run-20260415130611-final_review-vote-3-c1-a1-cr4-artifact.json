@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-3-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-3-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T14:55:51.924668615Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll three amendments address real control-flow and state-recovery defects in milestone planning; they improve correctness, prevent permanent deadlock/stale state, and avoid unnecessary expensive work.\n\n## Votes\n\n- `fr-4-52f93cb6`: Accept\n  The finding is valid: if a reservation marker is written before pre-run setup and not cleared on subsequent failures, the state can be permanently wedged. This is a concrete correctness and operability bug; the proposed cleanup/lease approach is an appropriate fix and improves robustness.\n- `fr-4-d3f01aa9`: Accept\n  A dangling `pending_requirements_run_id` to a missing/nonterminal run causing repeated terminal failures with no recovery is a real failure loop risk. Clearing stale pointers (or explicit restart semantics) is necessary to make planning idempotent and self-healing.\n- `fr-4-8cc51e5b`: Accept\n  Running planning/requirements work while a milestone is already `running` is an invalid execution path and wastes resources; rejecting early based on snapshot status is the correct guard. If rejection occurs later, cleanup of pending state is also required to avoid stale reservations.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}

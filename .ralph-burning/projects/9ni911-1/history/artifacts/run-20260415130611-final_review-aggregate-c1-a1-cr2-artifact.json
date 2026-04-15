@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260415130611-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260415130611-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T14:02:18.849160436Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 3\n**Unique Amendments:** 2\n**Final Review Restarts:** 2/25\n\n## Accepted\n\n- `fr-2-66b860a6`\n- `fr-2-5a4a19dc`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-66b860a6`\n\nfinding_summary: \"`milestone plan` cannot complete the documented clarification workflow. In `src/cli/milestone.rs:141-170`, every invocation immediately starts a fresh `draft_milestone()` run and only then inspects that new run's status, yet the `awaiting_answers` branch tells the operator to run `requirements answer <run_id>` and rerun `milestone plan`. After answers are submitted, rerunning `milestone plan` ignores the answered run and launches a new requirements run instead of materializing the completed bundle.\"\nseverity: high\naffected_files:\n- src/cli/milestone.rs\nremediation_hint: \"Persist the milestone's in-flight requirements run ID, and on rerun inspect that existing run first: if it is now completed, materialize its bundle; if it is still awaiting answers, keep pointing the user at that same run instead of redrafting.\"\n\n### `fr-2-5a4a19dc`\n\nfinding_summary: \"`milestone show` and `milestone status` trust raw `plan.json` without validating that it matches the current snapshot. In `src/cli/milestone.rs:353-399`, the commands parse `plan.json` directly and derive `bead_count`/`has_plan` from it, but they do not perform the plan-hash check or bundle validation that `project create-from-bead` already uses in `src/cli/project.rs:721-819`. A stale or semantically corrupt plan can therefore be reported as live milestone state instead of surfacing corruption.\"\nseverity: medium\naffected_files:\n- src/cli/milestone.rs\nremediation_hint: \"Route show/status through the same validated milestone-plan loader used by project creation, so these commands either report a snapshot-consistent plan or fail with a milestone-specific corruption error.\"\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T16:01:45.315236087Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real integrity-validation gaps in milestone CLI flows. The current code trusts persisted milestone snapshot and pending requirements references too early, which can surface corrupt or incompatible state as if it were valid milestone planning state.\n\n## Votes\n\n- `fr-6-226a0170`: Accept\n  `load_snapshot_for_action()` delegates to `milestone_service::load_snapshot()`, and that service helper just returns `read_snapshot()` without calling `MilestoneSnapshot::validate_semantics()`. `load_inspection_state()` then uses the raw snapshot for `milestone show`/`status`, including exposing `active_bead`, and the planning path uses the same unchecked snapshot to decide whether replanning is allowed. A corrupt `status.json` such as `status=paused` or `completed` with `active_bead` set would therefore be displayed and acted on instead of being rejected. That is a genuine state-integrity defect, not just a cosmetic issue.\n- `fr-6-17f28451`: Accept\n  The pending-run loaders in `src/cli/milestone.rs` accept the referenced requirements run based primarily on `RequirementsStatus` and only later, in the completed-path handoff, check `output_kind`. `load_pending_requirements_view()` performs no mode/output-kind validation at all, and `handle_plan()` will tell the user to continue an `AwaitingAnswers` run before verifying it is actually a milestone-planning run. That means a snapshot pointing at an unrelated draft/quick requirements run can be misrepresented as milestone planning state or produce misleading instructions. Even though completed mismatches are eventually rejected by `extract_milestone_bundle_handoff()`, the validation happens too late; the amendment's requested early compatibility check is technically warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

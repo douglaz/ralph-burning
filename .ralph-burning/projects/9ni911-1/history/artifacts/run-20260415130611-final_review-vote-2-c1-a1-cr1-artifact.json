@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T13:31:51.716307448Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nAll three amendments are verified as accurate against the source code and represent genuine defects. Amendment fr-1-dab9eb88 identifies a real data integrity issue where stale snapshot data masquerades as live plan state. Amendment fr-1-422d6518 identifies a high-severity control flow bug where a valid intermediate pipeline state is treated as a hard failure. Amendment fr-1-95b67e72 identifies a missing governance validation that breaks the codebase-wide consistency pattern.\n\n## Votes\n\n- `fr-1-dab9eb88`: Accept\n  Verified: load_bead_count (line 349) falls back to snapshot.progress.total_beads when plan.json is absent, and load_milestone_detail (line 323) derives has_plan from that fallback count or snapshot.plan_hash. This means milestone show/status can report bead_count > 0 and has_plan=true purely from cached snapshot data when the live plan.json no longer exists. Users get a misleading view of plan state. The remediation is sound: derive plan presence only from live artifacts, or surface an explicit missing-plan indicator.\n- `fr-1-422d6518`: Accept\n  Verified all five claims in the chain: (1) draft_milestone returns only a run_id (service.rs:219), (2) the full-mode pipeline can legitimately transition to AwaitingAnswers (service.rs:1241), (3) extract_milestone_bundle_handoff is called immediately after (milestone.rs:154-158), and (4) it explicitly rejects non-Completed status (service.rs:2325-2332). The result is that milestone plan exits non-zero when the pipeline validly pauses for clarification—a high-severity usability and correctness bug. The fix to inspect run status before extraction and treat awaiting_answers as a valid intermediate result is correct.\n- `fr-1-95b67e72`: Accept\n  Verified: handle_show (line 200) and handle_status (line 222) lack the load_workspace_config/ensure_supported_workspace_version calls that every other CLI handler in the codebase performs—including read-only handlers like project show (project.rs:635-636), project list (project.rs:601-602), task show (task.rs:82-84), and task list (task.rs:106-107). The sibling handlers handle_create (milestone.rs:105-106) and handle_plan (milestone.rs:131-132) both validate. Without this check, running milestone show/status on an unsupported workspace version produces cryptic filesystem errors instead of the clear governance message. The two-line fix matches the established pattern exactly.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

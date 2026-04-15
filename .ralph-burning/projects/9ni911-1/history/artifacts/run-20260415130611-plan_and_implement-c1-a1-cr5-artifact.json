@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260415130611-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T15:12:41.662004603Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nHardened milestone planning in `src/cli/milestone.rs` so `milestone plan` now clears startup reservations when pre-run setup fails, recovers from stale pending requirements runs left in unreadable or `drafting` states by clearing the pointer and starting fresh work, clears unusable completed-run pointers when milestone bundle extraction fails, and rejects replanning immediately when the milestone snapshot is already `running`. Added CLI regressions in `tests/cli.rs` covering backend-setup reservation cleanup, stale drafting-run recovery, and early running-status rejection, while keeping the existing awaiting-answers and completed-run reuse behavior intact.\n\n## Steps\n\n1. [Completed] Inspect the milestone CLI reservation flow, pending requirements-run lifecycle, and materialization path to map the three pending amendments onto the current command architecture.\n2. [Completed] Patch milestone planning to clear leaked startup reservations on every pre-run setup failure, recover from stale pending requirements runs, clear unusable completed-run pointers after bundle-extraction failures, and reject planning up front when the milestone status is already `running`.\n3. [Completed] Add CLI regression coverage for reservation cleanup, stale drafting-run recovery, and early running-status rejection, then run the repository verification gates including the authoritative `nix build` check.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test milestone_plan --features test-stub -- --nocapture` passed, including the new reservation-cleanup, stale-drafting recovery, and running-status regressions.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 5
+}

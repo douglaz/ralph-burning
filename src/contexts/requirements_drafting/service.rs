@@ -193,6 +193,19 @@ where
         project_id: Option<&ProjectId>,
     ) -> AppResult<String> {
         let run_id = generate_run_id(now);
+        self.draft_milestone_with_run_id(base_dir, run_id, idea, now, project_id)
+            .await
+    }
+
+    /// Execute milestone-mode planning with a caller-provided run id.
+    pub async fn draft_milestone_with_run_id(
+        &self,
+        base_dir: &Path,
+        run_id: String,
+        idea: &str,
+        now: DateTime<Utc>,
+        project_id: Option<&ProjectId>,
+    ) -> AppResult<String> {
         let mut run = RequirementsRun::new_milestone(run_id.clone(), idea.to_owned(), now);
 
         self.store.create_run_dir(base_dir, &run_id)?;
@@ -2438,7 +2451,7 @@ pub struct RequirementsShowResult {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn generate_run_id(now: DateTime<Utc>) -> String {
+pub(crate) fn generate_run_id(now: DateTime<Utc>) -> String {
     format!("req-{}", now.format("%Y%m%d-%H%M%S"))
 }
 

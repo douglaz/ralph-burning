@@ -1,0 +1,7 @@
+id = "juj-1"
+name = "engine-test-perf"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "511b19a5433bad63b4d7df91c28b7c8b65333bbbfc3cd4462727254fbdef8cb5"
+created_at = "2026-04-15T04:35:44.807122712Z"
+status_summary = "created"

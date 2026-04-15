@@ -1,0 +1,5 @@
+schema_version = 1
+id = "ms-alpha-plan"
+name = "Alpha Plan"
+description = "Plan the alpha milestone in milestone mode."
+created_at = "2026-04-15T13:12:47.103968518Z"
