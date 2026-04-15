@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260415164250",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-fdf3369e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: `milestone next` / `milestone run` do not resolve controller bead IDs robustly once the controller has stored the raw bead ref from `br ready`, so a valid claimed bead can fail or be mis-identified on later invocations.\nseverity: high\naffected_files:\n- src/cli/milestone.rs\n- src/cli/project.rs\nremediation_hint: Reuse the existing milestone-aware bead-resolution logic from the run path when loading controller beads: canonicalize short refs against the current milestone, disambiguate multi-result `br show` payloads instead of taking an arbitrary element, and map missing beads to `ControllerBeadStatus::Missing` rather than bubbling a hard error.\nreferences:\n- `src/cli/milestone.rs:747-784` forwards the raw `active_bead_id` into `project::execute_create_from_bead`.\n- `src/cli/milestone.rs:941-973` treats `br show --json` as either a single record or `details.pop()`, so a short ref can resolve to the wrong milestone's bead when multiple matches are returned.\n- `src/cli/milestone.rs:1031-1037` converts every successful `br show` into only `Open`/`Closed`; a deleted bead never becomes `Missing`, even though the controller resume logic explicitly handles `Missing` as a recoverable external closure.\n- `src/cli/project.rs:894-930` requires `br show` to return an exact `detail.id == bead_id`, so the new `milestone run` path can break as soon as the controller is holding a short bead ref that `br show` expands to a qualified ID.\n- `src/contexts/milestone_record/controller.rs:933-937` expects missing beads to be surfaced as `ControllerBeadStatus::Missing` during resume, not as an I/O failure.",
-        "created_at": "2026-04-15T17:15:24.924365071Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "f39bc467ac583dc45a6bc9d611b5b09e444d9bcfee4f36b7dc1eb03419ab7f0d"
-      },
-      {
-        "amendment_id": "fr-1-ee39a8bd",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: Active milestone tracking is not updated consistently for explicit milestone commands, so `milestone next` / `milestone run` without an ID can target a stale milestone even after the user just operated on a different one.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs\nremediation_hint: Once an explicit milestone ID has been parsed and validated, write `active-milestone` immediately, before any early return paths in `plan` and in the explicit-ID branch of `status`.\nreferences:\n- `src/cli/milestone.rs:229-247` validates `milestone_id` in `handle_plan`, but the `awaiting_answers` early return exits before `set_active_milestone` is called.\n- `src/cli/milestone.rs:317-326` only updates the active milestone after planning fully succeeds.\n- `src/cli/milestone.rs:417-432` returns milestone status for an explicit ID without ever calling `set_active_milestone`.\n- `src/cli/milestone.rs:468-490` makes omitted-ID resolution depend entirely on the stored `active-milestone` file.",
-        "created_at": "2026-04-15T17:15:24.924369208Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "6f898969589e070df247b9dd995fe5fb06ff67e0bc40694658a56a3fc2510fa4"
-      },
-      {
-        "amendment_id": "fr-1-168c812b",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "load_bead_view (src/cli/milestone.rs:920) hardcodes action: \"next\" in its MilestoneOperationFailed error, but it is called from both inspect_next_milestone_action (line 543, correct) and execute_milestone_run (line 672, incorrect — should say \"run\"). When the bead_belongs_to_milestone check fails during milestone run, users see 'milestone next failed' instead of 'milestone run failed'. Fix: add an action parameter to load_bead_view and pass the caller's action string.",
-        "created_at": "2026-04-15T17:15:24.924371062Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "02b68626bccd37c4b4d01900cde2609e7829ecf8ed7b2ac5e34b98416c844dbd"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 3
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-15T17:04:08.550478759Z",

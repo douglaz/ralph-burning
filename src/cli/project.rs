@@ -314,7 +314,7 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
     let milestone = milestone_store.read_milestone_record(&current_dir, &milestone_id)?;
     let milestone_snapshot = snapshot_store.read_snapshot(&current_dir, &milestone_id)?;
     let milestone_bundle = load_milestone_bundle(&plan_store, &current_dir, &milestone_id)?;
-    let bead = load_bead_detail(&current_dir, &args.bead_id).await?;
+    let bead = load_bead_detail(&current_dir, &milestone_id, &args.bead_id).await?;
     let flow_override = parse_flow_override(args.flow.as_deref())?;
     ensure_bead_belongs_to_milestone(&milestone_id, &bead)?;
     ensure_bead_creation_targets_are_actionable(&milestone_id, milestone_snapshot.status, &bead)?;
@@ -891,12 +891,23 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
     Ok(())
 }
 
-async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetail> {
+async fn load_bead_detail(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> AppResult<BeadDetail> {
     let response: BrShowResponse = BrAdapter::new()
         .with_working_dir(base_dir.to_path_buf())
         .exec_json(&BrCommand::show(bead_id))
         .await
         .map_err(|error| match error {
+            BrError::BrExitError { stderr, stdout, .. }
+                if br_show_exit_looks_missing(&stderr, &stdout) =>
+            {
+                AppError::Io(std::io::Error::other(format!(
+                    "failed to load bead '{bead_id}': bead not found"
+                )))
+            }
             BrError::BrExitError { stderr, .. } => AppError::Io(std::io::Error::other(format!(
                 "failed to load bead '{bead_id}': {stderr}"
             ))),
@@ -907,19 +918,44 @@ async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetai
 
     match response {
         BrShowResponse::Single(bead) => {
-            if bead.id != bead_id {
-                return Err(AppError::Io(std::io::Error::other(format!(
-                    "failed to load bead '{bead_id}': br show returned bead '{}'",
-                    bead.id
-                ))));
+            if bead_id.contains('.') {
+                if bead.id != bead_id {
+                    return Err(AppError::Io(std::io::Error::other(format!(
+                        "failed to load bead '{bead_id}': br show returned bead '{}'",
+                        bead.id
+                    ))));
+                }
+                return Ok(bead);
             }
-            Ok(bead)
+
+            if milestone_bead_refs_match(milestone_id, &bead.id, bead_id) {
+                return Ok(bead);
+            }
+
+            Err(AppError::Io(std::io::Error::other(format!(
+                "failed to load bead '{bead_id}': br show returned bead '{}'",
+                bead.id
+            ))))
         }
         BrShowResponse::Many(beads) => {
-            let mut matches = beads.into_iter().filter(|bead| bead.id == bead_id);
+            let mut matches = beads.into_iter().filter(|bead| {
+                if bead_id.contains('.') {
+                    bead.id == bead_id
+                } else {
+                    milestone_bead_refs_match(milestone_id, &bead.id, bead_id)
+                }
+            });
             let bead = matches.next().ok_or_else(|| {
+                let detail = if bead_id.contains('.') {
+                    "br show returned no matching bead".to_owned()
+                } else {
+                    format!(
+                        "br show returned no matching bead in milestone '{}'",
+                        milestone_id
+                    )
+                };
                 AppError::Io(std::io::Error::other(format!(
-                    "failed to load bead '{bead_id}': br show returned no matching bead"
+                    "failed to load bead '{bead_id}': {detail}"
                 )))
             })?;
             if matches.next().is_some() {
@@ -930,6 +966,32 @@ async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetai
             Ok(bead)
         }
     }
+}
+
+fn milestone_bead_refs_match(milestone_id: &MilestoneId, left: &str, right: &str) -> bool {
+    canonicalize_milestone_bead_ref(milestone_id, left)
+        == canonicalize_milestone_bead_ref(milestone_id, right)
+}
+
+fn canonicalize_milestone_bead_ref(milestone_id: &MilestoneId, bead_id: &str) -> String {
+    let trimmed = bead_id.trim();
+    let qualified_prefix = format!("{}.", milestone_id.as_str());
+    if trimmed.starts_with(&qualified_prefix) || trimmed.contains('.') {
+        trimmed.to_owned()
+    } else {
+        format!("{qualified_prefix}{trimmed}")
+    }
+}
+
+fn br_show_exit_looks_missing(stderr: &str, stdout: &str) -> bool {
+    fn message_describes_missing_bead(message: &str) -> bool {
+        let message = message.to_ascii_lowercase();
+        (message.contains("bead not found") || message.contains("issue not found"))
+            || (message.contains("not found")
+                && (message.contains("bead") || message.contains("issue")))
+    }
+
+    message_describes_missing_bead(stderr) || message_describes_missing_bead(stdout)
 }
 
 async fn load_bead_summaries(base_dir: &Path) -> AppResult<BTreeMap<String, BeadSummary>> {

@@ -228,6 +228,7 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
 
     let milestone_id = MilestoneId::new(milestone_id)?;
     let record = load_existing_milestone(&store, &current_dir, &milestone_id)?;
+    set_active_milestone(&current_dir, &milestone_id)?;
     let (run_id, run) = load_or_start_milestone_requirements_run(
         &snapshot_store,
         &requirements_store,
@@ -323,7 +324,6 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
         &current_dir,
         &milestone_id,
     )?;
-    set_active_milestone(&current_dir, &milestone_id)?;
     println!(
         "Planned milestone '{}' from requirements run '{}' ({} beads, status: {})",
         detail.id, run_id, detail.bead_count, detail.status
@@ -416,6 +416,8 @@ async fn handle_status(milestone_id: Option<String>, json: bool) -> AppResult<()
 
     if let Some(milestone_id) = milestone_id {
         let milestone_id = MilestoneId::new(milestone_id)?;
+        load_existing_milestone(&store, &current_dir, &milestone_id)?;
+        set_active_milestone(&current_dir, &milestone_id)?;
         let detail = load_milestone_detail(
             &store,
             &snapshot_store,
@@ -540,7 +542,7 @@ async fn inspect_next_milestone_action(
                     ),
                 }
             })?;
-            let bead = load_bead_view(base_dir, milestone_id, bead_id, controller.state)?;
+            let bead = load_bead_view(base_dir, milestone_id, bead_id, controller.state, "next")?;
             Ok(MilestoneNextView {
                 milestone_id: milestone_id_text,
                 status: MilestoneCommandStatus::Success,
@@ -669,7 +671,8 @@ async fn execute_milestone_run(
                         ),
                     }
                 })?;
-                let bead = load_bead_view(base_dir, milestone_id, bead_id, controller.state)?;
+                let bead =
+                    load_bead_view(base_dir, milestone_id, bead_id, controller.state, "run")?;
                 let project_id =
                     ensure_project_for_controller(base_dir, milestone_id, &controller).await?;
                 workspace_governance::set_active_project(base_dir, &project_id)?;
@@ -912,12 +915,19 @@ fn load_bead_view(
     milestone_id: &MilestoneId,
     bead_id: &str,
     controller_state: MilestoneControllerState,
+    action: &str,
 ) -> AppResult<MilestoneBeadView> {
-    let detail = load_bead_detail_from_br(base_dir, bead_id)?;
+    let detail = load_bead_detail_from_br(base_dir, milestone_id, bead_id)?.ok_or_else(|| {
+        AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: action.to_owned(),
+            details: format!("active bead '{bead_id}' could not be loaded from br"),
+        }
+    })?;
     if !bead_belongs_to_milestone(milestone_id, &detail.id) {
         return Err(AppError::MilestoneOperationFailed {
             milestone_id: milestone_id.to_string(),
-            action: "next".to_owned(),
+            action: action.to_owned(),
             details: format!(
                 "active bead '{}' is not part of milestone '{}'",
                 detail.id, milestone_id
@@ -938,7 +948,11 @@ fn bead_belongs_to_milestone(milestone_id: &MilestoneId, bead_id: &str) -> bool 
         || !bead_id.contains('.')
 }
 
-fn load_bead_detail_from_br(base_dir: &std::path::Path, bead_id: &str) -> AppResult<BeadDetail> {
+fn load_bead_detail_from_br(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> AppResult<Option<BeadDetail>> {
     let output = std::process::Command::new("br")
         .args(["show", bead_id, "--json"])
         .current_dir(base_dir)
@@ -946,6 +960,9 @@ fn load_bead_detail_from_br(base_dir: &std::path::Path, bead_id: &str) -> AppRes
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if br_show_output_indicates_missing(&stderr, &stdout) {
+            return Ok(None);
+        }
         let details = if !stderr.is_empty() {
             stderr
         } else if !stdout.is_empty() {
@@ -964,13 +981,69 @@ fn load_bead_detail_from_br(base_dir: &std::path::Path, bead_id: &str) -> AppRes
             details: format!("failed to parse bead JSON: {error}"),
         })?;
     match response {
-        BrShowResponse::Single(detail) => Ok(detail),
-        BrShowResponse::Many(mut details) => details.pop().ok_or_else(|| {
-            AppError::Io(std::io::Error::other(format!(
-                "br show {bead_id} --json returned no bead detail"
-            )))
-        }),
+        BrShowResponse::Single(detail) => {
+            if bead_id.contains('.') {
+                if detail.id != bead_id {
+                    return Err(AppError::Io(std::io::Error::other(format!(
+                        "br show {bead_id} --json returned bead '{}'",
+                        detail.id
+                    ))));
+                }
+                Ok(Some(detail))
+            } else if milestone_bead_refs_match(milestone_id, &detail.id, bead_id) {
+                Ok(Some(detail))
+            } else {
+                Err(AppError::Io(std::io::Error::other(format!(
+                    "br show {bead_id} --json returned bead '{}'",
+                    detail.id
+                ))))
+            }
+        }
+        BrShowResponse::Many(details) => {
+            let mut matches = details.into_iter().filter(|detail| {
+                if bead_id.contains('.') {
+                    detail.id == bead_id
+                } else {
+                    milestone_bead_refs_match(milestone_id, &detail.id, bead_id)
+                }
+            });
+            let Some(detail) = matches.next() else {
+                return Ok(None);
+            };
+            if matches.next().is_some() {
+                return Err(AppError::Io(std::io::Error::other(format!(
+                    "br show {bead_id} --json returned multiple matching beads"
+                ))));
+            }
+            Ok(Some(detail))
+        }
     }
+}
+
+fn milestone_bead_refs_match(milestone_id: &MilestoneId, left: &str, right: &str) -> bool {
+    canonicalize_milestone_bead_ref(milestone_id, left)
+        == canonicalize_milestone_bead_ref(milestone_id, right)
+}
+
+fn canonicalize_milestone_bead_ref(milestone_id: &MilestoneId, bead_id: &str) -> String {
+    let trimmed = bead_id.trim();
+    let qualified_prefix = format!("{}.", milestone_id.as_str());
+    if trimmed.starts_with(&qualified_prefix) || trimmed.contains('.') {
+        trimmed.to_owned()
+    } else {
+        format!("{qualified_prefix}{trimmed}")
+    }
+}
+
+fn br_show_output_indicates_missing(stderr: &str, stdout: &str) -> bool {
+    fn message_describes_missing_bead(message: &str) -> bool {
+        let message = message.to_ascii_lowercase();
+        (message.contains("bead not found") || message.contains("issue not found"))
+            || (message.contains("not found")
+                && (message.contains("bead") || message.contains("issue")))
+    }
+
+    message_describes_missing_bead(stderr) || message_describes_missing_bead(stdout)
 }
 
 struct MilestoneCommandControllerRuntime<'a> {
@@ -1030,7 +1103,10 @@ impl MilestoneCommandControllerRuntime<'_> {
 
 impl MilestoneControllerResumePort for MilestoneCommandControllerRuntime<'_> {
     fn bead_status(&self, bead_id: &str) -> AppResult<ControllerBeadStatus> {
-        let detail = load_bead_detail_from_br(self.base_dir, bead_id)?;
+        let Some(detail) = load_bead_detail_from_br(self.base_dir, self.milestone_id, bead_id)?
+        else {
+            return Ok(ControllerBeadStatus::Missing);
+        };
         Ok(match detail.status {
             BeadStatus::Closed => ControllerBeadStatus::Closed,
             _ => ControllerBeadStatus::Open,

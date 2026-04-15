@@ -1335,12 +1335,57 @@ fn milestone_status_wraps_missing_status_snapshot_with_milestone_id() {
 }
 
 #[test]
+fn milestone_status_with_explicit_id_updates_active_milestone() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    write_milestone_fixture(temp_dir.path(), "ms-beta");
+    fs::write(active_milestone_path(temp_dir.path()), "ms-alpha").expect("seed active milestone");
+
+    let output = Command::new(binary())
+        .args(["milestone", "status", "ms-beta", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone status");
+
+    assert!(
+        output.status.success(),
+        "milestone status should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(active_milestone_path(temp_dir.path())).expect("read active milestone"),
+        "ms-beta"
+    );
+}
+
+#[test]
 fn milestone_next_selects_bead_and_uses_active_milestone_when_id_is_omitted() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
 
-    let ready_payload = r#"[{"id":"ms-alpha.bead-2","title":"Bootstrap bead-backed task creation","priority":"P1","issue_type":"feature","labels":["creation"]}]"#;
-    let show_payload = default_ms_alpha_bead_2_show_response();
+    let ready_payload = r#"[{"id":"bead-2","title":"Bootstrap bead-backed task creation","priority":"P1","issue_type":"feature","labels":["creation"]}]"#;
+    let show_payload = r#"[
+  {
+    "id": "other-ms.bead-2",
+    "title": "Wrong milestone bead",
+    "status": "open",
+    "priority": "P4",
+    "issue_type": "feature",
+    "description": "Noise from another milestone.",
+    "acceptance_criteria": "- Ignore this result",
+    "dependencies": []
+  },
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
+    "dependencies": []
+  }
+]"#;
     let list_payload = default_br_list_response();
     write_br_milestone_selection_script(temp_dir.path(), ready_payload, show_payload, list_payload);
     write_bv_next_script(
@@ -1427,8 +1472,31 @@ fn milestone_run_executes_single_bead_milestone_and_reuses_active_selection() {
     let temp_dir = initialize_workspace_fixture();
     write_single_bead_milestone_fixture(temp_dir.path(), "ms-single");
 
-    let ready_payload = r#"[{"id":"ms-single.bead-1","title":"Execute the only bead","priority":"P1","issue_type":"task","labels":["single"]}]"#;
-    let show_payload = r#"[{"id":"ms-single.bead-1","title":"Execute the only bead","status":"open","priority":"P1","issue_type":"task","description":"Create and run a single bead-backed project.","acceptance_criteria":"- Single bead completes","dependencies":[],"dependents":[]}]"#;
+    let ready_payload = r#"[{"id":"bead-1","title":"Execute the only bead","priority":"P1","issue_type":"task","labels":["single"]}]"#;
+    let show_payload = r#"[
+  {
+    "id": "other-ms.bead-1",
+    "title": "Ignore this bead",
+    "status": "open",
+    "priority": "P4",
+    "issue_type": "task",
+    "description": "Belongs to a different milestone.",
+    "acceptance_criteria": "- Not relevant",
+    "dependencies": [],
+    "dependents": []
+  },
+  {
+    "id": "ms-single.bead-1",
+    "title": "Execute the only bead",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "task",
+    "description": "Create and run a single bead-backed project.",
+    "acceptance_criteria": "- Single bead completes",
+    "dependencies": [],
+    "dependents": []
+  }
+]"#;
     let list_payload = r#"{"issues":[{"id":"ms-single.bead-1","title":"Execute the only bead","status":"open","priority":"P1","issue_type":"task","labels":["single"]}]}"#;
     write_br_milestone_selection_script(temp_dir.path(), ready_payload, show_payload, list_payload);
     write_bv_next_script(temp_dir.path(), "ms-single.bead-1", "Execute the only bead");
@@ -1481,6 +1549,30 @@ fn milestone_run_executes_single_bead_milestone_and_reuses_active_selection() {
         project_count, 1,
         "milestone run should create exactly one project"
     );
+}
+
+#[test]
+fn milestone_run_membership_errors_use_run_action_label() {
+    let temp_dir = initialize_workspace_fixture();
+    write_single_bead_milestone_fixture(temp_dir.path(), "ms-single");
+
+    let ready_payload = r#"[{"id":"bead-1","title":"Execute the only bead","priority":"P1","issue_type":"task","labels":["single"]}]"#;
+    let show_payload = r#"[{"id":"other-ms.bead-1","title":"Wrong milestone bead","status":"open","priority":"P1","issue_type":"task","description":"Belongs elsewhere.","acceptance_criteria":"- Wrong milestone","dependencies":[],"dependents":[]}]"#;
+    let list_payload = r#"{"issues":[{"id":"ms-single.bead-1","title":"Execute the only bead","status":"open","priority":"P1","issue_type":"task","labels":["single"]}]}"#;
+    write_br_milestone_selection_script(temp_dir.path(), ready_payload, show_payload, list_payload);
+    write_bv_next_script(temp_dir.path(), "ms-single.bead-1", "Execute the only bead");
+
+    let output = Command::new(binary())
+        .args(["milestone", "run", "ms-single", "--json"])
+        .env("PATH", prepend_path(temp_dir.path()))
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone run");
+
+    assert!(!output.status.success(), "milestone run should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-single' run failed"));
+    assert!(!stderr.contains("milestone 'ms-single' next failed"));
 }
 
 #[test]
@@ -1854,6 +1946,10 @@ fn milestone_plan_succeeds_when_requirements_are_awaiting_answers() {
     .expect("parse milestone status");
     assert_eq!(status["status"], "planning");
     assert_eq!(status["pending_requirements_run_id"], run_id);
+    assert_eq!(
+        fs::read_to_string(active_milestone_path(temp_dir.path())).expect("read active milestone"),
+        "ms-alpha-questions"
+    );
     assert!(
         !milestone_root(temp_dir.path(), "ms-alpha-questions")
             .join("plan.json")

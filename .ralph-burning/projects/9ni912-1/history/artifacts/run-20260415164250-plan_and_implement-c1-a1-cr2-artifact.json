@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260415164250-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T17:40:02.706052435Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the milestone next/run follow-up issues by making controller bead handling tolerant of short refs across milestone CLI, project creation, and milestone-controller state validation; explicit milestone operations now refresh the active milestone immediately; and shared bead-loading errors now report the correct caller action. Updated CLI coverage to exercise short-ref controller resumes, explicit active-milestone updates, awaiting-answers planning, and the corrected run error label.\n\n## Steps\n\n1. [Completed] Inspected the milestone CLI, project bead-loading path, and milestone-controller transition validation to locate where short controller bead refs, missing-bead recovery, and active-milestone persistence diverged.\n2. [Completed] Patched `src/cli/milestone.rs`, `src/cli/project.rs`, and `src/contexts/milestone_record/controller.rs` to resolve short bead refs against the current milestone, map missing controller beads to `ControllerBeadStatus::Missing`, persist explicit active milestones earlier, and thread the correct action label into shared bead-loading failures.\n3. [Completed] Updated `tests/cli.rs` to cover short-ref milestone next/run flows, explicit status-driven active milestone updates, awaiting-answers plan persistence, and the corrected `milestone run` error wording, then ran the required validation commands.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test --test cli milestone_status_with_explicit_id_updates_active_milestone -- --exact` passed.\n- `cargo test --test cli milestone_run_membership_errors_use_run_action_label -- --exact` passed.\n- `cargo test --test cli milestone_next_selects_bead_and_uses_active_milestone_when_id_is_omitted -- --exact` passed.\n- `cargo test --test cli --features test-stub milestone_run_executes_single_bead_milestone_and_reuses_active_selection -- --exact` passed.\n- `cargo test --test cli --features test-stub milestone_plan_succeeds_when_requirements_are_awaiting_answers -- --exact` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build -L` passed.\n\n## Outstanding Risks\n\n- Short and fully qualified bead IDs are now treated as equivalent inside milestone-controller state transitions, which matches the current `br ready`/`br show` behavior; if beads_rust later changes those identifier semantics, this equivalence logic may need to be revisited.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 2
+}
