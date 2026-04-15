@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260415130611",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 7
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-6-226a0170",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "finding_summary: `milestone show`, `milestone status`, and `milestone plan` never validate `MilestoneSnapshot` semantics before using `status.json`, so they can present or act on impossible milestone states instead of rejecting corrupt state.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:447-467\n- src/cli/milestone.rs:627-639\n- src/contexts/milestone_record/service.rs:1466-1471\n- src/contexts/milestone_record/model.rs:208-225\nremediation_hint: After loading the snapshot, call `MilestoneSnapshot::validate_semantics()` and surface a milestone-scoped error before rendering fields like `active_bead` or allowing replanning.",
-        "created_at": "2026-04-15T16:01:45.328744826Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "e2c2deb917075f6f3d20512da6edba3bf5d026f0b17753ba45787871c39e69d1"
-      },
-      {
-        "amendment_id": "fr-6-17f28451",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "finding_summary: Pending requirements runs are accepted purely by `RequirementsStatus`; the handlers never verify that the referenced run is actually a milestone-mode / milestone-bundle run, so an unrelated draft/quick requirements run can be mistaken for milestone planning.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:167-174\n- src/cli/milestone.rs:471-517\n- src/cli/milestone.rs:709-750\nremediation_hint: When loading a pending requirements run for either inspection or planning, require `run.mode == Milestone` and `run.output_kind == MilestoneBundle`; otherwise raise a milestone-scoped error and avoid telling the user to continue an incompatible run.",
-        "created_at": "2026-04-15T16:01:45.328748663Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "5c4d1d70cfcad1a81bab95c1ed100e96c968a8b53698ea5df391a281402978b5"
-      }
-    ],
-    "processed_count": 14
+    "pending": [],
+    "processed_count": 16
   },
-  "status_summary": "running: final review restart round 7 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-15T15:53:00.588958303Z",

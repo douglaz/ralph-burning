@@ -1186,6 +1186,95 @@ fn milestone_show_rejects_stale_plan_metadata() {
 }
 
 #[test]
+fn milestone_show_rejects_semantically_invalid_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let status_path = milestone_root(temp_dir.path(), "ms-alpha").join("status.json");
+    let mut status: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&status_path).expect("read status json"))
+            .expect("parse status json");
+    status["active_bead"] = serde_json::json!("bead-2");
+    fs::write(
+        &status_path,
+        serde_json::to_string_pretty(&status).expect("serialize status json"),
+    )
+    .expect("write invalid status");
+
+    let output = Command::new(binary())
+        .args(["milestone", "show", "ms-alpha", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone show");
+
+    assert!(!output.status.success(), "milestone show should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-alpha' inspection failed"));
+    assert!(stderr.contains("status.json is inconsistent"));
+    assert!(stderr.contains("active_bead"));
+}
+
+#[test]
+fn milestone_show_rejects_incompatible_pending_requirements_run() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+
+    let run_id = "req-quick-pending";
+    let run_root = requirements_root(temp_dir.path()).join(run_id);
+    fs::create_dir_all(&run_root).expect("create pending requirements run dir");
+    fs::write(
+        run_root.join("run.json"),
+        serde_json::json!({
+            "run_id": run_id,
+            "idea": "Quick draft",
+            "mode": "quick",
+            "status": "completed",
+            "question_round": 0,
+            "latest_question_set_id": null,
+            "latest_draft_id": null,
+            "latest_review_id": null,
+            "latest_seed_id": "seed-1",
+            "latest_milestone_bundle_id": null,
+            "milestone_bundle": null,
+            "output_kind": "project_seed",
+            "pending_question_count": null,
+            "recommended_flow": null,
+            "created_at": "2026-04-15T14:00:00Z",
+            "updated_at": "2026-04-15T14:05:00Z",
+            "status_summary": "completed",
+            "current_stage": "project_seed",
+            "committed_stages": {},
+            "quick_revision_count": 0,
+            "last_transition_cached": false
+        })
+        .to_string(),
+    )
+    .expect("write incompatible requirements run");
+
+    let status_path = milestone_root(temp_dir.path(), "ms-alpha").join("status.json");
+    let mut status: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&status_path).expect("read status json"))
+            .expect("parse status json");
+    status["pending_requirements_run_id"] = serde_json::json!(run_id);
+    fs::write(
+        &status_path,
+        serde_json::to_string_pretty(&status).expect("serialize status json"),
+    )
+    .expect("write status json");
+
+    let output = Command::new(binary())
+        .args(["milestone", "show", "ms-alpha", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone show");
+
+    assert!(!output.status.success(), "milestone show should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-alpha' inspection failed"));
+    assert!(stderr.contains("pending requirements run 'req-quick-pending'"));
+    assert!(stderr.contains("expected mode 'milestone'"));
+}
+
+#[test]
 fn milestone_status_rejects_stale_plan_metadata() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
@@ -1659,6 +1748,134 @@ fn milestone_plan_recovers_from_stale_startup_reservation() {
     )
     .expect("parse milestone status");
     assert!(status["pending_requirements_run_id"].is_null());
+}
+
+#[test]
+fn milestone_plan_rejects_semantically_invalid_snapshot_before_backend_setup() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha-invalid");
+
+    let status_path = milestone_root(temp_dir.path(), "ms-alpha-invalid").join("status.json");
+    let mut status: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&status_path).expect("read status json"))
+            .expect("parse status json");
+    status["active_bead"] = serde_json::json!("bead-2");
+    fs::write(
+        &status_path,
+        serde_json::to_string_pretty(&status).expect("serialize status json"),
+    )
+    .expect("write invalid status json");
+
+    let output = Command::new(binary())
+        .args(["milestone", "plan", "ms-alpha-invalid"])
+        .env("RALPH_BURNING_BACKEND", "definitely-invalid")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone plan");
+
+    assert!(!output.status.success(), "milestone plan should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-alpha-invalid' planning failed"));
+    assert!(stderr.contains("status.json is inconsistent"));
+    assert!(stderr.contains("active_bead"));
+    assert!(
+        !stderr.contains("RALPH_BURNING_BACKEND"),
+        "snapshot validation should reject the milestone before backend setup is attempted"
+    );
+}
+
+#[test]
+fn milestone_plan_rejects_incompatible_pending_requirements_run() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let create_output = Command::new(binary())
+        .args([
+            "milestone",
+            "create",
+            "Alpha Incompatible Pending",
+            "--from-idea",
+            "Plan the alpha milestone once the wrong pending requirements run is fixed.",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone create");
+    assert!(
+        create_output.status.success(),
+        "milestone create should succeed: {}",
+        String::from_utf8_lossy(&create_output.stderr)
+    );
+
+    let milestone_id = "ms-alpha-incompatible-pending";
+    let run_id = "req-quick-pending";
+    let run_root = requirements_root(temp_dir.path()).join(run_id);
+    fs::create_dir_all(&run_root).expect("create incompatible run dir");
+    fs::write(
+        run_root.join("run.json"),
+        serde_json::json!({
+            "run_id": run_id,
+            "idea": "Quick draft",
+            "mode": "quick",
+            "status": "completed",
+            "question_round": 0,
+            "latest_question_set_id": null,
+            "latest_draft_id": null,
+            "latest_review_id": null,
+            "latest_seed_id": "seed-1",
+            "latest_milestone_bundle_id": null,
+            "milestone_bundle": null,
+            "output_kind": "project_seed",
+            "pending_question_count": null,
+            "recommended_flow": null,
+            "created_at": "2026-04-15T14:00:00Z",
+            "updated_at": "2026-04-15T14:05:00Z",
+            "status_summary": "completed",
+            "current_stage": "project_seed",
+            "committed_stages": {},
+            "quick_revision_count": 0,
+            "last_transition_cached": false
+        })
+        .to_string(),
+    )
+    .expect("write incompatible requirements run");
+
+    let status_path = milestone_root(temp_dir.path(), milestone_id).join("status.json");
+    let mut status: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&status_path).expect("read status json"))
+            .expect("parse status json");
+    status["pending_requirements_run_id"] = serde_json::json!(run_id);
+    fs::write(
+        &status_path,
+        serde_json::to_string_pretty(&status).expect("serialize status json"),
+    )
+    .expect("write status json");
+
+    let output = Command::new(binary())
+        .args(["milestone", "plan", milestone_id])
+        .env("RALPH_BURNING_BACKEND", "definitely-invalid")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone plan");
+
+    assert!(!output.status.success(), "milestone plan should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-alpha-incompatible-pending' planning failed"));
+    assert!(stderr.contains("pending requirements run 'req-quick-pending'"));
+    assert!(stderr.contains("expected mode 'milestone'"));
+    assert!(
+        !stderr.contains("RALPH_BURNING_BACKEND"),
+        "planning should reject the incompatible pending run before backend setup is attempted"
+    );
+
+    let status: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(milestone_root(temp_dir.path(), milestone_id).join("status.json"))
+            .expect("read milestone status"),
+    )
+    .expect("parse milestone status");
+    assert_eq!(status["pending_requirements_run_id"], run_id);
+    assert_eq!(
+        requirements_run_ids(temp_dir.path()),
+        vec![run_id.to_owned()]
+    );
 }
 
 #[cfg(feature = "test-stub")]

@@ -18,7 +18,9 @@ use crate::contexts::milestone_record::service::{
     self as milestone_service, CreateMilestoneInput, MilestonePlanPort, MilestoneSnapshotPort,
     MilestoneStorePort,
 };
-use crate::contexts::requirements_drafting::model::RequirementsStatus;
+use crate::contexts::requirements_drafting::model::{
+    RequirementsMode, RequirementsOutputKind, RequirementsRun, RequirementsStatus,
+};
 use crate::contexts::requirements_drafting::service as requirements_service;
 use crate::contexts::requirements_drafting::service::RequirementsStorePort;
 use crate::contexts::workspace_governance;
@@ -499,6 +501,7 @@ fn load_pending_requirements_view(
                 run_id, error
             ),
         })?;
+    validate_pending_requirements_run_compatibility(milestone_id, "inspection", run_id, &run)?;
     let display_status = match run.status {
         RequirementsStatus::Drafting | RequirementsStatus::Completed => {
             MilestoneStatus::Planning.to_string()
@@ -630,13 +633,20 @@ fn load_snapshot_for_action(
     milestone_id: &MilestoneId,
     action: &str,
 ) -> AppResult<MilestoneSnapshot> {
-    milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id).map_err(|error| {
-        AppError::MilestoneOperationFailed {
+    let snapshot = milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)
+        .map_err(|error| AppError::MilestoneOperationFailed {
             milestone_id: milestone_id.to_string(),
             action: action.to_owned(),
             details: error.to_string(),
-        }
-    })
+        })?;
+    snapshot
+        .validate_semantics()
+        .map_err(|details| AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: action.to_owned(),
+            details: format!("status.json is inconsistent: {details}"),
+        })?;
+    Ok(snapshot)
 }
 
 fn map_inspection_error(milestone_id: &MilestoneId, error: AppError) -> AppError {
@@ -732,6 +742,7 @@ fn load_pending_requirements_run(
             ));
         }
     };
+    validate_pending_requirements_run_compatibility(milestone_id, "planning", run_id, &run)?;
 
     if run.status == RequirementsStatus::Drafting {
         if !pending_requirements_drafting_run_is_stale(&run) {
@@ -748,6 +759,37 @@ fn load_pending_requirements_run(
     }
 
     Ok(Some(run))
+}
+
+fn validate_pending_requirements_run_compatibility(
+    milestone_id: &MilestoneId,
+    action: &str,
+    run_id: &str,
+    run: &RequirementsRun,
+) -> AppResult<()> {
+    if run.mode != RequirementsMode::Milestone {
+        return Err(AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: action.to_owned(),
+            details: format!(
+                "pending requirements run '{}' is incompatible with milestone planning: expected mode 'milestone', found '{}'",
+                run_id, run.mode
+            ),
+        });
+    }
+
+    if run.output_kind != RequirementsOutputKind::MilestoneBundle {
+        return Err(AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: action.to_owned(),
+            details: format!(
+                "pending requirements run '{}' is incompatible with milestone planning: expected output kind 'milestone_bundle', found '{}'",
+                run_id, run.output_kind
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 async fn start_reserved_requirements_run(
