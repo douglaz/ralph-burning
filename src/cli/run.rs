@@ -10714,6 +10714,8 @@ fn maybe_filter_history_by_stage(
     Ok(
         crate::contexts::project_run_record::queries::build_history_view(
             &history.project_id,
+            history.milestone_id.clone(),
+            history.bead_id.clone(),
             events,
             payloads,
             artifacts,
@@ -10761,6 +10763,10 @@ fn format_json_history(
     #[derive(Serialize)]
     struct HistoryJsonView {
         project_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        milestone_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bead_id: Option<String>,
         events: Vec<crate::contexts::project_run_record::model::JournalEvent>,
         payloads: Vec<HistoryPayloadJsonView>,
         artifacts: Vec<HistoryArtifactJsonView>,
@@ -10797,6 +10803,8 @@ fn format_json_history(
         .collect();
     let output = HistoryJsonView {
         project_id: history.project_id.clone(),
+        milestone_id: history.milestone_id.clone(),
+        bead_id: history.bead_id.clone(),
         events: history.events.clone(),
         payloads,
         artifacts,
@@ -10810,6 +10818,12 @@ fn print_history_text(
     verbose: bool,
 ) {
     println!("Project: {}", history.project_id);
+    if let Some(milestone_id) = &history.milestone_id {
+        println!("Milestone: {}", milestone_id);
+    }
+    if let Some(bead_id) = &history.bead_id {
+        println!("Bead: {}", bead_id);
+    }
     print_durable_records(
         &history.events,
         &history.payloads,

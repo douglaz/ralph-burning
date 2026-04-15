@@ -146,6 +146,23 @@ fn print_task_detail(detail: &ProjectDetail) {
     println!("Run status: {}", detail.run_snapshot.status_summary);
     println!("Journal events: {}", detail.journal_event_count);
     println!("Rollback points: {}", detail.rollback_count);
+    if let Some(lineage) = &detail.task_lineage {
+        println!(
+            "Milestone: {} ({})",
+            lineage.milestone_name, lineage.milestone_id
+        );
+        println!(
+            "Bead: {} ({})",
+            lineage.bead_title.as_deref().unwrap_or("<unknown>"),
+            lineage.bead_id
+        );
+        if !lineage.acceptance_criteria.is_empty() {
+            println!("Acceptance criteria:");
+            for criterion in &lineage.acceptance_criteria {
+                println!("  - {criterion}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::contexts::milestone_record::queries::BeadLineageView;
 use crate::contexts::workflow_composition::panel_contracts::{RecordKind, RecordProducer};
 use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
 
@@ -480,11 +481,13 @@ pub struct ProjectListEntry {
 }
 
 /// Detailed project view used in `project show` output.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectDetail {
     pub record: ProjectRecord,
     pub run_snapshot: RunSnapshot,
     pub journal_event_count: u64,
     pub rollback_count: usize,
     pub is_active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_lineage: Option<BeadLineageView>,
 }

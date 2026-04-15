@@ -3,7 +3,10 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 
 use crate::adapters::fs::FileSystem;
+use crate::contexts::milestone_record::bundle::MilestoneBundle;
 use crate::contexts::milestone_record::model::{MilestoneProgress, MilestoneStatus};
+use crate::contexts::milestone_record::queries::BeadLineageView;
+use crate::contexts::milestone_record::service::{MilestonePlanPort, MilestoneStorePort};
 use crate::contexts::requirements_drafting::service::SeedHandoff;
 use crate::contexts::workflow_composition;
 use crate::contexts::workspace_governance::config::{
@@ -1358,12 +1361,80 @@ pub fn list_projects(
     Ok(entries)
 }
 
+fn load_task_lineage_detail(
+    milestone_store: &dyn MilestoneStorePort,
+    plan_store: &dyn MilestonePlanPort,
+    base_dir: &Path,
+    task_source: Option<&TaskSource>,
+) -> AppResult<Option<BeadLineageView>> {
+    let Some(task_source) = task_source else {
+        return Ok(None);
+    };
+
+    let milestone_id = crate::contexts::milestone_record::model::MilestoneId::new(
+        task_source.milestone_id.clone(),
+    )?;
+    let milestone = milestone_store.read_milestone_record(base_dir, &milestone_id)?;
+    let plan_json = plan_store.read_plan_json(base_dir, &milestone_id)?;
+    let bundle: MilestoneBundle =
+        serde_json::from_str(&plan_json).map_err(|error| AppError::CorruptRecord {
+            file: format!("milestones/{}/plan.json", milestone_id),
+            details: error.to_string(),
+        })?;
+    let milestone_prefix = format!("{}.", milestone.id);
+
+    let mut bead_title = None;
+    let mut acceptance_criteria = Vec::new();
+    for workstream in &bundle.workstreams {
+        for bead in &workstream.beads {
+            let Some(planned_bead_id) = bead.bead_id.as_deref() else {
+                continue;
+            };
+            let short_id = planned_bead_id
+                .strip_prefix(milestone_prefix.as_str())
+                .unwrap_or(planned_bead_id);
+            if planned_bead_id != task_source.bead_id.as_str() && short_id != task_source.bead_id {
+                continue;
+            }
+
+            bead_title = Some(bead.title.clone());
+            acceptance_criteria = bead
+                .acceptance_criteria
+                .iter()
+                .map(|criterion_id| {
+                    bundle
+                        .acceptance_map
+                        .iter()
+                        .find(|criterion| criterion.id == *criterion_id)
+                        .map(|criterion| criterion.description.clone())
+                        .unwrap_or_else(|| criterion_id.clone())
+                })
+                .collect();
+            break;
+        }
+        if bead_title.is_some() {
+            break;
+        }
+    }
+
+    Ok(Some(BeadLineageView {
+        milestone_id: milestone.id.to_string(),
+        milestone_name: milestone.name,
+        bead_id: task_source.bead_id.clone(),
+        bead_title,
+        acceptance_criteria,
+    }))
+}
+
 /// Show detailed project information.
+#[allow(clippy::too_many_arguments)]
 pub fn show_project(
     store: &dyn ProjectStorePort,
     run_port: &dyn RunSnapshotPort,
     journal_port: &dyn JournalStorePort,
     active_port: &dyn ActiveProjectPort,
+    milestone_store: &dyn MilestoneStorePort,
+    plan_store: &dyn MilestonePlanPort,
     base_dir: &Path,
     project_id: &ProjectId,
 ) -> AppResult<ProjectDetail> {
@@ -1379,6 +1450,12 @@ pub fn show_project(
     let journal_event_count = events.len() as u64;
     let active_id = active_port.read_active_project_id(base_dir)?;
     let is_active = active_id.as_deref() == Some(project_id.as_str());
+    let task_lineage = load_task_lineage_detail(
+        milestone_store,
+        plan_store,
+        base_dir,
+        record.task_source.as_ref(),
+    )?;
 
     // Count rollback points from journal events
     let rollback_count = events
@@ -1392,6 +1469,7 @@ pub fn show_project(
         journal_event_count,
         rollback_count,
         is_active,
+        task_lineage,
     })
 }
 
@@ -1525,6 +1603,7 @@ pub fn run_history(
 ) -> AppResult<RunHistoryView> {
     let events =
         queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let (milestone_id, bead_id) = queries::history_lineage(&events);
     let (payloads, artifacts) = queries::filter_history_records(
         &events,
         artifact_port.list_payloads(base_dir, project_id)?,
@@ -1535,6 +1614,8 @@ pub fn run_history(
 
     Ok(queries::build_history_view(
         project_id.as_str(),
+        milestone_id,
+        bead_id,
         events,
         payloads,
         artifacts,

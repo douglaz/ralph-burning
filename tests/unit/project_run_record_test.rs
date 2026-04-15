@@ -1,9 +1,17 @@
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use chrono::{TimeZone, Utc};
 use tempfile::tempdir;
 
+use ralph_burning::contexts::milestone_record::bundle::{
+    AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+};
+use ralph_burning::contexts::milestone_record::model::{
+    MilestoneId, MilestoneRecord, MilestoneSnapshot,
+};
+use ralph_burning::contexts::milestone_record::service::{MilestonePlanPort, MilestoneStorePort};
 use ralph_burning::contexts::project_run_record::model::*;
 use ralph_burning::contexts::project_run_record::service;
 use ralph_burning::contexts::project_run_record::service::*;
@@ -15,18 +23,33 @@ use ralph_burning::shared::error::{AppError, AppResult};
 
 struct FakeProjectStore {
     existing_ids: Vec<String>,
+    custom_records: BTreeMap<String, ProjectRecord>,
 }
 
 impl FakeProjectStore {
     fn empty() -> Self {
         Self {
             existing_ids: Vec::new(),
+            custom_records: BTreeMap::new(),
         }
     }
 
     fn with_existing(ids: &[&str]) -> Self {
         Self {
             existing_ids: ids.iter().map(|s| s.to_string()).collect(),
+            custom_records: BTreeMap::new(),
+        }
+    }
+
+    fn with_records(records: Vec<ProjectRecord>) -> Self {
+        let existing_ids = records.iter().map(|record| record.id.to_string()).collect();
+        let custom_records = records
+            .into_iter()
+            .map(|record| (record.id.to_string(), record))
+            .collect();
+        Self {
+            existing_ids,
+            custom_records,
         }
     }
 }
@@ -143,7 +166,11 @@ impl ProjectStorePort for FakeProjectStore {
                 project_id: project_id.to_string(),
             });
         }
-        Ok(make_project_record(project_id.as_str()))
+        Ok(self
+            .custom_records
+            .get(project_id.as_str())
+            .cloned()
+            .unwrap_or_else(|| make_project_record(project_id.as_str())))
     }
 
     fn list_project_ids(&self, _base_dir: &Path) -> AppResult<Vec<ProjectId>> {
@@ -302,6 +329,98 @@ impl ActiveProjectPort for FakeActiveProjectStore {
     }
 }
 
+struct FakeMilestoneStore {
+    record: MilestoneRecord,
+}
+
+impl MilestoneStorePort for FakeMilestoneStore {
+    fn milestone_exists(&self, _base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<bool> {
+        Ok(self.record.id == *milestone_id)
+    }
+
+    fn read_milestone_record(
+        &self,
+        _base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<MilestoneRecord> {
+        if self.record.id != *milestone_id {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("milestone '{}' not found", milestone_id),
+            )));
+        }
+        Ok(self.record.clone())
+    }
+
+    fn write_milestone_record(
+        &self,
+        _base_dir: &Path,
+        _milestone_id: &MilestoneId,
+        _record: &MilestoneRecord,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn list_milestone_ids(&self, _base_dir: &Path) -> AppResult<Vec<MilestoneId>> {
+        Ok(vec![self.record.id.clone()])
+    }
+
+    fn create_milestone_atomic(
+        &self,
+        _base_dir: &Path,
+        _record: &MilestoneRecord,
+        _snapshot: &MilestoneSnapshot,
+        _initial_journal_line: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+struct FakeMilestonePlanStore {
+    plan_json: String,
+}
+
+impl MilestonePlanPort for FakeMilestonePlanStore {
+    fn read_plan_json(&self, _base_dir: &Path, _milestone_id: &MilestoneId) -> AppResult<String> {
+        Ok(self.plan_json.clone())
+    }
+
+    fn write_plan_json(
+        &self,
+        _base_dir: &Path,
+        _milestone_id: &MilestoneId,
+        _contents: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn read_plan_md(&self, _base_dir: &Path, _milestone_id: &MilestoneId) -> AppResult<String> {
+        Ok(String::new())
+    }
+
+    fn write_plan_md(
+        &self,
+        _base_dir: &Path,
+        _milestone_id: &MilestoneId,
+        _contents: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn read_plan_shape(&self, _base_dir: &Path, _milestone_id: &MilestoneId) -> AppResult<String> {
+        Ok(String::new())
+    }
+
+    fn write_plan_shape(
+        &self,
+        _base_dir: &Path,
+        _milestone_id: &MilestoneId,
+        _contents: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}
+
 // ── Helpers ──
 
 fn test_timestamp() -> chrono::DateTime<Utc> {
@@ -321,6 +440,49 @@ fn make_project_record(id: &str) -> ProjectRecord {
         status_summary: ProjectStatusSummary::Created,
         task_source: None,
     }
+}
+
+fn make_milestone_plan_json(
+    milestone_id: &str,
+    milestone_name: &str,
+    bead_id: &str,
+    bead_title: &str,
+) -> String {
+    serde_json::to_string(&MilestoneBundle {
+        schema_version: 1,
+        identity: MilestoneIdentity {
+            id: milestone_id.to_owned(),
+            name: milestone_name.to_owned(),
+        },
+        executive_summary: "summary".to_owned(),
+        goals: vec!["goal".to_owned()],
+        non_goals: vec![],
+        constraints: vec![],
+        acceptance_map: vec![AcceptanceCriterion {
+            id: "AC-1".to_owned(),
+            description: "acceptance criterion".to_owned(),
+            covered_by: vec![bead_id.to_owned()],
+        }],
+        workstreams: vec![Workstream {
+            name: "Core".to_owned(),
+            description: None,
+            beads: vec![BeadProposal {
+                bead_id: Some(bead_id.to_owned()),
+                explicit_id: Some(true),
+                title: bead_title.to_owned(),
+                description: None,
+                bead_type: Some("task".to_owned()),
+                priority: Some(1),
+                labels: vec![],
+                depends_on: vec![],
+                acceptance_criteria: vec!["AC-1".to_owned()],
+                flow_override: None,
+            }],
+        }],
+        default_flow: FlowPreset::Standard,
+        agents_guidance: None,
+    })
+    .expect("serialize plan bundle")
 }
 
 fn make_manual_amendment(amendment_id: &str, body: &str) -> QueuedAmendment {
@@ -1967,6 +2129,22 @@ fn show_project_returns_detail() {
     let run_store = FakeRunSnapshotStore::no_run();
     let journal_store = FakeJournalStore;
     let active_store = FakeActiveProjectStore::with_active("alpha");
+    let milestone_store = FakeMilestoneStore {
+        record: MilestoneRecord::new(
+            MilestoneId::new("ms-alpha").unwrap(),
+            "Alpha".to_owned(),
+            "desc".to_owned(),
+            test_timestamp(),
+        ),
+    };
+    let plan_store = FakeMilestonePlanStore {
+        plan_json: make_milestone_plan_json(
+            "ms-alpha",
+            "Alpha",
+            "ms-alpha.bead-1",
+            "Implement feature",
+        ),
+    };
     let base_dir = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
@@ -1975,6 +2153,8 @@ fn show_project_returns_detail() {
         &run_store,
         &journal_store,
         &active_store,
+        &milestone_store,
+        &plan_store,
         &base_dir,
         &pid,
     )
@@ -1984,6 +2164,7 @@ fn show_project_returns_detail() {
     assert!(detail.is_active);
     assert_eq!(detail.journal_event_count, 1);
     assert!(!detail.run_snapshot.has_active_run());
+    assert!(detail.task_lineage.is_none());
 }
 
 #[test]
@@ -1992,6 +2173,22 @@ fn show_project_fails_for_missing_project() {
     let run_store = FakeRunSnapshotStore::no_run();
     let journal_store = FakeJournalStore;
     let active_store = FakeActiveProjectStore::none();
+    let milestone_store = FakeMilestoneStore {
+        record: MilestoneRecord::new(
+            MilestoneId::new("ms-alpha").unwrap(),
+            "Alpha".to_owned(),
+            "desc".to_owned(),
+            test_timestamp(),
+        ),
+    };
+    let plan_store = FakeMilestonePlanStore {
+        plan_json: make_milestone_plan_json(
+            "ms-alpha",
+            "Alpha",
+            "ms-alpha.bead-1",
+            "Implement feature",
+        ),
+    };
     let base_dir = dummy_base_dir();
     let pid = ProjectId::new("missing").unwrap();
 
@@ -2000,6 +2197,8 @@ fn show_project_fails_for_missing_project() {
         &run_store,
         &journal_store,
         &active_store,
+        &milestone_store,
+        &plan_store,
         &base_dir,
         &pid,
     );
@@ -2007,6 +2206,60 @@ fn show_project_fails_for_missing_project() {
         result.unwrap_err(),
         AppError::ProjectNotFound { .. }
     ));
+}
+
+#[test]
+fn show_project_returns_task_lineage_for_milestone_tasks() {
+    let mut record = make_project_record("alpha");
+    record.task_source = Some(TaskSource {
+        milestone_id: "ms-alpha".to_owned(),
+        bead_id: "ms-alpha.bead-1".to_owned(),
+        parent_epic_id: None,
+        origin: TaskOrigin::Milestone,
+        plan_hash: Some("plan-hash".to_owned()),
+        plan_version: Some(2),
+    });
+    let store = FakeProjectStore::with_records(vec![record]);
+    let run_store = FakeRunSnapshotStore::no_run();
+    let journal_store = FakeJournalStore;
+    let active_store = FakeActiveProjectStore::none();
+    let milestone_store = FakeMilestoneStore {
+        record: MilestoneRecord::new(
+            MilestoneId::new("ms-alpha").unwrap(),
+            "Alpha Milestone".to_owned(),
+            "desc".to_owned(),
+            test_timestamp(),
+        ),
+    };
+    let plan_store = FakeMilestonePlanStore {
+        plan_json: make_milestone_plan_json(
+            "ms-alpha",
+            "Alpha Milestone",
+            "ms-alpha.bead-1",
+            "Implement feature",
+        ),
+    };
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let detail = show_project(
+        &store,
+        &run_store,
+        &journal_store,
+        &active_store,
+        &milestone_store,
+        &plan_store,
+        &base_dir,
+        &pid,
+    )
+    .unwrap();
+
+    let lineage = detail.task_lineage.expect("milestone lineage should exist");
+    assert_eq!(lineage.milestone_id, "ms-alpha");
+    assert_eq!(lineage.milestone_name, "Alpha Milestone");
+    assert_eq!(lineage.bead_id, "ms-alpha.bead-1");
+    assert_eq!(lineage.bead_title.as_deref(), Some("Implement feature"));
+    assert_eq!(lineage.acceptance_criteria, vec!["acceptance criterion"]);
 }
 
 #[test]

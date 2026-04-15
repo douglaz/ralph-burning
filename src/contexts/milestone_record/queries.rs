@@ -6,9 +6,13 @@
 //! into enriched views that the milestone controller can consume directly,
 //! without needing to correlate adapter-level structs at call sites.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::br_models::{BeadPriority, BeadStatus, BeadType, DependencyRef};
+use crate::contexts::milestone_record::model::TaskRunOutcome;
+use crate::contexts::project_run_record::model::ProjectStatusSummary;
+use crate::shared::domain::FlowPreset;
 
 // ── BeadSummaryView ──────────────────────────────────────────────────────
 
@@ -110,12 +114,81 @@ pub struct PlannedElsewhereView {
     pub related_beads: Vec<BeadSummaryView>,
 }
 
+// ── Lineage Queries ───────────────────────────────────────────────────────
+
+/// Stable lineage metadata for a milestone bead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BeadLineageView {
+    pub milestone_id: String,
+    pub milestone_name: String,
+    pub bead_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bead_title: Option<String>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+}
+
+/// A single bead execution attempt with computed duration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskRunAttemptView {
+    pub milestone_id: String,
+    pub bead_id: String,
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_hash: Option<String>,
+    pub outcome: TaskRunOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_detail: Option<String>,
+    pub started_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+}
+
+/// Execution history for a bead, including retries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BeadExecutionHistoryView {
+    pub lineage: BeadLineageView,
+    #[serde(default)]
+    pub runs: Vec<TaskRunAttemptView>,
+}
+
+/// A Ralph task linked to a milestone bead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MilestoneTaskView {
+    pub project_id: String,
+    pub project_name: String,
+    pub flow: FlowPreset,
+    pub status_summary: ProjectStatusSummary,
+    pub created_at: DateTime<Utc>,
+    pub bead_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bead_title: Option<String>,
+}
+
+/// All Ralph tasks currently linked to a milestone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MilestoneTaskListView {
+    pub milestone_id: String,
+    pub milestone_name: String,
+    #[serde(default)]
+    pub tasks: Vec<MilestoneTaskView>,
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::adapters::br_models::DependencyKind;
+    use crate::contexts::milestone_record::model::TaskRunOutcome;
+    use crate::contexts::project_run_record::model::ProjectStatusSummary;
+    use crate::shared::domain::FlowPreset;
 
     // ── helpers ──────────────────────────────────────────────────────
 
@@ -170,6 +243,32 @@ mod tests {
             ],
             action: "implement".to_owned(),
             blocked_by: vec![],
+        }
+    }
+
+    fn sample_bead_lineage() -> BeadLineageView {
+        BeadLineageView {
+            milestone_id: "ms-1".to_owned(),
+            milestone_name: "Milestone 1".to_owned(),
+            bead_id: "ms-1.bead-1".to_owned(),
+            bead_title: Some("Create query models".to_owned()),
+            acceptance_criteria: vec!["Queries return lineage".to_owned()],
+        }
+    }
+
+    fn sample_task_run_attempt() -> TaskRunAttemptView {
+        TaskRunAttemptView {
+            milestone_id: "ms-1".to_owned(),
+            bead_id: "ms-1.bead-1".to_owned(),
+            project_id: "task-alpha".to_owned(),
+            run_id: Some("run-1".to_owned()),
+            plan_hash: Some("plan-hash".to_owned()),
+            outcome: TaskRunOutcome::Succeeded,
+            outcome_detail: Some("completed".to_owned()),
+            started_at: chrono::Utc::now(),
+            finished_at: Some(chrono::Utc::now()),
+            duration_ms: Some(250),
+            task_id: Some("task-1".to_owned()),
         }
     }
 
@@ -620,6 +719,41 @@ mod tests {
         }"#;
         let view: BeadReadView = serde_json::from_str(json)?;
         assert_eq!(view.bead_type, BeadType::Other("custom_type".to_owned()));
+        Ok(())
+    }
+
+    #[test]
+    fn bead_execution_history_view_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let view = BeadExecutionHistoryView {
+            lineage: sample_bead_lineage(),
+            runs: vec![sample_task_run_attempt()],
+        };
+
+        let json = serde_json::to_string(&view)?;
+        let parsed: BeadExecutionHistoryView = serde_json::from_str(&json)?;
+        assert_eq!(parsed, view);
+        Ok(())
+    }
+
+    #[test]
+    fn milestone_task_list_view_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let view = MilestoneTaskListView {
+            milestone_id: "ms-1".to_owned(),
+            milestone_name: "Milestone 1".to_owned(),
+            tasks: vec![MilestoneTaskView {
+                project_id: "task-alpha".to_owned(),
+                project_name: "Task Alpha".to_owned(),
+                flow: FlowPreset::QuickDev,
+                status_summary: ProjectStatusSummary::Active,
+                created_at: chrono::Utc::now(),
+                bead_id: "ms-1.bead-1".to_owned(),
+                bead_title: Some("Create query models".to_owned()),
+            }],
+        };
+
+        let json = serde_json::to_string(&view)?;
+        let parsed: MilestoneTaskListView = serde_json::from_str(&json)?;
+        assert_eq!(parsed, view);
         Ok(())
     }
 }
