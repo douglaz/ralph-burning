@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T14:02:06.597272745Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real bugs in the milestone CLI. Amendment fr-2-66b860a6 is a clear correctness bug: handle_plan always calls draft_milestone() which creates a new requirements run, making the documented awaiting_answers workflow impossible to complete. The MilestoneRecord has no field to persist an in-flight run ID, so reruns lose track of the previous run entirely. Amendment fr-2-5a4a19dc identifies a genuine validation gap: show/status use a minimal load_plan_bundle that skips identity validation, bundle.validate(), and plan-hash consistency checks that load_milestone_bundle in project.rs performs. This means corrupt or stale plans are silently displayed as valid.\n\n## Votes\n\n- `fr-2-66b860a6`: Accept\n  Confirmed by reading the code. handle_plan (milestone.rs:128-227) unconditionally calls draft_milestone() at line 144-146, which always generates a fresh run_id and creates a new RequirementsRun (service.rs:195-219). When the run ends in AwaitingAnswers, the user is told to answer and rerun milestone plan (lines 165-170), but the MilestoneRecord struct (model.rs:140-163) has no field to persist the in-flight run ID. On rerun, a brand-new requirements run is drafted, completely ignoring the answered one. The daemon path handles this correctly by storing requirements_run_id on its task model (daemon_loop.rs:2436), but the CLI milestone plan path has no equivalent persistence. This is a real workflow-breaking bug that makes the clarification loop a dead end.\n- `fr-2-5a4a19dc`: Accept\n  Confirmed by comparing the two code paths. load_plan_bundle in milestone.rs:389-401 does bare serde_json::from_str deserialization with no further validation. In contrast, load_milestone_bundle in project.rs:721-758 performs three additional checks: (1) verifies bundle.identity.id matches the milestone_id (lines 733-741), (2) calls bundle.validate() which catches structural issues (lines 744-749), and (3) computes a SHA-256 plan hash (lines 751-757) which validate_milestone_plan_snapshot (lines 783-819) checks against the snapshot's stored hash to detect stale plans. The show/status commands skip all of these, so they can silently report a corrupt plan (wrong identity, invalid structure, stale hash) as valid state. The has_plan field and bead_count in the detail view would be misleading. While these are read-only commands, displaying corrupt data as trustworthy is a real defect worth fixing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 2
+}

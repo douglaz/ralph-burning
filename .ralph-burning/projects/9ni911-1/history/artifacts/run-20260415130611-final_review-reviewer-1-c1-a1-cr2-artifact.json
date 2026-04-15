@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260415130611-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T13:55:44.569893930Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the diff against `origin/master` with focus on the new milestone CLI handler and related tests. Targeted milestone CLI tests pass, but I found two fix-now correctness gaps: the rerun-after-answers flow always restarts planning instead of resuming/materializing the answered run, and show/status read unvalidated plan data that can drift from the live snapshot.\n\n## Amendments\n\n1. finding_summary: \"`milestone plan` cannot complete the documented clarification workflow. In `src/cli/milestone.rs:141-170`, every invocation immediately starts a fresh `draft_milestone()` run and only then inspects that new run's status, yet the `awaiting_answers` branch tells the operator to run `requirements answer <run_id>` and rerun `milestone plan`. After answers are submitted, rerunning `milestone plan` ignores the answered run and launches a new requirements run instead of materializing the completed bundle.\"\nseverity: high\naffected_files:\n- src/cli/milestone.rs\nremediation_hint: \"Persist the milestone's in-flight requirements run ID, and on rerun inspect that existing run first: if it is now completed, materialize its bundle; if it is still awaiting answers, keep pointing the user at that same run instead of redrafting.\"\n   Rationale: This breaks the only advertised follow-up path when milestone planning needs operator answers. It can silently discard answered work, and because requirements run IDs are second-granularity, an immediate rerun can even overwrite the prior run directory instead of producing a distinct resumable handoff.\n2. finding_summary: \"`milestone show` and `milestone status` trust raw `plan.json` without validating that it matches the current snapshot. In `src/cli/milestone.rs:353-399`, the commands parse `plan.json` directly and derive `bead_count`/`has_plan` from it, but they do not perform the plan-hash check or bundle validation that `project create-from-bead` already uses in `src/cli/project.rs:721-819`. A stale or semantically corrupt plan can therefore be reported as live milestone state instead of surfacing corruption.\"\nseverity: medium\naffected_files:\n- src/cli/milestone.rs\nremediation_hint: \"Route show/status through the same validated milestone-plan loader used by project creation, so these commands either report a snapshot-consistent plan or fail with a milestone-specific corruption error.\"\n   Rationale: The project prompt explicitly requires show/status output to reflect real milestone state, not cached or drifted data. Right now these commands can mislead operators about bead counts and plan presence, and malformed `plan.json` parse failures also lose the milestone/file context that the acceptance criteria asked for.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
