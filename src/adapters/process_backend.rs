@@ -906,9 +906,10 @@ impl ProcessBackendAdapter {
                         &schema_path,
                         &message_path,
                         &session.session_id,
+                        true,
                     )
                 } else {
-                    Self::codex_new_session_args(model_id, &schema_path, &message_path)
+                    Self::codex_new_session_args(model_id, &schema_path, &message_path, true)
                 };
 
                 Ok(PreparedCommand {
@@ -986,9 +987,10 @@ impl ProcessBackendAdapter {
                         &schema_path,
                         &message_path,
                         &session.session_id,
+                        false,
                     )
                 } else {
-                    Self::codex_new_session_args(model_id, &schema_path, &message_path)
+                    Self::codex_new_session_args(model_id, &schema_path, &message_path, false)
                 };
 
                 Ok(PreparedCommand {
@@ -1316,10 +1318,17 @@ impl ProcessBackendAdapter {
         }
     }
 
-    fn codex_model_reasoning_effort_and_fast(model_id: &str) -> (&str, Option<&str>, bool) {
-        let (model_id, fast_mode) = match model_id.strip_suffix("-fast") {
-            Some(base_model_id) if !base_model_id.is_empty() => (base_model_id, true),
-            _ => (model_id, false),
+    fn codex_model_reasoning_effort_and_fast(
+        model_id: &str,
+        supports_fast_mode: bool,
+    ) -> (&str, Option<&str>, bool) {
+        let (model_id, fast_mode) = if supports_fast_mode {
+            match model_id.strip_suffix("-fast") {
+                Some(base_model_id) if !base_model_id.is_empty() => (base_model_id, true),
+                _ => (model_id, false),
+            }
+        } else {
+            (model_id, false)
         };
 
         for effort in ["xhigh", "high", "medium", "low"] {
@@ -1351,9 +1360,10 @@ impl ProcessBackendAdapter {
         model_id: &str,
         schema_path: &Path,
         message_path: &Path,
+        supports_fast_mode: bool,
     ) -> Vec<String> {
         let (base_model_id, reasoning_effort, fast_mode) =
-            Self::codex_model_reasoning_effort_and_fast(model_id);
+            Self::codex_model_reasoning_effort_and_fast(model_id, supports_fast_mode);
         let mut args = vec![
             "exec".to_owned(),
             "--dangerously-bypass-approvals-and-sandbox".to_owned(),
@@ -1384,9 +1394,10 @@ impl ProcessBackendAdapter {
         schema_path: &Path,
         message_path: &Path,
         session_id: &str,
+        supports_fast_mode: bool,
     ) -> Vec<String> {
         let (base_model_id, reasoning_effort, fast_mode) =
-            Self::codex_model_reasoning_effort_and_fast(model_id);
+            Self::codex_model_reasoning_effort_and_fast(model_id, supports_fast_mode);
         let mut args = vec![
             "exec".to_owned(),
             "resume".to_owned(),
@@ -2533,22 +2544,33 @@ mod tests {
     #[test]
     fn codex_model_suffix_parses_reasoning_effort_and_fast_mode() {
         assert_eq!(
-            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.4-xhigh-fast"),
+            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast(
+                "gpt-5.4-xhigh-fast",
+                true
+            ),
             ("gpt-5.4", Some("xhigh"), true)
         );
         assert_eq!(
             ProcessBackendAdapter::codex_model_reasoning_effort_and_fast(
-                "gpt-5.3-codex-spark-xhigh-fast"
+                "gpt-5.3-codex-spark-xhigh-fast",
+                true,
             ),
             ("gpt-5.3-codex-spark", Some("xhigh"), true)
         );
         assert_eq!(
-            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.4-fast"),
+            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.4-fast", true),
             ("gpt-5.4", None, true)
         );
         assert_eq!(
-            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.4-xhigh"),
+            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.4-xhigh", true),
             ("gpt-5.4", Some("xhigh"), false)
+        );
+        assert_eq!(
+            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast(
+                "openai/gpt-4.1-fast",
+                false
+            ),
+            ("openai/gpt-4.1-fast", None, false)
         );
     }
 

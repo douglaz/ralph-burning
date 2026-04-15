@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415004740-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415004740-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T02:12:34.631964842Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRestricted Codex fast-mode suffix handling to `BackendFamily::Codex` so trailing `-fast` still strips to the base Codex model and adds `-c service_tier=\"fast\"`, while OpenRouter requests now pass `...-fast` model IDs through unchanged. Updated the shared model parser in `src/adapters/process_backend.rs` to take an explicit fast-mode toggle and added OpenRouter new-session and resume regression coverage in `tests/unit/process_backend_test.rs` alongside the existing Codex fast-mode assertions.\n\n## Steps\n\n1. [Completed] Inspect the Codex/OpenRouter process backend command builders and confirm the reported regression path where OpenRouter reused the new Codex fast-suffix parsing.\n2. [Completed] Update `src/adapters/process_backend.rs` so `-fast` parsing and `service_tier=\"fast\"` injection are enabled only for Codex invocations while preserving existing reasoning-effort suffix parsing.\n3. [Completed] Add regression tests proving OpenRouter model IDs ending in `-fast` remain unchanged for both new-session and resume flows, plus parser coverage for the no-fast OpenRouter case.\n4. [Completed] Run targeted regressions and the full validation gates on the final tree.\n\n## Validation Evidence\n\n- Targeted regressions passed: `cargo test codex_model_suffix_parses_reasoning_effort_and_fast_mode -- --nocapture`, `cargo test openrouter_new_session_fast_suffix_model_is_passed_through_unchanged -- --nocapture`, and `cargo test openrouter_resume_fast_suffix_model_is_passed_through_unchanged -- --nocapture`.\n- `cargo fmt --check` passed after formatting the updated files.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed and produced `/nix/store/1mkxbh06ly3p2jzq2rlb1xgsnj980cy9-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}
