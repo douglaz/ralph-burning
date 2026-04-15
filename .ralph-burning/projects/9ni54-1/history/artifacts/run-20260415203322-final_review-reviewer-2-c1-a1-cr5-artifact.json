@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-reviewer-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260415203322-final_review-reviewer-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T23:01:23.463533905Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed the implementation of milestone/bead lineage exposure across 4 query types: run history, task detail, bead execution history, and milestone task listing. The implementation is solid overall — all 4 query types are implemented, optional lineage fields maintain backward compatibility, results are serializable, and test coverage is thorough with edge cases for stale plans, corrupt plans, missing plans, and mixed bead ref formats. The bead ref matching logic (short vs qualified IDs) is well-handled. One correctness concern found: show_project hard-fails when a task references a deleted milestone, which blocks project inspection for orphaned tasks.\n\n## Amendments\n\n1. show_project (service.rs:1412-1417) propagates MilestoneNotFound as a hard error via `?` on load_task_lineage_detail. This means `project show` and `task show` become completely unusable for any task whose referenced milestone has been deleted or whose milestone_id is invalid. The test `show_project_propagates_missing_milestone_lineage_errors` confirms this is intentional, but it breaks the backward-compat guarantee: previously `show_project` succeeded for all existing projects regardless of milestone state. A project with task_source referencing a stale milestone should still be inspectable — the lineage should fall back to None (like when the plan is corrupt/missing) rather than failing the entire operation. Fix: in `load_task_lineage_detail`, catch `MilestoneNotFound` errors and return `Ok(None)` instead of propagating, matching the graceful fallback pattern already used for corrupt/missing plans.\n   Rationale: This is a correctness regression within the current bead's scope. The acceptance criteria require backward compatibility for non-milestone tasks (null lineage), but the implementation also breaks existing projects that reference deleted milestones. The graceful degradation pattern is already established for plan-level failures (corrupt plan, missing plan file) but not applied to milestone-level failures, creating an inconsistency in error handling.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 5
+}

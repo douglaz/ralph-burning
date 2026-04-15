@@ -2,34 +2,79 @@
   "active_run": {
     "run_id": "run-20260415203322",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 5
+      "completion_round": 6
     },
     "started_at": "2026-04-15T20:33:22.775220229Z",
     "prompt_hash_at_cycle_start": "114c5c4c96be38bce1fad837b98c1556dd8e6c3226fb6705a6716b84f71843fa",
     "prompt_hash_at_stage_start": "114c5c4c96be38bce1fad837b98c1556dd8e6c3226fb6705a6716b84f71843fa",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 4
+    "final_review_restart_count": 5
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 5,
+  "completion_rounds": 6,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-5-536ab26d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: Mixed short/qualified bead IDs are only normalized on the read side. `record_task_run_start` can discover a prior finalized attempt via canonicalized matching, but `reopen_failed_exact_attempt` still filters raw rows with `entry.bead_id == bead_id` at src/adapters/fs.rs:4541-4550, and `finalize_task_run_internal` does the same at src/adapters/fs.rs:4693-4699. If lineage stored `bead-1` and the current task uses `ms-alpha.bead-1` (or vice versa), retries and completion/repair syncs fail with \"already finalized\" or \"no matching task run\" even though the attempt was found. severity: high. affected_files: [src/adapters/fs.rs]. remediation_hint: Canonicalize bead refs in the raw-row reopen/finalize paths too, and add retry/complete tests that mix short and qualified bead IDs.",
+        "created_at": "2026-04-15T23:07:17.706813476Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "b4bf36c1a1001c51f46ea9446a58edaee1f5013ae06845339ab82ee1db5d692c"
+      },
+      {
+        "amendment_id": "fr-5-ccd324fd",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: Snapshot reconciliation still treats short and qualified bead refs as different beads. `latest_task_runs_per_bead` keys by raw `entry.bead_id` at src/contexts/milestone_record/model.rs:554-568, and `reconcile_snapshot_from_lineage` uses that output for `active_bead` and progress counts at src/contexts/milestone_record/service.rs:953-989. A retry history containing both `bead-1` and `ms-alpha.bead-1` for one logical bead will be double-counted, and two active mixed-form rows can even trip the \"multiple active beads present in lineage\" corruption path. severity: medium. affected_files: [src/contexts/milestone_record/model.rs, src/contexts/milestone_record/service.rs]. remediation_hint: Group latest runs by canonical milestone bead ref rather than the raw stored string.",
+        "created_at": "2026-04-15T23:07:17.706816562Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "350f1daa64996249e938d025822d079f27d9eeefd9df18cbf0873c106d199808"
+      },
+      {
+        "amendment_id": "fr-5-e55dacea",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: `project show` / `task show` now fail outright when a bead-linked project's milestone record is missing. `show_project` unconditionally loads lineage at src/contexts/project_run_record/service.rs:1363-1417, and `read_bead_lineage` returns `MilestoneNotFound` as soon as the milestone directory is absent at src/contexts/milestone_record/service.rs:2222-2237. That turns an otherwise readable project into an error even though the project record, run snapshot, and raw milestone/bead IDs still exist. severity: medium. affected_files: [src/contexts/project_run_record/service.rs, src/contexts/milestone_record/service.rs]. remediation_hint: Degrade to `task_lineage: None` or a partial lineage stub when the milestone record is missing instead of aborting the whole detail query.",
+        "created_at": "2026-04-15T23:07:17.706818846Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "e61362a5bfd9205903c2e331e7c91230b7a3441ce73f7b22d9b37e436dd77cad"
+      },
+      {
+        "amendment_id": "fr-5-6cc1e6a7",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "show_project (service.rs:1412-1417) propagates MilestoneNotFound as a hard error via `?` on load_task_lineage_detail. This means `project show` and `task show` become completely unusable for any task whose referenced milestone has been deleted or whose milestone_id is invalid. The test `show_project_propagates_missing_milestone_lineage_errors` confirms this is intentional, but it breaks the backward-compat guarantee: previously `show_project` succeeded for all existing projects regardless of milestone state. A project with task_source referencing a stale milestone should still be inspectable — the lineage should fall back to None (like when the plan is corrupt/missing) rather than failing the entire operation. Fix: in `load_task_lineage_detail`, catch `MilestoneNotFound` errors and return `Ok(None)` instead of propagating, matching the graceful fallback pattern already used for corrupt/missing plans.",
+        "created_at": "2026-04-15T23:07:17.706821691Z",
+        "batch_sequence": 4,
+        "source": "workflow_stage",
+        "dedup_key": "b99446b490438b5b4c935128d8aa9b037c25825ab9d05d0000911d90c88e5a96"
+      }
+    ],
     "processed_count": 10
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 6 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-15T22:33:05.680783538Z",
+    "resolved_at": "2026-04-15T22:58:13.336917306Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
