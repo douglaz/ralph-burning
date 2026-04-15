@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260415130611-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T15:53:00.469401278Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nHardened milestone planning and inspection in the CLI. `milestone plan` now replaces the startup reservation with a real requirements run id before the long drafting pipeline, recovers stale `__starting__` reservations, keeps live drafting runs from being replaced by concurrent replans, and only clears pending pointers for definite missing runs while surfacing corrupt/unreadable pending runs as milestone-specific errors. `milestone show`/`milestone status` now derive effective live status from the pending requirements run and expose pending run metadata so replans report `planning` or `awaiting_answers` instead of stale snapshot status. Added regressions for stale startup recovery, pending replan status rendering, and corrupt pending-run handling.\n\n## Steps\n\n1. [Completed] Inspect the milestone CLI and requirements drafting flow to trace the startup reservation lifecycle, pending-run inspection logic, and live status rendering paths implicated by the reported regressions.\n2. [Completed] Patch milestone planning to persist real pending run ids before the long pipeline, recover stale startup reservations, preserve live in-flight drafting runs, and stop auto-clearing corrupt or unreadable pending requirements runs.\n3. [Completed] Update milestone show/status read models to derive effective live replan status from the pending requirements run, expose pending run metadata in JSON/detail output, add regression coverage, and run the repository verification gates including `nix build`.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test milestone_ --features test-stub -- --nocapture` passed, including the new stale-startup, pending-status, and corrupt-pending regressions.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build -L` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 6
+}

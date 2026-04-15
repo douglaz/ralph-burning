@@ -26,6 +26,8 @@ use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::shared::error::{AppError, AppResult};
 
 const PENDING_REQUIREMENTS_START_PREFIX: &str = "__starting__:";
+const PENDING_REQUIREMENTS_START_STALE_AFTER_SECONDS: i64 = 30;
+const PENDING_REQUIREMENTS_DRAFTING_STALE_AFTER_SECONDS: i64 = 300;
 
 #[derive(Debug, Args)]
 pub struct MilestoneCommand {
@@ -67,8 +69,17 @@ struct MilestoneSummaryView {
     progress: MilestoneProgress,
     #[serde(skip_serializing_if = "Option::is_none")]
     active_bead: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_requirements: Option<PendingRequirementsView>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PendingRequirementsView {
+    run_id: String,
+    status: String,
+    status_summary: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,6 +92,8 @@ struct MilestoneDetailView {
     progress: MilestoneProgress,
     #[serde(skip_serializing_if = "Option::is_none")]
     active_bead: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_requirements: Option<PendingRequirementsView>,
     plan_version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     plan_hash: Option<String>,
@@ -233,6 +246,7 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
         &store,
         &snapshot_store,
         &plan_store,
+        &requirements_store,
         &current_dir,
         &milestone_id,
     )?;
@@ -250,11 +264,13 @@ async fn handle_show(milestone_id: String, json: bool) -> AppResult<()> {
     let store = FsMilestoneStore;
     let snapshot_store = FsMilestoneSnapshotStore;
     let plan_store = FsMilestonePlanStore;
+    let requirements_store = FsRequirementsStore;
     let milestone_id = MilestoneId::new(milestone_id)?;
     let detail = load_milestone_detail(
         &store,
         &snapshot_store,
         &plan_store,
+        &requirements_store,
         &current_dir,
         &milestone_id,
     )?;
@@ -274,6 +290,7 @@ async fn handle_status(milestone_id: Option<String>, json: bool) -> AppResult<()
     let store = FsMilestoneStore;
     let snapshot_store = FsMilestoneSnapshotStore;
     let plan_store = FsMilestonePlanStore;
+    let requirements_store = FsRequirementsStore;
 
     if let Some(milestone_id) = milestone_id {
         let milestone_id = MilestoneId::new(milestone_id)?;
@@ -281,6 +298,7 @@ async fn handle_status(milestone_id: Option<String>, json: bool) -> AppResult<()
             &store,
             &snapshot_store,
             &plan_store,
+            &requirements_store,
             &current_dir,
             &milestone_id,
         )?;
@@ -299,6 +317,7 @@ async fn handle_status(milestone_id: Option<String>, json: bool) -> AppResult<()
                 &store,
                 &snapshot_store,
                 &plan_store,
+                &requirements_store,
                 &current_dir,
                 &milestone_id,
             )
@@ -341,13 +360,20 @@ fn load_milestone_summary(
     store: &impl MilestoneStorePort,
     snapshot_store: &impl MilestoneSnapshotPort,
     plan_store: &impl MilestonePlanPort,
+    requirements_store: &impl RequirementsStorePort,
     base_dir: &std::path::Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<MilestoneSummaryView> {
     let record = load_existing_milestone(store, base_dir, milestone_id)?;
-    let (snapshot, plan) =
-        load_inspection_snapshot_and_plan(snapshot_store, plan_store, base_dir, milestone_id)?;
-    let bead_count = plan
+    let inspection = load_inspection_state(
+        snapshot_store,
+        plan_store,
+        requirements_store,
+        base_dir,
+        milestone_id,
+    )?;
+    let bead_count = inspection
+        .plan
         .as_ref()
         .map(|plan| plan.bundle.bead_count() as u32)
         .unwrap_or(0);
@@ -355,12 +381,13 @@ fn load_milestone_summary(
     Ok(MilestoneSummaryView {
         id: record.id.to_string(),
         name: record.name,
-        status: snapshot.status.to_string(),
+        status: inspection.display_status,
         bead_count,
-        progress: snapshot.progress,
-        active_bead: snapshot.active_bead,
+        progress: inspection.snapshot.progress,
+        active_bead: inspection.snapshot.active_bead,
+        pending_requirements: inspection.pending_requirements,
         created_at: record.created_at,
-        updated_at: snapshot.updated_at,
+        updated_at: inspection.snapshot.updated_at,
     })
 }
 
@@ -368,30 +395,38 @@ fn load_milestone_detail(
     store: &impl MilestoneStorePort,
     snapshot_store: &impl MilestoneSnapshotPort,
     plan_store: &impl MilestonePlanPort,
+    requirements_store: &impl RequirementsStorePort,
     base_dir: &std::path::Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<MilestoneDetailView> {
     let record = load_existing_milestone(store, base_dir, milestone_id)?;
-    let (snapshot, plan_bundle) =
-        load_inspection_snapshot_and_plan(snapshot_store, plan_store, base_dir, milestone_id)?;
-    let bead_count = plan_bundle
+    let inspection = load_inspection_state(
+        snapshot_store,
+        plan_store,
+        requirements_store,
+        base_dir,
+        milestone_id,
+    )?;
+    let bead_count = inspection
+        .plan
         .as_ref()
         .map(|bundle| bundle.bundle.bead_count() as u32)
         .unwrap_or(0);
-    let has_plan = plan_bundle.is_some();
+    let has_plan = inspection.plan.is_some();
 
     Ok(MilestoneDetailView {
         id: record.id.to_string(),
         name: record.name,
         description: record.description,
-        status: snapshot.status.to_string(),
+        status: inspection.display_status,
         bead_count,
-        progress: snapshot.progress,
-        active_bead: snapshot.active_bead,
-        plan_version: snapshot.plan_version,
-        plan_hash: snapshot.plan_hash,
+        progress: inspection.snapshot.progress,
+        active_bead: inspection.snapshot.active_bead,
+        pending_requirements: inspection.pending_requirements,
+        plan_version: inspection.snapshot.plan_version,
+        plan_hash: inspection.snapshot.plan_hash,
         created_at: record.created_at,
-        updated_at: snapshot.updated_at,
+        updated_at: inspection.snapshot.updated_at,
         has_plan,
     })
 }
@@ -401,19 +436,85 @@ struct LoadedMilestoneBundle {
     bundle: MilestoneBundle,
 }
 
-fn load_inspection_snapshot_and_plan(
+#[derive(Debug)]
+struct MilestoneInspectionState {
+    snapshot: MilestoneSnapshot,
+    plan: Option<LoadedMilestoneBundle>,
+    display_status: String,
+    pending_requirements: Option<PendingRequirementsView>,
+}
+
+fn load_inspection_state(
     snapshot_store: &impl MilestoneSnapshotPort,
     plan_store: &impl MilestonePlanPort,
+    requirements_store: &impl RequirementsStorePort,
     base_dir: &std::path::Path,
     milestone_id: &MilestoneId,
-) -> AppResult<(MilestoneSnapshot, Option<LoadedMilestoneBundle>)> {
+) -> AppResult<MilestoneInspectionState> {
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
         let snapshot =
             load_snapshot_for_action(snapshot_store, base_dir, milestone_id, "inspection")?;
         let plan = load_live_plan_bundle(plan_store, base_dir, milestone_id, &snapshot)
             .map_err(|error| map_inspection_error(milestone_id, error))?;
-        Ok((snapshot, plan))
+        let (display_status, pending_requirements) =
+            load_pending_requirements_view(requirements_store, base_dir, milestone_id, &snapshot)
+                .map_err(|error| map_inspection_error(milestone_id, error))?;
+        Ok(MilestoneInspectionState {
+            snapshot,
+            plan,
+            display_status,
+            pending_requirements,
+        })
     })
+}
+
+fn load_pending_requirements_view(
+    requirements_store: &impl RequirementsStorePort,
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    snapshot: &MilestoneSnapshot,
+) -> AppResult<(String, Option<PendingRequirementsView>)> {
+    let Some(run_id) = snapshot.pending_requirements_run_id.as_deref() else {
+        return Ok((snapshot.status.to_string(), None));
+    };
+
+    if is_pending_requirements_start_reservation(run_id) {
+        return Ok((
+            MilestoneStatus::Planning.to_string(),
+            Some(PendingRequirementsView {
+                run_id: run_id.to_owned(),
+                status: "starting".to_owned(),
+                status_summary: "requirements run is starting".to_owned(),
+            }),
+        ));
+    }
+
+    let run = requirements_store
+        .read_run(base_dir, run_id)
+        .map_err(|error| AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "inspection".to_owned(),
+            details: format!(
+                "pending requirements run '{}' could not be inspected: {}",
+                run_id, error
+            ),
+        })?;
+    let display_status = match run.status {
+        RequirementsStatus::Drafting | RequirementsStatus::Completed => {
+            MilestoneStatus::Planning.to_string()
+        }
+        RequirementsStatus::AwaitingAnswers => RequirementsStatus::AwaitingAnswers.to_string(),
+        RequirementsStatus::Failed => MilestoneStatus::Failed.to_string(),
+    };
+
+    Ok((
+        display_status,
+        Some(PendingRequirementsView {
+            run_id: run_id.to_owned(),
+            status: run.status.to_string(),
+            status_summary: run.status_summary,
+        }),
+    ))
 }
 
 fn load_live_plan_bundle(
@@ -614,13 +715,34 @@ fn load_pending_requirements_run(
 ) -> AppResult<Option<crate::contexts::requirements_drafting::model::RequirementsRun>> {
     let run = match requirements_store.read_run(base_dir, run_id) {
         Ok(run) => run,
-        Err(_) => {
+        Err(AppError::InvalidRequirementsState {
+            run_id: missing_run_id,
+            details,
+        }) if missing_run_id == run_id && details == "requirements run not found" => {
             clear_pending_requirements_run(snapshot_store, base_dir, milestone_id, Some(run_id))?;
             return Ok(None);
+        }
+        Err(error) => {
+            return Err(planning_error(
+                milestone_id,
+                format!(
+                    "pending requirements run '{}' could not be inspected: {}",
+                    run_id, error
+                ),
+            ));
         }
     };
 
     if run.status == RequirementsStatus::Drafting {
+        if !pending_requirements_drafting_run_is_stale(&run) {
+            return Err(planning_error(
+                milestone_id,
+                format!(
+                    "requirements run '{}' is still drafting in another process; rerun once it reaches awaiting_answers or completed",
+                    run_id
+                ),
+            ));
+        }
         clear_pending_requirements_run(snapshot_store, base_dir, milestone_id, Some(run_id))?;
         return Ok(None);
     }
@@ -639,6 +761,8 @@ async fn start_reserved_requirements_run(
     String,
     crate::contexts::requirements_drafting::model::RequirementsRun,
 )> {
+    let now = Utc::now();
+    let run_id = requirements_service::generate_run_id(now);
     let effective_config = match EffectiveConfig::load(base_dir) {
         Ok(config) => config,
         Err(error) => {
@@ -664,21 +788,6 @@ async fn start_reserved_requirements_run(
                 return Err(planning_error(milestone_id, error.to_string()));
             }
         };
-    let run_id = match requirements_cli_service
-        .draft_milestone(base_dir, &record.description, Utc::now(), None)
-        .await
-    {
-        Ok(run_id) => run_id,
-        Err(error) => {
-            clear_pending_requirements_run(
-                snapshot_store,
-                base_dir,
-                milestone_id,
-                Some(reservation_id),
-            )?;
-            return Err(planning_error(milestone_id, error.to_string()));
-        }
-    };
     replace_pending_requirements_run(
         snapshot_store,
         base_dir,
@@ -686,6 +795,13 @@ async fn start_reserved_requirements_run(
         reservation_id,
         &run_id,
     )?;
+    if let Err(error) = requirements_cli_service
+        .draft_milestone_with_run_id(base_dir, run_id.clone(), &record.description, now, None)
+        .await
+    {
+        clear_pending_requirements_run(snapshot_store, base_dir, milestone_id, Some(&run_id))?;
+        return Err(planning_error(milestone_id, error.to_string()));
+    }
     let run = requirements_store
         .read_run(base_dir, &run_id)
         .map_err(|error| {
@@ -720,14 +836,21 @@ fn reserve_pending_requirements_run(
                 "cannot replan a milestone while status is 'running'; pause or complete execution before planning again",
             ));
         }
-        if let Some(run_id) = snapshot.pending_requirements_run_id.as_deref() {
-            if is_pending_requirements_start_reservation(run_id) {
-                return Err(planning_error(
-                    milestone_id,
-                    "planning is already starting in another process; rerun once the pending requirements run is recorded",
-                ));
+        if let Some(run_id) = snapshot.pending_requirements_run_id.clone() {
+            if is_pending_requirements_start_reservation(&run_id) {
+                if !pending_requirements_start_reservation_is_stale(&run_id) {
+                    return Err(planning_error(
+                        milestone_id,
+                        "planning is already starting in another process; rerun once the pending requirements run is recorded",
+                    ));
+                }
+
+                snapshot.pending_requirements_run_id = None;
+                snapshot.updated_at = Utc::now();
+                planning_snapshot_write(snapshot_store, base_dir, milestone_id, &snapshot)?;
+            } else {
+                return Ok(PendingRequirementsRunReservation::Existing(run_id));
             }
-            return Ok(PendingRequirementsRunReservation::Existing(run_id.to_owned()));
         }
 
         let reservation_id = pending_requirements_start_reservation();
@@ -808,6 +931,34 @@ fn is_pending_requirements_start_reservation(run_id: &str) -> bool {
     run_id.starts_with(PENDING_REQUIREMENTS_START_PREFIX)
 }
 
+fn pending_requirements_start_reservation_is_stale(run_id: &str) -> bool {
+    let Some((pid, timestamp_nanos)) = parse_pending_requirements_start_reservation(run_id) else {
+        return true;
+    };
+    let now_nanos = Utc::now()
+        .timestamp_nanos_opt()
+        .unwrap_or_else(|| Utc::now().timestamp_micros() * 1_000);
+    let elapsed_nanos = now_nanos.saturating_sub(timestamp_nanos);
+    let stale_after_nanos = PENDING_REQUIREMENTS_START_STALE_AFTER_SECONDS * 1_000_000_000;
+    let proc_root = std::path::Path::new("/proc");
+    let process_missing = proc_root.is_dir() && !proc_root.join(pid.to_string()).exists();
+
+    elapsed_nanos >= stale_after_nanos || process_missing
+}
+
+fn parse_pending_requirements_start_reservation(run_id: &str) -> Option<(u32, i64)> {
+    let suffix = run_id.strip_prefix(PENDING_REQUIREMENTS_START_PREFIX)?;
+    let (pid, timestamp_nanos) = suffix.split_once('-')?;
+    Some((pid.parse().ok()?, timestamp_nanos.parse().ok()?))
+}
+
+fn pending_requirements_drafting_run_is_stale(
+    run: &crate::contexts::requirements_drafting::model::RequirementsRun,
+) -> bool {
+    let elapsed = Utc::now().signed_duration_since(run.updated_at);
+    elapsed.num_seconds() >= PENDING_REQUIREMENTS_DRAFTING_STALE_AFTER_SECONDS
+}
+
 fn planning_snapshot_write(
     snapshot_store: &impl MilestoneSnapshotPort,
     base_dir: &std::path::Path,
@@ -836,6 +987,10 @@ fn print_milestone_detail(detail: &MilestoneDetailView) {
     println!("Plan Version: {}", detail.plan_version);
     if let Some(plan_hash) = &detail.plan_hash {
         println!("Plan Hash:    {plan_hash}");
+    }
+    if let Some(pending) = &detail.pending_requirements {
+        println!("Pending Run:  {} ({})", pending.run_id, pending.status);
+        println!("Pending Info: {}", pending.status_summary);
     }
     if let Some(active_bead) = &detail.active_bead {
         println!("Active Bead:  {active_bead}");
