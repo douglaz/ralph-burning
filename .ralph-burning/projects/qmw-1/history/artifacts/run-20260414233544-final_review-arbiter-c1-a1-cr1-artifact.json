@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414233544-final_review-arbiter-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414233544-final_review-arbiter-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T00:45:46.731172050Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nRejected the amendment. The workspace `default_model` overriding family-only compiled defaults is intentional behavior, confirmed by a passing test whose name explicitly declares this design (`explicit_default_model_overrides_compiled_codex_role_defaults`). The resolution precedence in policy.rs deliberately allows workspace settings to customize Codex model selection for family-only entries while preserving explicitly-pinned models (reviewer[2]). The compiled defaults are intentionally unpinned to support this configurability.\n\n## Rulings\n\n- `fr-1-4fcad17c`: Reject\n  The behavior described is intentional, not a bug. The evidence is decisive: (1) The test `explicit_default_model_overrides_compiled_codex_role_defaults` (backend_policy_test.rs:224-256) explicitly asserts that workspace `default_model` overrides family-only compiled defaults — its name alone declares the design intent. (2) The resolution chain in policy.rs:301-324 deliberately places workspace `base_backend.model` (lines 310-316) ahead of non-explicit compiled role defaults (lines 317-323), while preserving explicitly-pinned models like reviewer[2]'s `gpt-5.3-codex-spark-xhigh`. This two-tier design — explicit pins are protected, family-only defaults yield to workspace config — is coherent and tested. (3) The compiled defaults in config.rs:1480-1493 are intentionally family-only (None model) for reviewer[0] and the arbiter, allowing workspaces to customize their Codex model choice. If the designers wanted these pinned, they would have used the same explicit `Some(model)` pattern already demonstrated by reviewer[2]. The amendment's 'requested default panel contract of codex/gpt-5.4-xhigh' is not a contract encoded in compiled defaults — it is the fallback that appears only when no workspace override exists (as shown in the baseline test at line 93). Pinning these defaults would break the intentional configurability model and contradict the passing test.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}
