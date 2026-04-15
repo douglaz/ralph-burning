@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415164250-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T18:25:38.508310021Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real, verified bugs. Amendment fr-3-78e7fc68 correctly identifies that bead_status blindly takes the first element from BrShowResponse::Many (line 956) while the same file already demonstrates the correct pattern using milestone_bead_refs_match filtering (lines 482-489), and the runtime struct has milestone_id available (line 234). Amendment fr-3-8da55614 correctly identifies a state synchronization gap where project select and run start/resume change the active project without updating active-milestone, leading to stale milestone resolution.\n\n## Votes\n\n- `fr-3-78e7fc68`: Accept\n  Verified. Line 956 uses `details.remove(0)` to blindly pick the first element when `br show` returns multiple matches. The correct pattern — filtering with `milestone_bead_refs_match` — is already implemented in `request_bead_detail` at lines 482-489 of the same file. The `ProjectMilestoneControllerRuntime` struct (line 232-235) holds `milestone_id`, so `bead_status` has all the information needed to filter correctly but doesn't use it. If two milestones share a short bead ID prefix, the wrong bead's status is read, causing incorrect controller state transitions. The remediation is straightforward and follows an established pattern in the codebase.\n- `fr-3-8da55614`: Accept\n  Verified. `project select` (line 161-166) calls only `set_active_project` without touching `active-milestone`. `run start` (line 3371) and `run resume` (line 3543) likewise resolve only the active project. Meanwhile `resolve_active_milestone` (line 487-495) reads a persisted `active-milestone` file that may point to a milestone from a previously-active project. This creates a concrete state desync: switch to a project backed by milestone B, then `milestone next` still operates on stale milestone A. The proposed fallback — having `resolve_active_milestone` check the active project's `task_source.milestone_id` before returning `NoActiveMilestone` — is a clean, minimal fix that doesn't require threading milestone updates through every project-switching command.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415164250-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T18:24:37.770027252Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed all implementation changes across 10 files (1552 additions, 58 deletions). Both `milestone next` and `milestone run` commands are correctly implemented with --json support, active milestone selection when ID is omitted, and clear status codes (success/blocked/needs_operator/completed). The `bead_refs` module was properly extracted from `run.rs` with two behavioral correctness fixes: (1) `canonicalize_milestone_bead_ref` no longer double-prefixes foreign qualified refs like 'other-ms.bead-1', and (2) `br_show_output_indicates_missing` removes a false-positive path where permission errors containing 'issue' and 'not found' were misclassified as missing beads. Controller bead ID comparisons in `controller.rs` now use milestone-aware matching via `milestone_bead_ids_equivalent`. The tracing `with_writer(std::io::stderr)` change correctly prevents trace output from polluting JSON on stdout. The run loop in `execute_milestone_run` has a proper 256-step safety bound. All acceptance criteria verified: cargo test (792 passed), cargo clippy -- -D warnings, cargo fmt --check, and nix build all pass cleanly.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}

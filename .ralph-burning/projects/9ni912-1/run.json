@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260415164250",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-15T16:42:50.130698692Z",
     "prompt_hash_at_cycle_start": "eae7b5e66239a4c94d32254e1e39b0f4330b81f8683df9749c5f62d8b789cf3f",
     "prompt_hash_at_stage_start": "eae7b5e66239a4c94d32254e1e39b0f4330b81f8683df9749c5f62d8b789cf3f",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-78e7fc68",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: `ProjectMilestoneControllerRuntime::bead_status` still trusts the first element returned by `br show <short-id> --json` when `br` returns multiple matches (`src/cli/run.rs:930-957`). This is reachable because the controller deliberately preserves raw short refs from `br ready`, so a later `run start`/`run resume` can query `br show bead-1` for a milestone-owned bead. If another milestone also has `bead-1`, the runtime can read the foreign bead's status and incorrectly move the controller to `needs_operator`/`reconciling` or block execution for the wrong reason.\nseverity: medium\naffected_files:\n- src/cli/run.rs:930-957\nremediation_hint: Handle `BrShowResponse::Many` the same way `request_bead_detail` and the new milestone CLI loaders do: filter candidates with `milestone_bead_refs_match(...)`, reject ambiguous multi-matches, and only then derive `ControllerBeadStatus`.",
+        "created_at": "2026-04-15T18:27:04.762584687Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "6127b00a16ad037798f88e906f28cac9093b60a25626269d54edf4898bf8f5e4"
+      },
+      {
+        "amendment_id": "fr-3-8da55614",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: Omitted `milestone_id` still resolves from a single persisted `active-milestone` file (`src/cli/milestone.rs:487-495`), but several commands that clearly switch the user's milestone context never refresh that state. `project select` only updates the active project (`src/cli/project.rs:161-166`), and `run start`/`run resume` load bead-backed project metadata without updating the active milestone (`src/cli/run.rs:3370-3376`, `src/cli/run.rs:3543-3548`). After switching to a project from milestone B, `milestone next`/`milestone run` without an explicit ID can still operate on stale milestone A, or fail with `NoActiveMilestone` in workspaces that only have an active bead-backed project.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:487-495\n- src/cli/project.rs:161-166\n- src/cli/run.rs:3370-3376\n- src/cli/run.rs:3543-3548\nremediation_hint: Either update `active-milestone` whenever the active project changes to a bead-backed project, or make `resolve_active_milestone` fall back to the active project's `task_source.milestone_id` before returning `NoActiveMilestone`.",
+        "created_at": "2026-04-15T18:27:04.762588514Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "036cee8057763b394f397f7fc8cfb0916bbc49845bcacace234b2abf7ae12470"
+      }
+    ],
     "processed_count": 6
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-15T17:40:02.832588097Z",
+    "resolved_at": "2026-04-15T18:10:29.318561451Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

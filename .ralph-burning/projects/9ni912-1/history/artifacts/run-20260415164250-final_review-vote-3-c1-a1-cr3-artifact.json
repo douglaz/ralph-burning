@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-vote-3-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415164250-final_review-vote-3-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T18:24:42.158156657Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nBoth amendments identify concrete logic defects with real cross-context correctness and safety impact in milestone/bead resolution. I accept both as worthwhile fixes.\n\n## Votes\n\n- `fr-3-78e7fc68`: Accept\n  `bead_status` relying on the first result from `br show --json` is unsafe when short refs collide; it can resolve to a bead in a different milestone and compute an incorrect controller status. Handling `BrShowResponse::Many` with milestone-bound matching and explicit ambiguity rejection is necessary for deterministic, correct behavior.\n- `fr-3-8da55614`: Accept\n  Context drift between active project and active milestone is a real state bug: project switches in `project select` and run workflows can leave stale milestone state, causing commands without explicit milestone IDs to act on wrong/no context. Falling back to the active project’s `task_source.milestone_id` or refreshing active milestone state makes resolution consistent and prevents surprising failures.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}
