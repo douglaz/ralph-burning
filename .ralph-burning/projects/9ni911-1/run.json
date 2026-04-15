@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260415130611",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 5
+      "completion_round": 6
     },
     "started_at": "2026-04-15T13:06:11.671068234Z",
     "prompt_hash_at_cycle_start": "e33f3f1f3e19ee2cdcf07293497164fd1ecef5862cfeb440d8e0402d978bddf9",
     "prompt_hash_at_stage_start": "e33f3f1f3e19ee2cdcf07293497164fd1ecef5862cfeb440d8e0402d978bddf9",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 4
+    "final_review_restart_count": 5
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 5,
+  "completion_rounds": 6,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-5-7597c84a",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: If the CLI is interrupted after writing a __starting__ reservation, milestone planning becomes permanently wedged. reserve_pending_requirements_run rejects any prefixed pending_requirements_run_id at src/cli/milestone.rs:723-728, but that marker is only replaced after draft_milestone returns from the full requirements pipeline at src/cli/milestone.rs:667-688 and src/contexts/requirements_drafting/service.rs:188-217. A killed plan command therefore leaves no recovery path for later milestone plan invocations. severity: high affected_files: [\"src/cli/milestone.rs:667-688\", \"src/cli/milestone.rs:723-735\", \"src/contexts/requirements_drafting/service.rs:188-217\"] remediation_hint: Persist the real run_id before the long-running pipeline starts, or add stale-reservation timeout/ownership recovery instead of treating every __starting__ marker as live forever.",
+        "created_at": "2026-04-15T15:30:45.592679262Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "bf4235f6ce3e5b15e182e2a8fe1541fa73a92386b95f00a7f69103c91b0acd89"
+      },
+      {
+        "amendment_id": "fr-5-9618b042",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: Replanning an already ready/completed/failed milestone never updates the exposed status to show that planning is underway or awaiting answers. The reservation path only sets pending_requirements_run_id at src/cli/milestone.rs:714-735, handle_plan returns early on awaiting_answers at src/cli/milestone.rs:154-161, and both summary/detail views serialize snapshot.status directly while omitting the pending run at src/cli/milestone.rs:61-89 and src/cli/milestone.rs:355-395. As a result, milestone show/status can continue reporting 'ready' or 'completed' even while a replan is blocked on clarification. severity: medium affected_files: [\"src/cli/milestone.rs:61-89\", \"src/cli/milestone.rs:154-161\", \"src/cli/milestone.rs:355-395\", \"src/cli/milestone.rs:714-735\"] remediation_hint: Either derive an effective display status from pending_requirements_run_id and the referenced requirements run, or transition the milestone snapshot back to planning while a replan is outstanding and expose the pending run in the JSON/detail output.",
+        "created_at": "2026-04-15T15:30:45.592682528Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "f4256aedd3adf7fdef1ace116c8591f762a74d2d97449e4106ac9e3e1eb47ef2"
+      },
+      {
+        "amendment_id": "fr-5-b5b04d7d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: load_pending_requirements_run silently clears the pending pointer for every read_run failure at src/cli/milestone.rs:615-620, even though the filesystem adapter distinguishes missing runs from corrupt or otherwise unreadable run.json files at src/adapters/fs.rs:5427-5440. A malformed or transiently unreadable requirements/<run>/run.json will therefore be treated as stale state and replaced by a brand-new planning run, orphaning the original clarification/bundle data instead of surfacing the underlying corruption. severity: medium affected_files: [\"src/cli/milestone.rs:615-620\", \"src/adapters/fs.rs:5427-5440\"] remediation_hint: Only clear pending_requirements_run_id for a definite not-found/stale case; propagate CorruptRecord and other I/O failures so operators can repair the existing requirements run rather than forking a new one.",
+        "created_at": "2026-04-15T15:30:45.592685313Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "8a3d9f27793b66d70040577628b52bfd53f49ea6c55173a6a72b388847b73365"
+      }
+    ],
     "processed_count": 11
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 6 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-15T14:48:22.085056610Z",
+    "resolved_at": "2026-04-15T15:12:41.781327768Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

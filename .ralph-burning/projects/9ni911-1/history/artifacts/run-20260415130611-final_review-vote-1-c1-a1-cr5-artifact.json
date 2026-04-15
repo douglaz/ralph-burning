@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T15:30:45.579956243Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments describe real defects in milestone replanning. The first is a hard recovery wedge after interruption; the second is a real observability/state-reporting gap during replans; the third masks corruption/I/O failures as stale state and can fork planning history incorrectly.\n\n## Votes\n\n- `fr-5-7597c84a`: Accept\n  `reserve_pending_requirements_run` writes a `__starting__:` marker and later invocations reject that marker immediately instead of trying to recover it. The marker is only replaced with the real requirements `run_id` after `draft_milestone()` returns from the full pipeline, so an interrupted process can leave the snapshot permanently stuck in the startup-reserved state. There is no automatic timeout, liveness check, or CLI recovery path, so subsequent `milestone plan` runs remain wedged.\n- `fr-5-9618b042`: Accept\n  Replanning is allowed for non-`running` milestones, but the reservation path only updates `pending_requirements_run_id`; it does not change `snapshot.status`, and the show/status views serialize only `snapshot.status`. That means a milestone can have an active or `awaiting_answers` replanning run while the exposed state still says `ready`, `completed`, or `failed`, with no pending run surfaced in the CLI JSON/detail output. That is materially misleading state reporting for operators and any status consumers.\n- `fr-5-b5b04d7d`: Accept\n  `load_pending_requirements_run` currently treats every `read_run` error as if the pending pointer were merely stale, clears it, and allows a replacement run to start. But `FsRequirementsStore::read_run` already distinguishes not-found (`InvalidRequirementsState`) from corrupt JSON (`CorruptRecord`) and other I/O failures. Collapsing those cases hides genuine data corruption or unreadable storage, and can orphan the original run's clarification/bundle artifacts behind a new planning run instead of forcing repair of the broken run.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}
