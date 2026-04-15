@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-reviewer-3-c1-a1-cr7-artifact",
+  "payload_id": "run-20260415130611-final_review-reviewer-3-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T16:14:29.517196396Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nThe diff contains only `.ralph-burning` orchestration-state updates (`.ralph-burning/projects/9ni911-1/journal.ndjson` and `.ralph-burning/projects/9ni911-1/run.json`), with no project source changes under `src/` or CLI paths. Since these files are out of review scope per prompt, there are no actionable correctness/safety findings to report.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 7
+}

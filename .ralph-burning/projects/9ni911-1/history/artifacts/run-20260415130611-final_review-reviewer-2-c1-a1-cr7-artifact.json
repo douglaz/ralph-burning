@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-reviewer-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260415130611-final_review-reviewer-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T16:17:46.516414824Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed the diff for milestone command handler enhancements (src/cli/milestone.rs, src/contexts/requirements_drafting/service.rs, tests/cli.rs). The changes add: (1) stale startup reservation detection via PID+timeout, (2) stale drafting run detection via timeout, (3) compatibility validation for pending requirements runs (mode/output_kind), (4) semantic validation of snapshots before actions, (5) pending_requirements view in show/status JSON output, (6) guard against replanning running milestones, (7) proper cleanup on backend setup failures, and (8) draft_milestone_with_run_id for caller-controlled run IDs. All 35 milestone CLI tests pass, clippy is clean with -D warnings, and fmt check passes. The loop recovery in load_or_start_milestone_requirements_run has a one-attempt guard preventing infinite loops. Error handling is thorough — incompatible runs surface clear errors, corrupt state is reported without silent data loss, and stale runs are recovered gracefully. The /proc-based PID check is properly guarded by proc_root.is_dir() for non-Linux portability. No correctness, safety, or robustness issues found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 7
+}

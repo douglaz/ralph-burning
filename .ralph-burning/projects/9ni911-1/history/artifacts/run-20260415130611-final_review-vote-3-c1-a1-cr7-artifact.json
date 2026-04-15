@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415130611-final_review-vote-3-c1-a1-cr7-artifact",
+  "payload_id": "run-20260415130611-final_review-vote-3-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T16:21:33.968918014Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted all three amendments. Each identifies a concrete correctness/concurrency/state-consistency defect with real risk of duplicate work or silent behavior changes under normal operation, not merely edge-case concerns.\n\n## Votes\n\n- `fr-7-dbe8e49b`: Accept\n  High-confidence race condition: exposing the final run_id in milestone state before the run directory and initial run.json are durably created allows readers to observe a non-existent in-progress run, trigger cleanup, and launch duplicate planners. Keeping the reserved sentinel state until persistence is complete (or atomically returning/committing the run id) is the correct fix.\n- `fr-7-b6a40eb3`: Accept\n  The stale-detection logic is false-positive-prone because freshness is derived from `updated_at` that only changes at stage boundaries around awaited backend calls. Long-running remote stages can exceed five minutes, making a still-valid run look abandoned and enabling concurrent duplicate planning. This is a real liveness/coordination hazard and should be gated on heartbeat/lease or operator confirmation.\n- `fr-7-01e93634`: Accept\n  Persisting and reusing mutable `description` as the source prompt for reruns changes semantics after materialization rewrites it to a generated summary. Subsequent reruns silently lose the original `--from-idea` intent, which is a correctness and UX regression. Storing immutable planning input separately is the appropriate fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 7
+}
