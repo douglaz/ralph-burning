@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415164250-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T18:53:42.661774764Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `f2fc08b4`, read the updated milestone/project/run/controller/workspace code paths, ran the targeted milestone test suites, and found two fix-now robustness issues in the new omitted-ID and milestone-run recovery flows.\n\n## Amendments\n\n1. finding_summary: `milestone run` cannot recover a bead-backed project that was already created before `active_task_id` was recorded in the controller.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:744-766\n- src/cli/project.rs:406-417\n- src/cli/project.rs:448-499\nremediation_hint: Before falling back to `project::execute_create_from_bead`, look for an existing project whose `task_source` matches `(milestone_id, bead_id)` or at least the computed `default_project_id_for_bead`, then adopt that project into the controller instead of erroring with `DuplicateProject`.\n   Rationale: There is a real crash/partial-success window between `create_project_from_bead_context` succeeding and `sync_controller_task_claimed` persisting `record.id` into the controller. After that window, `milestone run` reaches `ensure_project_for_controller`, sees `active_task_id == None`, and unconditionally calls `execute_create_from_bead`; `execute_create_from_bead` then trips the duplicate-project guard and aborts. I reproduced this by seeding a claimed controller plus an existing `task-ms-single-bead-1` project: `milestone run ms-single --json` fails with `project 'task-ms-single-bead-1' already exists` and leaves the controller stuck in `claimed` with no task id.\n2. finding_summary: Omitted-ID `milestone next` and `milestone run` abort on a stale `active-milestone` pointer instead of falling back to the active project's milestone metadata.\nseverity: low\naffected_files:\n- src/cli/milestone.rs:491-499\nremediation_hint: If `read_active_milestone` yields an ID that is malformed or no longer exists, ignore that cached pointer and then try `active_project_milestone_id` before surfacing `NoActiveMilestone` or `MilestoneNotFound`.\n   Rationale: `resolve_active_milestone` treats the cached pointer as authoritative and returns immediately after `load_existing_milestone`, so a stale cache entry blocks the new omitted-ID workflow even when the active project still carries a valid `task_source.milestone_id`. I reproduced this with `active-project=task-ms-alpha-bead-1`, `active-milestone=ms-stale`, and a valid `ms-alpha` milestone on disk: `milestone next --json` fails with `milestone 'ms-stale' was not found` instead of inferring `ms-alpha` from the selected project.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

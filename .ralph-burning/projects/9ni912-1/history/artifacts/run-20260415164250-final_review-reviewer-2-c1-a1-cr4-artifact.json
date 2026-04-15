@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-reviewer-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415164250-final_review-reviewer-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T18:48:34.277060596Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed the changes addressing two prior amendments: (1) bead_status multi-match filtering in the milestone controller, and (2) active milestone sync from project selection and run start/resume. Both amendments are properly addressed. The bead_status function now correctly filters BrShowResponse results against the current milestone using milestone_bead_refs_match, handling both Single and Many variants with proper disambiguation. The active milestone sync is wired into project select, run start, and run resume, and resolve_active_milestone has a clean fallback to the active project's task_source.milestone_id. All four new tests pass. No critical or high-severity issues found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 4
+}

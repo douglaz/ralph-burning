@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260415164250-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415164250-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T18:56:23.959843554Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-3d30bf16`\n- `fr-4-de7bdf94`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-3d30bf16`\n\nfinding_summary: `milestone run` cannot recover a bead-backed project that was already created before `active_task_id` was recorded in the controller.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:744-766\n- src/cli/project.rs:406-417\n- src/cli/project.rs:448-499\nremediation_hint: Before falling back to `project::execute_create_from_bead`, look for an existing project whose `task_source` matches `(milestone_id, bead_id)` or at least the computed `default_project_id_for_bead`, then adopt that project into the controller instead of erroring with `DuplicateProject`.\n\n### `fr-4-de7bdf94`\n\nfinding_summary: Omitted-ID `milestone next` and `milestone run` abort on a stale `active-milestone` pointer instead of falling back to the active project's milestone metadata.\nseverity: low\naffected_files:\n- src/cli/milestone.rs:491-499\nremediation_hint: If `read_active_milestone` yields an ID that is malformed or no longer exists, ignore that cached pointer and then try `active_project_milestone_id` before surfacing `NoActiveMilestone` or `MilestoneNotFound`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

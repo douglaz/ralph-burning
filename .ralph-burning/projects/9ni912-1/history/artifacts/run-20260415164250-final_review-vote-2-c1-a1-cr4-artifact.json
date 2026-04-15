@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-vote-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415164250-final_review-vote-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T18:55:14.635593682Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real bugs in milestone recovery and resilience paths. Amendment fr-4-3d30bf16 targets a genuine recovery gap where a project can exist without the controller tracking it, causing an unrecoverable DuplicateProject error on retry. The code explicitly handles the sync_controller_task_claimed failure (transitioning to NeedsOperator), which proves the developers anticipated this failure window, but the subsequent milestone run has no path to adopt the orphaned project. Amendment fr-4-de7bdf94 identifies a stale-pointer issue where a cached active-milestone file pointing to a deleted milestone aborts resolution instead of falling through to the project-based fallback, which is a valid resilience concern.\n\n## Votes\n\n- `fr-4-3d30bf16`: Accept\n  This is a real recovery gap. The flow: (1) execute_create_from_bead creates the project at project.rs:448-487, (2) sync_controller_task_claimed at project.rs:491 fails, (3) controller transitions to NeedsOperator at project.rs:507-524 and the error propagates. On the next milestone run, active_task_id is None (milestone.rs:744), so it falls through to execute_create_from_bead again (milestone.rs:759), which hits the duplicate check at project.rs:413-417 and errors with DuplicateProject. The project exists but the controller doesn't know about it, and there's no recovery path. The remediation of checking for an existing project matching default_project_id_for_bead before attempting creation is sound and addresses the root cause without introducing new complexity.\n- `fr-4-de7bdf94`: Accept\n  The bug is real in resolve_active_milestone (milestone.rs:487-501). When read_active_milestone returns a stale ID, MilestoneId::new succeeds (it's just string validation), but load_existing_milestone at line 493 fails with MilestoneNotFound and the error propagates immediately via the early return. The fallback to active_project_milestone_id at line 497 never executes because it's only reached when the active-milestone file is absent or empty, not when it points to a non-existent milestone. Catching the MilestoneNotFound error from the stale pointer and falling through to the project-based resolution is a straightforward and correct fix that improves operational resilience.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 4
+}
