@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260415004740",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-15T01:13:35.732943244Z",
     "prompt_hash_at_cycle_start": "1abc2610bc4bef6c094ff7a99ab9ec988d3a1620d39d9bfc7ce4c4de26497c8b",
     "prompt_hash_at_stage_start": "1abc2610bc4bef6c094ff7a99ab9ec988d3a1620d39d9bfc7ce4c4de26497c8b",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-9c8192c4",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: The new `-fast` suffix handling is applied to OpenRouter requests as well as Codex. `build_command` feeds OpenRouter model IDs through `codex_new_session_args` / `codex_resume_args` (`src/adapters/process_backend.rs:954,979-991`), and those helpers now strip any trailing `-fast` and inject `service_tier=\"fast\"` (`src/adapters/process_backend.rs:1319-1404`). That means an OpenRouter model whose real ID ends in `-fast` will be silently rewritten to a different model and may 404 or target the wrong backend model. The added tests only exercise Codex paths (`tests/unit/process_backend_test.rs:943-1198`), so this regression is currently unguarded. severity: medium. affected_files: [src/adapters/process_backend.rs, tests/unit/process_backend_test.rs]. remediation_hint: Gate `-fast` parsing and `service_tier` injection to `BackendFamily::Codex` only, and add a regression test proving OpenRouter `...-fast` model IDs are passed through unchanged.",
+        "created_at": "2026-04-15T01:59:00.472560643Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "8ef994703ce927d1fcb9c35c094c7c24eb9e27e1de6c1fecb183cb5c8b18a2c9"
+      }
+    ],
     "processed_count": 3
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-15T01:33:33.723100150Z",
+    "resolved_at": "2026-04-15T01:50:53.388107869Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

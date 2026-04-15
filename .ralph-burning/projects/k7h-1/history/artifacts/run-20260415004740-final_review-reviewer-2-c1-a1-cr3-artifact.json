@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415004740-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415004740-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T01:53:47.086823912Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nImplementation is clean and correct. The `-fast` suffix parsing in `codex_model_reasoning_effort_and_fast` correctly strips the suffix before reasoning effort parsing, with a proper empty-string guard. Both `codex_new_session_args` and `codex_resume_args` add `-c service_tier=\"fast\"` following the same pattern as reasoning effort overrides. Four unit test cases cover the parsing (effort+fast, complex-model+effort+fast, fast-only, effort-only), and two integration tests verify end-to-end argument construction for new session and resume paths. All 56 process_backend tests pass, clippy reports no warnings.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}
