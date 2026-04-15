@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415043544-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415043544-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T05:27:32.116811157Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nCompared with `origin/master`, the only reviewable diff outside `.ralph-burning/` is `.beads/issues.jsonl`. I found two blocking correctness issues: the advertised test-profile optimization was not implemented in `Cargo.toml`, and the new benchmark command in the bead would not actually run Cargo in release mode because `--release` is placed after `--`.\n\n## Amendments\n\n1. finding_summary: The branch does not actually implement the requested test-profile performance change. `Cargo.toml` still leaves `[profile.test]` at the unoptimized default (`debug = 0` only), and the only non-orchestration diff tied to this work is backlog metadata, so the bead's core change and verification were never applied.\nseverity: high\naffected_files:\n- Cargo.toml\n- .beads/issues.jsonl\nevidence:\n- Cargo.toml:35-36 still defines `[profile.test]` with only `debug = 0`; there is no `opt-level` or equivalent test-profile optimization on this branch.\n- .beads/issues.jsonl:117 is the only reviewable change associated with the new performance bead.\nremediation_hint: Implement the chosen optimization in `Cargo.toml` (or the intended release-mode test path), rerun the timing comparisons and required verification commands, and resubmit the actual code/config change for review.\n   Rationale: As reviewed, the tree still behaves like the base revision for test-profile configuration, so the performance problem described by the bead remains unresolved and the acceptance criteria are not satisfied.\n2. finding_summary: The newly added benchmark instructions for `ralph-burning-juj` will not run the release profile as written. The command places `--release` after `--`, so Cargo forwards it to the test binary instead of enabling release-mode compilation, which invalidates the bead's step-1 hypothesis check.\nseverity: medium\naffected_files:\n- .beads/issues.jsonl\nevidence:\n- .beads/issues.jsonl:117 embeds `cargo test --locked --features test-stub --test cli cli_run_start_releases_lock_on_error -- --exact --release`.\n- `cargo test --help` documents `--release` as a Cargo compilation option that must appear before the `-- [ARGS]...` separator.\nremediation_hint: Move `--release` into Cargo's option section, for example `cargo test --release --locked --features test-stub --test cli cli_run_start_releases_lock_on_error -- --exact`, and make the same fix anywhere else this measurement command is copied.\n   Rationale: This bead is supposed to validate whether release-mode optimization explains the slowdown. With the flag in the wrong position, the validation step either fails outright or measures the wrong build profile, so any conclusion drawn from it would be unsound.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

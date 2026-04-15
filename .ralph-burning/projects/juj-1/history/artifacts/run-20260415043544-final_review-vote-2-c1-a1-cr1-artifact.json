@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415043544-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415043544-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T05:28:16.047453138Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nAll three amendments are valid findings. The bead's core deliverable — optimizing test-profile performance — was never implemented in Cargo.toml (fr-1-88dcab36). The benchmark command embedded in the bead description has --release placed after the -- separator, meaning it was forwarded to the test binary rather than enabling release compilation (fr-1-50cb47ee). And the acceptance criteria (single test under 15s) remain unmet at 69.65s, with profiling data confirming the overhead is not CPU-bound (fr-1-9570b4ae). The branch contains only orchestration checkpoint changes, no actual code or config modifications.\n\n## Votes\n\n- `fr-1-88dcab36`: Accept\n  Verified: Cargo.toml lines 35-36 show [profile.test] with only `debug = 0` — no opt-level or any other optimization setting was added. The git diff confirms the only changes on this branch are orchestration files (.ralph-burning/projects/juj-1/journal.ndjson and run.json), not Cargo.toml. The bead's stated goal was to optimize test performance, but no implementation was delivered. This is a high-severity gap — the bead is incomplete.\n- `fr-1-50cb47ee`: Accept\n  Verified: The bead description at .beads/issues.jsonl line 117 contains `cargo test --locked --features test-stub --test cli cli_run_start_releases_lock_on_error -- --exact --release`. The `--release` flag appears after `--`, which means Cargo passes it as an argument to the test binary rather than using it for release-mode compilation. This is a factual cargo CLI error that would invalidate any timing measurements taken with this command, since the test would still run in debug mode. The fix is straightforward: move --release before --.\n- `fr-1-9570b4ae`: Accept\n  The acceptance criteria explicitly state 'Target: single CLI lifecycle test under 15 seconds (currently 67-85s)' and 'Measurable reduction in stub-backend test execution time'. At 69.65s the test is 4.6x over target with no measurable improvement. The hypothesis that debug-mode overhead was the bottleneck was disproven (only ~6% improvement in release mode, with the full suite actually slower). The amendment's analysis that the overhead is not CPU-bound is well-supported by the profiling data (67.7% futex, 10.6% wait4) and the negligible effect of compiler optimizations. A follow-up investigation targeting sleep/timeout durations, subprocess overhead, or polling intervals is the correct next step.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

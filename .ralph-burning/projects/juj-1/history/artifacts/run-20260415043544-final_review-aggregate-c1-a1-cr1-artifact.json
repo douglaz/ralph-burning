@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260415043544-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415043544-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T05:32:08.535212380Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-50cb47ee`\n- `fr-1-9570b4ae`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-1-88dcab36`\n\n## Final Accepted Amendments\n\n### `fr-1-50cb47ee`\n\nfinding_summary: The newly added benchmark instructions for `ralph-burning-juj` will not run the release profile as written. The command places `--release` after `--`, so Cargo forwards it to the test binary instead of enabling release-mode compilation, which invalidates the bead's step-1 hypothesis check.\nseverity: medium\naffected_files:\n- .beads/issues.jsonl\nevidence:\n- .beads/issues.jsonl:117 embeds `cargo test --locked --features test-stub --test cli cli_run_start_releases_lock_on_error -- --exact --release`.\n- `cargo test --help` documents `--release` as a Cargo compilation option that must appear before the `-- [ARGS]...` separator.\nremediation_hint: Move `--release` into Cargo's option section, for example `cargo test --release --locked --features test-stub --test cli cli_run_start_releases_lock_on_error -- --exact`, and make the same fix anywhere else this measurement command is copied.\n\n### `fr-1-9570b4ae`\n\nThe acceptance criteria specify 'Target: single CLI lifecycle test under 15 seconds (currently 67-85s)' and 'Measurable reduction in stub-backend test execution time'. Neither criterion is met. While the hypothesis was correctly tested and disproven (release mode yields ~6% improvement on the single test but the full suite and conformance are actually slower), the performance problem persists at 69.65s — 4.6x over the 15s target. A new bead should investigate the actual bottleneck. The release-vs-debug data strongly suggests the overhead is not CPU-bound (compiler optimizations don't help), so the root cause is likely: (1) excessive sleep/timeout durations in stub backends, (2) subprocess spawning overhead, or (3) synchronization/polling intervals in the test harness. Profiling with strace/perf to identify the dominant wait source would be the right next step.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

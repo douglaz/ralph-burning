@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415043544-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415043544-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T05:30:14.143137113Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the amendment that treats the missing `Cargo.toml` change as a defect, because the work item made that change conditional on benchmark results and the recorded measurements do not justify it. Accepted the amendment about the malformed release benchmark command in `.beads/issues.jsonl` and the amendment noting that the performance acceptance criteria remain unmet and need follow-up investigation.\n\n## Votes\n\n- `fr-1-88dcab36`: Reject\n  The prompt explicitly required measuring debug vs. release first and only applying `[profile.test]` optimization if release mode was meaningfully better. The implementation evidence shows only a small single-test improvement and slower broader CLI/conformance timings in release mode, so leaving `Cargo.toml` unchanged is consistent with the requested decision rule. The amendment also overstates the case by saying verification was never applied; the benchmark and verification work was performed even though it did not justify the proposed config change.\n- `fr-1-50cb47ee`: Accept\n  This is a real correctness issue in the authoritative backlog entry. In `.beads/issues.jsonl`, `--release` appears after the `--` separator, so it is passed to the test binary instead of enabling Cargo's release profile. Anyone following that command verbatim will not run the intended benchmark, so the bead instructions should be corrected.\n- `fr-1-9570b4ae`: Accept\n  The final tree does not meet the stated performance outcome: the hot CLI lifecycle test remains around 70 seconds and no speedup change was landed. The release-vs-debug measurements are enough to show the original optimization hypothesis was not validated, especially since the broader CLI/conformance runs were slower in release mode. That leaves the acceptance criteria unmet and supports opening follow-up work to profile the real bottleneck.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
