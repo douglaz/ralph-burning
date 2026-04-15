@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260415130611",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 5
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-4-52f93cb6",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "finding_summary: `milestone plan` leaks the `__starting__:` reservation when setup fails before `draft_milestone()` runs, permanently wedging the milestone until `status.json` is edited by hand.\nseverity: high\naffected_files:\n- src/cli/milestone.rs:567-570\n- src/cli/milestone.rs:623-640\nremediation_hint: Once the reservation has been written, clear it on every subsequent error path (`EffectiveConfig::load`, `build_requirements_service`, and any other pre-run setup failure), or replace the marker with a lease/timeout-backed reservation so stale startup markers self-heal.",
-        "created_at": "2026-04-15T14:58:14.151781453Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "63974ab760f8e53a070a27389c976d6450aca9c54b180b86cbf18e5110a677e8"
-      },
-      {
-        "amendment_id": "fr-4-d3f01aa9",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "finding_summary: Once `pending_requirements_run_id` points at a missing or unusable requirements run, `milestone plan` has no recovery path and will repeat the same failure forever.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:154-188\n- src/cli/milestone.rs:190-221\n- src/cli/milestone.rs:553-565\n- src/cli/milestone.rs:678-695\nremediation_hint: Treat missing/invalid/nonterminal pending runs as stale state: clear the pointer (or allow an explicit restart path) before returning, and add a regression test for an interrupted milestone requirements run left in `drafting`.",
-        "created_at": "2026-04-15T14:58:14.151784068Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "660b65a6f74d81cc763aedeeaf8095d7815dfff783aade718a0fb0d0ae8b77a2"
-      },
-      {
-        "amendment_id": "fr-4-8cc51e5b",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "finding_summary: `milestone plan` starts a full milestone requirements run even when the milestone is already `running`, and only discovers the status conflict after the expensive planning pass finishes.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs:145-152\n- src/cli/milestone.rs:553-573\n- src/cli/milestone.rs:618-640\n- src/contexts/milestone_record/service.rs:1377-1387\nremediation_hint: Reject `milestone plan` up front when the snapshot status is `running` (before reserving or invoking the requirements service), or at minimum clear the pending run when materialization is rejected for this reason.",
-        "created_at": "2026-04-15T14:58:14.151786011Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "963ecd71ed66f6f9724460b3174c9e351c40f5165fccead280c8882a2bc19091"
-      }
-    ],
-    "processed_count": 8
+    "pending": [],
+    "processed_count": 11
   },
-  "status_summary": "running: final review restart round 5 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-15T14:48:22.085056610Z",
