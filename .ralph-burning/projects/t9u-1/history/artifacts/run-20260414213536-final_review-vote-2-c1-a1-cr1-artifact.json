@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414213536-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414213536-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T22:06:04.579888917Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nEvaluated one amendment about persist_workflow_run_id deriving run identity from the latest journal RunStarted event rather than from the dispatch path. The finding is architecturally sound: the code itself acknowledges the race at lines 1800-1803, and a wrong binding (Some(wrong_id)) bypasses the fail-closed guard at lines 1941-1944 that was specifically added to prevent reconciling against the wrong run. The dispatch function (execute_run_with_retry) returns AppResult<()> and discards the RunId, forcing the daemon to guess from the journal — a refactor to return the authoritative RunId would close this gap deterministically.\n\n## Votes\n\n- `fr-1-d6eb874a`: Accept\n  The finding correctly identifies a defense-in-depth gap. The code at lines 1800-1803 explicitly acknowledges the race: 'If another run was started on this project between the original dispatch and this call, this may bind the wrong run_id.' The newly added fail-closed guard (lines 1941-1944) catches None (missing binding) but cannot detect Some(wrong_id) (incorrect binding). Since agent dispatch can take minutes to hours, a manual re-run during that window is a realistic operational scenario — not merely theoretical. The manual rerun's RunStarted event becomes the latest in the journal, so persist_workflow_run_id stamps the wrong run_id onto the task, and the fail-closed guard is silently bypassed. The remediation is feasible: execute_run_with_retry (engine.rs:1200) currently returns AppResult<()> and discards the RunId generated internally; refactoring it to return the authoritative RunId would make the binding deterministic rather than a journal-derived guess, closing the gap that undermines the safety guard.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

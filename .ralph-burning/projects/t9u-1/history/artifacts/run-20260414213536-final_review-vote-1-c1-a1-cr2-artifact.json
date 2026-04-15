@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414213536-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414213536-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T22:41:45.716325837Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment: the current success path persists `workflow_run_id` only in storage, then immediately reconciles against stale in-memory task state, which can falsely trigger missing-binding failures on first successful milestone runs.\n\n## Votes\n\n- `fr-2-536e5340`: Accept\n  `persist_workflow_run_id` delegates to `DaemonTaskService::set_workflow_run_id`, which rereads and rewrites the stored task but does not update the caller's `active_task`. Both dispatch paths then call `try_reconcile_success(..., &active_task)` immediately afterward, and `try_reconcile_success` reads `task.workflow_run_id` directly and fail-closes with `reconciliation_no_run_binding` when it is still `None`. That makes the just-persisted binding invisible on the same success pass for first-time successful milestone tasks and can incorrectly force the milestone controller to `NeedsOperator`. Reloading the task or passing the captured `run_id` through reconciliation is the correct remediation, and a regression test should cover this path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

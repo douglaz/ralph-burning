@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414213536-final_review-reviewer-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260414213536-final_review-reviewer-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T23:29:17.807884821Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe changes correctly implement fail-closed behavior for try_reconcile_success when workflow_run_id is missing. The approach is sound: (1) engine functions now return the authoritative run_id from dispatch instead of reading the journal, (2) persist_workflow_run_id uses this captured run_id instead of the unsafe latest-RunStarted fallback, (3) task_for_success_reconciliation re-reads the task from disk after persistence to verify the binding is durable, (4) try_reconcile_success fails closed and transitions the milestone controller to NeedsOperator when the durable binding is absent. Two new tests cover the no-binding and failed-persistence paths. Clippy is clean, fmt passes. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 4
+}

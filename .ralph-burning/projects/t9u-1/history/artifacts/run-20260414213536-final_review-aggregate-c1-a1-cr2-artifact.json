@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260414213536-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414213536-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T22:42:45.719981465Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 2\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-536e5340`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-536e5340`\n\nfinding_summary: `persist_workflow_run_id` only updates the task record on disk, but both dispatch paths still pass the old `active_task` into `try_reconcile_success`, so newly completed tasks are guaranteed to look unbound on their first success path.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs\n- src/contexts/automation_runtime/task_service.rs\nremediation_hint: After `persist_workflow_run_id(...)` at `src/contexts/automation_runtime/daemon_loop.rs:992-993` / `1682-1683`, reload the task from the store or thread the captured `run_id` directly into reconciliation before calling `try_reconcile_success`. Add an end-to-end regression test for a first-time successful run.\nevidence:\n- `src/contexts/automation_runtime/daemon_loop.rs:1092-1093` and `1719-1720` call `try_reconcile_success(..., &active_task)` immediately after persistence.\n- `src/contexts/automation_runtime/task_service.rs:634-643` shows `set_workflow_run_id` mutates only the stored copy.\n- `src/contexts/automation_runtime/daemon_loop.rs:1917-1920` now fail-closes whenever the in-memory task still has `workflow_run_id == None`.\nimpact: any task whose `workflow_run_id` was absent before dispatch will now be marked `reconciliation_no_run_binding` and push the milestone controller to `NeedsOperator` even when the authoritative run id was just persisted successfully.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260414213536-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414213536-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T22:06:04.593839736Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 2\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-d6eb874a`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-d6eb874a`\n\nfinding_summary: The patch still lets the daemon guess a run identity in `persist_workflow_run_id`, so a manual rerun between dispatch completion and persistence can stamp the newer run onto the task and bypass the new fail-closed reconciliation guard.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs:1779-1810\n- src/contexts/automation_runtime/daemon_loop.rs:1941-1944\n- src/contexts/automation_runtime/daemon_loop.rs:7797-7948\nremediation_hint: Stop deriving `workflow_run_id` from the latest `RunStarted` event. Persist the authoritative run id from the dispatch/result path or another deterministic artifact of the just-finished attempt; if that binding cannot be proven, leave the field unset so `try_reconcile_success` takes the new `reconciliation_no_run_binding` path.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

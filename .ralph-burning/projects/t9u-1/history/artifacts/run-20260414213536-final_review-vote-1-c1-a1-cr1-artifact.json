@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414213536-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260414213536-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T22:05:26.105510043Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted 1 amendment. The review finding is technically correct: the daemon still derives `workflow_run_id` from the latest journal `RunStarted`, which can bind a newer manual rerun and defeat the intended fail-closed reconciliation path.\n\n## Votes\n\n- `fr-1-d6eb874a`: Accept\n  `persist_workflow_run_id` still reverse-scans the journal and writes the most recent `RunStarted` `run_id` onto the task when the field is empty. That is not an authoritative binding to the just-finished dispatch attempt. The dispatch path completes before this persistence step, and the workflow engine has already removed the pid file by completion, so a concurrent/manual rerun can legally start and append a newer `RunStarted` before persistence happens. If that newer id is persisted, `try_reconcile_success` will treat it as the durable task binding and will skip the new `reconciliation_no_run_binding` fail-closed path, reconciling against the wrong run instead. That is a real correctness and safety defect, so this amendment should be accepted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

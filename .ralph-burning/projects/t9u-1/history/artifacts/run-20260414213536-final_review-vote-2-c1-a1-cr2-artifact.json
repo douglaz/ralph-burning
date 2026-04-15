@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260414213536-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260414213536-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-14T22:42:45.705754345Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nVerified the amendment by tracing the full code path across both dispatch paths in daemon_loop.rs and the task_service.rs persistence layer. The bug is confirmed: persist_workflow_run_id takes &DaemonTask (immutable borrow) and only updates the on-disk copy via set_workflow_run_id (which does its own read/modify/write cycle). The in-memory active_task passed to try_reconcile_success still has workflow_run_id == None, so the fail-closed check at lines 1917-1920 always triggers for first-time successful dispatches, marking the task as reconciliation_no_run_binding and escalating the milestone to NeedsOperator despite the run_id being successfully persisted to disk moments earlier.\n\n## Votes\n\n- `fr-2-536e5340`: Accept\n  Confirmed by code inspection: (1) persist_workflow_run_id at line 1773 takes &DaemonTask (immutable), so it cannot update the in-memory active_task; (2) set_workflow_run_id at task_service.rs:634-643 does a separate store read/modify/write that only affects the on-disk copy; (3) both dispatch paths at lines 1092-1093 and 1719-1720 pass the stale active_task to try_reconcile_success; (4) the fail-closed guard at lines 1917-1920 returns Err for None workflow_run_id, calling missing_workflow_run_id_failure which transitions the milestone controller to NeedsOperator. This means every first-time successful task dispatch will have its work completed but then fail reconciliation — a high-severity bug on the critical path. The remediation hint (reload from store or thread run_id into reconciliation) is correct and straightforward.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 2
+}

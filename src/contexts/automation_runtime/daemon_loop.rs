@@ -7,8 +7,8 @@ use chrono::Utc;
 use serde_json::json;
 
 use crate::adapters::fs::{
-    FileSystem, FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
-    FsMilestoneStore, FsTaskRunLineageStore,
+    FileSystem, FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+    FsMilestoneSnapshotStore, FsMilestoneStore, FsTaskRunLineageStore,
 };
 use crate::adapters::github::GithubPort;
 use crate::cli::run::{
@@ -44,6 +44,7 @@ use crate::contexts::automation_runtime::{
     github_intake, DaemonStorePort, RebaseConflictRequest, RebaseConflictResolution,
     RebaseConflictResolver, WorktreePort,
 };
+use crate::contexts::milestone_record::controller as milestone_controller;
 use crate::contexts::milestone_record::service as milestone_service;
 use crate::contexts::project_run_record::model::{RunSnapshot, RunStatus};
 use crate::contexts::project_run_record::service::{
@@ -79,16 +80,16 @@ type ConfiguredRequirementsServiceBuilder = Box<
         + Sync,
 >;
 
-fn aborted_dispatch_cleanup_error(outcome: AppResult<()>) -> Option<AppError> {
+fn aborted_dispatch_cleanup_error<T>(outcome: AppResult<T>) -> Option<AppError> {
     match outcome {
-        Ok(()) | Err(AppError::InvocationCancelled { .. }) => None,
+        Ok(_) | Err(AppError::InvocationCancelled { .. }) => None,
         Err(error) => Some(error),
     }
 }
 
-fn finish_aborted_dispatch_task_cleanup(
+fn finish_aborted_dispatch_task_cleanup<T>(
     task_id: &str,
-    outcome: AppResult<()>,
+    outcome: AppResult<T>,
     lease_release_result: AppResult<()>,
 ) -> AppResult<()> {
     match (
@@ -983,20 +984,13 @@ where
         }
 
         match outcome {
-            Ok(()) => {
-                // Persist the workflow run_id on the task after dispatch
-                // so reconciliation retries use the correct run rather
-                // than re-reading the journal (which may have been
-                // appended to by a manual re-run). Skip for
-                // post-completion retries: no new RunStarted was written
-                // (dispatch was a no-op for Completed), so the journal's
-                // latest RunStarted may belong to a newer manual re-run.
-                // Storing that would permanently bind the wrong run_id.
-                // Tasks that already have workflow_run_id from the
-                // original dispatch are unaffected (persist returns early).
-                if !is_post_completion_retry {
-                    self.persist_workflow_run_id(store_dir, repo_root, &active_task);
-                }
+            Ok(run_id) => {
+                let reconciliation_task = self.task_for_success_reconciliation(
+                    store_dir,
+                    &active_task,
+                    run_id.as_deref(),
+                    is_post_completion_retry,
+                )?;
 
                 // Reconciliation-only retries (reconciliation_*) skip the PR
                 // handler: the PR was already created/merged on the original
@@ -1094,8 +1088,9 @@ where
                 } // end if !is_reconciliation_only_retry
                   // Reconcile bead BEFORE marking completed so a crash between
                   // reconciliation and mark_completed causes reprocessing on restart.
-                if let Err((failure_class, failure_message)) =
-                    self.try_reconcile_success(repo_root, &active_task).await
+                if let Err((failure_class, failure_message)) = self
+                    .try_reconcile_success(repo_root, &reconciliation_task)
+                    .await
                 {
                     match DaemonTaskService::mark_failed(
                         self.store,
@@ -1680,12 +1675,13 @@ where
         }
 
         match outcome {
-            Ok(()) => {
-                // Persist workflow run_id after dispatch — skip for
-                // post-completion retries (see multi-repo path comment).
-                if !is_post_completion_retry {
-                    self.persist_workflow_run_id(base_dir, base_dir, &active_task);
-                }
+            Ok(run_id) => {
+                let reconciliation_task = self.task_for_success_reconciliation(
+                    base_dir,
+                    &active_task,
+                    run_id.as_deref(),
+                    is_post_completion_retry,
+                )?;
 
                 // Skip PR handler for reconciliation-only retries — see
                 // multi-repo path comment for rationale.
@@ -1720,8 +1716,9 @@ where
                 }
                 // Reconcile bead BEFORE marking completed so a crash between
                 // reconciliation and mark_completed causes reprocessing on restart.
-                if let Err((failure_class, failure_message)) =
-                    self.try_reconcile_success(base_dir, &active_task).await
+                if let Err((failure_class, failure_message)) = self
+                    .try_reconcile_success(base_dir, &reconciliation_task)
+                    .await
                 {
                     if let Err(e) = DaemonTaskService::mark_failed(
                         self.store,
@@ -1771,56 +1768,101 @@ where
         Ok(())
     }
 
-    /// Best-effort: persist the workflow run_id extracted from the journal
-    /// onto the task so that reconciliation retries can identify the correct
-    /// run without re-reading the journal. `store_dir` is the daemon store
-    /// root; `project_dir` is where journal files live.
-    fn persist_workflow_run_id(&self, store_dir: &Path, project_dir: &Path, task: &DaemonTask) {
+    /// Best-effort: persist the authoritative workflow run_id captured from
+    /// the dispatch path onto the task so reconciliation retries bind to the
+    /// exact attempt the daemon just executed.
+    fn persist_workflow_run_id(&self, store_dir: &Path, task: &DaemonTask, run_id: Option<&str>) {
         // Skip if already set (reconciliation retry of a task that
         // previously had its run_id persisted).
         if task.workflow_run_id.is_some() {
             return;
         }
-        let Ok(project_id) = crate::shared::domain::ProjectId::new(&task.project_id) else {
-            return;
-        };
-        let Ok(events) = self.journal_store.read_journal(project_dir, &project_id) else {
-            return;
-        };
-        let run_id = events
-            .iter()
-            .rev()
-            .find(|e| {
-                e.event_type
-                    == crate::contexts::project_run_record::model::JournalEventType::RunStarted
-            })
-            .and_then(|e| e.details.get("run_id").and_then(serde_json::Value::as_str));
-        if let Some(run_id) = run_id {
-            // The task had no workflow_run_id — we're binding it to the latest
-            // RunStarted event. If another run was started on this project
-            // between the original dispatch and this call, this may bind the
-            // wrong run_id. Log so operators can correlate suspect bindings.
-            tracing::debug!(
+        let Some(run_id) = run_id else {
+            tracing::warn!(
                 task_id = %task.task_id,
-                run_id,
-                "persist_workflow_run_id: binding run_id from latest RunStarted journal event",
+                "persist_workflow_run_id: no authoritative run_id available; leaving task unbound",
             );
-            if let Err(e) =
-                DaemonTaskService::set_workflow_run_id(self.store, store_dir, &task.task_id, run_id)
-            {
-                eprintln!(
-                    "daemon: failed to persist workflow_run_id on task '{}' (non-blocking): {e}",
-                    task.task_id
-                );
-            }
+            return;
+        };
+        if let Err(e) =
+            DaemonTaskService::set_workflow_run_id(self.store, store_dir, &task.task_id, run_id)
+        {
+            eprintln!(
+                "daemon: failed to persist workflow_run_id on task '{}' (non-blocking): {e}",
+                task.task_id
+            );
         }
+    }
+
+    fn task_for_success_reconciliation(
+        &self,
+        store_dir: &Path,
+        task: &DaemonTask,
+        run_id: Option<&str>,
+        is_post_completion_retry: bool,
+    ) -> AppResult<DaemonTask> {
+        // Only trust a workflow binding once it has been durably written to
+        // the task record. A transient run_id captured from dispatch/resume is
+        // not enough: if the metadata write failed, success reconciliation
+        // must fail closed instead of partially reconciling the wrong attempt.
+        if !is_post_completion_retry {
+            self.persist_workflow_run_id(store_dir, task, run_id);
+        }
+        self.store.read_task(store_dir, &task.task_id)
+    }
+
+    fn missing_workflow_run_id_failure(
+        &self,
+        project_dir: &Path,
+        task: &DaemonTask,
+        task_source: &crate::contexts::project_run_record::model::TaskSource,
+    ) -> (String, String) {
+        let reason = format!(
+            "task '{}' cannot reconcile success because workflow_run_id is missing; \
+             persist_workflow_run_id did not record a durable task-to-run binding, so \
+             the daemon cannot safely determine which workflow attempt to reconcile. \
+             Operator intervention required before retrying reconciliation",
+            task.task_id
+        );
+
+        let reason = match crate::contexts::milestone_record::model::MilestoneId::new(
+            &task_source.milestone_id,
+        ) {
+            Ok(milestone_id) => {
+                let request = milestone_controller::ControllerTransitionRequest::new(
+                    milestone_controller::MilestoneControllerState::NeedsOperator,
+                    reason.clone(),
+                )
+                .with_bead(&task_source.bead_id)
+                .with_task(&task.task_id);
+                match milestone_controller::sync_controller_state(
+                    &FsMilestoneControllerStore,
+                    project_dir,
+                    &milestone_id,
+                    request,
+                    Utc::now(),
+                ) {
+                    Ok(_) => reason,
+                    Err(error) => format!(
+                        "{reason}; additionally failed to persist needs_operator controller state: {error}"
+                    ),
+                }
+            }
+            Err(error) => format!(
+                "{reason}; additionally could not parse milestone_id '{}': {error}",
+                task_source.milestone_id
+            ),
+        };
+
+        ("reconciliation_no_run_binding".to_owned(), reason)
     }
 
     /// Attempt success reconciliation for a completed milestone task.
     ///
     /// Closes the bead in `br`, syncs, updates milestone state, and captures
-    /// next-step hints. Best-effort: failures are logged and transition the
-    /// milestone to Failed (needs-operator) rather than blocking task completion.
+    /// next-step hints. If the daemon cannot prove which workflow run belongs
+    /// to this task, it fails closed, moves the milestone controller to
+    /// needs-operator, and returns an error so the task is marked Failed.
     ///
     /// `project_dir` is the workspace root where project records, milestone
     /// files, and the `.beads/` graph live. In single-repo mode this is
@@ -1875,21 +1917,30 @@ where
             None => return Ok(()), // Not a milestone task, nothing to reconcile.
         };
 
-        // NOTE: We intentionally do NOT transition the milestone to Failed on
-        // reconciliation errors. MilestoneStatus::Failed is terminal — once set,
-        // record_bead_start rejects all future bead starts, permanently wedging
-        // the milestone with no automated recovery path. Instead, we leave the
-        // milestone Running and return Err so the *task* is marked Failed. The
-        // operator can then retry_task, which re-dispatches reconciliation against
-        // the still-Running milestone. All reconciliation steps are idempotent:
-        // br close checks bead status, sync is unconditional, and
-        // record_bead_completion handles replays.
+        // NOTE: We intentionally do NOT transition the milestone snapshot to
+        // Failed on reconciliation errors. MilestoneStatus::Failed is terminal
+        // — once set, record_bead_start rejects all future bead starts,
+        // permanently wedging the milestone with no automated recovery path.
+        // Instead, we leave the milestone snapshot Running and return Err so
+        // the *task* is marked Failed. The operator can then retry_task, which
+        // re-dispatches reconciliation against the still-Running milestone.
+        // For safety-critical metadata failures such as a missing durable
+        // workflow_run_id binding, we additionally move the milestone
+        // controller to needs-operator so the ambiguity is visible.
 
-        // Extract run_id and started_at. Prefer the durable workflow_run_id
-        // persisted on the task (set after dispatch completes) over scanning
-        // the journal for the latest RunStarted event. The journal-based
-        // fallback is kept for backwards compatibility with tasks dispatched
-        // before workflow_run_id was introduced.
+        // Extract run_id and started_at. Reconciliation must only use the
+        // durable workflow_run_id persisted on the task record. Guessing from
+        // the latest RunStarted journal event remains unsafe because a newer
+        // manual re-run may have appended its own run identity, and a
+        // transient in-memory run_id is not durable enough to prove the
+        // binding survived persistence.
+        let run_id_from_task = match task.workflow_run_id.as_deref() {
+            Some(run_id) => run_id,
+            None => {
+                return Err(self.missing_workflow_run_id_failure(project_dir, task, task_source))
+            }
+        };
+
         let journal_events = match self.journal_store.read_journal(project_dir, &project_id) {
             Ok(events) => events,
             Err(e) => {
@@ -1900,54 +1951,15 @@ where
             }
         };
 
-        let run_id_from_task = task.workflow_run_id.as_deref();
-        if run_id_from_task.is_none() {
-            if task.attempt_count > 0 {
-                // Fail-closed: on retries without a durable task→run
-                // binding, the journal's latest RunStarted may belong to a
-                // different manual re-run started between the original
-                // failure and this retry. Guessing the wrong run would
-                // close/sync the bead and rewrite milestone lineage for the
-                // wrong attempt. Surface a needs-operator condition instead;
-                // the operator can re-dispatch with a correct run binding.
-                return Err((
-                    "reconciliation_no_run_binding".to_owned(),
-                    format!(
-                        "task '{}' has no workflow_run_id on retry \
-                         (attempt_count={}); cannot safely determine which \
-                         run to reconcile — operator intervention required",
-                        task.task_id, task.attempt_count,
-                    ),
-                ));
-            }
-            // First dispatch (attempt_count == 0): the journal's RunStarted
-            // was written by this dispatch and is correct.
-            // persist_workflow_run_id should have set the binding, but the
-            // write may have failed transiently. Falling back to the latest
-            // RunStarted is safe because no retry window exists for a manual
-            // re-run to have overwritten it.
-            eprintln!(
-                "daemon: try_reconcile_success for task '{}' has no workflow_run_id — \
-                 falling back to latest RunStarted journal event (first dispatch, safe)",
-                task.task_id,
-            );
-        }
         let run_started = journal_events.iter().rev().find(|event| {
             if event.event_type != JournalEventType::RunStarted {
                 return false;
             }
-            match run_id_from_task {
-                // When workflow_run_id is set, match the specific RunStarted
-                // event rather than blindly taking the latest one.
-                Some(target) => {
-                    event
-                        .details
-                        .get("run_id")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(target)
-                }
-                None => true,
-            }
+            event
+                .details
+                .get("run_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(run_id_from_task)
         });
 
         let (run_id, started_at) = match run_started {
@@ -2683,7 +2695,7 @@ where
         shutdown: CancellationToken,
         task_cancel: CancellationToken,
         github: &G,
-    ) -> AppResult<()> {
+    ) -> AppResult<Option<String>> {
         let project_id = ProjectId::new(task.project_id.clone())?;
         let flow = task
             .resolved_flow
@@ -2776,7 +2788,7 @@ where
         config: &DaemonLoopConfig,
         shutdown: CancellationToken,
         task_cancel: CancellationToken,
-    ) -> AppResult<()> {
+    ) -> AppResult<Option<String>> {
         let project_id = ProjectId::new(task.project_id.clone())?;
         let flow = task
             .resolved_flow
@@ -2857,7 +2869,7 @@ where
         worktree_path: &Path,
         writer_owner: Option<&str>,
         cancellation_token: CancellationToken,
-    ) -> AppResult<()> {
+    ) -> AppResult<Option<String>> {
         if let Some(builder) = self.configured_agent_service_builder {
             let agent_service = builder(effective_config)?;
             return dispatch_in_worktree_with_service(
@@ -3221,9 +3233,9 @@ where
         dispatch_future: &mut std::pin::Pin<&mut F>,
         summary: &'static str,
         log_message: &'static str,
-    ) -> AppResult<()>
+    ) -> AppResult<Option<String>>
     where
-        F: Future<Output = AppResult<()>>,
+        F: Future<Output = AppResult<Option<String>>>,
     {
         let interrupted_handoff = self.prepare_cancelled_dispatch_handoff(
             base_dir,
@@ -4016,58 +4028,54 @@ async fn dispatch_in_worktree_with_service<A, R, S>(
     worktree_path: &Path,
     writer_owner: Option<&str>,
     cancellation_token: CancellationToken,
-) -> AppResult<()>
+) -> AppResult<Option<String>>
 where
     A: AgentExecutionPort + Sync,
     R: RawOutputPort + Sync,
     S: SessionStorePort + Sync,
 {
     match run_status {
-        RunStatus::NotStarted => {
-            engine::execute_run_with_retry(
-                agent_service,
-                run_snapshot_read,
-                run_snapshot_write,
-                journal_store,
-                artifact_write,
-                log_write,
-                amendment_queue,
-                base_dir,
-                Some(worktree_path),
-                project_id,
-                writer_owner,
-                flow,
-                effective_config,
-                &RetryPolicy::default_policy().with_max_remediation_cycles(
-                    effective_config.run_policy().max_review_iterations,
-                ),
-                cancellation_token,
-            )
-            .await
-        }
-        RunStatus::Failed | RunStatus::Paused => {
-            engine::resume_run_with_retry(
-                agent_service,
-                run_snapshot_read,
-                run_snapshot_write,
-                journal_store,
-                artifact_store,
-                artifact_write,
-                log_write,
-                amendment_queue,
-                base_dir,
-                Some(worktree_path),
-                project_id,
-                writer_owner,
-                flow,
-                effective_config,
-                &RetryPolicy::default_policy().with_max_remediation_cycles(
-                    effective_config.run_policy().max_review_iterations,
-                ),
-                cancellation_token,
-            )
-            .await
-        }
+        RunStatus::NotStarted => engine::execute_run_with_retry_and_capture_run_id(
+            agent_service,
+            run_snapshot_read,
+            run_snapshot_write,
+            journal_store,
+            artifact_write,
+            log_write,
+            amendment_queue,
+            base_dir,
+            Some(worktree_path),
+            project_id,
+            writer_owner,
+            flow,
+            effective_config,
+            &RetryPolicy::default_policy()
+                .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations),
+            cancellation_token,
+        )
+        .await
+        .map(Some),
+        RunStatus::Failed | RunStatus::Paused => engine::resume_run_with_retry_and_capture_run_id(
+            agent_service,
+            run_snapshot_read,
+            run_snapshot_write,
+            journal_store,
+            artifact_store,
+            artifact_write,
+            log_write,
+            amendment_queue,
+            base_dir,
+            Some(worktree_path),
+            project_id,
+            writer_owner,
+            flow,
+            effective_config,
+            &RetryPolicy::default_policy()
+                .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations),
+            cancellation_token,
+        )
+        .await
+        .map(Some),
         RunStatus::Running => Err(AppError::TaskStateTransitionInvalid {
             task_id: project_id.to_string(),
             from: "run_running".to_owned(),
@@ -4079,11 +4087,11 @@ where
             // (e.g., reconciliation_br_failed, reconciliation_metadata_error,
             // reconciliation_milestone_update_failed). The run succeeded but
             // post-run bookkeeping (bead close, sync, milestone update) failed.
-            // Returning Ok(()) lets the caller fall through to the success
+            // Returning Ok(None) lets the caller fall through to the success
             // path where try_reconcile_success runs again. All reconciliation
             // steps are idempotent: br close checks bead status, sync is
             // unconditional, and record_bead_completion handles replays.
-            Ok(())
+            Ok(None)
         }
     }
 }
@@ -4302,10 +4310,10 @@ mod tests {
     };
     use crate::adapters::fs::{
         FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
-        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
-        FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRequirementsStore,
-        FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
-        RunBackendProcessRecord, RunPidOwner, RunPidRecord,
+        FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+        FsMilestoneSnapshotStore, FsMilestoneStore, FsPayloadArtifactWriteStore, FsProjectStore,
+        FsRawOutputStore, FsRequirementsStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
+        FsRuntimeLogWriteStore, FsSessionStore, RunBackendProcessRecord, RunPidOwner, RunPidRecord,
     };
     use crate::adapters::github::InMemoryGithubClient;
     use crate::adapters::stub_backend::StubBackendAdapter;
@@ -4321,10 +4329,14 @@ mod tests {
         DaemonStorePort, LeaseRecord, ResourceCleanupOutcome, WorktreeCleanupOutcome,
         WorktreeLease, WorktreePort, WriterLockReleaseOutcome,
     };
+    use crate::contexts::milestone_record::controller::{self as milestone_controller};
     use crate::contexts::milestone_record::service::{
         create_milestone, update_status, CreateMilestoneInput, MilestoneSnapshotPort,
     };
-    use crate::contexts::project_run_record::model::{ActiveRun, RunSnapshot, RunStatus};
+    use crate::contexts::project_run_record::journal;
+    use crate::contexts::project_run_record::model::{
+        ActiveRun, RunSnapshot, RunStatus, TaskOrigin, TaskSource,
+    };
     use crate::contexts::project_run_record::service::{
         create_project, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
     };
@@ -4336,7 +4348,7 @@ mod tests {
     };
     use crate::contexts::workspace_governance::initialize_workspace;
     use crate::shared::domain::FlowPreset;
-    use crate::shared::domain::{ProjectId, StageCursor, StageId};
+    use crate::shared::domain::{ProjectId, RunId, StageCursor, StageId};
     use crate::shared::error::{AppError, AppResult};
 
     fn sample_waiting_task(task_id: &str, run_id: &str) -> DaemonTask {
@@ -4496,6 +4508,18 @@ mod tests {
         }
     }
 
+    struct FailOnceWorkflowRunIdWriteStore {
+        fail_next_workflow_run_id_write: AtomicBool,
+    }
+
+    impl FailOnceWorkflowRunIdWriteStore {
+        fn new() -> Self {
+            Self {
+                fail_next_workflow_run_id_write: AtomicBool::new(true),
+            }
+        }
+    }
+
     struct FailOnceLeaseReferenceClearStore {
         task_id: String,
         fail_next_clear_lease_write: AtomicBool,
@@ -4529,6 +4553,111 @@ mod tests {
             {
                 return Err(AppError::Io(std::io::Error::other(
                     "simulated waiting-task metadata write failure",
+                )));
+            }
+
+            FsDaemonStore.write_task(base_dir, task)
+        }
+
+        fn list_leases(&self, base_dir: &std::path::Path) -> AppResult<Vec<WorktreeLease>> {
+            FsDaemonStore.list_leases(base_dir)
+        }
+
+        fn read_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<WorktreeLease> {
+            FsDaemonStore.read_lease(base_dir, lease_id)
+        }
+
+        fn write_lease(&self, base_dir: &std::path::Path, lease: &WorktreeLease) -> AppResult<()> {
+            FsDaemonStore.write_lease(base_dir, lease)
+        }
+
+        fn list_lease_records(&self, base_dir: &std::path::Path) -> AppResult<Vec<LeaseRecord>> {
+            FsDaemonStore.list_lease_records(base_dir)
+        }
+
+        fn read_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<LeaseRecord> {
+            FsDaemonStore.read_lease_record(base_dir, lease_id)
+        }
+
+        fn write_lease_record(
+            &self,
+            base_dir: &std::path::Path,
+            lease: &LeaseRecord,
+        ) -> AppResult<()> {
+            FsDaemonStore.write_lease_record(base_dir, lease)
+        }
+
+        fn remove_lease(
+            &self,
+            base_dir: &std::path::Path,
+            lease_id: &str,
+        ) -> AppResult<ResourceCleanupOutcome> {
+            FsDaemonStore.remove_lease(base_dir, lease_id)
+        }
+
+        fn read_daemon_journal(
+            &self,
+            base_dir: &std::path::Path,
+        ) -> AppResult<Vec<DaemonJournalEvent>> {
+            FsDaemonStore.read_daemon_journal(base_dir)
+        }
+
+        fn append_daemon_journal_event(
+            &self,
+            base_dir: &std::path::Path,
+            event: &DaemonJournalEvent,
+        ) -> AppResult<()> {
+            FsDaemonStore.append_daemon_journal_event(base_dir, event)
+        }
+
+        fn acquire_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            lease_id: &str,
+        ) -> AppResult<()> {
+            FsDaemonStore.acquire_writer_lock(base_dir, project_id, lease_id)
+        }
+
+        fn release_writer_lock(
+            &self,
+            base_dir: &std::path::Path,
+            project_id: &ProjectId,
+            expected_owner: &str,
+        ) -> AppResult<WriterLockReleaseOutcome> {
+            FsDaemonStore.release_writer_lock(base_dir, project_id, expected_owner)
+        }
+    }
+
+    impl DaemonStorePort for FailOnceWorkflowRunIdWriteStore {
+        fn list_tasks(&self, base_dir: &std::path::Path) -> AppResult<Vec<DaemonTask>> {
+            FsDaemonStore.list_tasks(base_dir)
+        }
+
+        fn read_task(&self, base_dir: &std::path::Path, task_id: &str) -> AppResult<DaemonTask> {
+            FsDaemonStore.read_task(base_dir, task_id)
+        }
+
+        fn create_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            FsDaemonStore.create_task(base_dir, task)
+        }
+
+        fn write_task(&self, base_dir: &std::path::Path, task: &DaemonTask) -> AppResult<()> {
+            if task.workflow_run_id.is_some()
+                && self
+                    .fail_next_workflow_run_id_write
+                    .swap(false, Ordering::SeqCst)
+            {
+                return Err(AppError::Io(std::io::Error::other(
+                    "simulated workflow_run_id metadata write failure",
                 )));
             }
 
@@ -5277,7 +5406,7 @@ mod tests {
         );
 
         let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
-        let dispatch_future = std::future::pending::<AppResult<()>>();
+        let dispatch_future = std::future::pending::<AppResult<Option<String>>>();
         tokio::pin!(dispatch_future);
         let mut cleanup_future = std::pin::pin!(daemon.finish_cancelled_dispatch(
             base,
@@ -5734,7 +5863,7 @@ mod tests {
         );
 
         let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
-        let dispatch_future = std::future::pending::<AppResult<()>>();
+        let dispatch_future = std::future::pending::<AppResult<Option<String>>>();
         tokio::pin!(dispatch_future);
         let mut cleanup_future = std::pin::pin!(daemon.finish_cancelled_dispatch(
             base,
@@ -5915,7 +6044,7 @@ mod tests {
         );
 
         let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
-        let dispatch_future = std::future::ready(Ok(()));
+        let dispatch_future = std::future::ready(Ok(Some("run-cleanup-missing-pid".to_owned())));
         tokio::pin!(dispatch_future);
         let error = daemon
             .finish_cancelled_dispatch(
@@ -7676,9 +7805,10 @@ mod tests {
     #[test]
     fn aborted_dispatch_cleanup_allows_successful_outcomes() {
         assert!(
-            super::finish_aborted_dispatch_task_cleanup("task-aborted", Ok(()), Ok(())).is_ok()
+            super::finish_aborted_dispatch_task_cleanup::<()>("task-aborted", Ok(()), Ok(()))
+                .is_ok()
         );
-        assert!(super::finish_aborted_dispatch_task_cleanup(
+        assert!(super::finish_aborted_dispatch_task_cleanup::<()>(
             "task-aborted",
             Err(AppError::InvocationCancelled {
                 backend: "daemon".to_owned(),
@@ -7691,7 +7821,7 @@ mod tests {
 
     #[test]
     fn aborted_dispatch_cleanup_propagates_dispatch_errors_after_lease_release() {
-        let error = super::finish_aborted_dispatch_task_cleanup(
+        let error = super::finish_aborted_dispatch_task_cleanup::<()>(
             "task-aborted",
             Err(AppError::Io(std::io::Error::other(
                 "backend cleanup failed",
@@ -7707,7 +7837,7 @@ mod tests {
 
     #[test]
     fn aborted_dispatch_cleanup_prioritizes_lease_cleanup_failures() {
-        let error = super::finish_aborted_dispatch_task_cleanup(
+        let error = super::finish_aborted_dispatch_task_cleanup::<()>(
             "task-aborted",
             Err(AppError::Io(std::io::Error::other(
                 "backend cleanup failed",
@@ -7767,9 +7897,421 @@ mod tests {
         )
         .await;
 
+        assert_eq!(
+            result.expect("dispatch completed status should not error"),
+            None,
+            "RunStatus::Completed must return Ok(None) for reconciliation retries"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn try_reconcile_success_missing_workflow_run_id_fails_closed_and_signals_operator() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        let now = Utc::now();
+        initialize_workspace(base, now).expect("init workspace");
+
+        let milestone = create_milestone(
+            &FsMilestoneStore,
+            base,
+            CreateMilestoneInput {
+                id: "ms-missing-run-binding".to_owned(),
+                name: "Missing run binding".to_owned(),
+                description: "Reconciliation should fail closed".to_owned(),
+            },
+            now,
+        )
+        .expect("create milestone");
+        let task_source = TaskSource {
+            milestone_id: milestone.id.to_string(),
+            bead_id: "ms-missing-run-binding.bead-1".to_owned(),
+            parent_epic_id: None,
+            origin: TaskOrigin::Milestone,
+            plan_hash: Some("plan-v1".to_owned()),
+            plan_version: Some(1),
+        };
+        let project_id = ProjectId::new("missing-run-binding-project").expect("project id");
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Missing run binding project".to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt"),
+                created_at: now,
+                task_source: Some(task_source.clone()),
+            },
+        )
+        .expect("create project");
+
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base,
+            &milestone.id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::Running,
+                "bead execution started",
+            )
+            .with_bead(&task_source.bead_id)
+            .with_task("task-missing-run-binding"),
+            now - chrono::Duration::seconds(1),
+        )
+        .expect("mark controller running");
+
+        let journal_events = FsJournalStore
+            .read_journal(base, &project_id)
+            .expect("read initial journal");
+        let manual_rerun_id = RunId::new("run-newer-manual-rerun").expect("run id");
+        let run_started = journal::run_started_event(
+            journal::last_sequence(&journal_events) + 1,
+            now + chrono::Duration::seconds(2),
+            &manual_rerun_id,
+            StageId::Implementation,
+            1,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&run_started).expect("serialize run_started"),
+            )
+            .expect("append newer run_started");
+        let run_completed = journal::run_completed_event(
+            run_started.sequence + 1,
+            now + chrono::Duration::seconds(3),
+            &manual_rerun_id,
+            1,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&run_completed).expect("serialize run_completed"),
+            )
+            .expect("append newer run_completed");
+
+        let mut task = sample_pending_task("task-missing-run-binding", &project_id);
+        task.status = TaskStatus::Active;
+        task.attempt_count = 1;
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .try_reconcile_success(base, &task)
+            .await
+            .expect_err("missing workflow_run_id must fail closed");
+        assert_eq!(error.0, "reconciliation_no_run_binding");
         assert!(
-            result.is_ok(),
-            "RunStatus::Completed must return Ok(()) for reconciliation retries, got: {result:?}"
+            error.1.contains("workflow_run_id is missing"),
+            "error should explain the missing run binding: {}",
+            error.1
+        );
+        assert!(
+            error.1.contains("Operator intervention required"),
+            "error should require operator action: {}",
+            error.1
+        );
+
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &milestone.id)
+                .expect("load controller")
+                .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator
+        );
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some(task_source.bead_id.as_str())
+        );
+        assert_eq!(
+            controller.active_task_id.as_deref(),
+            Some(task.task_id.as_str())
+        );
+        assert!(
+            controller
+                .last_transition_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("workflow_run_id is missing")),
+            "controller should carry the operator-facing missing-binding reason: {controller:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_workflow_run_id_requires_authoritative_binding() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        let now = Utc::now();
+        initialize_workspace(base, now).expect("init workspace");
+
+        let project_id = ProjectId::new("persist-run-binding-project").expect("project id");
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Persist run binding project".to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt"),
+                created_at: now,
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let original_run_id = RunId::new("run-original-dispatch").expect("original run id");
+        let original_started = journal::run_started_event(
+            2,
+            now + chrono::Duration::seconds(1),
+            &original_run_id,
+            StageId::Implementation,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&original_started).expect("serialize original run"),
+            )
+            .expect("append original run");
+
+        let manual_rerun_id = RunId::new("run-manual-rerun").expect("manual rerun id");
+        let manual_started = journal::run_started_event(
+            3,
+            now + chrono::Duration::seconds(2),
+            &manual_rerun_id,
+            StageId::Implementation,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&manual_started).expect("serialize manual rerun"),
+            )
+            .expect("append manual rerun");
+
+        let store = FsDaemonStore;
+        let task_without_binding =
+            sample_pending_task("task-no-authoritative-binding", &project_id);
+        store
+            .create_task(base, &task_without_binding)
+            .expect("create task without binding");
+
+        let task_with_binding = sample_pending_task("task-authoritative-binding", &project_id);
+        store
+            .create_task(base, &task_with_binding)
+            .expect("create task with binding");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &store,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        daemon.persist_workflow_run_id(base, &task_without_binding, None);
+        let unchanged = store
+            .read_task(base, &task_without_binding.task_id)
+            .expect("read unchanged task");
+        assert!(
+            unchanged.workflow_run_id.is_none(),
+            "missing authoritative binding must leave workflow_run_id unset"
+        );
+
+        daemon.persist_workflow_run_id(base, &task_with_binding, Some(original_run_id.as_str()));
+        let persisted = store
+            .read_task(base, &task_with_binding.task_id)
+            .expect("read persisted task");
+        assert_eq!(
+            persisted.workflow_run_id.as_deref(),
+            Some(original_run_id.as_str()),
+            "persisted binding must use the authoritative dispatch run_id, not the latest journal event"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn try_reconcile_success_fails_closed_when_workflow_run_id_persist_fails() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        let now = Utc::now();
+        initialize_workspace(base, now).expect("init workspace");
+
+        let milestone = create_milestone(
+            &FsMilestoneStore,
+            base,
+            CreateMilestoneInput {
+                id: "ms-authoritative-run-binding".to_owned(),
+                name: "Authoritative run binding".to_owned(),
+                description: "Fresh dispatch should use captured run_id".to_owned(),
+            },
+            now,
+        )
+        .expect("create milestone");
+        let task_source = TaskSource {
+            milestone_id: milestone.id.to_string(),
+            bead_id: "ms-authoritative-run-binding.bead-1".to_owned(),
+            parent_epic_id: None,
+            origin: TaskOrigin::Milestone,
+            plan_hash: Some("plan-v1".to_owned()),
+            plan_version: Some(1),
+        };
+        let project_id = ProjectId::new("authoritative-run-binding-project").expect("project id");
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Authoritative run binding project".to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt"),
+                created_at: now,
+                task_source: Some(task_source.clone()),
+            },
+        )
+        .expect("create project");
+
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base,
+            &milestone.id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::Running,
+                "bead execution started",
+            )
+            .with_bead(&task_source.bead_id)
+            .with_task("task-authoritative-run-binding"),
+            now - chrono::Duration::seconds(1),
+        )
+        .expect("mark controller running");
+
+        let authoritative_run_id =
+            RunId::new("run-authoritative-first-dispatch").expect("authoritative run id");
+        let journal_events = FsJournalStore
+            .read_journal(base, &project_id)
+            .expect("read initial journal");
+        let run_started = journal::run_started_event(
+            journal::last_sequence(&journal_events) + 1,
+            now + chrono::Duration::seconds(2),
+            &authoritative_run_id,
+            StageId::Implementation,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&run_started).expect("serialize run_started"),
+            )
+            .expect("append run_started");
+        let run_completed = journal::run_completed_event(
+            run_started.sequence + 1,
+            now + chrono::Duration::seconds(3),
+            &authoritative_run_id,
+            1,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&run_completed).expect("serialize run_completed"),
+            )
+            .expect("append run_completed");
+
+        let mut task = sample_pending_task("task-authoritative-run-binding", &project_id);
+        task.status = TaskStatus::Active;
+        task.attempt_count = 1;
+        let store = FailOnceWorkflowRunIdWriteStore::new();
+        store.create_task(base, &task).expect("create task");
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &store,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        daemon.persist_workflow_run_id(base, &task, Some(authoritative_run_id.as_str()));
+        let reloaded_task = store
+            .read_task(base, &task.task_id)
+            .expect("read reloaded task");
+        assert!(
+            reloaded_task.workflow_run_id.is_none(),
+            "failed persistence must leave the durable workflow_run_id unset"
+        );
+
+        let error = daemon
+            .try_reconcile_success(base, &reloaded_task)
+            .await
+            .expect_err("missing durable workflow_run_id must fail closed");
+        assert_eq!(error.0, "reconciliation_no_run_binding");
+        assert!(
+            error.1.contains("workflow_run_id is missing"),
+            "reconciliation should explain the missing durable binding: {}",
+            error.1
+        );
+
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &milestone.id)
+                .expect("load controller")
+                .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator,
+            "missing durable workflow_run_id should escalate to needs_operator"
         );
     }
 
