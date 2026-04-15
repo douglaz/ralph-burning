@@ -47,6 +47,9 @@ use crate::contexts::automation_runtime::cli_writer_lease::{
 };
 use crate::contexts::automation_runtime::model::CliWriterCleanupHandoff;
 use crate::contexts::automation_runtime::{DaemonStorePort, LeaseRecord};
+use crate::contexts::milestone_record::bead_refs::{
+    br_show_output_indicates_missing, canonicalize_milestone_bead_ref, milestone_bead_refs_match,
+};
 use crate::contexts::milestone_record::bundle::{planned_bead_membership_refs, MilestoneBundle};
 use crate::contexts::milestone_record::controller::{
     self as milestone_controller, ControllerBeadStatus, ControllerTaskStatus,
@@ -314,16 +317,6 @@ fn load_planned_bead_membership_refs(
         })
 }
 
-fn canonicalize_milestone_bead_ref(milestone_id: &MilestoneId, bead_id: &str) -> String {
-    let trimmed = bead_id.trim();
-    let qualified_prefix = format!("{}.", milestone_id.as_str());
-    if trimmed.starts_with(&qualified_prefix) {
-        trimmed.to_owned()
-    } else {
-        format!("{qualified_prefix}{trimmed}")
-    }
-}
-
 fn milestone_planned_refs_contain(
     planned_refs: &HashSet<String>,
     milestone_id: &MilestoneId,
@@ -334,11 +327,6 @@ fn milestone_planned_refs_contain(
         || bead_id
             .strip_prefix(&format!("{}.", milestone_id.as_str()))
             .is_some_and(|short_ref| planned_refs.contains(short_ref))
-}
-
-fn milestone_bead_refs_match(milestone_id: &MilestoneId, left: &str, right: &str) -> bool {
-    canonicalize_milestone_bead_ref(milestone_id, left)
-        == canonicalize_milestone_bead_ref(milestone_id, right)
 }
 
 fn summarize_bead_ids(ids: &[String]) -> String {
@@ -357,16 +345,9 @@ fn summarize_bead_ids(ids: &[String]) -> String {
 }
 
 fn br_show_error_is_missing(error: &BrError) -> bool {
-    fn message_describes_missing_bead(message: &str) -> bool {
-        let message = message.to_ascii_lowercase();
-        (message.contains("bead not found") || message.contains("issue not found"))
-            || (message.contains("not found")
-                && (message.contains("bead") || message.contains("issue")))
-    }
-
     match error {
         BrError::BrExitError { stderr, stdout, .. } => {
-            message_describes_missing_bead(stderr) || message_describes_missing_bead(stdout)
+            br_show_output_indicates_missing(stderr, stdout)
         }
         _ => false,
     }

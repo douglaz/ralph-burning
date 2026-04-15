@@ -19,6 +19,9 @@ use crate::composition::agent_execution_builder;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
+use crate::contexts::milestone_record::bead_refs::{
+    br_show_output_indicates_missing, milestone_bead_refs_match,
+};
 use crate::contexts::milestone_record::bundle::{bead_matches_implicit_slot, MilestoneBundle};
 use crate::contexts::milestone_record::controller::{
     self as milestone_controller, MilestoneControllerState,
@@ -278,6 +281,7 @@ async fn handle_create_from_requirements(run_id: String) -> AppResult<()> {
                 &handoff.bundle,
                 Utc::now(),
             )?;
+            set_active_milestone_after_command(&current_dir, &record.id)?;
             println!(
                 "Created milestone '{}' from requirements run '{}'",
                 record.id, handoff.requirements_run_id
@@ -516,6 +520,7 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
         return Err(link_error);
     }
 
+    set_active_milestone_after_command(&current_dir, &milestone_id)?;
     set_active_project_after_create(&current_dir, &record.id)?;
     Ok(record.id)
 }
@@ -902,7 +907,7 @@ async fn load_bead_detail(
         .await
         .map_err(|error| match error {
             BrError::BrExitError { stderr, stdout, .. }
-                if br_show_exit_looks_missing(&stderr, &stdout) =>
+                if br_show_output_indicates_missing(&stderr, &stdout) =>
             {
                 AppError::Io(std::io::Error::other(format!(
                     "failed to load bead '{bead_id}': bead not found"
@@ -966,32 +971,6 @@ async fn load_bead_detail(
             Ok(bead)
         }
     }
-}
-
-fn milestone_bead_refs_match(milestone_id: &MilestoneId, left: &str, right: &str) -> bool {
-    canonicalize_milestone_bead_ref(milestone_id, left)
-        == canonicalize_milestone_bead_ref(milestone_id, right)
-}
-
-fn canonicalize_milestone_bead_ref(milestone_id: &MilestoneId, bead_id: &str) -> String {
-    let trimmed = bead_id.trim();
-    let qualified_prefix = format!("{}.", milestone_id.as_str());
-    if trimmed.starts_with(&qualified_prefix) || trimmed.contains('.') {
-        trimmed.to_owned()
-    } else {
-        format!("{qualified_prefix}{trimmed}")
-    }
-}
-
-fn br_show_exit_looks_missing(stderr: &str, stdout: &str) -> bool {
-    fn message_describes_missing_bead(message: &str) -> bool {
-        let message = message.to_ascii_lowercase();
-        (message.contains("bead not found") || message.contains("issue not found"))
-            || (message.contains("not found")
-                && (message.contains("bead") || message.contains("issue")))
-    }
-
-    message_describes_missing_bead(stderr) || message_describes_missing_bead(stdout)
 }
 
 async fn load_bead_summaries(base_dir: &Path) -> AppResult<BTreeMap<String, BeadSummary>> {
@@ -2080,6 +2059,18 @@ fn set_active_project_after_create(base_dir: &Path, project_id: &ProjectId) -> A
         AppError::Io(std::io::Error::other(format!(
             "Project '{}' was created successfully but could not be selected as active: {}. Use `ralph-burning project select {}` to select it manually.",
             project_id, error, project_id
+        )))
+    })
+}
+
+fn set_active_milestone_after_command(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<()> {
+    workspace_governance::set_active_milestone(base_dir, milestone_id).map_err(|error| {
+        AppError::Io(std::io::Error::other(format!(
+            "The command succeeded but could not record milestone '{}' as active: {}. Run `ralph-burning milestone next {}` or `ralph-burning milestone run {}` with the explicit milestone ID.",
+            milestone_id, error, milestone_id, milestone_id
         )))
     })
 }

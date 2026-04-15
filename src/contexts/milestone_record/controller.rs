@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::shared::error::{AppError, AppResult};
 
+use super::bead_refs::milestone_bead_refs_match;
 use super::model::MilestoneId;
 
 pub const MILESTONE_CONTROLLER_SCHEMA_VERSION: u32 = 1;
@@ -1396,18 +1397,7 @@ fn validate_active_context_alignment(
 }
 
 fn milestone_bead_ids_equivalent(milestone_id: &MilestoneId, left: &str, right: &str) -> bool {
-    canonicalize_milestone_bead_ref(milestone_id, left)
-        == canonicalize_milestone_bead_ref(milestone_id, right)
-}
-
-fn canonicalize_milestone_bead_ref(milestone_id: &MilestoneId, bead_id: &str) -> String {
-    let trimmed = bead_id.trim();
-    let qualified_prefix = format!("{}.", milestone_id.as_str());
-    if trimmed.starts_with(&qualified_prefix) || trimmed.contains('.') {
-        trimmed.to_owned()
-    } else {
-        format!("{qualified_prefix}{trimmed}")
-    }
+    milestone_bead_refs_match(milestone_id, left, right)
 }
 
 fn state_name(state: MilestoneControllerState) -> &'static str {

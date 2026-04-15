@@ -1,11 +1,13 @@
 pub mod config;
 pub mod template_catalog;
 
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
 use crate::adapters::fs::FileSystem;
+use crate::contexts::milestone_record::model::MilestoneId;
 use crate::shared::domain::{ProjectId, WorkspaceConfig, CURRENT_WORKSPACE_VERSION};
 use crate::shared::error::{AppError, AppResult};
 
@@ -17,6 +19,7 @@ pub use config::{
 pub const WORKSPACE_DIR: &str = ".ralph-burning";
 pub const WORKSPACE_CONFIG_FILE: &str = "workspace.toml";
 pub const ACTIVE_PROJECT_FILE: &str = "active-project";
+pub const ACTIVE_MILESTONE_FILE: &str = "active-milestone";
 pub const PROJECTS_DIR: &str = "projects";
 pub const PROJECT_CONFIG_FILE: &str = "project.toml";
 pub const REQUIRED_WORKSPACE_DIRECTORIES: &[&str] =
@@ -97,6 +100,35 @@ pub fn set_active_project(base_dir: &Path, project_id: &ProjectId) -> AppResult<
     let _ = FileSystem::write_active_project(
         &FileSystem::audit_workspace_root_path(base_dir),
         project_id.as_str(),
+    );
+    Ok(())
+}
+
+pub fn read_active_milestone(base_dir: &Path) -> AppResult<Option<String>> {
+    let path = FileSystem::workspace_root_path(base_dir).join(ACTIVE_MILESTONE_FILE);
+    match std::fs::read_to_string(path) {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_owned()))
+            }
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub fn set_active_milestone(base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<()> {
+    let contents = milestone_id.as_str();
+    FileSystem::write_atomic(
+        &FileSystem::live_workspace_root_path(base_dir).join(ACTIVE_MILESTONE_FILE),
+        contents,
+    )?;
+    let _ = FileSystem::write_atomic(
+        &FileSystem::audit_workspace_root_path(base_dir).join(ACTIVE_MILESTONE_FILE),
+        contents,
     );
     Ok(())
 }

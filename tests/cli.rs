@@ -4039,6 +4039,76 @@ exit 1
     ));
 }
 
+#[cfg(feature = "test-stub")]
+#[test]
+fn project_create_from_bead_sets_active_milestone_for_run_without_id() {
+    let temp_dir = initialize_workspace_fixture();
+    write_single_bead_milestone_fixture(temp_dir.path(), "ms-single");
+
+    let ready_payload = r#"[{"id":"bead-1","title":"Execute the only bead","priority":"P1","issue_type":"task","labels":["single"]}]"#;
+    let show_payload = r#"[
+  {
+    "id": "ms-single.bead-1",
+    "title": "Execute the only bead",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "task",
+    "description": "Create and run a single bead-backed project.",
+    "acceptance_criteria": "- Single bead completes",
+    "dependencies": [],
+    "dependents": []
+  }
+]"#;
+    let list_payload = r#"{"issues":[{"id":"ms-single.bead-1","title":"Execute the only bead","status":"open","priority":"P1","issue_type":"task","labels":["single"]}]}"#;
+    write_br_milestone_selection_script(temp_dir.path(), ready_payload, show_payload, list_payload);
+    write_bv_next_script(temp_dir.path(), "ms-single.bead-1", "Execute the only bead");
+
+    let path = prepend_path(temp_dir.path());
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-single",
+            "--bead-id",
+            "ms-single.bead-1",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        create.status.success(),
+        "project create-from-bead should succeed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(active_milestone_path(temp_dir.path()))
+            .expect("read active milestone")
+            .trim(),
+        "ms-single"
+    );
+
+    let run = Command::new(binary())
+        .args(["milestone", "run", "--json"])
+        .env("PATH", &path)
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone run without id");
+
+    assert!(
+        run.status.success(),
+        "milestone run without id should succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&run.stdout).expect("parse milestone run json");
+    assert_eq!(json["milestone_id"], "ms-single");
+    assert_eq!(json["status"], "completed");
+}
+
 #[test]
 fn project_create_from_bead_falls_back_when_br_list_is_unavailable() {
     let temp_dir = initialize_workspace_fixture();
@@ -6633,6 +6703,58 @@ fn project_create_from_requirements_materializes_milestone_bundle_output() {
     assert!(status.contains("\"status\": \"ready\""));
     let plan = fs::read_to_string(milestone_root.join("plan.json")).expect("read plan.json");
     assert!(plan.contains("\"id\": \"ms-planned\""));
+}
+
+#[test]
+fn project_create_from_requirements_sets_active_milestone_for_next_without_id() {
+    let temp_dir = initialize_workspace_fixture();
+    let run_id = "req-milestone";
+    write_requirements_milestone_run_fixture(temp_dir.path(), run_id, "ms-planned");
+
+    let create = Command::new(binary())
+        .args(["project", "create", "--from-requirements", run_id])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project create from milestone requirements");
+
+    assert!(
+        create.status.success(),
+        "create from requirements milestone should succeed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(active_milestone_path(temp_dir.path()))
+            .expect("read active milestone")
+            .trim(),
+        "ms-planned"
+    );
+
+    let ready_payload = r#"[{"id":"bead-1","title":"Persist milestone bundle","priority":"P1","issue_type":"task","labels":["planning"]}]"#;
+    let show_payload = r#"[{"id":"ms-planned.bead-1","title":"Persist milestone bundle","status":"open","priority":"P1","issue_type":"task","description":"Write plan.json and plan.md","acceptance_criteria":"- Milestone plan is materialized","dependencies":[],"dependents":[]}]"#;
+    let list_payload = r#"{"issues":[{"id":"ms-planned.bead-1","title":"Persist milestone bundle","status":"open","priority":"P1","issue_type":"task","labels":["planning"]}]}"#;
+    write_br_milestone_selection_script(temp_dir.path(), ready_payload, show_payload, list_payload);
+    write_bv_next_script(
+        temp_dir.path(),
+        "ms-planned.bead-1",
+        "Persist milestone bundle",
+    );
+
+    let output = Command::new(binary())
+        .args(["milestone", "next", "--json"])
+        .env("PATH", prepend_path(temp_dir.path()))
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone next without id");
+
+    assert!(
+        output.status.success(),
+        "milestone next without id should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse milestone next json");
+    assert_eq!(json["milestone_id"], "ms-planned");
+    assert_eq!(json["bead"]["id"], "ms-planned.bead-1");
 }
 
 #[test]

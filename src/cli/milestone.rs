@@ -9,12 +9,15 @@ use crate::adapters::br_models::{BeadDetail, BeadStatus, ReadyBead};
 use crate::adapters::br_process::BrAdapter;
 use crate::adapters::bv_process::BvAdapter;
 use crate::adapters::fs::{
-    FileSystem, FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+    FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
     FsMilestoneSnapshotStore, FsMilestoneStore, FsProjectStore, FsRequirementsStore,
     FsRunSnapshotStore,
 };
 use crate::cli::{project, run};
 use crate::composition::agent_execution_builder;
+use crate::contexts::milestone_record::bead_refs::{
+    br_show_output_indicates_missing, milestone_bead_refs_match,
+};
 use crate::contexts::milestone_record::bundle::MilestoneBundle;
 use crate::contexts::milestone_record::controller::{
     self as milestone_controller, ControllerBeadStatus, ControllerTaskStatus,
@@ -41,7 +44,6 @@ use crate::shared::error::{AppError, AppResult};
 const PENDING_REQUIREMENTS_START_PREFIX: &str = "__starting__:";
 const PENDING_REQUIREMENTS_START_STALE_AFTER_SECONDS: i64 = 30;
 const PENDING_REQUIREMENTS_DRAFTING_STALE_AFTER_SECONDS: i64 = 300;
-const ACTIVE_MILESTONE_FILE: &str = "active-milestone";
 const MAX_MILESTONE_RUN_STEPS: usize = 256;
 
 #[derive(Debug, Args)]
@@ -210,7 +212,7 @@ async fn handle_create(args: MilestoneCreateArgs) -> AppResult<()> {
         Utc::now(),
     )
     .map_err(|error| map_create_error(&milestone_id, error))?;
-    set_active_milestone(&current_dir, &record.id)?;
+    workspace_governance::set_active_milestone(&current_dir, &record.id)?;
 
     println!("Created milestone '{}' ({})", record.id, record.name);
     Ok(())
@@ -228,7 +230,7 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
 
     let milestone_id = MilestoneId::new(milestone_id)?;
     let record = load_existing_milestone(&store, &current_dir, &milestone_id)?;
-    set_active_milestone(&current_dir, &milestone_id)?;
+    workspace_governance::set_active_milestone(&current_dir, &milestone_id)?;
     let (run_id, run) = load_or_start_milestone_requirements_run(
         &snapshot_store,
         &requirements_store,
@@ -337,7 +339,7 @@ async fn handle_next(milestone_id: Option<String>, json: bool) -> AppResult<()> 
 
     let store = FsMilestoneStore;
     let milestone_id = resolve_requested_milestone(&store, &current_dir, milestone_id)?;
-    set_active_milestone(&current_dir, &milestone_id)?;
+    workspace_governance::set_active_milestone(&current_dir, &milestone_id)?;
 
     let outcome = inspect_next_milestone_action(&current_dir, &milestone_id).await?;
     let failure =
@@ -361,7 +363,7 @@ async fn handle_run(milestone_id: Option<String>, json: bool) -> AppResult<()> {
 
     let store = FsMilestoneStore;
     let milestone_id = resolve_requested_milestone(&store, &current_dir, milestone_id)?;
-    set_active_milestone(&current_dir, &milestone_id)?;
+    workspace_governance::set_active_milestone(&current_dir, &milestone_id)?;
 
     let outcome = execute_milestone_run(&current_dir, &milestone_id).await?;
     let failure = milestone_command_failure(&milestone_id, "run", outcome.status, &outcome.message);
@@ -401,7 +403,7 @@ async fn handle_show(milestone_id: String, json: bool) -> AppResult<()> {
     } else {
         print_milestone_detail(&detail);
     }
-    set_active_milestone(&current_dir, &milestone_id)?;
+    workspace_governance::set_active_milestone(&current_dir, &milestone_id)?;
     Ok(())
 }
 
@@ -417,7 +419,7 @@ async fn handle_status(milestone_id: Option<String>, json: bool) -> AppResult<()
     if let Some(milestone_id) = milestone_id {
         let milestone_id = MilestoneId::new(milestone_id)?;
         load_existing_milestone(&store, &current_dir, &milestone_id)?;
-        set_active_milestone(&current_dir, &milestone_id)?;
+        workspace_governance::set_active_milestone(&current_dir, &milestone_id)?;
         let detail = load_milestone_detail(
             &store,
             &snapshot_store,
@@ -486,39 +488,11 @@ fn resolve_active_milestone(
     store: &impl MilestoneStorePort,
     base_dir: &std::path::Path,
 ) -> AppResult<MilestoneId> {
-    let raw = read_active_milestone(base_dir)?.ok_or(AppError::NoActiveMilestone)?;
+    let raw = workspace_governance::read_active_milestone(base_dir)?
+        .ok_or(AppError::NoActiveMilestone)?;
     let milestone_id = MilestoneId::new(raw)?;
     load_existing_milestone(store, base_dir, &milestone_id)?;
     Ok(milestone_id)
-}
-
-fn read_active_milestone(base_dir: &std::path::Path) -> AppResult<Option<String>> {
-    let path = FileSystem::workspace_root_path(base_dir).join(ACTIVE_MILESTONE_FILE);
-    match std::fs::read_to_string(path) {
-        Ok(raw) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(trimmed.to_owned()))
-            }
-        }
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn set_active_milestone(base_dir: &std::path::Path, milestone_id: &MilestoneId) -> AppResult<()> {
-    let contents = milestone_id.as_str();
-    FileSystem::write_atomic(
-        &FileSystem::live_workspace_root_path(base_dir).join(ACTIVE_MILESTONE_FILE),
-        contents,
-    )?;
-    let _ = FileSystem::write_atomic(
-        &FileSystem::audit_workspace_root_path(base_dir).join(ACTIVE_MILESTONE_FILE),
-        contents,
-    );
-    Ok(())
 }
 
 async fn inspect_next_milestone_action(
@@ -1018,32 +992,6 @@ fn load_bead_detail_from_br(
             Ok(Some(detail))
         }
     }
-}
-
-fn milestone_bead_refs_match(milestone_id: &MilestoneId, left: &str, right: &str) -> bool {
-    canonicalize_milestone_bead_ref(milestone_id, left)
-        == canonicalize_milestone_bead_ref(milestone_id, right)
-}
-
-fn canonicalize_milestone_bead_ref(milestone_id: &MilestoneId, bead_id: &str) -> String {
-    let trimmed = bead_id.trim();
-    let qualified_prefix = format!("{}.", milestone_id.as_str());
-    if trimmed.starts_with(&qualified_prefix) || trimmed.contains('.') {
-        trimmed.to_owned()
-    } else {
-        format!("{qualified_prefix}{trimmed}")
-    }
-}
-
-fn br_show_output_indicates_missing(stderr: &str, stdout: &str) -> bool {
-    fn message_describes_missing_bead(message: &str) -> bool {
-        let message = message.to_ascii_lowercase();
-        (message.contains("bead not found") || message.contains("issue not found"))
-            || (message.contains("not found")
-                && (message.contains("bead") || message.contains("issue")))
-    }
-
-    message_describes_missing_bead(stderr) || message_describes_missing_bead(stdout)
 }
 
 struct MilestoneCommandControllerRuntime<'a> {
