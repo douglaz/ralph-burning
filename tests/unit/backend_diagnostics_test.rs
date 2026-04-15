@@ -728,7 +728,7 @@ fn show_effective_reports_final_review_panel_members() {
     assert_eq!("codex", final_reviewer.backend_family);
     assert_eq!("gpt-5.4-xhigh", final_reviewer.model_id);
     assert_eq!(
-        "backends.codex.role_models.final_reviewer (default)",
+        "final_review.backends (default)",
         final_reviewer.model_source
     );
 
@@ -740,10 +740,7 @@ fn show_effective_reports_final_review_panel_members() {
     assert_eq!("codex", reviewer0.backend_family);
     assert_eq!("gpt-5.4-xhigh", reviewer0.model_id);
     assert_eq!("final_review.backends (default)", reviewer0.override_source);
-    assert_eq!(
-        "backends.codex.role_models.final_reviewer (default)",
-        reviewer0.model_source
-    );
+    assert_eq!("final_review.backends (default)", reviewer0.model_source);
 
     let reviewer1 = view
         .roles
@@ -751,12 +748,9 @@ fn show_effective_reports_final_review_panel_members() {
         .find(|r| r.role == "final_review_panel.reviewer[1]")
         .expect("second final-review reviewer row should exist");
     assert_eq!("claude", reviewer1.backend_family);
-    assert_eq!("claude-opus-4-6", reviewer1.model_id);
+    assert_eq!("claude-opus-4-6-max", reviewer1.model_id);
     assert_eq!("final_review.backends (default)", reviewer1.override_source);
-    assert_eq!(
-        "backends.claude.role_models.final_reviewer (default)",
-        reviewer1.model_source
-    );
+    assert_eq!("final_review.backends (default)", reviewer1.model_source);
 
     let arbiter = view
         .roles
@@ -794,16 +788,21 @@ fn show_effective_final_reviewer_uses_explicit_default_model_before_compiled_cod
         .iter()
         .find(|r| r.role == "final_reviewer")
         .expect("compatibility final_reviewer row should exist");
-    assert_eq!("workspace-default-model", final_reviewer.model_id);
-    assert_eq!("workspace.toml", final_reviewer.model_source);
+    // First reviewer has an inline model override (gpt-5.4-xhigh), unaffected
+    // by default_model.
+    assert_eq!("gpt-5.4-xhigh", final_reviewer.model_id);
+    assert_eq!(
+        "final_review.backends (default)",
+        final_reviewer.model_source
+    );
 
     let reviewer0 = view
         .roles
         .iter()
         .find(|r| r.role == "final_review_panel.reviewer[0]")
         .expect("first final-review reviewer row should exist");
-    assert_eq!("workspace-default-model", reviewer0.model_id);
-    assert_eq!("workspace.toml", reviewer0.model_source);
+    assert_eq!("gpt-5.4-xhigh", reviewer0.model_id);
+    assert_eq!("final_review.backends (default)", reviewer0.model_source);
 }
 
 #[test]
@@ -854,7 +853,9 @@ fn probe_implementer_and_final_reviewer_use_explicit_default_model_before_compil
         .expect("final reviewer probe should resolve");
     let final_reviewer_target = final_reviewer.target.expect("final reviewer target");
     assert_eq!("codex", final_reviewer_target.backend_family);
-    assert_eq!("workspace-default-model", final_reviewer_target.model_id);
+    // First reviewer has an inline model override (gpt-5.4-xhigh), unaffected
+    // by default_model.
+    assert_eq!("gpt-5.4-xhigh", final_reviewer_target.model_id);
 }
 
 #[test]
@@ -887,7 +888,7 @@ fn show_effective_final_reviewer_skips_optional_disabled_first_member() {
         .find(|r| r.role == "final_reviewer")
         .expect("compatibility final_reviewer row should exist");
     assert_eq!("claude", final_reviewer.backend_family);
-    assert_eq!("claude-opus-4-6", final_reviewer.model_id);
+    assert_eq!("claude-opus-4-6-max", final_reviewer.model_id);
     assert!(
         final_reviewer.resolution_error.is_none(),
         "optional disabled reviewer should be skipped for final_reviewer alias: {:?}",
@@ -937,7 +938,7 @@ fn probe_singular_final_reviewer_skips_optional_disabled_first_member() {
         .target
         .expect("singular role probe should return a target");
     assert_eq!("claude", target.backend_family);
-    assert_eq!("claude-opus-4-6", target.model_id);
+    assert_eq!("claude-opus-4-6-max", target.model_id);
 }
 
 // ── structured panel failure tests ───────────────────────────────────────────
