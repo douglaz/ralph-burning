@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415004740-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260415004740-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T01:38:32.491938564Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments correctly identify the same high-severity gap: the current tree still does not implement Codex `-fast` model suffix handling, and the claimed implementation/testing for that bead is not present in the code or tests.\n\n## Votes\n\n- `fr-2-54112b84`: Accept\n  `src/adapters/process_backend.rs` still strips only reasoning-effort suffixes (`-xhigh`, `-high`, `-medium`, `-low`). For a model like `gpt-5.4-xhigh-fast`, `codex_model_and_reasoning_effort()` returns the full string unchanged, so both `codex_new_session_args()` and `codex_resume_args()` pass `--model gpt-5.4-xhigh-fast` and never add any fast-mode override. The existing unit tests cover reasoning-effort behavior only, so the bead's required fast-mode behavior is still missing.\n- `fr-2-acc9174e`: Accept\n  The diff from `fa1bae34` to `HEAD` contains no source or test changes implementing this bead, and the fast-mode tests named in the artifact are absent. The substantive remediation is correct: the Codex backend needs explicit trailing `-fast` parsing, the resulting fast-mode CLI/config wiring for both new and resumed sessions, and regression tests that cover standard and spark model IDs plus combined reasoning-effort and fast suffixes. The amendment has a minor identifier mismatch (`codex_resume_session_args()` vs the current `codex_resume_args()`), but that does not affect the validity of the finding.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
