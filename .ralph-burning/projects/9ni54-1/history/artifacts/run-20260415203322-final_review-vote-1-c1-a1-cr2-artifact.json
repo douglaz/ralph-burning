@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260415203322-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T21:42:37.443367740Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real defects in the current lineage handling. One is a JSON contract/robustness issue caused by omitting absent lineage keys instead of emitting explicit nulls, and the other is a stronger correctness issue where task detail queries discard known milestone/bead lineage when plan metadata is missing even though a fallback path already exists.\n\n## Votes\n\n- `fr-2-d0058eb5`: Accept\n  `RunHistoryView` and the CLI `HistoryJsonView` both use `skip_serializing_if = \"Option::is_none\"` for `milestone_id` and `bead_id`, so non-lineage history output drops those keys entirely. In a command documented as a stable JSON surface, that makes the shape depend on whether lineage exists and prevents consumers from distinguishing an explicit 'no lineage' result from a producer that never emitted the fields. The codebase already uses explicit JSON nulls for absent optional fields on other stable run JSON surfaces, so this looks like a real contract inconsistency worth fixing.\n- `fr-2-80ff9e53`: Accept\n  `load_task_lineage_detail()` returns `None` before calling `read_bead_lineage()` whenever `plan.json` is missing or unparsable, even though `read_bead_lineage()` is explicitly written to fall back to milestone/bead lineage without plan-derived title or acceptance criteria. That means `project show`/`task show` can erase durable lineage for a milestone-backed task solely because current plan metadata is unavailable, making it look like a standalone task. Since the milestone record and persisted task source still exist, dropping all lineage is a correctness loss and the suggested fallback-based remediation is sound.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
