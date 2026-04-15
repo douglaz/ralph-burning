@@ -3,7 +3,6 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 
 use crate::adapters::fs::FileSystem;
-use crate::contexts::milestone_record::bundle::MilestoneBundle;
 use crate::contexts::milestone_record::model::{MilestoneProgress, MilestoneStatus};
 use crate::contexts::milestone_record::queries::BeadLineageView;
 use crate::contexts::milestone_record::service::{MilestonePlanPort, MilestoneStorePort};
@@ -1371,59 +1370,40 @@ fn load_task_lineage_detail(
         return Ok(None);
     };
 
-    let milestone_id = crate::contexts::milestone_record::model::MilestoneId::new(
+    let Ok(milestone_id) = crate::contexts::milestone_record::model::MilestoneId::new(
         task_source.milestone_id.clone(),
-    )?;
-    let milestone = milestone_store.read_milestone_record(base_dir, &milestone_id)?;
-    let plan_json = plan_store.read_plan_json(base_dir, &milestone_id)?;
-    let bundle: MilestoneBundle =
-        serde_json::from_str(&plan_json).map_err(|error| AppError::CorruptRecord {
-            file: format!("milestones/{}/plan.json", milestone_id),
-            details: error.to_string(),
-        })?;
-    let milestone_prefix = format!("{}.", milestone.id);
+    ) else {
+        return Ok(None);
+    };
 
-    let mut bead_title = None;
-    let mut acceptance_criteria = Vec::new();
-    for workstream in &bundle.workstreams {
-        for bead in &workstream.beads {
-            let Some(planned_bead_id) = bead.bead_id.as_deref() else {
-                continue;
-            };
-            let short_id = planned_bead_id
-                .strip_prefix(milestone_prefix.as_str())
-                .unwrap_or(planned_bead_id);
-            if planned_bead_id != task_source.bead_id.as_str() && short_id != task_source.bead_id {
-                continue;
-            }
-
-            bead_title = Some(bead.title.clone());
-            acceptance_criteria = bead
-                .acceptance_criteria
-                .iter()
-                .map(|criterion_id| {
-                    bundle
-                        .acceptance_map
-                        .iter()
-                        .find(|criterion| criterion.id == *criterion_id)
-                        .map(|criterion| criterion.description.clone())
-                        .unwrap_or_else(|| criterion_id.clone())
-                })
-                .collect();
-            break;
-        }
-        if bead_title.is_some() {
-            break;
-        }
+    if milestone_store
+        .read_milestone_record(base_dir, &milestone_id)
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let Ok(plan_json) = plan_store.read_plan_json(base_dir, &milestone_id) else {
+        return Ok(None);
+    };
+    if serde_json::from_str::<crate::contexts::milestone_record::bundle::MilestoneBundle>(
+        &plan_json,
+    )
+    .is_err()
+    {
+        return Ok(None);
     }
 
-    Ok(Some(BeadLineageView {
-        milestone_id: milestone.id.to_string(),
-        milestone_name: milestone.name,
-        bead_id: task_source.bead_id.clone(),
-        bead_title,
-        acceptance_criteria,
-    }))
+    match crate::contexts::milestone_record::service::read_bead_lineage(
+        milestone_store,
+        plan_store,
+        base_dir,
+        &milestone_id,
+        &task_source.bead_id,
+        task_source.plan_hash.as_deref(),
+    ) {
+        Ok(lineage) => Ok(Some(lineage)),
+        Err(_) => Ok(None),
+    }
 }
 
 /// Show detailed project information.
@@ -2709,5 +2689,200 @@ fn planning_stage_for_flow(flow: FlowPreset) -> StageId {
         FlowPreset::DocsChange => StageId::DocsPlan,
         FlowPreset::CiImprovement => StageId::CiPlan,
         FlowPreset::Minimal => StageId::PlanAndImplement,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    use crate::adapters::fs::{
+        FsActiveProjectStore, FsJournalStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+        FsMilestoneSnapshotStore, FsMilestoneStore, FsProjectStore, FsRunSnapshotStore,
+    };
+    use crate::contexts::milestone_record::bundle::{
+        AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+    };
+    use crate::contexts::milestone_record::service::materialize_bundle;
+    use crate::contexts::project_run_record::model::TaskOrigin;
+    use crate::shared::domain::{FlowPreset, ProjectId};
+
+    fn setup_workspace(base: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
+        std::fs::create_dir_all(base.join(".ralph-burning/projects"))?;
+        Ok(())
+    }
+
+    fn sample_bundle(id: &str, name: &str) -> MilestoneBundle {
+        MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: id.to_owned(),
+                name: name.to_owned(),
+            },
+            executive_summary: "Test plan.".to_owned(),
+            goals: vec!["Goal 1".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Tests pass".to_owned(),
+                covered_by: vec!["bead-1".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Core".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    bead_id: None,
+                    explicit_id: None,
+                    title: "Implement feature".to_owned(),
+                    description: None,
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec![],
+                    depends_on: vec![],
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: None,
+                }],
+            }],
+            default_flow: FlowPreset::QuickDev,
+            agents_guidance: None,
+        }
+    }
+
+    fn hash_text(content: &str) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    #[test]
+    fn show_project_omits_stale_task_plan_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base)?;
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 0, 0)
+            .single()
+            .unwrap();
+        let milestone = materialize_bundle(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &sample_bundle("ms-alpha", "Alpha"),
+            now,
+        )?;
+
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: ProjectId::new("task-alpha")?,
+                name: "Task Alpha".to_owned(),
+                flow: FlowPreset::QuickDev,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: "hash".to_owned(),
+                created_at: now,
+                task_source: Some(TaskSource {
+                    milestone_id: milestone.id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    parent_epic_id: None,
+                    origin: TaskOrigin::Milestone,
+                    plan_hash: Some("stale-plan-hash".to_owned()),
+                    plan_version: Some(1),
+                }),
+            },
+        )?;
+
+        let detail = show_project(
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsJournalStore,
+            &FsActiveProjectStore,
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            base,
+            &ProjectId::new("task-alpha")?,
+        )?;
+
+        let lineage = detail
+            .task_lineage
+            .expect("milestone lineage should still exist");
+        assert_eq!(lineage.milestone_id, "ms-alpha");
+        assert_eq!(lineage.milestone_name, "Alpha");
+        assert_eq!(lineage.bead_id, "bead-1");
+        assert_eq!(lineage.bead_title, None);
+        assert!(lineage.acceptance_criteria.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn show_project_gracefully_ignores_missing_plan_lineage(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base)?;
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 30, 0)
+            .single()
+            .unwrap();
+        let milestone = materialize_bundle(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &sample_bundle("ms-alpha", "Alpha"),
+            now,
+        )?;
+        let current_plan_hash =
+            hash_text(&FsMilestonePlanStore.read_plan_json(base, &milestone.id)?);
+
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: ProjectId::new("task-alpha")?,
+                name: "Task Alpha".to_owned(),
+                flow: FlowPreset::QuickDev,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: "hash".to_owned(),
+                created_at: now,
+                task_source: Some(TaskSource {
+                    milestone_id: milestone.id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    parent_epic_id: None,
+                    origin: TaskOrigin::Milestone,
+                    plan_hash: Some(current_plan_hash),
+                    plan_version: Some(1),
+                }),
+            },
+        )?;
+
+        std::fs::remove_file(FileSystem::milestone_root(base, &milestone.id).join("plan.json"))?;
+
+        let detail = show_project(
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsJournalStore,
+            &FsActiveProjectStore,
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            base,
+            &ProjectId::new("task-alpha")?,
+        )?;
+
+        assert_eq!(detail.record.task_source.unwrap().milestone_id, "ms-alpha");
+        assert_eq!(detail.task_lineage, None);
+        Ok(())
     }
 }

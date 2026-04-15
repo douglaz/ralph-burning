@@ -2216,7 +2216,7 @@ fn show_project_returns_task_lineage_for_milestone_tasks() {
         bead_id: "ms-alpha.bead-1".to_owned(),
         parent_epic_id: None,
         origin: TaskOrigin::Milestone,
-        plan_hash: Some("plan-hash".to_owned()),
+        plan_hash: None,
         plan_version: Some(2),
     });
     let store = FakeProjectStore::with_records(vec![record]);
