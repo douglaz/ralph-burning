@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-reviewer-3-c1-a1-cr2-artifact",
+  "payload_id": "run-20260415164250-final_review-reviewer-3-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T17:40:12.467479703Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed `git diff` in full; the working-tree changes are limited to `.ralph-burning/projects/9ni912-1/journal.ndjson` and `.ralph-burning/projects/9ni912-1/run.json` only. Since `.ralph-burning/` is explicitly out of scope for review, there are no in-scope implementation changes to assess and no actionable findings were identified.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

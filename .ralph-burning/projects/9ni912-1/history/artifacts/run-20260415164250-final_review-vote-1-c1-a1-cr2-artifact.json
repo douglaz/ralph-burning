@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260415164250-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T17:54:03.849810816Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendments that identify current behavioral defects in milestone selection and missing-bead detection. Rejected the duplication-only amendment because it points to cleanup risk rather than a present correctness, safety, or robustness failure.\n\n## Votes\n\n- `fr-2-de3fa6ce`: Accept\n  The cited code paths create or materialize milestone-scoped work but never call `set_active_milestone`, while omitted IDs in `milestone next` and `milestone run` are resolved solely from the `active-milestone` pointer. That leaves those commands using stale state or failing with `NoActiveMilestone` after otherwise successful creation flows, so this is a real user-visible regression.\n- `fr-2-db2d60b4`: Reject\n  The duplication is real, but the amendment does not demonstrate a current behavioral divergence or concrete failure in the existing code. These are small private helpers, and while consolidating them may be worthwhile cleanup, that maintainability concern alone is too speculative to treat as a review-blocking defect.\n- `fr-2-613a6cff`: Accept\n  The proposal slightly overstates the simplification of the predicate, but the core issue is valid: the helper currently accepts any message containing `not found` plus generic `issue`, not just explicit missing-bead text. In `milestone.rs`, that can turn an unrelated `br show` failure into `ControllerBeadStatus::Missing`, and the controller then treats `Missing` the same as `Closed`, which can silently skip an open bead.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

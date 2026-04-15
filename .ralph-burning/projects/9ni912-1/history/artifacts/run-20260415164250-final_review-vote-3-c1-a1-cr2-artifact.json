@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-vote-3-c1-a1-cr2-artifact",
+  "payload_id": "run-20260415164250-final_review-vote-3-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T17:50:35.586835166Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll three amendments are technically meritorious. The first fixes a concrete state-management bug in omitted-ID milestone workflows, the second prevents divergence of core bead-matching logic through shared canonicalization, and the third tightens missing-bead detection to avoid false positives that can incorrectly mark open beads as missing.\n\n## Votes\n\n- `fr-2-de3fa6ce`: Accept\n  This identifies a real workflow defect: new milestone creation paths materialize milestones but do not update the active-milestone pointer, so subsequent omitted-ID `milestone next/run` calls resolve stale state or error. Persisting the active milestone after successful materialization is necessary for correctness and user-facing reliability.\n- `fr-2-db2d60b4`: Accept\n  The identical bead-resolution/canonicalization helpers duplicated across CLI and controller create a latent consistency risk. Factoring them into a shared utility or type method is a sound maintainability improvement that reduces the chance of silent resolution mismatches across codepaths.\n- `fr-2-613a6cff`: Accept\n  The current broad `not found && issue` predicate is over-broad and can misclassify unrelated failures (e.g., permission/path errors) as missing beads. Narrowing to explicit `bead not found` / `issue not found` or an equivalent strict pattern prevents false missing status and avoids incorrectly treating open beads as closed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

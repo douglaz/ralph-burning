@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415164250-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260415164250-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T17:50:27.056059866Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master` excluding `.ralph-burning/`, read the milestone/project/run/controller changes and related CLI tests end-to-end, and ran `cargo test --test cli milestone_` plus `cargo test --features test-stub --test cli milestone_run_`. Found 1 fix-now issue.\n\n## Amendments\n\n1. finding_summary: Active milestone persistence is missing from the milestone-scoped project creation paths, so the new omitted-ID behavior still breaks after normal workflows. In `src/cli/project.rs:267-292`, the `RequirementsCreateHandoff::MilestoneBundle` branch materializes and prints a milestone but never records it as the active milestone. In `src/cli/project.rs:303-529`, `project create-from-bead` / `task create` creates a project for an explicit `milestone_id` but also never updates the active milestone. Because `milestone next/run` resolve omitted IDs only from the `active-milestone` pointer (`src/cli/milestone.rs:470-489`), running either creation flow and then invoking `ralph-burning milestone next` or `ralph-burning milestone run` without an explicit ID will still use stale state or fail with `NoActiveMilestone`.\nseverity: medium\naffected_files:\n- src/cli/project.rs\n- src/cli/milestone.rs\nremediation_hint: Move active-milestone persistence into a shared helper and call it after successful milestone materialization / bead-backed project creation, then add CLI coverage for those flows followed by `milestone next/run` without an ID.\n   Rationale: The bead's active-milestone feature is only wired into `milestone` subcommands. Public milestone-related entry points under `project` leave the pointer untouched, so the new omitted-argument UX is inconsistent and fails in a common command sequence.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
