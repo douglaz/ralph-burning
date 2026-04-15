@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260415130611",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-dab9eb88",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: `milestone show` / `milestone status` can report a bead count and `has_plan=true` from cached snapshot data after the live plan artifacts are gone. In `src/cli/milestone.rs:320-350`, `load_bead_count` falls back to `snapshot.progress.total_beads` when `plan.json` is missing, and `load_milestone_detail` then sets `has_plan` from that fallback count or `snapshot.plan_hash`. I verified this by creating a milestone with only `milestone.toml` + `status.json`: `milestone show --json` still reported `bead_count: 7` and `has_plan: true` with no `plan.json` present.\nseverity: medium\naffected_files: [\"src/cli/milestone.rs\"]\nremediation_hint: For `show`/`status`, derive plan presence and bead count from the live plan artifacts only, or surface a clear missing-plan error instead of falling back to `status.json` counters.",
-        "created_at": "2026-04-15T13:33:50.475854195Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "f6559d30c2153cbc78c935a9a548db655e32998d7631aa8cd1b4e3c0dbefa5b5"
-      },
-      {
-        "amendment_id": "fr-1-422d6518",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: `milestone plan` treats a successfully started milestone requirements run as a hard failure whenever the full-mode pipeline opens a question round. `src/cli/milestone.rs:146-166` immediately calls `extract_milestone_bundle_handoff` after `draft_milestone`, but `draft_milestone` only guarantees a run ID (`src/contexts/requirements_drafting/service.rs:188-220`) and the requirements pipeline can validly stop in `awaiting_answers` (`src/contexts/requirements_drafting/service.rs:1089-1248`). The extractor explicitly rejects any non-`completed` run (`src/contexts/requirements_drafting/service.rs:2319-2333`), so a milestone that needs clarification exits non-zero even though planning actually started.\nseverity: high\naffected_files: [\"src/cli/milestone.rs\", \"src/contexts/requirements_drafting/service.rs\"]\nremediation_hint: After `draft_milestone`, inspect the run status before extracting the handoff. Treat `awaiting_answers` as a successful intermediate result that prints the run ID and next-step instructions, and only extract/materialize when the run is actually completed.",
-        "created_at": "2026-04-15T13:33:50.475857581Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "06d9a45185c4c1ede6d6d56b2b327ad7aa1753ac83304162fc4aa5f0aeec6ea6"
-      },
-      {
-        "amendment_id": "fr-1-95b67e72",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "handle_show (line 200) and handle_status (line 222) in src/cli/milestone.rs skip workspace governance validation (load_workspace_config / ensure_supported_workspace_version). Every other CLI handler in the codebase—including read-only ones like project show (project.rs:631) and project list (project.rs:599)—validates the workspace version first. Without this check, milestone show/status on a workspace with an unsupported version will produce confusing filesystem errors instead of the clear 'unsupported workspace version' message. Fix: add the same two-line validation block at the top of handle_show and handle_status, matching the pattern in handle_create.",
-        "created_at": "2026-04-15T13:33:50.475860026Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "996ac6cc3ba7a33596f55edfbb16ad53d13a8aa2ba5a0ae3d7a85102f0c2c718"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 3
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-15T13:23:47.655044813Z",

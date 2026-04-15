@@ -10,14 +10,14 @@ use crate::adapters::fs::{
 };
 use crate::composition::agent_execution_builder;
 use crate::contexts::milestone_record::bundle::MilestoneBundle;
-use crate::contexts::milestone_record::model::{
-    MilestoneId, MilestoneProgress, MilestoneRecord, MilestoneSnapshot,
-};
+use crate::contexts::milestone_record::model::{MilestoneId, MilestoneProgress, MilestoneRecord};
 use crate::contexts::milestone_record::service::{
     self as milestone_service, CreateMilestoneInput, MilestonePlanPort, MilestoneSnapshotPort,
     MilestoneStorePort,
 };
+use crate::contexts::requirements_drafting::model::RequirementsStatus;
 use crate::contexts::requirements_drafting::service as requirements_service;
+use crate::contexts::requirements_drafting::service::RequirementsStorePort;
 use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::shared::error::{AppError, AppResult};
@@ -102,8 +102,7 @@ pub async fn handle(command: MilestoneCommand) -> AppResult<()> {
 
 async fn handle_create(args: MilestoneCreateArgs) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
+    validate_workspace(&current_dir)?;
 
     let milestone_id = derive_milestone_id(&args.name)?;
     let description = args
@@ -128,8 +127,7 @@ async fn handle_create(args: MilestoneCreateArgs) -> AppResult<()> {
 
 async fn handle_plan(milestone_id: String) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
+    validate_workspace(&current_dir)?;
 
     let store = FsMilestoneStore;
     let snapshot_store = FsMilestoneSnapshotStore;
@@ -151,6 +149,37 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
             action: "planning".to_owned(),
             details: error.to_string(),
         })?;
+    let run = requirements_store
+        .read_run(&current_dir, &run_id)
+        .map_err(|error| AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "planning".to_owned(),
+            details: format!(
+                "requirements run '{}' could not be inspected: {}",
+                run_id, error
+            ),
+        })?;
+
+    match run.status {
+        RequirementsStatus::Completed => {}
+        RequirementsStatus::AwaitingAnswers => {
+            println!(
+                "Milestone '{}' planning is awaiting answers in requirements run '{}'. Complete `ralph-burning requirements answer {}` and rerun `ralph-burning milestone plan {}`.",
+                milestone_id, run_id, run_id, milestone_id
+            );
+            return Ok(());
+        }
+        status => {
+            return Err(AppError::MilestoneOperationFailed {
+                milestone_id: milestone_id.to_string(),
+                action: "planning".to_owned(),
+                details: format!(
+                    "requirements run '{}' ended in '{}' status before producing a milestone bundle: {}",
+                    run_id, status, run.status_summary
+                ),
+            });
+        }
+    }
     let handoff = requirements_service::extract_milestone_bundle_handoff(
         &requirements_store,
         &current_dir,
@@ -199,6 +228,8 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
 
 async fn handle_show(milestone_id: String, json: bool) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
+    validate_workspace(&current_dir)?;
+
     let store = FsMilestoneStore;
     let snapshot_store = FsMilestoneSnapshotStore;
     let plan_store = FsMilestonePlanStore;
@@ -221,6 +252,8 @@ async fn handle_show(milestone_id: String, json: bool) -> AppResult<()> {
 
 async fn handle_status(milestone_id: Option<String>, json: bool) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
+    validate_workspace(&current_dir)?;
+
     let store = FsMilestoneStore;
     let snapshot_store = FsMilestoneSnapshotStore;
     let plan_store = FsMilestonePlanStore;
@@ -296,7 +329,7 @@ fn load_milestone_summary(
 ) -> AppResult<MilestoneSummaryView> {
     let record = load_existing_milestone(store, base_dir, milestone_id)?;
     let snapshot = milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
-    let bead_count = load_bead_count(plan_store, base_dir, milestone_id, &snapshot)?;
+    let bead_count = load_bead_count(plan_store, base_dir, milestone_id)?;
 
     Ok(MilestoneSummaryView {
         id: record.id.to_string(),
@@ -319,8 +352,12 @@ fn load_milestone_detail(
 ) -> AppResult<MilestoneDetailView> {
     let record = load_existing_milestone(store, base_dir, milestone_id)?;
     let snapshot = milestone_service::load_snapshot(snapshot_store, base_dir, milestone_id)?;
-    let bead_count = load_bead_count(plan_store, base_dir, milestone_id, &snapshot)?;
-    let has_plan = bead_count > 0 || snapshot.plan_hash.is_some();
+    let plan_bundle = load_plan_bundle(plan_store, base_dir, milestone_id)?;
+    let bead_count = plan_bundle
+        .as_ref()
+        .map(|bundle| bundle.bead_count() as u32)
+        .unwrap_or(0);
+    let has_plan = plan_bundle.is_some();
 
     Ok(MilestoneDetailView {
         id: record.id.to_string(),
@@ -342,11 +379,10 @@ fn load_bead_count(
     plan_store: &impl MilestonePlanPort,
     base_dir: &std::path::Path,
     milestone_id: &MilestoneId,
-    snapshot: &MilestoneSnapshot,
 ) -> AppResult<u32> {
     match load_plan_bundle(plan_store, base_dir, milestone_id)? {
         Some(bundle) => Ok(bundle.bead_count() as u32),
-        None => Ok(snapshot.progress.total_beads),
+        None => Ok(0),
     }
 }
 
@@ -367,6 +403,11 @@ fn load_plan_bundle(
 fn print_json<T: Serialize>(value: &T) -> AppResult<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+fn validate_workspace(base_dir: &std::path::Path) -> AppResult<()> {
+    let config = workspace_governance::load_workspace_config(base_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)
 }
 
 fn print_milestone_detail(detail: &MilestoneDetailView) {
