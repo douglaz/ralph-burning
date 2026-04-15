@@ -1,0 +1,52 @@
+{
+  "active_run": {
+    "run_id": "run-20260415004740",
+    "stage_cursor": {
+      "stage": "final_review",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 2
+    },
+    "started_at": "2026-04-15T01:13:35.732943244Z",
+    "prompt_hash_at_cycle_start": "1abc2610bc4bef6c094ff7a99ab9ec988d3a1620d39d9bfc7ce4c4de26497c8b",
+    "prompt_hash_at_stage_start": "1abc2610bc4bef6c094ff7a99ab9ec988d3a1620d39d9bfc7ce4c4de26497c8b",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 1
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 2,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [],
+    "processed_count": 1
+  },
+  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-15T01:13:35.757896506Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6"
+    }
+  }
+}

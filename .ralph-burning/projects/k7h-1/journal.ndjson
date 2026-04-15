@@ -1,0 +1,1 @@
+{"sequence":30,"timestamp":"2026-04-15T01:33:33.623719909Z","event_type":"stage_completed","details":{"artifact_id":"run-20260415004740-plan_and_implement-c1-a1-cr2-artifact","attempt":1,"cycle":1,"payload_id":"run-20260415004740-plan_and_implement-c1-a1-cr2","run_id":"run-20260415004740","stage_id":"plan_and_implement"}}
