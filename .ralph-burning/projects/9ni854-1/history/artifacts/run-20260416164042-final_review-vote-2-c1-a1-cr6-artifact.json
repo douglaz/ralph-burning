@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr6-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T19:47:41.326670633Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real defects in the failure reconciliation system. Amendment fr-6-dc7d9acd correctly identifies that the stale-replay early return at lines 181-193 can permanently lose a failure record when reopen_failed_exact_attempt overwrites the lineage entry in place and the BeadFailed journal append was the missing piece—failure_attempt_number then counts zero prior failures, resetting the escalation counter. Amendment fr-6-5328dcbf correctly identifies that the snapshot fallback path (lines 1997-2015) lacks the cross-validation present in the bound-run-id path (lines 1956-1995), allowing a stale snapshot to attribute failure to the wrong run.\n\n## Votes\n\n- `fr-6-dc7d9acd`: Accept\n  Verified in code. When the stale-replay branch fires (lines 181-193), three conditions hold: already_recorded is false, exact_attempt_exists is false (the lineage entry was overwritten by reopen_failed_exact_attempt at fs.rs:4564-4571 which sets outcome to Running with new started_at), and newer_same_run_attempt_exists is true. The early return skips all recording logic at lines 220-264. Since the old failure entry was mutated in-place in the lineage and the journal never received the BeadFailed event, failure_attempt_number (line 503-506) computes max(0, 0)+1=1 on the next failure, regardless of how many prior failures actually occurred. This is a real data loss bug that can delay NeedsOperator escalation past the configured MAX_FAILURE_RETRIES threshold. The remediation—appending the missing BeadFailed journal row when the stale replay is detected—is sound and targeted.\n- `fr-6-5328dcbf`: Accept\n  Verified in code. The bound-run-id path (lines 1956-1995) performs careful cross-validation: it checks snapshot_started_at, searches for RunStarted and RunResumed journal events, and has explicit metadata-failure error handling when started_at cannot be determined. The snapshot fallback path (lines 1997-2015) does none of this—it blindly trusts whatever interrupted_run or active_run the snapshot provides. If the snapshot is stale (e.g., written before a newer run started) but the journal already contains a RunStarted for a different run, the daemon attributes the failure to the wrong execution. The consequence—incorrect escalation or blocking the wrong bead—is a real safety issue. The remediation to cross-check the snapshot against the newest durable journal/lineage attempt, failing closed to NeedsOperator on mismatch, is consistent with the exact-binding checks already enforced on the bound-run-id path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 6
+}
