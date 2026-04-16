@@ -925,6 +925,11 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
     project_id: &str,
     run_id: &str,
 ) -> Result<(), ReconciliationError> {
+    let milestone_error = |details: String| ReconciliationError::MilestoneUpdateFailed {
+        bead_id: bead_id.to_owned(),
+        task_id: task_id.to_owned(),
+        details,
+    };
     let Ok(milestone_id) = MilestoneId::new(milestone_id_str) else {
         return Ok(());
     };
@@ -935,11 +940,9 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
     let payloads = match FsArtifactStore.list_payloads(base_dir, &pid) {
         Ok(payloads) => payloads,
         Err(error) => {
-            tracing::debug!(
-                error = %error,
-                "failed to list payloads for propose-new-bead reconciliation (non-blocking)"
-            );
-            return Ok(());
+            return Err(milestone_error(format!(
+                "failed to list payloads for propose-new-bead reconciliation: {error}"
+            )));
         }
     };
 
@@ -965,18 +968,17 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
     let Some(payload) = latest_by_round.get(&authoritative_round) else {
         return Ok(());
     };
-    let aggregate: FinalReviewAggregatePayload =
-        match serde_json::from_value(payload.payload.clone()) {
-            Ok(aggregate) => aggregate,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    completion_round = authoritative_round,
-                    "failed to parse final-review aggregate for propose-new-bead reconciliation"
-                );
-                return Ok(());
-            }
-        };
+    let aggregate: FinalReviewAggregatePayload = match serde_json::from_value(
+        payload.payload.clone(),
+    ) {
+        Ok(aggregate) => aggregate,
+        Err(error) => {
+            return Err(milestone_error(format!(
+                    "failed to parse final-review aggregate for propose-new-bead reconciliation at completion round {}: {}",
+                    authoritative_round, error
+                )));
+        }
+    };
 
     let mut created_in_pass = 0usize;
     for amendment in &aggregate.final_accepted_amendments {
@@ -990,12 +992,10 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
             amendment.severity,
             amendment.rationale.as_ref(),
         ) else {
-            tracing::warn!(
-                amendment_id = amendment.amendment_id.as_str(),
-                completion_round = authoritative_round,
-                "accepted propose-new-bead amendment is missing required metadata; skipping"
-            );
-            continue;
+            return Err(milestone_error(format!(
+                "accepted propose-new-bead amendment {} is missing required metadata in completion round {}",
+                amendment.amendment_id, authoritative_round
+            )));
         };
 
         let input = ProposeNewBeadInput {
@@ -3392,16 +3392,47 @@ mod tests {
             serde_json::to_string(&payload)?,
         )?;
 
+        // MockBrRunner::pop() consumes from END (reverse order).
+        // Call order:
+        // 1. br list --all (empty array — no existing matches)
+        // 2. br show active-bead (get labels for new bead)
+        // 3. br create (create the new bead)
+        // 4. br show bead-proposed (resolve created bead ID — candidate from stdout)
+        //    If description mismatch → fallback: 4a. list --all, 4b. br show
+        // 5. br update (add dependency on active-bead)
+        // 6. br sync --flush-only
+        let bead_detail = serde_json::json!({
+            "id": "bead-proposed",
+            "title": "Add retry telemetry",
+            "status": "open",
+            "priority": 2,
+            "bead_type": "task",
+            "labels": ["backend"],
+            "description": "## Finding Summary\nRetry paths lack telemetry\n\n## Proposed Scope\nInstrument retry loops with counters and histograms\n\n## Rationale\nNo existing bead covers retry observability",
+            "dependencies": [],
+            "dependents": []
+        })
+        .to_string();
         let br_runner = MockBrRunner::new(vec![
+            // 6. br sync
             MockBrRunner::success("synced"),
+            // 5. br update (add dependency)
             MockBrRunner::success("dependency added"),
+            // 4b. br show bead-proposed (resolve fallback)
+            MockBrRunner::success(&bead_detail),
+            // 4a. br list --all (resolve fallback)
             MockBrRunner::success(
-                r#"{"id":"bead-proposed","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","labels":["backend"]}"#,
+                r#"[{"id":"bead-proposed","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","labels":["backend"]}]"#,
             ),
+            // 4. br show bead-proposed (resolve primary — candidate from stdout)
+            MockBrRunner::success(&bead_detail),
+            // 3. br create
             MockBrRunner::success("created bead-proposed"),
+            // 2. br show active-bead (get labels)
             MockBrRunner::success(
-                r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend"]}"#,
+                r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend"],"dependencies":[],"dependents":[]}"#,
             ),
+            // 1. br list --all (empty)
             MockBrRunner::success("[]"),
         ]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(br_runner));
@@ -3417,8 +3448,25 @@ mod tests {
         )
         .await?;
 
+        // Replay: journal already has ProposedBeadCreated, so handle_propose_new_bead
+        // finds the existing creation event and does br show to verify the bead exists.
+        // If dependency on active-bead is missing, it adds it (br update + br sync).
+        let bead_detail_with_dep = serde_json::json!({
+            "id": "bead-proposed",
+            "title": "Add retry telemetry",
+            "status": "open",
+            "priority": 2,
+            "bead_type": "task",
+            "labels": ["backend"],
+            "description": "## Finding Summary\nRetry paths lack telemetry\n\n## Proposed Scope\nInstrument retry loops with counters and histograms\n\n## Rationale\nNo existing bead covers retry observability",
+            "dependencies": [{"id": "active-bead", "kind": "blocks"}],
+            "dependents": []
+        })
+        .to_string();
         let replay_mutation =
-            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![
+                MockBrRunner::success(&bead_detail_with_dep),
+            ])));
         reconcile_proposed_beads_after_success(
             &replay_mutation,
             base,
@@ -3448,6 +3496,227 @@ mod tests {
         assert!(journal
             .iter()
             .all(|event| event.event_type != MilestoneEventType::PlannedElsewhereMapped));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_proposed_beads_after_success_returns_error_on_payload_listing_failure(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+        let record = crate::contexts::milestone_record::service::create_milestone(
+            &store,
+            base,
+            crate::contexts::milestone_record::service::CreateMilestoneInput {
+                id: "ms-proposed-corrupt-payload".to_owned(),
+                name: "Proposed bead corrupt payload".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let project_id = ProjectId::new("proj-proposed-corrupt-payload")?;
+        let project_root = crate::adapters::fs::FileSystem::project_root(base, &project_id);
+        let payloads_dir = project_root.join("history/payloads");
+        std::fs::create_dir_all(&payloads_dir)?;
+        std::fs::write(payloads_dir.join("aggregate.json"), "{not valid json")?;
+
+        let br_mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+
+        let error = reconcile_proposed_beads_after_success(
+            &br_mutation,
+            base,
+            "active-bead",
+            "task-proposed-corrupt-payload",
+            record.id.as_str(),
+            "proj-proposed-corrupt-payload",
+            "run-proposed-corrupt-payload",
+        )
+        .await
+        .expect_err("corrupt payload listing should stop reconciliation");
+
+        match error {
+            ReconciliationError::MilestoneUpdateFailed { details, .. } => {
+                assert!(
+                    details.contains("failed to list payloads for propose-new-bead reconciliation")
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_proposed_beads_after_success_returns_error_on_aggregate_parse_failure(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+        let record = crate::contexts::milestone_record::service::create_milestone(
+            &store,
+            base,
+            crate::contexts::milestone_record::service::CreateMilestoneInput {
+                id: "ms-proposed-parse-failure".to_owned(),
+                name: "Proposed bead parse failure".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let project_id = ProjectId::new("proj-proposed-parse-failure")?;
+        let project_root = crate::adapters::fs::FileSystem::project_root(base, &project_id);
+        let payloads_dir = project_root.join("history/payloads");
+        std::fs::create_dir_all(&payloads_dir)?;
+
+        let payload = PayloadRecord {
+            payload_id: "run-proposed-parse-failure-final_review-aggregate-c1-a1-cr4-payload"
+                .to_owned(),
+            stage_id: StageId::FinalReview,
+            cycle: 1,
+            attempt: 1,
+            created_at: now,
+            payload: serde_json::json!({"unexpected": "shape"}),
+            record_kind: RecordKind::StageAggregate,
+            producer: None,
+            completion_round: 4,
+        };
+        std::fs::write(
+            payloads_dir.join("aggregate.json"),
+            serde_json::to_string(&payload)?,
+        )?;
+
+        let br_mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+
+        let error = reconcile_proposed_beads_after_success(
+            &br_mutation,
+            base,
+            "active-bead",
+            "task-proposed-parse-failure",
+            record.id.as_str(),
+            "proj-proposed-parse-failure",
+            "run-proposed-parse-failure",
+        )
+        .await
+        .expect_err("aggregate parse failure should stop reconciliation");
+
+        match error {
+            ReconciliationError::MilestoneUpdateFailed { details, .. } => {
+                assert!(details.contains("failed to parse final-review aggregate"));
+                assert!(details.contains("completion round 4"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_proposed_beads_after_success_returns_error_on_missing_metadata(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+        let record = crate::contexts::milestone_record::service::create_milestone(
+            &store,
+            base,
+            crate::contexts::milestone_record::service::CreateMilestoneInput {
+                id: "ms-proposed-missing-metadata".to_owned(),
+                name: "Proposed bead missing metadata".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let project_id = ProjectId::new("proj-proposed-missing-metadata")?;
+        let project_root = crate::adapters::fs::FileSystem::project_root(base, &project_id);
+        let payloads_dir = project_root.join("history/payloads");
+        std::fs::create_dir_all(&payloads_dir)?;
+
+        let aggregate = FinalReviewAggregatePayload {
+            restart_required: false,
+            force_completed: false,
+            total_reviewers: 1,
+            total_proposed_amendments: 1,
+            unique_amendment_count: 1,
+            accepted_amendment_ids: vec!["a1".to_owned()],
+            rejected_amendment_ids: vec![],
+            disputed_amendment_ids: vec![],
+            amendments: vec![],
+            final_accepted_amendments: vec![FinalReviewCanonicalAmendment {
+                amendment_id: "a1".to_owned(),
+                normalized_body: "Retry paths lack telemetry".to_owned(),
+                sources: vec![],
+                mapped_to_bead_id: None,
+                classification: AmendmentClassification::ProposeNewBead,
+                rationale: Some("No existing bead covers retry observability".to_owned()),
+                proposed_title: Some("Add retry telemetry".to_owned()),
+                proposed_scope: None,
+                severity: Some(
+                    crate::contexts::workflow_composition::review_classification::Severity::Medium,
+                ),
+            }],
+            final_review_restart_count: 0,
+            max_restarts: 3,
+            summary: "test".to_owned(),
+            exhausted_count: 0,
+            probe_exhausted_count: 0,
+            effective_min_reviewers: 1,
+        };
+
+        let payload = PayloadRecord {
+            payload_id: "run-proposed-missing-metadata-final_review-aggregate-c1-a1-cr4-payload"
+                .to_owned(),
+            stage_id: StageId::FinalReview,
+            cycle: 1,
+            attempt: 1,
+            created_at: now,
+            payload: serde_json::to_value(&aggregate)?,
+            record_kind: RecordKind::StageAggregate,
+            producer: None,
+            completion_round: 4,
+        };
+        std::fs::write(
+            payloads_dir.join("aggregate.json"),
+            serde_json::to_string(&payload)?,
+        )?;
+
+        let br_mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+
+        let error = reconcile_proposed_beads_after_success(
+            &br_mutation,
+            base,
+            "active-bead",
+            "task-proposed-missing-metadata",
+            record.id.as_str(),
+            "proj-proposed-missing-metadata",
+            "run-proposed-missing-metadata",
+        )
+        .await
+        .expect_err("missing metadata should stop reconciliation");
+
+        match error {
+            ReconciliationError::MilestoneUpdateFailed { details, .. } => {
+                assert!(details.contains(
+                    "accepted propose-new-bead amendment a1 is missing required metadata"
+                ));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
 
         Ok(())
     }
