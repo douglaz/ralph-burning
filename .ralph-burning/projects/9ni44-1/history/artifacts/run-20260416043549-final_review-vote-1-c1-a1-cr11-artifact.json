@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T08:51:14.423071417Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted 1 amendment. The cited flows only validate bead-file health once at the start, so later mutation steps can run after external corruption or conflicts are introduced.\n\n## Votes\n\n- `fr-11-250ddd55`: Accept\n  The finding is technically sound. In both `handle_propose_new_bead` and `claim_bead_in_br`, the initial `check_beads_health`/`ensure_beads_mutation_health` happens before a multi-step sequence, but the subsequent mutation calls (`create_bead`, `add_dependency`, `update_bead_status`, `sync_flush`) do not revalidate health themselves. `BrMutationAdapter` serializes each individual call, but it does not hold a lock across the whole sequence, and external `git pull`/merge activity would not honor that lock anyway. As a result, `.beads/issues.jsonl` can become conflicted or malformed between steps and later mutations may still execute on unsafe state, which defeats the intended safety barrier.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

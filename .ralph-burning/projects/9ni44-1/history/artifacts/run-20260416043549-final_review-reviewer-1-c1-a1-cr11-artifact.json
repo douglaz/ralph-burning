@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T08:49:43.906531564Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master` while excluding `.ralph-burning/`. I found one fix-now correctness gap: the new beads-health validation is not applied per mutation, so later mutations in multi-step flows can still run after the export becomes unsafe.\n\n## Amendments\n\n1. finding_summary: The new safety gate is only checked once at the start of multi-step mutation flows, so later bead mutations can still run after `.beads/issues.jsonl` becomes conflicted or malformed. In `src/contexts/milestone_record/service.rs:3178-3217`, `ensure_beads_mutation_health()` runs before `create_bead`, but the follow-up `add_dependency` and `sync_flush` execute without another check. In `src/cli/project.rs:965-1000`, the same pattern exists around `sync_if_dirty()`: the explicit `update --status=in_progress` and final `sync_flush` are not revalidated after the recovered flush. A concurrent `git pull`/merge between those steps defeats the intended \"pre-operation safety checks\" and still allows later mutations on corrupted bead state.\n   Rationale: This bead's purpose is to prevent mutations on unsafe bead state, but the current implementation only protects the first mutation in each sequence. Rechecking immediately before each mutation step, or centralizing the guard inside `BrMutationAdapter`, is needed to make the safety guarantee real across these multi-step flows.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

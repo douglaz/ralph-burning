@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr11-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T08:52:00.892527240Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed amendment fr-11-250ddd55 about single-check-before-multi-step bead mutations. The finding correctly identifies that ensure_beads_mutation_health() runs only once at the top of multi-step flows, but the proposed concern — that a concurrent git pull could corrupt state mid-flow — is not actionable. Adding more pre-flight checks between steps would still leave TOCTOU gaps (each check-then-act pair is non-atomic through the CLI subprocess). The real protection is provided by: (1) the repo_operation_lock preventing concurrent br operations, (2) the br CLI's own file validation on each mutation, and (3) the single-operator design where git operations are sequenced by the same orchestrator. If br encounters a corrupted file mid-flow, it fails and those errors are properly propagated through the existing error handling chains.\n\n## Votes\n\n- `fr-11-250ddd55`: Reject\n  The finding identifies a real TOCTOU pattern but the proposed mitigation (adding more health checks between steps) does not actually close the race. Each health check reads .beads/issues.jsonl and returns, then the mutation shells out to br CLI as a separate process — so there is always a gap between check and act regardless of how many checks you add. The actual safety net is threefold: (1) exec_tracked_mutation acquires both operation_lock and repo_operation_lock for each br CLI call, preventing concurrent mutations; (2) the br CLI itself validates issues.jsonl when it reads the file, so a corrupted file would cause the CLI to fail with an error that is properly propagated through the existing error handling (MilestoneOperationFailed / Io errors); (3) this is a single-operator orchestration system where git pull/merge operations are sequenced by the same process — there is no external actor concurrently modifying the working tree during a bead mutation flow. The only way to truly eliminate the TOCTOU gap would be to hold a file lock across the entire multi-step flow, which is a fundamentally different architecture, not a matter of adding more check calls.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 11
+}

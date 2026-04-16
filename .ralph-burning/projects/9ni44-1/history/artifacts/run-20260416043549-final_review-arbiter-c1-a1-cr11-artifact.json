@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-arbiter-c1-a1-cr11-artifact",
+  "payload_id": "run-20260416043549-final_review-arbiter-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T08:54:15.944815433Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment. The code evidence shows the safety precheck is only applied once per multi-step flow while locking is scoped to individual `br` calls, so later mutation steps are not covered by the same unsafe-state guard.\n\n## Rulings\n\n- `fr-11-250ddd55`: Accept\n  The cited code does leave a real gap in the new safety gate. In `src/contexts/milestone_record/service.rs:3178-3217`, `ensure_beads_mutation_health()` is called once before `create_bead()`, but `add_dependency()` and `sync_flush()` are separate awaited operations with no recheck. In `src/cli/project.rs:965-1000`, the same is true across `sync_if_dirty()`, `update_bead_status()`, and the final `sync_flush()`. The lock coverage is only per adapter call, not per whole flow: `exec_tracked_mutation()` acquires and releases `operation_lock` / `repo_operation_lock` inside each individual mutation (`src/adapters/br_process.rs:1005-1015`), and `sync_flush()` / `sync_if_dirty()` do the same separately (`src/adapters/br_process.rs:1153-1156`, `1200-1203`). That means the initial health check does not protect later steps from an intervening non-cooperating workspace change such as a merge conflict. Reviewer 2 is right that extra checks would not make the sequence fully atomic, but that does not negate the finding: the advertised unsafe-state gate is only enforced at the start of these multi-step flows, and there is no in-repo evidence that `br` itself revalidates `.beads/issues.jsonl` on every later step or that all external git activity is serialized by this lock.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}
