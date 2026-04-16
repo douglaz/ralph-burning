@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr6-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T06:53:43.185017950Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify genuine gaps in safety-critical code paths. Amendment fr-6-3e080620 correctly identifies that claim_bead_in_br() doesn't honor recovered dirty state before issuing a redundant br update, risking a hard failure on retry when only a sync flush was needed. Amendment fr-6-e847e385 correctly identifies that validate_jsonl_records() accepts any valid JSON value (numbers, arrays, strings) as healthy, undermining the mutation gate it was designed to provide.\n\n## Votes\n\n- `fr-6-3e080620`: Accept\n  Confirmed via code: claim_bead_in_br (project.rs:972-973) constructs a new BrMutationAdapter which recovers the pending-mutation marker (br_process.rs:573,602-618), setting has_unsync_mutations=true. But it then unconditionally calls update_bead_status() (project.rs:974), which in exec_tracked_mutation_locked (br_process.rs:698-749) invokes `br update --status=in_progress` again. If the br CLI rejects a no-op status transition, the retry path fails even though the only remaining work is sync_flush. The recovery mechanism (sync_if_dirty at line 870) exists precisely for this case but is never invoked. The fix—calling sync_if_dirty() on a dirty adapter before issuing another mutation—is well-scoped and correct.\n- `fr-6-e847e385`: Accept\n  Confirmed via code: validate_jsonl_records (br_health.rs:94-109) deserializes each line as serde_json::Value, which accepts any valid JSON token—numbers, strings, arrays, booleans, null—not just issue-record objects. Since check_beads_health() returns Healthy when this passes (br_health.rs:70-72), and all mutation gates (e.g., claim_bead_in_br at project.rs:966-970, ensure_healthy_beads_for_import at br_process.rs:672-681) depend on this check, a corrupted JSONL file containing lines like `42` or `[]` would not be caught. Tightening validation to require JSON objects with at minimum an `id` field is a proportionate fix that closes a real hole in the safety layer without adding undue complexity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 6
+}
