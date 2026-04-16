@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T18:13:57.669810415Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe implementation is solid overall — core reconciliation logic, idempotency, attempt counting, escalation, and bead immutability are all correct with comprehensive test coverage (794 tests pass, clippy clean, fmt clean). One real bug found: the new `resume_transition_request` logic for Blocked-with-retry-context generates `Blocked → Running` and `Blocked → Reconciling` transitions, but `allows_transition_to` in controller.rs doesn't include these edges, so `transition_from_current_locked` (line 966) would reject them as illegal transitions during daemon resume.\n\n## Amendments\n\n1. The `allows_transition_to` method in `src/contexts/milestone_record/controller.rs` (lines 52-55) is missing `(State::Blocked, State::Running)` and `(State::Blocked, State::Reconciling)` edges. The new `resume_transition_request` logic (line ~1229) for Blocked-with-retry-context generates these transitions when: (a) the retry task is already Running, or (b) the retry task already Succeeded. But `transition_from_current_locked` (line 966) enforces `allows_transition_to`, so these resume transitions would fail with a 'corrupt controller' error. Fix: add `| (State::Blocked, State::Running) | (State::Blocked, State::Reconciling)` to the match arms in `allows_transition_to`.\n   Rationale: The resume path is exercised on every daemon restart. If a bead is in Blocked retry state and the task is Running or already Succeeded, resume_controller will produce a transition that the state machine rejects. This would prevent the daemon from resuming correctly, requiring manual intervention.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}

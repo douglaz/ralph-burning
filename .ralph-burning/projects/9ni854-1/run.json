@@ -2,34 +2,79 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-16T16:40:42.098700951Z",
     "prompt_hash_at_cycle_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "prompt_hash_at_stage_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-41474432",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: Failure reconciliation stores the daemon task ID in `controller.active_task_id`, but the controller runtime consistently interprets that field as the bead-backed project ID. The new daemon wiring passes `&task.task_id` into `reconcile_failure` (`src/contexts/automation_runtime/daemon_loop.rs:2047-2055`), and `transition_controller_after_failure` writes that value back into the blocked/needs-operator controller transitions (`src/contexts/automation_runtime/failure_reconciliation.rs:481-498`, `src/contexts/automation_runtime/failure_reconciliation.rs:545-552`). Both milestone resume paths then parse `active_task_id` with `ProjectId::new(...)` and require that project to exist (`src/cli/milestone.rs:810-819`, `src/cli/milestone.rs:1252-1264`, `src/cli/run.rs:989-1000`). After a daemon-managed failure, the controller now points at the daemon task record instead of the project, so `milestone run`/resume cannot reopen the failed bead and falls into missing/invalid-project errors instead of retrying.\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs\n- src/contexts/automation_runtime/failure_reconciliation.rs\nremediation_hint: Keep recording the daemon task ID in journal/outcome detail, but use `project_id` for controller transitions so blocked/retry resume continues to target the existing project.",
+        "created_at": "2026-04-16T18:24:30.940969846Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "53c9ee011bbf3119d8b8b4682769e5f37ec9c9d8708a9d656807fe9ffb0ab673"
+      },
+      {
+        "amendment_id": "fr-3-9275f7e6",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: The new blocked-retry resume branch requests a direct `Blocked -> Running` controller transition, but that edge is still illegal in the controller state machine. `resume_transition_request` now returns `MilestoneControllerState::Running` when a blocked retry task is already running (`src/contexts/milestone_record/controller.rs:1227-1240`), while `MilestoneControllerState::allows_transition_to` still only allows `Blocked -> Selecting|Claimed|Completed|NeedsOperator` (`src/contexts/milestone_record/controller.rs:27-55`). On any restart while a retried project is already running, `resume_controller` will therefore reject the state change as an illegal transition instead of adopting the in-flight retry.\naffected_files:\n- src/contexts/milestone_record/controller.rs\nremediation_hint: Either route that resume case back through an allowed intermediate state such as `Claimed`, or explicitly add/support `Blocked -> Running` everywhere the journal/state validators expect legal transitions, with coverage for restart-during-retry.",
+        "created_at": "2026-04-16T18:24:30.940975326Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "22432c8bdd229c7a5e652327a7e8fb2a7c154d7146616a08d228af46c1f175f9"
+      },
+      {
+        "amendment_id": "fr-3-5e153857",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: The manual milestone retry path that this patch exposes does not actually use the new attempt-aware failure reconciliation logic. `execute_milestone_run` now treats blocked retry context as executable and resumes the existing project (`src/cli/milestone.rs:720-756`), but the terminal sync path it calls on failure still uses the old generic behavior: failed runs go through `sync_controller_task_claimed(...)` plus `record_bead_completion_with_disposition(...)` (`src/cli/run.rs:1336-1384`) rather than `reconcile_failure`. Because `execute_milestone_run` then maps any failed project snapshot straight to `MilestoneCommandStatus::NeedsOperator` (`src/cli/milestone.rs:737-756`), second/third failures triggered from `milestone run` are never evaluated against `MAX_FAILURE_RETRIES`; they bypass the new blocked-vs-needs-operator policy entirely.\naffected_files:\n- src/cli/milestone.rs\n- src/cli/run.rs\nremediation_hint: Route failed `run start`/`run resume` terminal sync through the same failure-reconciliation helper (or a shared attempt-aware helper) and derive the CLI result from the post-sync controller outcome instead of the raw failed project snapshot.",
+        "created_at": "2026-04-16T18:24:30.940981418Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "c06ade5d2d016f41c47a537502d5ba2f98a76dd478e61865b9dd350b8ce7cf63"
+      },
+      {
+        "amendment_id": "fr-3-6c768527",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "The `allows_transition_to` method in `src/contexts/milestone_record/controller.rs` (lines 52-55) is missing `(State::Blocked, State::Running)` and `(State::Blocked, State::Reconciling)` edges. The new `resume_transition_request` logic (line ~1229) for Blocked-with-retry-context generates these transitions when: (a) the retry task is already Running, or (b) the retry task already Succeeded. But `transition_from_current_locked` (line 966) enforces `allows_transition_to`, so these resume transitions would fail with a 'corrupt controller' error. Fix: add `| (State::Blocked, State::Running) | (State::Blocked, State::Reconciling)` to the match arms in `allows_transition_to`.",
+        "created_at": "2026-04-16T18:24:30.940984724Z",
+        "batch_sequence": 4,
+        "source": "workflow_stage",
+        "dedup_key": "1fb58cb3694d809e3a721c3d5ab02cfc77aed2c565e676ba174c2bdbb440e131"
+      }
+    ],
     "processed_count": 6
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T17:32:03.498149685Z",
+    "resolved_at": "2026-04-16T18:10:10.151929609Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
