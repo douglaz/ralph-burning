@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T06:36:50.379204688Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the main br health/mutation and milestone reconciliation changes, and found two fix-now robustness gaps in the new safety checks: malformed JSONL is still treated as healthy, and the new `br` availability preflight can block indefinitely because it bypasses the adapter’s timeout-controlled execution path.\n\n## Amendments\n\n1. finding_summary: `check_beads_health()` never validates that `.beads/issues.jsonl` is parseable JSONL, so truncated or otherwise malformed exports are classified as `Healthy` and the new mutation guards still allow `br update/create/close` to run against corrupted bead state. severity: medium. affected_files: [\"src/adapters/br_health.rs\", \"src/cli/project.rs\", \"src/contexts/milestone_record/service.rs\", \"src/contexts/automation_runtime/success_reconciliation.rs\"]. evidence: `src/adapters/br_health.rs:44-70` only checks file readability, conflict markers, and `br` availability; the new guard sites in `src/cli/project.rs:965-974`, `src/contexts/milestone_record/service.rs:2998-3020`, and `src/contexts/automation_runtime/success_reconciliation.rs:117-123,221-223` trust that result before mutating beads. remediation_hint: treat malformed JSONL as unhealthy by parsing each line (or performing an equivalent bounded `br`-backed validation) before returning `Healthy`.\n   Rationale: The bead’s stated safety goal includes malformed JSONL, but the current implementation only blocks missing files and merge markers. A partially written or corrupt export will still pass the new preflight and let mutation flows proceed.\n2. finding_summary: the new health-check path can hang bead mutations indefinitely because `check_beads_health()` calls `BrAdapter::check_available()`, and that probe uses blocking `std::process::Command::output()` with no timeout. severity: medium. affected_files: [\"src/adapters/br_health.rs\", \"src/adapters/br_process.rs\"]. evidence: `src/adapters/br_health.rs:18-20,91-95` invokes `BrAdapter::new().check_available()` on every health check, and `src/adapters/br_process.rs:386-389` runs `br --version` via `output()` instead of the timeout-governed process runner used elsewhere. remediation_hint: run the availability probe through the existing timed process path (or cache a startup check) so a wedged `br` binary cannot stall claim/close/create flows forever.\n   Rationale: This change moves the availability probe onto the critical path before every protected mutation. If `br --version` blocks, Ralph now hangs instead of surfacing a bounded timeout like the rest of the adapter does.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}
