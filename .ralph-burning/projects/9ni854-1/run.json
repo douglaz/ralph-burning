@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 13
+      "completion_round": 14
     },
     "started_at": "2026-04-16T16:40:42.098700951Z",
     "prompt_hash_at_cycle_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "prompt_hash_at_stage_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 12
+    "final_review_restart_count": 13
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 13,
+  "completion_rounds": 14,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-13-52c8902b",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 13,
+        "body": "finding_summary: `sync_terminal_milestone_task_with_options` breaks terminal milestone sync for paused-then-resumed runs that keep the same `run_id`.\naffected_files: `src/cli/run.rs`, `src/adapters/fs.rs`\nline_references: `src/cli/run.rs:1174-1185`, `src/cli/run.rs:1277-1304`, `src/adapters/fs.rs:5065-5090`\ndetails: On resume of a still-running attempt, `record_task_run_start` reuses the existing lineage row without moving `started_at`, so the lineage still points at the original start time. The new CLI sync path now prefers that stale lineage timestamp over the newer `run_resumed` boundary, then calls `terminal_event_for_attempt` against the pre-resume window. A normal pause -> resume -> complete/fail flow will therefore be rejected as \"missing durable run_completed/run_failed\", leaving milestone state unsynced even though the project journal is correct.\nremediation_hint: Derive the current attempt boundary from the newest durable/snapshot resume boundary instead of letting a reused nonterminal lineage row override it, and add a regression test for pause -> resume -> complete/fail with the same running lineage row surviving across resume.",
+        "created_at": "2026-04-16T22:47:16.770749634Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "364e640afede41d1f4a1b7b522f0360c3b3215b07dc484a13755f09046793f68"
+      }
+    ],
     "processed_count": 28
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 14 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T22:07:18.399023762Z",
+    "resolved_at": "2026-04-16T22:30:29.803506456Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

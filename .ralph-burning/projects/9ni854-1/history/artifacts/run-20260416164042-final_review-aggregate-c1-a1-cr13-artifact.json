@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr13-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T22:47:16.770761096Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 13/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-13-52c8902b`\n\n## Rejected\n\n- `fr-13-3b2565d7`\n- `fr-13-2c6b54c1`\n\n## Disputed\n\n- `fr-13-bf9a4563`\n\n## Final Accepted Amendments\n\n### `fr-13-52c8902b`\n\nfinding_summary: `sync_terminal_milestone_task_with_options` breaks terminal milestone sync for paused-then-resumed runs that keep the same `run_id`.\naffected_files: `src/cli/run.rs`, `src/adapters/fs.rs`\nline_references: `src/cli/run.rs:1174-1185`, `src/cli/run.rs:1277-1304`, `src/adapters/fs.rs:5065-5090`\ndetails: On resume of a still-running attempt, `record_task_run_start` reuses the existing lineage row without moving `started_at`, so the lineage still points at the original start time. The new CLI sync path now prefers that stale lineage timestamp over the newer `run_resumed` boundary, then calls `terminal_event_for_attempt` against the pre-resume window. A normal pause -> resume -> complete/fail flow will therefore be rejected as \"missing durable run_completed/run_failed\", leaving milestone state unsynced even though the project journal is correct.\nremediation_hint: Derive the current attempt boundary from the newest durable/snapshot resume boundary instead of letting a reused nonterminal lineage row override it, and add a regression test for pause -> resume -> complete/fail with the same running lineage row surviving across resume.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 13
+}
