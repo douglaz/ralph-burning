@@ -89,176 +89,103 @@ where
     C: MilestoneControllerPort,
 {
     async move {
-        let milestone_id = MilestoneId::new(milestone_id_str).map_err(|error| {
-            FailureReconciliationError::MilestoneUpdateFailed {
-                bead_id: bead_id.to_owned(),
-                task_id: task_id.to_owned(),
-                details: format!("invalid milestone id: {error}"),
-            }
+        reconcile_failure_sync(
+            snapshot_store,
+            journal_store,
+            lineage_store,
+            controller_store,
+            base_dir,
+            bead_id,
+            task_id,
+            project_id,
+            milestone_id_str,
+            run_id,
+            plan_hash,
+            started_at,
+            failed_at,
+            error_summary,
+        )
+    }
+    .instrument(tracing::warn_span!(
+        "reconcile_failure",
+        milestone_id = milestone_id_str,
+        bead_id = bead_id,
+        task_id = task_id,
+        run_id = run_id
+    ))
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconcile_failure_sync<S, J, L, C>(
+    snapshot_store: &S,
+    journal_store: &J,
+    lineage_store: &L,
+    controller_store: &C,
+    base_dir: &Path,
+    bead_id: &str,
+    task_id: &str,
+    project_id: &str,
+    milestone_id_str: &str,
+    run_id: &str,
+    plan_hash: Option<&str>,
+    started_at: DateTime<Utc>,
+    failed_at: DateTime<Utc>,
+    error_summary: &str,
+) -> Result<FailureReconciliationOutcome, FailureReconciliationError>
+where
+    S: MilestoneSnapshotPort,
+    J: MilestoneJournalPort,
+    L: TaskRunLineagePort,
+    C: MilestoneControllerPort,
+{
+    let milestone_id = MilestoneId::new(milestone_id_str).map_err(|error| {
+        FailureReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!("invalid milestone id: {error}"),
+        }
+    })?;
+    let error_summary = normalize_error_summary(error_summary);
+    let existing_journal = milestone_service::read_journal(journal_store, base_dir, &milestone_id)
+        .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!(
+                "failed to load milestone journal for failure reconciliation: {error}"
+            ),
         })?;
-        let error_summary = normalize_error_summary(error_summary);
-        let existing_journal =
-            milestone_service::read_journal(journal_store, base_dir, &milestone_id).map_err(
-                |error| FailureReconciliationError::MilestoneUpdateFailed {
-                    bead_id: bead_id.to_owned(),
-                    task_id: task_id.to_owned(),
-                    details: format!(
-                        "failed to load milestone journal for failure reconciliation: {error}"
-                    ),
-                },
-            )?;
 
-        let existing_runs =
-            milestone_service::find_runs_for_bead(lineage_store, base_dir, &milestone_id, bead_id)
-                .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
-                    bead_id: bead_id.to_owned(),
-                    task_id: task_id.to_owned(),
-                    details: format!(
-                        "failed to load task runs for failure reconciliation: {error}"
-                    ),
-                })?;
-
-        let (already_recorded, predicted_attempt_number) = failure_attempt_number(
-            &existing_runs,
-            &existing_journal,
-            &milestone_id,
-            bead_id,
-            task_id,
-            project_id,
-            run_id,
-            started_at,
-        )?;
-        let outcome_detail =
-            format_failure_outcome_detail(task_id, predicted_attempt_number, &error_summary);
-        let predicted_outcome = failure_outcome(bead_id, predicted_attempt_number, &error_summary);
-
-        if already_recorded && newer_attempt_exists(&existing_runs, project_id, run_id, started_at)
-        {
-            tracing::info!(
-                bead_id = bead_id,
-                task_id = task_id,
-                run_id = run_id,
-                attempt_number = predicted_attempt_number,
-                "skipping stale failure replay because a newer bead attempt already exists"
-            );
-            transition_controller_after_failure(
-                controller_store,
-                base_dir,
-                &milestone_id,
-                bead_id,
-                task_id,
-                project_id,
-                run_id,
-                started_at,
-                failed_at,
-                true,
-                &existing_runs,
-                &predicted_outcome,
-            )?;
-            return Ok(predicted_outcome);
-        }
-
-        if already_recorded {
-            milestone_service::repair_task_run_with_disposition(
-                snapshot_store,
-                journal_store,
-                lineage_store,
-                base_dir,
-                &milestone_id,
-                bead_id,
-                project_id,
-                run_id,
-                plan_hash,
-                started_at,
-                TaskRunOutcome::Failed,
-                Some(outcome_detail.clone()),
-                failed_at,
-                CompletionMilestoneDisposition::ReconcileFromLineage,
-            )
+    let existing_runs =
+        milestone_service::find_runs_for_bead(lineage_store, base_dir, &milestone_id, bead_id)
             .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
                 bead_id: bead_id.to_owned(),
                 task_id: task_id.to_owned(),
-                details: error.to_string(),
+                details: format!("failed to load task runs for failure reconciliation: {error}"),
             })?;
-        } else {
-            milestone_service::record_bead_completion_with_disposition(
-                snapshot_store,
-                journal_store,
-                lineage_store,
-                base_dir,
-                &milestone_id,
-                bead_id,
-                project_id,
-                run_id,
-                plan_hash,
-                TaskRunOutcome::Failed,
-                Some(&outcome_detail),
-                started_at,
-                failed_at,
-                CompletionMilestoneDisposition::ReconcileFromLineage,
-            )
-            .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
-                bead_id: bead_id.to_owned(),
-                task_id: task_id.to_owned(),
-                details: error.to_string(),
-            })?;
-        }
 
-        let recorded_runs =
-            milestone_service::find_runs_for_bead(lineage_store, base_dir, &milestone_id, bead_id)
-                .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
-                    bead_id: bead_id.to_owned(),
-                    task_id: task_id.to_owned(),
-                    details: format!(
-                        "failed to reload task runs after failure reconciliation: {error}"
-                    ),
-                })?;
-        let recorded_journal =
-            milestone_service::read_journal(journal_store, base_dir, &milestone_id).map_err(
-                |error| FailureReconciliationError::MilestoneUpdateFailed {
-                    bead_id: bead_id.to_owned(),
-                    task_id: task_id.to_owned(),
-                    details: format!(
-                        "failed to reload milestone journal after failure reconciliation: {error}"
-                    ),
-                },
-            )?;
-        let (_, attempt_number) = failure_attempt_number(
-            &recorded_runs,
-            &recorded_journal,
-            &milestone_id,
-            bead_id,
-            task_id,
-            project_id,
-            run_id,
-            started_at,
-        )?;
+    let (already_recorded, predicted_attempt_number) = failure_attempt_number(
+        &existing_runs,
+        &existing_journal,
+        &milestone_id,
+        bead_id,
+        task_id,
+        project_id,
+        run_id,
+        started_at,
+    )?;
+    let outcome_detail =
+        format_failure_outcome_detail(task_id, predicted_attempt_number, &error_summary);
+    let predicted_outcome = failure_outcome(bead_id, predicted_attempt_number, &error_summary);
 
-        if !recorded_runs.iter().any(|entry| {
-            entry.project_id == project_id
-                && entry.run_id.as_deref() == Some(run_id)
-                && entry.outcome == TaskRunOutcome::Failed
-        }) {
-            return Err(FailureReconciliationError::MilestoneUpdateFailed {
-                bead_id: bead_id.to_owned(),
-                task_id: task_id.to_owned(),
-                details: format!(
-                    "failed run was not present after reconciliation for run_id={run_id}"
-                ),
-            });
-        }
-
-        tracing::warn!(
+    if already_recorded && newer_attempt_exists(&existing_runs, project_id, run_id, started_at) {
+        tracing::info!(
             bead_id = bead_id,
             task_id = task_id,
-            attempt_number = attempt_number,
-            max_retries = MAX_FAILURE_RETRIES,
-            error_summary = error_summary.as_str(),
-            already_recorded,
-            "reconciled failed bead attempt"
+            run_id = run_id,
+            attempt_number = predicted_attempt_number,
+            "skipping stale failure replay because a newer bead attempt already exists"
         );
-
-        let outcome = failure_outcome(bead_id, attempt_number, &error_summary);
         transition_controller_after_failure(
             controller_store,
             base_dir,
@@ -269,36 +196,141 @@ where
             run_id,
             started_at,
             failed_at,
-            already_recorded,
-            &recorded_runs,
-            &outcome,
+            true,
+            &existing_runs,
+            &predicted_outcome,
         )?;
-
-        if let FailureReconciliationOutcome::EscalatedToOperator {
-            attempt_number,
-            reason,
-        } = &outcome
-        {
-            tracing::error!(
-                bead_id = bead_id,
-                task_id = task_id,
-                attempt_number = *attempt_number,
-                max_retries = MAX_FAILURE_RETRIES,
-                reason = reason.as_str(),
-                "failed bead escalated to operator"
-            );
-        }
-
-        Ok(outcome)
+        return Ok(predicted_outcome);
     }
-    .instrument(tracing::warn_span!(
-        "reconcile_failure",
-        milestone_id = milestone_id_str,
+
+    if already_recorded {
+        milestone_service::repair_task_run_with_disposition(
+            snapshot_store,
+            journal_store,
+            lineage_store,
+            base_dir,
+            &milestone_id,
+            bead_id,
+            project_id,
+            run_id,
+            plan_hash,
+            started_at,
+            TaskRunOutcome::Failed,
+            Some(outcome_detail.clone()),
+            failed_at,
+            CompletionMilestoneDisposition::ReconcileFromLineage,
+        )
+        .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: error.to_string(),
+        })?;
+    } else {
+        milestone_service::record_bead_completion_with_disposition(
+            snapshot_store,
+            journal_store,
+            lineage_store,
+            base_dir,
+            &milestone_id,
+            bead_id,
+            project_id,
+            run_id,
+            plan_hash,
+            TaskRunOutcome::Failed,
+            Some(&outcome_detail),
+            started_at,
+            failed_at,
+            CompletionMilestoneDisposition::ReconcileFromLineage,
+        )
+        .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: error.to_string(),
+        })?;
+    }
+
+    let recorded_runs =
+        milestone_service::find_runs_for_bead(lineage_store, base_dir, &milestone_id, bead_id)
+            .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: format!(
+                    "failed to reload task runs after failure reconciliation: {error}"
+                ),
+            })?;
+    let recorded_journal = milestone_service::read_journal(journal_store, base_dir, &milestone_id)
+        .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!(
+                "failed to reload milestone journal after failure reconciliation: {error}"
+            ),
+        })?;
+    let (_, attempt_number) = failure_attempt_number(
+        &recorded_runs,
+        &recorded_journal,
+        &milestone_id,
+        bead_id,
+        task_id,
+        project_id,
+        run_id,
+        started_at,
+    )?;
+
+    if !recorded_runs.iter().any(|entry| {
+        entry.project_id == project_id
+            && entry.run_id.as_deref() == Some(run_id)
+            && entry.outcome == TaskRunOutcome::Failed
+    }) {
+        return Err(FailureReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!("failed run was not present after reconciliation for run_id={run_id}"),
+        });
+    }
+
+    tracing::warn!(
         bead_id = bead_id,
         task_id = task_id,
-        run_id = run_id
-    ))
-    .await
+        attempt_number = attempt_number,
+        max_retries = MAX_FAILURE_RETRIES,
+        error_summary = error_summary.as_str(),
+        already_recorded,
+        "reconciled failed bead attempt"
+    );
+
+    let outcome = failure_outcome(bead_id, attempt_number, &error_summary);
+    transition_controller_after_failure(
+        controller_store,
+        base_dir,
+        &milestone_id,
+        bead_id,
+        task_id,
+        project_id,
+        run_id,
+        started_at,
+        failed_at,
+        already_recorded,
+        &recorded_runs,
+        &outcome,
+    )?;
+
+    if let FailureReconciliationOutcome::EscalatedToOperator {
+        attempt_number,
+        reason,
+    } = &outcome
+    {
+        tracing::error!(
+            bead_id = bead_id,
+            task_id = task_id,
+            attempt_number = *attempt_number,
+            max_retries = MAX_FAILURE_RETRIES,
+            reason = reason.as_str(),
+            "failed bead escalated to operator"
+        );
+    }
+
+    Ok(outcome)
 }
 
 fn normalize_error_summary(error_summary: &str) -> String {
@@ -349,7 +381,7 @@ fn newer_attempt_exists(
 fn controller_requires_failure_sync(
     controller: &milestone_controller::MilestoneControllerRecord,
     bead_id: &str,
-    task_id: &str,
+    project_id: &str,
 ) -> bool {
     match controller.state {
         MilestoneControllerState::Idle => true,
@@ -366,7 +398,7 @@ fn controller_requires_failure_sync(
                 && controller
                     .active_task_id
                     .as_deref()
-                    .is_none_or(|active_task_id| active_task_id == task_id)
+                    .is_none_or(|active_task_id| active_task_id == project_id)
         }
     }
 }
@@ -483,7 +515,7 @@ fn transition_controller_after_failure<C: MilestoneControllerPort>(
                 reason.clone(),
             )
             .with_bead(bead_id)
-            .with_task(task_id);
+            .with_task(project_id);
             (MilestoneControllerState::Blocked, reason, request)
         }
         FailureReconciliationOutcome::EscalatedToOperator {
@@ -495,7 +527,7 @@ fn transition_controller_after_failure<C: MilestoneControllerPort>(
                 reason.clone(),
             )
             .with_bead(bead_id)
-            .with_task(task_id);
+            .with_task(project_id);
             (
                 MilestoneControllerState::NeedsOperator,
                 reason.clone(),
@@ -523,7 +555,7 @@ fn transition_controller_after_failure<C: MilestoneControllerPort>(
 
     if replay_already_settled
         && current.as_ref().is_some_and(|controller| {
-            !controller_requires_failure_sync(controller, bead_id, task_id)
+            !controller_requires_failure_sync(controller, bead_id, project_id)
         })
     {
         return Ok(());
@@ -547,7 +579,7 @@ fn transition_controller_after_failure<C: MilestoneControllerPort>(
             base_dir,
             milestone_id,
             bead_id,
-            task_id,
+            project_id,
             "workflow execution failed; reconciling milestone state",
             now,
         )
@@ -700,7 +732,7 @@ mod tests {
     fn start_attempt(
         base_dir: &Path,
         milestone_id: &crate::contexts::milestone_record::model::MilestoneId,
-        task_id: &str,
+        _task_id: &str,
         run_id: &str,
         started_at: chrono::DateTime<Utc>,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -730,7 +762,7 @@ mod tests {
                 base_dir,
                 milestone_id,
                 "bead-failure",
-                task_id,
+                "proj-failure",
                 "retrying blocked bead task",
                 started_at,
             )?;
@@ -740,7 +772,7 @@ mod tests {
             base_dir,
             milestone_id,
             "bead-failure",
-            task_id,
+            "proj-failure",
             "workflow execution started",
             started_at,
         )?;
@@ -795,7 +827,7 @@ mod tests {
             milestone_controller::MilestoneControllerState::Blocked
         );
         assert_eq!(controller.active_bead_id.as_deref(), Some("bead-failure"));
-        assert_eq!(controller.active_task_id.as_deref(), Some("task-1"));
+        assert_eq!(controller.active_task_id.as_deref(), Some("proj-failure"));
         assert!(controller
             .last_transition_reason
             .as_deref()
@@ -1224,7 +1256,7 @@ mod tests {
             controller.state,
             milestone_controller::MilestoneControllerState::Running
         );
-        assert_eq!(controller.active_task_id.as_deref(), Some("task-1"));
+        assert_eq!(controller.active_task_id.as_deref(), Some("proj-failure"));
 
         Ok(())
     }
@@ -1373,7 +1405,7 @@ mod tests {
             controller.state,
             milestone_controller::MilestoneControllerState::Running
         );
-        assert_eq!(controller.active_task_id.as_deref(), Some("task-1"));
+        assert_eq!(controller.active_task_id.as_deref(), Some("proj-failure"));
 
         let runs = milestone_service::find_runs_for_bead(
             &FsTaskRunLineageStore,

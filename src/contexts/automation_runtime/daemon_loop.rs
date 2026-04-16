@@ -8697,7 +8697,7 @@ mod tests {
             base,
             &milestone_id,
             &task_source.bead_id,
-            "task-daemon-failure",
+            project_id.as_str(),
             "workflow execution started",
             started_at,
         )
@@ -8789,7 +8789,7 @@ mod tests {
         );
         assert_eq!(
             controller.active_task_id.as_deref(),
-            Some("task-daemon-failure")
+            Some(project_id.as_str())
         );
 
         let task_runs = milestone_service::find_runs_for_bead(
@@ -8870,7 +8870,7 @@ mod tests {
             base,
             &milestone_id,
             &task_source.bead_id,
-            "task-daemon-failure-fallback",
+            project_id.as_str(),
             "workflow execution started",
             started_at,
         )

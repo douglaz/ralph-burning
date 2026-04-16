@@ -51,6 +51,8 @@ impl MilestoneControllerState {
                 | (State::Reconciling, State::NeedsOperator)
                 | (State::Blocked, State::Selecting)
                 | (State::Blocked, State::Claimed)
+                | (State::Blocked, State::Running)
+                | (State::Blocked, State::Reconciling)
                 | (State::Blocked, State::Completed)
                 | (State::Blocked, State::NeedsOperator)
                 | (State::NeedsOperator, State::Idle)
@@ -2333,6 +2335,82 @@ mod tests {
             .last_transition_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("ready beads")));
+        Ok(())
+    }
+
+    #[test]
+    fn resume_blocked_retry_running_task_transitions_back_to_running(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let store = FakeControllerStore::default();
+        let runtime = FakeResumeRuntime {
+            bead_status: RefCell::new(ControllerBeadStatus::Open),
+            task_status: RefCell::new(ControllerTaskStatus::Running),
+            ready_beads: RefCell::new(false),
+            all_closed: RefCell::new(false),
+        };
+        let base = Path::new(".");
+        let milestone_id = milestone_id();
+
+        transition_controller(
+            &store,
+            base,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Blocked,
+                "retry remains available after a failed attempt",
+            )
+            .with_bead("ms-alpha.bead-2")
+            .with_task("task-42"),
+            ts(10),
+        )?;
+
+        let resumed = resume_controller(&store, &runtime, base, &milestone_id, ts(11))?;
+
+        assert_eq!(resumed.state, MilestoneControllerState::Running);
+        assert_eq!(resumed.active_bead_id.as_deref(), Some("ms-alpha.bead-2"));
+        assert_eq!(resumed.active_task_id.as_deref(), Some("task-42"));
+        assert!(resumed
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("blocked retry task is running")));
+        Ok(())
+    }
+
+    #[test]
+    fn resume_blocked_retry_succeeded_task_transitions_to_reconciling(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let store = FakeControllerStore::default();
+        let runtime = FakeResumeRuntime {
+            bead_status: RefCell::new(ControllerBeadStatus::Open),
+            task_status: RefCell::new(ControllerTaskStatus::Succeeded),
+            ready_beads: RefCell::new(false),
+            all_closed: RefCell::new(false),
+        };
+        let base = Path::new(".");
+        let milestone_id = milestone_id();
+
+        transition_controller(
+            &store,
+            base,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Blocked,
+                "retry remains available after a failed attempt",
+            )
+            .with_bead("ms-alpha.bead-2")
+            .with_task("task-42"),
+            ts(10),
+        )?;
+
+        let resumed = resume_controller(&store, &runtime, base, &milestone_id, ts(11))?;
+
+        assert_eq!(resumed.state, MilestoneControllerState::Reconciling);
+        assert_eq!(resumed.active_bead_id.as_deref(), Some("ms-alpha.bead-2"));
+        assert_eq!(resumed.active_task_id.as_deref(), Some("task-42"));
+        assert!(resumed
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("blocked retry task already succeeded")));
         Ok(())
     }
 

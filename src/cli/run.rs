@@ -45,6 +45,7 @@ use crate::contexts::automation_runtime::cli_writer_lease::{
     read_project_writer_lock_owner, reclaim_specific_project_writer_owner, CliWriterLeaseGuard,
     DetachedProjectWriterOwner, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
+use crate::contexts::automation_runtime::failure_reconciliation::reconcile_failure_sync;
 use crate::contexts::automation_runtime::model::CliWriterCleanupHandoff;
 use crate::contexts::automation_runtime::{DaemonStorePort, LeaseRecord};
 use crate::contexts::milestone_record::bead_refs::{
@@ -1138,20 +1139,11 @@ fn sync_terminal_milestone_task_with_options(
         return Ok(false);
     }
 
-    let (outcome, outcome_detail, disposition) = match final_snapshot.status {
-        RunStatus::Completed => (
-            TaskRunOutcome::Succeeded,
-            None,
-            CompletionMilestoneDisposition::ReconcileFromLineage,
-        ),
+    let outcome_detail = match final_snapshot.status {
+        RunStatus::Completed => None,
         RunStatus::Failed => {
             let detail = final_snapshot.status_summary.trim();
-            let detail = (!detail.is_empty()).then(|| detail.to_owned());
-            (
-                TaskRunOutcome::Failed,
-                detail,
-                CompletionMilestoneDisposition::ReconcileFromLineage,
-            )
+            (!detail.is_empty()).then(|| detail.to_owned())
         }
         RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => return Ok(false),
     };
@@ -1298,6 +1290,34 @@ fn sync_terminal_milestone_task_with_options(
         RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => unreachable!(),
     };
 
+    if final_snapshot.status == RunStatus::Failed {
+        let error_summary = outcome_detail
+            .as_deref()
+            .unwrap_or(final_snapshot.status_summary.as_str());
+        reconcile_failure_sync(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base_dir,
+            &task_source.bead_id,
+            project_id.as_str(),
+            project_id.as_str(),
+            milestone_id.as_str(),
+            run_id,
+            task_source.plan_hash.as_deref(),
+            started_at,
+            finished_at,
+            error_summary,
+        )
+        .map_err(|error| AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "sync".to_owned(),
+            details: error.to_string(),
+        })?;
+        return Ok(true);
+    }
+
     let exact_attempt_already_terminal = same_named_terminal_attempt_exists
         || matching_lineage_run.iter().any(|entry| {
             lineage_entry_matches_attempt(entry, project_id.as_str(), run_id, started_at)
@@ -1333,17 +1353,7 @@ fn sync_terminal_milestone_task_with_options(
                     finished_at,
                 )?;
             }
-            RunStatus::Failed => {
-                milestone_controller::sync_controller_task_claimed(
-                    &FsMilestoneControllerStore,
-                    base_dir,
-                    &milestone_id,
-                    &task_source.bead_id,
-                    project_id.as_str(),
-                    "workflow attempt failed; the bead-linked project remains claimed for resume",
-                    finished_at,
-                )?;
-            }
+            RunStatus::Failed => unreachable!(),
             RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => unreachable!(),
         }
     }
@@ -1360,10 +1370,10 @@ fn sync_terminal_milestone_task_with_options(
             run_id,
             task_source.plan_hash.as_deref(),
             started_at,
-            outcome,
+            TaskRunOutcome::Succeeded,
             outcome_detail,
             finished_at,
-            disposition,
+            CompletionMilestoneDisposition::ReconcileFromLineage,
         )?;
     } else {
         milestone_service::record_bead_completion_with_disposition(
@@ -1376,11 +1386,11 @@ fn sync_terminal_milestone_task_with_options(
             project_id.as_str(),
             run_id,
             task_source.plan_hash.as_deref(),
-            outcome,
+            TaskRunOutcome::Succeeded,
             outcome_detail.as_deref(),
             started_at,
             finished_at,
-            disposition,
+            CompletionMilestoneDisposition::ReconcileFromLineage,
         )?;
     }
 
@@ -5775,6 +5785,14 @@ mod tests {
             last_stage_resolution_snapshot: None,
         };
 
+        prepare_milestone_controller_for_execution(
+            base_dir,
+            &project_id,
+            &project_record,
+            MilestoneControllerExecutionOrigin::Start,
+        )
+        .expect("prepare milestone controller");
+
         let synced =
             sync_terminal_milestone_task(base_dir, &project_id, &project_record, &final_snapshot)
                 .expect("sync should succeed");
@@ -5803,10 +5821,10 @@ mod tests {
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
         assert_eq!(task_runs[0].plan_hash.as_deref(), Some("plan-v1"));
         assert!(task_runs[0].finished_at.is_some());
-        assert_eq!(
-            task_runs[0].outcome_detail.as_deref(),
-            Some("failed after review")
-        );
+        assert!(task_runs[0]
+            .outcome_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("error=failed after review")));
 
         let snapshot = load_snapshot(&FsMilestoneSnapshotStore, base_dir, &milestone.id)
             .expect("load milestone snapshot");
@@ -5820,6 +5838,112 @@ mod tests {
                 && event.from_state == Some(MilestoneStatus::Running)
                 && event.to_state == Some(MilestoneStatus::Paused)
         }));
+    }
+
+    #[test]
+    fn sync_terminal_milestone_task_escalates_failed_retries_after_max_retries() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let milestone_started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T09:59:00Z")
+            .expect("parse milestone_started_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
+            .expect("create project dir");
+
+        let milestone = create_milestone_with_plan(base_dir, milestone_started_at);
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: milestone_started_at,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: "ms-alpha".to_owned(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+
+        for attempt in 1..=3 {
+            let started_at =
+                milestone_started_at + chrono::Duration::minutes((attempt * 10) as i64);
+            let failed_at = started_at + chrono::Duration::minutes(5);
+            let run_id = format!("run-{attempt}");
+            let message = format!("attempt {attempt} failed");
+
+            std::fs::write(
+                base_dir.join(".ralph-burning/projects/bead-run/journal.ndjson"),
+                format!(
+                    "{{\"sequence\":1,\"timestamp\":\"2026-04-01T09:59:00Z\",\"event_type\":\"project_created\",\"details\":{{\"project_id\":\"bead-run\",\"flow\":\"docs_change\"}}}}\n{{\"sequence\":2,\"timestamp\":\"{}\",\"event_type\":\"run_started\",\"details\":{{\"run_id\":\"{}\",\"first_stage\":\"planning\",\"max_completion_rounds\":20}}}}\n{{\"sequence\":3,\"timestamp\":\"{}\",\"event_type\":\"run_failed\",\"details\":{{\"run_id\":\"{}\",\"stage_id\":\"review\",\"failure_class\":\"stage_failure\",\"message\":\"{}\",\"completion_rounds\":0,\"max_completion_rounds\":20}}}}",
+                    started_at.to_rfc3339(),
+                    run_id,
+                    failed_at.to_rfc3339(),
+                    run_id,
+                    message,
+                ),
+            )
+            .expect("write project journal");
+
+            let final_snapshot = RunSnapshot {
+                active_run: None,
+                interrupted_run: None,
+                status: RunStatus::Failed,
+                cycle_history: Vec::new(),
+                completion_rounds: 0,
+                max_completion_rounds: Some(20),
+                rollback_point_meta: Default::default(),
+                amendment_queue: Default::default(),
+                status_summary: message.clone(),
+                last_stage_resolution_snapshot: None,
+            };
+
+            let synced = sync_terminal_milestone_task(
+                base_dir,
+                &project_id,
+                &project_record,
+                &final_snapshot,
+            )
+            .expect("sync should succeed");
+            assert!(synced);
+        }
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator
+        );
+        assert_eq!(controller.active_task_id.as_deref(), Some("bead-run"));
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("failed 3 times")));
+
+        let task_runs = read_task_runs(&FsTaskRunLineageStore, base_dir, &milestone.id)
+            .expect("read task-runs");
+        assert_eq!(task_runs.len(), 3);
+        assert!(task_runs
+            .iter()
+            .all(|entry| entry.outcome == TaskRunOutcome::Failed));
+
+        let failed_events = read_journal(&FsMilestoneJournalStore, base_dir, &milestone.id)
+            .expect("read milestone journal")
+            .into_iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadFailed)
+            .count();
+        assert_eq!(failed_events, 3);
     }
 
     #[test]
@@ -6336,10 +6460,10 @@ mod tests {
         assert_eq!(task_runs[0].started_at, resumed_at);
         assert_eq!(task_runs[0].finished_at, Some(second_failed_at));
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
-        assert_eq!(
-            task_runs[0].outcome_detail.as_deref(),
-            Some("resumed attempt failed")
-        );
+        assert!(task_runs[0]
+            .outcome_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("error=resumed attempt failed")));
 
         let snapshot = load_snapshot(&FsMilestoneSnapshotStore, base_dir, &milestone.id)
             .expect("load milestone snapshot");
@@ -7333,10 +7457,9 @@ mod tests {
             .expect("read task-runs after repaired sync");
         assert_eq!(task_runs.len(), 1);
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
-        assert_eq!(
-            task_runs[0].outcome_detail.as_deref(),
-            Some("failed (interrupted by termination signal)")
-        );
+        assert!(task_runs[0].outcome_detail.as_deref().is_some_and(
+            |detail| detail.contains("error=failed (interrupted by termination signal)")
+        ));
     }
 
     #[test]
@@ -7470,9 +7593,10 @@ mod tests {
             .expect("read task-runs after repaired sync");
         assert_eq!(task_runs.len(), 1);
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
-        assert_eq!(
-            task_runs[0].outcome_detail.as_deref(),
-            Some("failed (interrupted by daemon shutdown)")
+        assert!(
+            task_runs[0].outcome_detail.as_deref().is_some_and(
+                |detail| detail.contains("error=failed (interrupted by daemon shutdown)")
+            )
         );
     }
 

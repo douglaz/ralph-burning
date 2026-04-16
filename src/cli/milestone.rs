@@ -747,10 +747,23 @@ async fn execute_milestone_run(
                         });
                     }
                     RunStatus::Failed => {
+                        let controller =
+                            resolve_controller_for_next(base_dir, milestone_id).await?;
+                        let message = controller
+                            .last_transition_reason
+                            .clone()
+                            .unwrap_or_else(|| snapshot.status_summary.clone());
+                        let status = match controller.state {
+                            MilestoneControllerState::Blocked => MilestoneCommandStatus::Blocked,
+                            MilestoneControllerState::NeedsOperator => {
+                                MilestoneCommandStatus::NeedsOperator
+                            }
+                            _ => MilestoneCommandStatus::NeedsOperator,
+                        };
                         return Ok(MilestoneRunView {
                             milestone_id: milestone_id.to_string(),
-                            status: MilestoneCommandStatus::NeedsOperator,
-                            message: snapshot.status_summary,
+                            status,
+                            message,
                             bead: Some(bead),
                             project_id: Some(project_id.to_string()),
                         });
