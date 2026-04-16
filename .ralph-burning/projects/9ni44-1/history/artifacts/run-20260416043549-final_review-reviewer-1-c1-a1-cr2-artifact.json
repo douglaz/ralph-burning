@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T05:25:30.746902280Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 fix-now issues: the new `sync_import()` safety check does not survive process restarts, and the new health check still treats malformed `.beads/issues.jsonl` as healthy.\n\n## Amendments\n\n1. finding_summary: `BrMutationAdapter::sync_import()` only checks the adapter's in-memory dirty flag, so every fresh adapter instance is treated as clean even after a prior process crashed with unflushed `br` state. `BrMutationAdapter::new()` / `with_adapter()` always initialize `has_unsync_mutations` to `false` (src/adapters/br_process.rs:496-516), and `sync_import()` relies exclusively on `ensure_synced()` before running `br sync --import-only` (src/adapters/br_process.rs:529-543, 713-724). That means the documented recovery flow after `git pull` / failed-run restart can still import upstream JSONL over stale local mutations, which defeats the safety guarantee this bead is adding. severity: high. affected_files: src/adapters/br_process.rs. remediation_hint: persist or reconstruct pending-mutation state across restarts before allowing `sync_import()`, or narrow the API so import is rejected unless the caller has independently proven the workspace is clean.\n   Rationale: This is a core correctness issue in the newly added sync-safety API: the guard does not survive the exact crash/restart scenario the feature is meant to protect.\n2. finding_summary: The new beads health check never validates that `.beads/issues.jsonl` is actually valid JSONL. `check_beads_health_with()` only verifies that the file exists, is readable text, and lacks merge-marker lines before returning `Healthy` (src/adapters/br_health.rs:44-70). The new mutation guards in claim/reconciliation/propose-new-bead then trust that result (src/cli/project.rs:965-970, src/contexts/automation_runtime/success_reconciliation.rs:117-128, src/contexts/milestone_record/service.rs:2998-3004). A truncated or manually corrupted export without conflict markers will therefore still be mutated, even though malformed JSONL is one of the failure modes this bead is supposed to block. severity: medium. affected_files: src/adapters/br_health.rs, src/cli/project.rs, src/contexts/automation_runtime/success_reconciliation.rs, src/contexts/milestone_record/service.rs. remediation_hint: extend the health probe to parse each JSONL record or run a cheap `br` validation/read command and return a distinct unhealthy status for malformed exports.\n   Rationale: The current safety gate only catches one corruption shape (merge conflicts) and leaves another explicitly in-scope corruption mode unguarded.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

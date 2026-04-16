@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
     "started_at": "2026-04-16T04:35:49.747391164Z",
     "prompt_hash_at_cycle_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "prompt_hash_at_stage_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-2088a645",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "finding_summary: `BrMutationAdapter::sync_import()` only checks the adapter's in-memory dirty flag, so every fresh adapter instance is treated as clean even after a prior process crashed with unflushed `br` state. `BrMutationAdapter::new()` / `with_adapter()` always initialize `has_unsync_mutations` to `false` (src/adapters/br_process.rs:496-516), and `sync_import()` relies exclusively on `ensure_synced()` before running `br sync --import-only` (src/adapters/br_process.rs:529-543, 713-724). That means the documented recovery flow after `git pull` / failed-run restart can still import upstream JSONL over stale local mutations, which defeats the safety guarantee this bead is adding. severity: high. affected_files: src/adapters/br_process.rs. remediation_hint: persist or reconstruct pending-mutation state across restarts before allowing `sync_import()`, or narrow the API so import is rejected unless the caller has independently proven the workspace is clean.",
+        "created_at": "2026-04-16T05:31:08.839999092Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "808dab18e794994bfbed698526a596c3561621ec29370f1861e8b2de5d54460d"
+      },
+      {
+        "amendment_id": "fr-2-67d5a423",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "Missing test for `BrMutationAdapter::sync_import()` refusing to run when the adapter has pending (dirty) mutations. The doc comments and `ensure_synced` guard in `sync_import()` codify this as a key safety invariant, but no test exercises this rejection path. Add a test in `src/adapters/br_process.rs` that: (1) makes a mutation to set the dirty flag, (2) calls `sync_import()`, (3) asserts the call returns an error about pending mutations, and (4) verifies no subprocess was actually invoked via the command log.",
+        "created_at": "2026-04-16T05:31:08.840001577Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "7838f3a6b531ab246bc219c895c2931c5fdd1ac1d485385b8d3127a12413d9f0"
+      }
+    ],
     "processed_count": 3
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T04:53:20.429224818Z",
+    "resolved_at": "2026-04-16T05:20:56.904450270Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
