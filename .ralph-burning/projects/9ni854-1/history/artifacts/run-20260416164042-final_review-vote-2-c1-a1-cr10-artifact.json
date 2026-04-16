@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr10-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T21:35:34.759790729Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real defects in the failure reconciliation system. The first correctly identifies that Blocked state's transition validator is inconsistent with its new role carrying bead/task context. The second correctly identifies an overly strict crash-recovery path that ignores available durable identity sources.\n\n## Votes\n\n- `fr-10-a748fcc9`: Accept\n  Verified by reading the code. Blocked now accepts (Some, Some) bead/task pairs at line 1414-1420, but state_preserves_active_context (line 1485-1492) excludes Blocked and state_clears_active_context (line 1494-1502) includes it. The guard at line 1455 — `if !state_preserves_active_context(from_state) || state_clears_active_context(to_state) { return None; }` — short-circuits identity checks both FROM and TO Blocked. This means a Reconciling->Blocked or Blocked->Running transition with mismatched bead/task identifiers would pass validation silently. While current internal callers at line 1236 happen to pass correct identifiers, the validator's job is to enforce invariants defensively. The fix is straightforward: add Blocked-with-context to the preservation set.\n- `fr-10-61708381`: Accept\n  Verified by reading the code. In the None path at line 2143-2152, snapshot_attempt is hard-required via ok_or_else. However, durable_project_attempt_identity (line 124-146) and durable_lineage_attempt_identity (line 148-169) are both available and already computed for validation in the Some path. The Some(bound_run_id) path at lines 2120-2141 demonstrates the pattern of chaining multiple sources. In crash recovery, run.json may be stale or incomplete (snapshot comes from .ok() at line 1974), but the append-only journal and lineage files are more durable. When both durable sources agree on the same attempt identity, that's sufficient to proceed safely. The current code unnecessarily fails reconciliation in legitimate crash scenarios where only the snapshot is damaged.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 10
+}

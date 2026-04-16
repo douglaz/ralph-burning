@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr10-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T21:36:50.776021141Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 10/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-10-a748fcc9`\n- `fr-10-61708381`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-10-a748fcc9`\n\nfinding_summary: `MilestoneControllerState::Blocked` now accepts an active bead/task pair, but the transition validator still treats `Blocked` as a context-clearing state. Because `state_preserves_active_context()` excludes `Blocked` and `state_clears_active_context()` still includes it, transitions into and out of retry-blocked state no longer enforce that the same bead/project is preserved. A mismatched `Blocked -> Running` or `Reconciling -> Blocked` transition can therefore slip through without being rejected. See `src/contexts/milestone_record/controller.rs:1414-1500`.\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/controller.rs\nremediation_hint: Update the active-context preservation helpers (and add a regression test) so blocked retry states preserve bead/task identity the same way `Claimed`/`Running`/`Reconciling` do.\n\n### `fr-10-61708381`\n\nfinding_summary: In the `workflow_run_id == None` path, failure reconciliation hard-requires `run.json` to still carry `active_run`/`interrupted_run` and immediately raises `reconciliation_no_run_binding` when that snapshot metadata is missing. That is too strict for crash-recovery cases where the durable project journal and milestone lineage already agree on the current failed attempt. The code even computes `durable_project_attempt_identity()` / `durable_lineage_attempt_identity()` just above, but does not use them here. See `src/contexts/automation_runtime/daemon_loop.rs:2044-2080` and `src/contexts/automation_runtime/daemon_loop.rs:2143-2180`.\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs\nremediation_hint: When `workflow_run_id` is absent, fall back to the durable journal/lineage attempt identity if those sources agree, instead of requiring snapshot attempt metadata unconditionally.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 10
+}

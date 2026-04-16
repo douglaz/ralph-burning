@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T21:36:50.763289207Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness defects. The first leaves retry-blocked controller transitions under-validated after `Blocked` started carrying active context. The second rejects a recoverable failure-reconciliation path even when the durable journal and lineage already provide a consistent attempt identity.\n\n## Votes\n\n- `fr-10-a748fcc9`: Accept\n  `state_context_error_details()` now permits `Blocked` to hold both `active_bead_id` and `active_task_id`, and the resume path uses that state as a retry-in-progress context. But `transition_context_error_details()` still short-circuits preservation checks because `state_preserves_active_context()` excludes `Blocked` while `state_clears_active_context()` still includes it. As a result, transitions like `Reconciling -> Blocked` or `Blocked -> Running` can change bead/task identity without being rejected. That is a real controller-integrity bug, not a theoretical concern, and it should be fixed together with a regression test.\n- `fr-10-61708381`: Accept\n  In the `workflow_run_id == None` branch, the code immediately raises `reconciliation_no_run_binding` when `run.json` lacks `active_run` or `interrupted_run`, even though it has already derived durable attempt identities from the project journal and milestone lineage. When those durable sources agree on the same `(run_id, started_at)`, they are sufficient to identify the failed attempt for crash-recovery purposes, and the later code still requires a matching durable `run_failed` event before reconciling. Requiring snapshot metadata unconditionally therefore causes unnecessary `needs_operator` escalation in recoverable cases. The safe fix is to fall back only when the durable sources agree and to keep rejecting ambiguous cases.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}
