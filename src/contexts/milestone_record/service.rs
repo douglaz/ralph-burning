@@ -2094,6 +2094,28 @@ fn load_plan_bundle(
     Ok((bundle, plan_hash))
 }
 
+fn load_plan_bundle_for_lineage(
+    plan_store: &(impl MilestonePlanPort + ?Sized),
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<Option<(MilestoneBundle, String)>> {
+    match load_plan_bundle(plan_store, base_dir, milestone_id) {
+        Ok(bundle) => Ok(Some(bundle)),
+        Err(error) if should_fallback_for_lineage_plan_error(&error, milestone_id) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn should_fallback_for_lineage_plan_error(error: &AppError, milestone_id: &MilestoneId) -> bool {
+    match error {
+        AppError::Io(io_error) => io_error.kind() == std::io::ErrorKind::NotFound,
+        AppError::CorruptRecord { file, .. } => {
+            file.ends_with(&format!("milestones/{}/plan.json", milestone_id))
+        }
+        _ => false,
+    }
+}
+
 fn backfill_legacy_explicit_bead_flags(bundle: &mut MilestoneBundle, milestone_id: &MilestoneId) {
     let mut next_implicit_bead = 1usize;
 
@@ -2244,7 +2266,7 @@ pub fn read_bead_lineage(
     }
 
     let milestone = store.read_milestone_record(base_dir, milestone_id)?;
-    let current_plan = load_plan_bundle(plan_store, base_dir, milestone_id).ok();
+    let current_plan = load_plan_bundle_for_lineage(plan_store, base_dir, milestone_id)?;
     let current_plan = current_plan
         .as_ref()
         .map(|(bundle, plan_hash)| (bundle, plan_hash.as_str()));
@@ -2283,9 +2305,9 @@ pub fn bead_execution_history(
     let runs = find_runs_for_bead(lineage_store, base_dir, milestone_id, bead_id)?;
     let lineage = if runs.is_empty() {
         let milestone = store.read_milestone_record(base_dir, milestone_id)?;
-        match load_plan_bundle(plan_store, base_dir, milestone_id) {
-            Ok((bundle, _)) => build_bead_lineage_view(&milestone, &bundle, bead_id)?,
-            Err(_) => build_fallback_bead_lineage_view(&milestone, bead_id),
+        match load_plan_bundle_for_lineage(plan_store, base_dir, milestone_id)? {
+            Some((bundle, _)) => build_bead_lineage_view(&milestone, &bundle, bead_id)?,
+            None => build_fallback_bead_lineage_view(&milestone, bead_id),
         }
     } else {
         match shared_plan_hash_for_runs(&runs) {
@@ -2350,7 +2372,7 @@ pub fn list_tasks_for_milestone(
     milestone_id: &MilestoneId,
 ) -> AppResult<MilestoneTaskListView> {
     let milestone = store.read_milestone_record(base_dir, milestone_id)?;
-    let current_plan = load_plan_bundle(plan_store, base_dir, milestone_id).ok();
+    let current_plan = load_plan_bundle_for_lineage(plan_store, base_dir, milestone_id)?;
 
     let mut tasks = Vec::new();
     for project_id in project_store.list_project_ids(base_dir)? {
@@ -3270,6 +3292,59 @@ mod tests {
             F: FnOnce() -> AppResult<T>,
         {
             FsMilestoneSnapshotStore.with_milestone_write_lock(base_dir, milestone_id, operation)
+        }
+    }
+
+    struct FailingPlanReadStore {
+        error_kind: std::io::ErrorKind,
+    }
+
+    impl MilestonePlanPort for FailingPlanReadStore {
+        fn read_plan_json(
+            &self,
+            _base_dir: &Path,
+            _milestone_id: &MilestoneId,
+        ) -> AppResult<String> {
+            Err(std::io::Error::new(self.error_kind, "simulated plan read failure").into())
+        }
+
+        fn write_plan_json(
+            &self,
+            _base_dir: &Path,
+            _milestone_id: &MilestoneId,
+            _content: &str,
+        ) -> AppResult<()> {
+            unreachable!("write_plan_json is not used by this test helper")
+        }
+
+        fn read_plan_md(&self, _base_dir: &Path, _milestone_id: &MilestoneId) -> AppResult<String> {
+            unreachable!("read_plan_md is not used by this test helper")
+        }
+
+        fn write_plan_md(
+            &self,
+            _base_dir: &Path,
+            _milestone_id: &MilestoneId,
+            _content: &str,
+        ) -> AppResult<()> {
+            unreachable!("write_plan_md is not used by this test helper")
+        }
+
+        fn read_plan_shape(
+            &self,
+            _base_dir: &Path,
+            _milestone_id: &MilestoneId,
+        ) -> AppResult<String> {
+            unreachable!("read_plan_shape is not used by this test helper")
+        }
+
+        fn write_plan_shape(
+            &self,
+            _base_dir: &Path,
+            _milestone_id: &MilestoneId,
+            _content: &str,
+        ) -> AppResult<()> {
+            unreachable!("write_plan_shape is not used by this test helper")
         }
     }
 
@@ -10822,6 +10897,122 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn read_bead_lineage_propagates_non_not_found_plan_store_errors(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 20, 0)
+            .single()
+            .unwrap();
+        let record = create_milestone(
+            &FsMilestoneStore,
+            base,
+            CreateMilestoneInput {
+                id: "ms-alpha".to_owned(),
+                name: "Alpha".to_owned(),
+                description: "testing".to_owned(),
+            },
+            now,
+        )?;
+
+        let error = read_bead_lineage(
+            &FsMilestoneStore,
+            &FailingPlanReadStore {
+                error_kind: std::io::ErrorKind::PermissionDenied,
+            },
+            base,
+            &record.id,
+            "bead-1",
+            Some("plan-hash"),
+        )
+        .expect_err("permission failures should propagate");
+
+        assert!(
+            matches!(error, AppError::Io(io_error) if io_error.kind() == std::io::ErrorKind::PermissionDenied)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bead_execution_history_propagates_non_not_found_plan_store_errors(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 25, 0)
+            .single()
+            .unwrap();
+        let record = create_milestone(
+            &FsMilestoneStore,
+            base,
+            CreateMilestoneInput {
+                id: "ms-alpha".to_owned(),
+                name: "Alpha".to_owned(),
+                description: "testing".to_owned(),
+            },
+            now,
+        )?;
+
+        let error = bead_execution_history(
+            &FsMilestoneStore,
+            &FailingPlanReadStore {
+                error_kind: std::io::ErrorKind::PermissionDenied,
+            },
+            &FsTaskRunLineageStore,
+            base,
+            &record.id,
+            "bead-1",
+        )
+        .expect_err("permission failures should propagate");
+
+        assert!(
+            matches!(error, AppError::Io(io_error) if io_error.kind() == std::io::ErrorKind::PermissionDenied)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn list_tasks_for_milestone_propagates_non_not_found_plan_store_errors(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 30, 0)
+            .single()
+            .unwrap();
+        let record = create_milestone(
+            &FsMilestoneStore,
+            base,
+            CreateMilestoneInput {
+                id: "ms-alpha".to_owned(),
+                name: "Alpha".to_owned(),
+                description: "testing".to_owned(),
+            },
+            now,
+        )?;
+
+        let error = list_tasks_for_milestone(
+            &FsMilestoneStore,
+            &FailingPlanReadStore {
+                error_kind: std::io::ErrorKind::PermissionDenied,
+            },
+            &crate::adapters::fs::FsProjectStore,
+            base,
+            &record.id,
+        )
+        .expect_err("permission failures should propagate");
+
+        assert!(
+            matches!(error, AppError::Io(io_error) if io_error.kind() == std::io::ErrorKind::PermissionDenied)
+        );
         Ok(())
     }
 }

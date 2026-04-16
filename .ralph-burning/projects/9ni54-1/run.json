@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260415203322",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 9
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-8-e4025c8d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "finding_summary: `canonicalize_milestone_bead_ref` now treats every all-numeric dotted bead ref as a local short alias, which breaks matching when milestone IDs themselves are numeric.\nseverity: medium\naffected_files:\n- `src/contexts/milestone_record/bead_refs.rs:8-23`\n- `src/adapters/fs.rs:4371-4372`\n- `src/adapters/fs.rs:4997-4998`\n- `src/adapters/fs.rs:5180-5183`\nremediation_hint: Do not blindly prefix every numeric dotted ref. Either prove the dotted alias belongs to the current milestone (for example from the current plan/bead graph) before canonicalizing, or narrow the heuristic so fully qualified foreign numeric milestone refs are preserved.",
-        "created_at": "2026-04-16T00:34:54.307674311Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "0f44db8d6c468f4287bee622e53c91a2a4fcc2d35edef744040dd0528c1ff45a"
-      },
-      {
-        "amendment_id": "fr-8-f2b6e0b1",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "finding_summary: The new lineage queries silently swallow every `load_plan_bundle` failure and return fallback lineage instead of surfacing unexpected plan-store errors.\nseverity: low\naffected_files:\n- `src/contexts/milestone_record/service.rs:2247-2250`\n- `src/contexts/milestone_record/service.rs:2286-2288`\n- `src/contexts/milestone_record/service.rs:2352-2353`\nremediation_hint: Keep the current fallback for expected stale-plan cases, but propagate unrelated `AppError`s such as filesystem/permission failures so callers can distinguish \"plan unavailable/corrupt\" from \"the store is broken\".",
-        "created_at": "2026-04-16T00:34:54.307676405Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "5a84981e9711df0b30a5db3e8db4997d1f850077ae75d83d157cdf14553eae87"
-      }
-    ],
-    "processed_count": 18
+    "pending": [],
+    "processed_count": 20
   },
-  "status_summary": "running: final review restart round 9 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T00:19:18.516049580Z",

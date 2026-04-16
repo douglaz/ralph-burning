@@ -1,8 +1,20 @@
 use crate::contexts::milestone_record::model::MilestoneId;
 
 pub fn milestone_bead_refs_match(milestone_id: &MilestoneId, left: &str, right: &str) -> bool {
-    canonicalize_milestone_bead_ref(milestone_id, left)
-        == canonicalize_milestone_bead_ref(milestone_id, right)
+    let left = left.trim();
+    let right = right.trim();
+    if left == right {
+        return true;
+    }
+
+    let qualified_prefix = format!("{}.", milestone_id.as_str());
+    left.strip_prefix(&qualified_prefix)
+        .is_some_and(|short_ref| short_ref == right)
+        || right
+            .strip_prefix(&qualified_prefix)
+            .is_some_and(|short_ref| short_ref == left)
+        || canonicalize_milestone_bead_ref(milestone_id, left)
+            == canonicalize_milestone_bead_ref(milestone_id, right)
 }
 
 fn looks_like_short_dotted_bead_ref(bead_id: &str) -> bool {
@@ -12,12 +24,18 @@ fn looks_like_short_dotted_bead_ref(bead_id: &str) -> bool {
             .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
 }
 
+fn milestone_id_is_numeric(milestone_id: &MilestoneId) -> bool {
+    milestone_id.as_str().chars().all(|ch| ch.is_ascii_digit())
+}
+
 pub fn canonicalize_milestone_bead_ref(milestone_id: &MilestoneId, bead_id: &str) -> String {
     let trimmed = bead_id.trim();
     let qualified_prefix = format!("{}.", milestone_id.as_str());
     if trimmed.starts_with(&qualified_prefix) {
         trimmed.to_owned()
-    } else if !trimmed.contains('.') || looks_like_short_dotted_bead_ref(trimmed) {
+    } else if !trimmed.contains('.')
+        || (looks_like_short_dotted_bead_ref(trimmed) && !milestone_id_is_numeric(milestone_id))
+    {
         format!("{qualified_prefix}{trimmed}")
     } else {
         trimmed.to_owned()
@@ -65,6 +83,30 @@ mod tests {
             &milestone_id,
             "8.5.3",
             "9ni.8.5.3"
+        ));
+    }
+
+    #[test]
+    fn preserves_numeric_dotted_refs_for_numeric_milestone_ids() {
+        let milestone_id = MilestoneId::new("10").expect("milestone id");
+
+        assert_eq!(
+            canonicalize_milestone_bead_ref(&milestone_id, "8.5.3"),
+            "8.5.3"
+        );
+        assert_eq!(
+            canonicalize_milestone_bead_ref(&milestone_id, "10.8.5.3"),
+            "10.8.5.3"
+        );
+        assert!(milestone_bead_refs_match(
+            &milestone_id,
+            "8.5.3",
+            "10.8.5.3"
+        ));
+        assert!(!milestone_bead_refs_match(
+            &milestone_id,
+            "8.5.3",
+            "11.8.5.3"
         ));
     }
 
