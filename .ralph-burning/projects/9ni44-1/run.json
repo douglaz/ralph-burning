@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 13
+      "completion_round": 14
     },
     "started_at": "2026-04-16T04:35:49.747391164Z",
     "prompt_hash_at_cycle_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "prompt_hash_at_stage_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 12
+    "final_review_restart_count": 13
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 13,
+  "completion_rounds": 14,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-13-80401345",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 13,
+        "body": "finding_summary: `reconcile_success()` now blocks idempotent replay even when no new bead mutation is needed. The new preflight at `src/contexts/automation_runtime/success_reconciliation.rs:244-246` runs before `close_bead_idempotent()`, but that helper is explicitly read-first and returns early when `br show` says the bead is already closed (`src/contexts/automation_runtime/success_reconciliation.rs:424-426`). Even if that initial guard were moved, `sync_after_close()` still unconditionally health-gates and runs `sync_flush()` at `src/contexts/automation_runtime/success_reconciliation.rs:459-467` instead of using the new `sync_if_dirty()` path. In a crash-recovery replay where the prior close+sync already succeeded, an unrelated later conflict/malformed `.beads/issues.jsonl` now prevents milestone-state completion even though there is nothing left to mutate or flush. severity: medium. affected_files: [\"src/contexts/automation_runtime/success_reconciliation.rs\"]. remediation_hint: only gate the branch that will actually call `close_bead`, and use `sync_if_dirty()`/pending-mutation state for replay so already-closed, already-synced recoveries can still advance milestone state without requiring a clean export.",
+        "created_at": "2026-04-16T09:46:44.118694278Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "e8e41193aacd14208a4a7e9581152758475f3fee0dd6c8c07576cdfd427a9805"
+      },
+      {
+        "amendment_id": "fr-13-658a8d49",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 13,
+        "body": "finding_summary: `claim_bead_in_br()` skips the new health recheck on the recovered-claim short-circuit path. After `sync_if_dirty()` succeeds, lines `src/cli/project.rs:984-989` immediately return `Ok(())` when the recovered flush replayed `update_bead_status(<bead>, \"in_progress\")`. Unlike the normal explicit-claim path, which rechecks export health before its final sync at `src/cli/project.rs:992-1002`, this early return never verifies that the recovered `br sync --flush-only` left `.beads/issues.jsonl` in a safe state. If the replayed flush itself leaves conflict markers or malformed JSONL behind, the controller records a successful claim and proceeds with a corrupted bead export. severity: medium. affected_files: [\"src/cli/project.rs\"]. remediation_hint: run the same post-flush health guard before returning from the recovered-claim path, and add a regression test where the replayed `sync --flush-only` both replays the claim and corrupts `.beads/issues.jsonl`.",
+        "created_at": "2026-04-16T09:46:44.118697404Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "723574200c0c40c4df5fabdfff12ee29083b63661e156b66819043d0bf4a9f66"
+      }
+    ],
     "processed_count": 25
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 14 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T09:05:42.204963860Z",
+    "resolved_at": "2026-04-16T09:34:22.534474330Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
