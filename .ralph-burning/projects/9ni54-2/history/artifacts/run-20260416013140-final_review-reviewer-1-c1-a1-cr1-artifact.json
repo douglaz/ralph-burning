@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416013140-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416013140-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T01:48:33.542813951Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the current bead diff while excluding `.ralph-burning/` state. One fix-now issue found: the new `milestone bead-history` and `milestone tasks` handlers do not validate milestone existence up front, so missing milestones are misreported as corrupt records.\n\n## Amendments\n\n1. finding_summary: `milestone bead-history` and `milestone tasks` skip the upfront milestone existence check, so a missing milestone is reported as a corrupt record instead of the normal not-found error.\nseverity: medium\naffected_files:\n- src/cli/milestone.rs\nsupporting_references:\n- src/cli/milestone.rs:428-433\n- src/cli/milestone.rs:507-512\n- src/contexts/milestone_record/service.rs:2307-2324\n- src/contexts/milestone_record/service.rs:2374\n- src/adapters/fs.rs:3319-3330\nremediation_hint: Mirror `handle_show()` / `handle_status()` by calling `load_existing_milestone(&FsMilestoneStore, ...)` before invoking `load_bead_execution_history()` or `load_milestone_task_list()`.\nrepro:\n- `cargo run --quiet -- milestone tasks ms-notreal --json` -> `corrupt record in milestones/ms-notreal/milestone.toml: milestone.toml not found`\n- `cargo run --quiet -- milestone bead-history ms-notreal bead-1 --json` -> same corrupt-record error\n- `cargo run --quiet -- milestone show ms-notreal --json` -> `milestone 'ms-notreal' was not found under .ralph-burning/milestones/`\n   Rationale: This is a user-visible correctness regression in both newly added commands. The project prompt says to follow the existing `show`/`status` patterns, and those patterns guard missing milestones before calling into services that otherwise surface `CorruptRecord` for an absent `milestone.toml`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
