@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-plan_and_implement-c1-a1-cr8-artifact",
+  "payload_id": "run-20260415203322-plan_and_implement-c1-a1-cr8",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-16T00:19:18.401404695Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the remaining dotted bead-lineage regression by teaching milestone bead canonicalization to expand numeric short refs like `8.5.3` to the current milestone-qualified form while still leaving foreign qualified refs untouched. This restores correct attempt collapsing and bead-history lookup for mixed short/qualified task-run rows, and adds regression coverage in bead-ref canonicalization, task-run attempt collapsing, and bead execution history queries using the real `9ni.8.5.3`/`8.5.3` alias pair.\n\n## Steps\n\n1. [Completed] Inspected the milestone bead-reference canonicalization and the downstream task-run/query paths to confirm that dotted short refs were being treated as already qualified, which prevented `8.5.3` from matching `9ni.8.5.3`.\n2. [Completed] Patched `canonicalize_milestone_bead_ref()` so simple refs and numeric dotted aliases are canonicalized against the current milestone, while non-current qualified refs remain unchanged for backward compatibility.\n3. [Completed] Added regression coverage for the real dotted alias pair in bead-ref canonicalization, task-run attempt collapsing, and bead execution history lookup, then reran the required Rust and Nix validation gates on the final tree.\n\n## Validation Evidence\n\n- `cargo test canonicalizes_short_refs_and_numeric_aliases_without_rewriting_foreign_qualified_ids --lib` passed.\n- `cargo test same_attempt_accepts_short_and_qualified_bead_refs --lib` passed.\n- `cargo test collapse_task_run_attempts_merges_short_and_qualified_numeric_bead_refs --lib` passed.\n- `cargo test find_runs_for_bead_collapses_short_and_qualified_refs_for_same_attempt --lib` passed.\n- `cargo fmt --check` passed.\n- `cargo test` passed on the final tree.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed and `result` now resolves to `/nix/store/62170w7cg3xmd7967qk4i46z8hi66irk-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`.\n\n## Outstanding Risks\n\n- Historical bead titles and acceptance criteria are still unavailable after a milestone replan because the system does not persist versioned plan snapshots; when persisted provenance no longer matches the live plan, lineage intentionally falls back to durable milestone/bead IDs without reconstructing old plan metadata.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 8
+}

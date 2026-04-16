@@ -1172,8 +1172,8 @@ mod tests {
     {
         let started_at = Utc::now();
         let first = TaskRunEntry {
-            milestone_id: "ms-1".to_owned(),
-            bead_id: "bead-1".to_owned(),
+            milestone_id: "9ni".to_owned(),
+            bead_id: "8.5.3".to_owned(),
             project_id: "project-1".to_owned(),
             run_id: Some("run-1".to_owned()),
             plan_hash: None,
@@ -1184,13 +1184,51 @@ mod tests {
             task_id: None,
         };
         let second = TaskRunEntry {
-            bead_id: "ms-1.bead-1".to_owned(),
+            bead_id: "9ni.8.5.3".to_owned(),
             outcome: TaskRunOutcome::Succeeded,
             finished_at: Some(started_at + chrono::Duration::seconds(1)),
             ..first.clone()
         };
 
         assert!(TaskRunEntry::same_attempt(&first, &second));
+        Ok(())
+    }
+
+    #[test]
+    fn collapse_task_run_attempts_merges_short_and_qualified_numeric_bead_refs(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let finished_at = started_at + chrono::Duration::seconds(5);
+        let collapsed = collapse_task_run_attempts(vec![
+            TaskRunEntry {
+                milestone_id: "9ni".to_owned(),
+                bead_id: "8.5.3".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at,
+                finished_at: None,
+                task_id: None,
+            },
+            TaskRunEntry {
+                milestone_id: "9ni".to_owned(),
+                bead_id: "9ni.8.5.3".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: Some("completed".to_owned()),
+                started_at,
+                finished_at: Some(finished_at),
+                task_id: None,
+            },
+        ]);
+
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].bead_id, "9ni.8.5.3");
+        assert_eq!(collapsed[0].outcome, TaskRunOutcome::Succeeded);
         Ok(())
     }
 

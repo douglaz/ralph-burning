@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260415203322",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 8
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-7-4d952349",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "finding_summary: The new bead-alias matching only adds the milestone prefix when the bead id contains no dot, so short-form ids like `8.5.3` are treated as already-qualified and no longer match `9ni.8.5.3` [src/contexts/milestone_record/bead_refs.rs:8-15]. That bad canonicalization now feeds `TaskRunEntry::same_attempt()` / `canonical_task_run_bead_ref()` and `FsTaskRunLineageStore::find_runs_for_bead()`, so mixed short/qualified task-run rows for the same bead will not collapse together and `bead_execution_history()` can return duplicate or missing attempts for the dot-separated bead ids this repo actually uses [src/contexts/milestone_record/model.rs:452-472, src/adapters/fs.rs:5173-5183]. severity: high. affected_files: [\"src/contexts/milestone_record/bead_refs.rs\", \"src/contexts/milestone_record/model.rs\", \"src/adapters/fs.rs\"]. remediation_hint: canonicalize short dotted aliases against the current milestone instead of treating every dotted id as foreign/fully-qualified, and add coverage for a real alias pair such as `9ni.8.5.3` versus `8.5.3`.",
-        "created_at": "2026-04-16T00:06:45.349290318Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "0329dc9b8ca2f3067b21795670061ba019e6aebb8826aecb2b0e85ed6a1fba93"
-      }
-    ],
-    "processed_count": 17
+    "pending": [],
+    "processed_count": 18
   },
-  "status_summary": "running: final review restart round 8 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-15T23:53:30.160881984Z",

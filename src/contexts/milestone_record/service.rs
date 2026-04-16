@@ -7169,7 +7169,7 @@ mod tests {
             &store,
             base,
             CreateMilestoneInput {
-                id: "mixed-bead-ref-query-test".to_owned(),
+                id: "9ni".to_owned(),
                 name: "Mixed Bead Ref Query Test".to_owned(),
                 description: "short and qualified bead refs should collapse to one attempt"
                     .to_owned(),
@@ -7185,7 +7185,7 @@ mod tests {
         let raw_lines = [
             serde_json::to_string(&TaskRunEntry {
                 milestone_id: record.id.to_string(),
-                bead_id: "bead-1".to_owned(),
+                bead_id: "8.5.3".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: None,
@@ -7197,7 +7197,7 @@ mod tests {
             })?,
             serde_json::to_string(&TaskRunEntry {
                 milestone_id: record.id.to_string(),
-                bead_id: format!("{}.bead-1", record.id),
+                bead_id: format!("{}.8.5.3", record.id),
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
@@ -7211,8 +7211,9 @@ mod tests {
         .join("\n");
         std::fs::write(&task_runs_path, format!("{raw_lines}\n"))?;
 
-        let runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
+        let runs = find_runs_for_bead(&lineage_store, base, &record.id, "8.5.3")?;
         assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].bead_id, format!("{}.8.5.3", record.id));
         assert_eq!(runs[0].outcome, TaskRunOutcome::Succeeded);
         assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v1"));
         assert_eq!(runs[0].outcome_detail.as_deref(), Some("completed"));
