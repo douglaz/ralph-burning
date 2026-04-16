@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T21:14:16.438756968Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real replay/idempotence defects in failure reconciliation. One derives retry ordinals from unstable journal append order after historical repair, and the other lets CLI replay rewrite already-recorded failure detail with a synthetic helper id.\n\n## Votes\n\n- `fr-9-8cf7ea9c`: Accept\n  `failure_attempt_events` returns `BeadFailed` rows in raw journal order, and `failure_attempt_number` turns the matching row's `.position()` directly into the retry ordinal. `repair_historical_failure_event` appends a missing older failure to the end of the journal, so once history has been backfilled, a replay of a later failed attempt can be assigned the wrong ordinal solely because the journal is no longer chronological. That wrong ordinal then flows into `failure_outcome` and the regenerated `attempt=` detail, so the replay can be downgraded from an operator escalation back to a retryable failure and rewrite durable metadata incorrectly.\n- `fr-9-d41dec72`: Accept\n  The CLI path passes `cli-sync:<project>` into `reconcile_failure_sync`, which eagerly formats `outcome_detail` from that task id before it knows whether the failure was already recorded. In the `already_recorded` branch it still calls `repair_task_run_with_disposition`, and the lineage repair path replaces the stored terminal `outcome_detail` when the new value differs; the repaired completion event is then written back to the journal as well. That makes a replay non-idempotent and can overwrite the durable failure detail with the synthetic CLI helper id instead of preserving the original daemon-authored provenance. The structured `task_id` field may survive when already populated, but the amendment's core defect is real: replay should not mutate an already-recorded attempt's provenance/detail payload.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

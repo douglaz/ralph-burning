@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 9
+      "completion_round": 10
     },
     "started_at": "2026-04-16T16:40:42.098700951Z",
     "prompt_hash_at_cycle_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "prompt_hash_at_stage_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 8
+    "final_review_restart_count": 9
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 9,
+  "completion_rounds": 10,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-9-8cf7ea9c",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "finding_summary: `reconcile_failure_sync` derives an already-recorded attempt's ordinal from the insertion order of `BeadFailed` journal rows. When `repair_historical_failure_event` appends a missing older failure after later failures already exist, `failure_attempt_events` returns those rows in on-disk order and `failure_attempt_number` turns that order directly into `attempt_number`. A replay of a later failure can then be mis-numbered, which feeds the wrong value into `failure_outcome` and can downgrade a replayed third failure back to `Retryable` while also rewriting the durable `attempt=` detail incorrectly.\nfile_refs: src/contexts/automation_runtime/failure_reconciliation.rs:457-490, src/contexts/automation_runtime/failure_reconciliation.rs:580-614, src/contexts/automation_runtime/failure_reconciliation.rs:805-822\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs\nremediation_hint: derive ordinals from a stable attempt key such as `started_at` (or keep repaired historical events chronologically ordered) before converting them into retry counts.",
+        "created_at": "2026-04-16T21:14:16.452995128Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "0118abcf06c624151d1ca6ed4cbcb6a9943e7205b029d96ee23536016c6ef72e"
+      },
+      {
+        "amendment_id": "fr-9-d41dec72",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "finding_summary: The CLI failure-sync path now calls `reconcile_failure_sync` with a synthetic task id (`cli-sync:<project>`). On any replay where the daemon already recorded the failed attempt, the `already_recorded` branch rebuilds `outcome_detail` from that synthetic id and pushes it through `repair_task_run_with_disposition`, which replaces the original daemon task id in both the lineage row and the `BeadFailed` journal payload. That makes a replay non-idempotent and destroys the real task provenance this feature is supposed to preserve.\nfile_refs: src/cli/run.rs:1313-1337, src/contexts/automation_runtime/failure_reconciliation.rs:177-179, src/contexts/automation_runtime/failure_reconciliation.rs:275-291, src/contexts/milestone_record/service.rs:2747-2824\naffected_files:\n- src/cli/run.rs\n- src/contexts/automation_runtime/failure_reconciliation.rs\n- src/contexts/milestone_record/service.rs\nremediation_hint: when a failed attempt is already recorded, preserve the existing task id/outcome detail instead of replacing it with the CLI helper id, or make the CLI replay path a backfill-only repair that never overwrites prior provenance.",
+        "created_at": "2026-04-16T21:14:16.453000508Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "54754c58ac27dd9ab72f7f445440649d4588b87a16538912ed307d61e389274b"
+      }
+    ],
     "processed_count": 20
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 10 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T20:33:05.521124149Z",
+    "resolved_at": "2026-04-16T21:01:18.971006937Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
