@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416151509-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260416151509-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T16:09:23.892514670Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real defects. The first identifies inaccurate reconciliation telemetry caused by inferring counts from durable-state deltas rather than the reconciliation actions that actually succeeded. The second identifies an observability/privacy regression where tracing now records full `br` command lines, including unbounded user-authored payloads, in the `operation` field.\n\n## Votes\n\n- `fr-2-91055575`: Accept\n  `reconcile_success` currently derives `beads_created` and `planned_elsewhere_mappings` from before/after persisted state snapshots. That is not equivalent to the reconciliation work that just succeeded. In `handle_propose_new_bead`, the recovery path can append a `ProposedBeadCreated` journal event while leaving `created_in_pass` at 0, so the summary can report a bead creation even though no new bead was created. Likewise, `verify_planned_elsewhere_after_success` persists a verified mapping by rewriting an existing mapping identity, and the journal rebuild logic collapses to the latest record, so the mapping count can remain unchanged even when verification succeeded. This makes the emitted summary materially inaccurate; explicit counters from the reconciliation routines are the correct fix.\n- `fr-2-bb270f83`: Accept\n  `BrCommand::display_string()` serializes the full argv, and `exec_read`, `exec_mutation`, and `exec_json` place that string into tracing span fields. That means commands such as `create` with `--description=...` and `comments add <id> <text>` leak arbitrary free-form user content into logs under `operation`, with no bounding or redaction. This is a real robustness and logging-hygiene problem: it expands log volume unpredictably and can expose user-authored content where a stable command identifier was expected. Restricting `operation` to a bounded command/subcommand name is the safer design.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

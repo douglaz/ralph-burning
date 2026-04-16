@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416151509-final_review-arbiter-c1-a1-cr3-artifact",
+  "payload_id": "run-20260416151509-final_review-arbiter-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T16:34:59.059547345Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment because its core premise was false: `load_controller` is not purely internal/read-only. It can repair persisted state from the transition journal, and the code plus targeted test coverage support keeping its observability distinct from the debug-level read-only helpers.\n\n## Rulings\n\n- `fr-3-9b4d5e90`: Reject\n  Reject. The amendment depends on the claim that `load_controller` is a pure read, but the code shows it is not. `load_controller` calls `hydrate_controller_locked`, and that helper explicitly rewrites persisted controller state when the hydrated state derived from the journal does not match `controller.json` (`src/contexts/milestone_record/controller.rs:905-938`, especially lines 935-937 calling `store.write_controller(...)`). That recovery behavior is not hypothetical; it is covered by `load_controller_recovers_from_journal_when_state_file_is_stale` (`src/contexts/milestone_record/controller.rs:1875-1923`). The cited peers in `service.rs` are genuinely read-only helpers, so their `debug` level is not a reliable precedent for this function. The tipping evidence is the write-on-recovery path: because `load_controller` can repair persisted state under the controller lock, downgrading its span and success log to `debug` is not technically justified.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

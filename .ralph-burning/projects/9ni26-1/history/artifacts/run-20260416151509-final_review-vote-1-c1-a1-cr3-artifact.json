@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416151509-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260416151509-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T16:34:15.557493475Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the proposed logging-level downgrade because its core premise is incorrect: `load_controller` is not a pure read. It can rewrite persisted controller state during hydration/recovery, so treating it as equivalent to the debug-level pure read helpers would reduce visibility for a state-mutating operation.\n\n## Votes\n\n- `fr-3-9b4d5e90`: Reject\n  `load_controller` is not just an internal read helper. It calls `hydrate_controller_locked`, which compares `controller.json` against the transition journal and, when they differ, calls `store.write_controller(...)` to repair persisted state (`src/contexts/milestone_record/controller.rs:935-938`). The test `load_controller_recovers_from_journal_when_state_file_is_stale` (`src/contexts/milestone_record/controller.rs:1875-1923`) exists specifically to verify that recovery behavior. That makes this materially different from the cited peer functions in `service.rs`, which are straightforward read/load operations and legitimately use `debug`. Downgrading both the span and success log to `debug` would reduce observability for a function that can perform state repair, so the proposed amendment is not technically justified as written.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

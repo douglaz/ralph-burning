@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416151509-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416151509-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T15:41:01.259729715Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-38f72f28`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-38f72f28`\n\nfinding_summary: `nix build` currently fails because `check_available_times_out_when_version_probe_hangs` depends on an external `sleep` command inside its fake `br --version` script. In the Nix sandbox that binary is unavailable, so the probe exits immediately and the assertion sees a non-timeout error instead of `BrError::BrTimeout`. affected_files: [`src/adapters/br_process.rs:1974`, `src/adapters/br_process.rs:1980`]. remediation_hint: rewrite the hanging fake `br` probe to avoid external binaries entirely (for example, use a pure-shell infinite loop or a small Rust helper) so the timeout behavior is deterministic under `nix build`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}
