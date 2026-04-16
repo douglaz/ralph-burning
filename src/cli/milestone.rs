@@ -429,7 +429,9 @@ async fn handle_bead_history(milestone_id: String, bead_id: String, json: bool) 
     let current_dir = std::env::current_dir()?;
     validate_workspace(&current_dir)?;
 
+    let store = FsMilestoneStore;
     let milestone_id = MilestoneId::new(milestone_id)?;
+    load_existing_milestone(&store, &current_dir, &milestone_id)?;
     let history = load_bead_execution_history(&current_dir, &milestone_id, &bead_id)?;
 
     if json {
@@ -508,7 +510,9 @@ async fn handle_tasks(milestone_id: String, json: bool) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
     validate_workspace(&current_dir)?;
 
+    let store = FsMilestoneStore;
     let milestone_id = MilestoneId::new(milestone_id)?;
+    load_existing_milestone(&store, &current_dir, &milestone_id)?;
     let tasks = load_milestone_task_list(&current_dir, &milestone_id)?;
 
     if json {
@@ -992,7 +996,7 @@ fn print_bead_execution_history(history: &BeadExecutionHistoryView) {
             run.project_id,
             run.run_id.as_deref().unwrap_or("-"),
             run.outcome,
-            run.started_at,
+            run.started_at.to_rfc3339(),
             run.finished_at
                 .as_ref()
                 .map(DateTime::<Utc>::to_rfc3339)
