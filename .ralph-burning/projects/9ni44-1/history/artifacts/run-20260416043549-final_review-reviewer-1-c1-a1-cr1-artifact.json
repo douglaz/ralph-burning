@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T04:56:31.879874792Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the changed br health/process code and the affected milestone mutation paths, and found two fix-now correctness gaps.\n\n## Amendments\n\n1. finding_summary: The new beads health guard only runs inside `handle_propose_new_bead`; the normal bead-closing and bead-claiming flows still mutate `.beads` without any preflight validation.\nseverity: high\naffected_files:\n- src/contexts/milestone_record/service.rs:2998-3029\n- src/contexts/automation_runtime/success_reconciliation.rs:204-216\n- src/contexts/automation_runtime/success_reconciliation.rs:377-430\n- src/cli/project.rs:964-981\nremediation_hint: Move the health check into a shared helper and invoke it before every milestone mutation entrypoint that updates or closes bead state, not just before proposed-bead creation, so conflicted or missing `.beads/issues.jsonl` stops the operation before `br update`/`br close`/`br sync` runs.\n   Rationale: This bead is supposed to prevent mutations on corrupted bead state, but the common success-reconciliation and claim paths still bypass the new guard entirely. A repo with merge markers or a missing export can still be mutated through the normal workflow.\n2. finding_summary: `check_beads_health()` misidentifies ordinary `issues.jsonl` content as a merge conflict because it uses raw substring checks for `<<<<<<<`, `=======`, and `>>>>>>>`, and it also collapses every non-`NotFound` read failure into `ConflictMarkers`.\nseverity: medium\naffected_files:\n- src/adapters/br_health.rs:25-31\n- src/adapters/br_health.rs:45-46\nremediation_hint: Detect real conflict-marker lines instead of any substring match, and preserve other read failures as distinct errors so operators are not told to resolve a nonexistent merge conflict.\n   Rationale: Bead descriptions/comments are arbitrary text serialized into JSON strings, so valid content containing `=======` or similar tokens will now block all mutations with a false conflict error. The same code also turns permission/encoding/read failures into the wrong operator guidance.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
