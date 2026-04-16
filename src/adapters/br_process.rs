@@ -16,6 +16,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::adapters::br_health::{
@@ -652,52 +653,99 @@ impl<R: ProcessRunner> BrAdapter<R> {
 
     /// Execute a read-only br command and return raw output.
     pub async fn exec_read(&self, cmd: &BrCommand) -> Result<BrOutput, BrError> {
-        let args = cmd.build_args();
-        let output = self
-            .runner
-            .run(args, self.read_timeout, self.working_dir.as_deref())
-            .await?;
+        let operation = cmd.display_string();
+        async move {
+            let args = cmd.build_args();
+            let output = self
+                .runner
+                .run(args, self.read_timeout, self.working_dir.as_deref())
+                .await?;
 
-        if output.exit_code != 0 {
-            return Err(BrError::BrExitError {
-                exit_code: output.exit_code,
-                stdout: output.stdout,
-                stderr: output.stderr,
-                command: cmd.display_string(),
-            });
+            if output.exit_code != 0 {
+                return Err(BrError::BrExitError {
+                    exit_code: output.exit_code,
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                    command: cmd.display_string(),
+                });
+            }
+
+            Ok(output)
         }
-
-        Ok(output)
+        .instrument(tracing::info_span!(
+            "exec_read",
+            operation = operation.as_str()
+        ))
+        .await
     }
 
     /// Execute a mutation br command and return raw output.
     pub async fn exec_mutation(&self, cmd: &BrCommand) -> Result<BrOutput, BrError> {
-        let args = cmd.build_args();
-        let output = self
-            .runner
-            .run(args, self.mutation_timeout, self.working_dir.as_deref())
-            .await?;
+        let operation = cmd.display_string();
+        let span_operation = operation.clone();
+        async move {
+            let start = Instant::now();
+            let args = cmd.build_args();
+            let output = self
+                .runner
+                .run(args, self.mutation_timeout, self.working_dir.as_deref())
+                .await?;
 
-        if output.exit_code != 0 {
-            return Err(BrError::BrExitError {
-                exit_code: output.exit_code,
-                stdout: output.stdout,
-                stderr: output.stderr,
-                command: cmd.display_string(),
-            });
+            let duration_ms = start.elapsed().as_millis() as u64;
+            if output.exit_code != 0 {
+                tracing::warn!(
+                    operation = operation.as_str(),
+                    outcome = "failure",
+                    duration_ms = duration_ms,
+                    "br exec_mutation returned non-zero exit status"
+                );
+                return Err(BrError::BrExitError {
+                    exit_code: output.exit_code,
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                    command: cmd.display_string(),
+                });
+            }
+
+            tracing::info!(
+                operation = operation.as_str(),
+                outcome = "success",
+                duration_ms = duration_ms,
+                "br exec_mutation completed"
+            );
+            Ok(output)
         }
-
-        Ok(output)
+        .instrument(tracing::info_span!(
+            "exec_mutation",
+            operation = span_operation.as_str()
+        ))
+        .await
     }
 
     /// Execute a read-only command and parse the JSON output.
     pub async fn exec_json<T: DeserializeOwned>(&self, cmd: &BrCommand) -> Result<T, BrError> {
-        let output = self.exec_read(cmd).await?;
-        serde_json::from_str(&output.stdout).map_err(|e| BrError::BrParseError {
-            details: e.to_string(),
-            raw_output: output.stdout,
-            command: cmd.display_string(),
-        })
+        let operation = cmd.display_string();
+        let span_operation = operation.clone();
+        async move {
+            let output = self.exec_read(cmd).await?;
+            let parsed =
+                serde_json::from_str(&output.stdout).map_err(|e| BrError::BrParseError {
+                    details: e.to_string(),
+                    raw_output: output.stdout,
+                    command: cmd.display_string(),
+                })?;
+            tracing::debug!(
+                operation = operation.as_str(),
+                outcome = "success",
+                "parsed br JSON output"
+            );
+            Ok(parsed)
+        }
+        .instrument(tracing::debug_span!(
+            "exec_json",
+            operation = span_operation.as_str()
+        ))
+        .await
     }
 }
 
@@ -1250,22 +1298,49 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         if let Some(desc) = description {
             cmd = cmd.kv("description", desc);
         }
-        self.exec_tracked_mutation("create_bead", None, None, &cmd)
-            .await
+        let output = self
+            .exec_tracked_mutation("create_bead", None, None, &cmd)
+            .await?;
+        tracing::info!(
+            operation = "create_bead",
+            outcome = "success",
+            title = title,
+            bead_type = bead_type,
+            priority = priority,
+            "created bead"
+        );
+        Ok(output)
     }
 
     /// Update the status of an existing bead.
     pub async fn update_bead_status(&self, id: &str, status: &str) -> Result<BrOutput, BrError> {
         let cmd = BrCommand::update_status(id, status);
-        self.exec_tracked_mutation("update_bead_status", Some(id), Some(status), &cmd)
-            .await
+        let output = self
+            .exec_tracked_mutation("update_bead_status", Some(id), Some(status), &cmd)
+            .await?;
+        tracing::info!(
+            operation = "update_bead_status",
+            bead_id = id,
+            status = status,
+            outcome = "success",
+            "updated bead status"
+        );
+        Ok(output)
     }
 
     /// Close a bead with a reason.
     pub async fn close_bead(&self, id: &str, reason: &str) -> Result<BrOutput, BrError> {
         let cmd = BrCommand::close(id, reason);
-        self.exec_tracked_mutation("close_bead", Some(id), None, &cmd)
-            .await
+        let output = self
+            .exec_tracked_mutation("close_bead", Some(id), None, &cmd)
+            .await?;
+        tracing::info!(
+            operation = "close_bead",
+            bead_id = id,
+            outcome = "success",
+            "closed bead"
+        );
+        Ok(output)
     }
 
     /// Add a dependency: `from_id` depends on `depends_on_id`.
@@ -1275,8 +1350,17 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         depends_on_id: &str,
     ) -> Result<BrOutput, BrError> {
         let cmd = BrCommand::dep_add(from_id, depends_on_id);
-        self.exec_tracked_mutation("add_dependency", Some(from_id), None, &cmd)
-            .await
+        let output = self
+            .exec_tracked_mutation("add_dependency", Some(from_id), None, &cmd)
+            .await?;
+        tracing::info!(
+            operation = "add_dependency",
+            bead_id = from_id,
+            dependency_id = depends_on_id,
+            outcome = "success",
+            "added bead dependency"
+        );
+        Ok(output)
     }
 
     /// Remove a dependency between two beads.
@@ -1306,9 +1390,13 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// safely re-run `br sync --flush-only` without losing the local mutation
     /// intent.
     pub async fn sync_flush(&self) -> Result<BrOutput, BrError> {
-        let _operation_guard = self.operation_lock.lock().await;
-        let _repo_guard = self.acquire_repo_operation_lock()?;
-        self.sync_flush_locked().await
+        async {
+            let _operation_guard = self.operation_lock.lock().await;
+            let _repo_guard = self.acquire_repo_operation_lock()?;
+            self.sync_flush_locked().await
+        }
+        .instrument(tracing::info_span!("sync_flush", operation = "sync_flush"))
+        .await
     }
 
     async fn sync_flush_locked(&self) -> Result<BrOutput, BrError> {
@@ -1507,41 +1595,48 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// unreadable, or conflict-marked `.beads/issues.jsonl` state is rejected
     /// before the import subprocess can run.
     pub async fn sync_import(&self) -> Result<BrOutput, BrError> {
-        let _operation_guard = self.operation_lock.lock().await;
-        let _repo_guard = self.acquire_repo_operation_lock()?;
-        self.ensure_synced_locked()?;
-        self.ensure_healthy_beads_for_import()?;
+        async {
+            let _operation_guard = self.operation_lock.lock().await;
+            let _repo_guard = self.acquire_repo_operation_lock()?;
+            self.ensure_synced_locked()?;
+            self.ensure_healthy_beads_for_import()?;
 
-        let cmd = BrCommand::sync_import();
-        let start = Instant::now();
-        let result = self.adapter.exec_mutation(&cmd).await;
-        let duration_ms = start.elapsed().as_millis() as u64;
+            let cmd = BrCommand::sync_import();
+            let start = Instant::now();
+            let result = self.adapter.exec_mutation(&cmd).await;
+            let duration_ms = start.elapsed().as_millis() as u64;
 
-        match &result {
-            Ok(_) => {
-                tracing::info!(
-                    operation = "sync_import",
-                    outcome = "success",
-                    duration_ms = duration_ms,
-                    "br sync import completed"
-                );
+            match &result {
+                Ok(_) => {
+                    tracing::info!(
+                        operation = "sync_import",
+                        outcome = "success",
+                        duration_ms = duration_ms,
+                        "br sync import completed"
+                    );
+                }
+                Err(err) => {
+                    let stderr_content = match err {
+                        BrError::BrExitError { stderr, .. } => stderr.as_str(),
+                        _ => "",
+                    };
+                    tracing::warn!(
+                        operation = "sync_import",
+                        outcome = "failure",
+                        duration_ms = duration_ms,
+                        stderr = stderr_content,
+                        "br sync import failed"
+                    );
+                }
             }
-            Err(err) => {
-                let stderr_content = match err {
-                    BrError::BrExitError { stderr, .. } => stderr.as_str(),
-                    _ => "",
-                };
-                tracing::warn!(
-                    operation = "sync_import",
-                    outcome = "failure",
-                    duration_ms = duration_ms,
-                    stderr = stderr_content,
-                    "br sync import failed"
-                );
-            }
+
+            result
         }
-
-        result
+        .instrument(tracing::info_span!(
+            "sync_import",
+            operation = "sync_import"
+        ))
+        .await
     }
 }
 

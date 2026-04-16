@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::{Digest, Sha256};
+use tracing::Instrument;
 
 use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary};
@@ -1313,6 +1314,7 @@ pub struct CreateMilestoneInput {
 }
 
 /// Create a new milestone with initial snapshot and journal event.
+#[tracing::instrument(skip_all, fields(milestone_id = %input.id))]
 pub fn create_milestone(
     store: &impl MilestoneStorePort,
     base_dir: &Path,
@@ -1334,6 +1336,11 @@ pub fn create_milestone(
     let journal_line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
 
     store.create_milestone_atomic(base_dir, &record, &snapshot, &journal_line)?;
+    tracing::info!(
+        operation = "create_milestone",
+        outcome = "success",
+        "created milestone"
+    );
     Ok(record)
 }
 
@@ -1466,32 +1473,55 @@ fn reconcile_record_description(
 }
 
 /// Load a milestone record by ID.
+#[tracing::instrument(skip_all, level = "debug", fields(milestone_id = %milestone_id))]
 pub fn load_milestone(
     store: &impl MilestoneStorePort,
     base_dir: &Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<MilestoneRecord> {
-    store.read_milestone_record(base_dir, milestone_id)
+    let milestone = store.read_milestone_record(base_dir, milestone_id)?;
+    tracing::debug!(
+        operation = "load_milestone",
+        outcome = "success",
+        "loaded milestone record"
+    );
+    Ok(milestone)
 }
 
 /// Load a milestone's current status snapshot.
+#[tracing::instrument(skip_all, level = "debug", fields(milestone_id = %milestone_id))]
 pub fn load_snapshot(
     snapshot_store: &impl MilestoneSnapshotPort,
     base_dir: &Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<MilestoneSnapshot> {
-    snapshot_store.read_snapshot(base_dir, milestone_id)
+    let snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+    tracing::debug!(
+        operation = "load_snapshot",
+        outcome = "success",
+        "loaded milestone snapshot"
+    );
+    Ok(snapshot)
 }
 
 /// List all milestone IDs in the workspace.
+#[tracing::instrument(skip_all, level = "debug")]
 pub fn list_milestones(
     store: &impl MilestoneStorePort,
     base_dir: &Path,
 ) -> AppResult<Vec<MilestoneId>> {
-    store.list_milestone_ids(base_dir)
+    let milestones = store.list_milestone_ids(base_dir)?;
+    tracing::debug!(
+        operation = "list_milestones",
+        outcome = "success",
+        milestone_count = milestones.len(),
+        "listed milestones"
+    );
+    Ok(milestones)
 }
 
 /// Update the milestone status and append a journal event.
+#[tracing::instrument(skip_all, fields(milestone_id = %milestone_id))]
 pub fn update_status(
     snapshot_store: &impl MilestoneSnapshotPort,
     journal_store: &impl MilestoneJournalPort,
@@ -1500,8 +1530,9 @@ pub fn update_status(
     new_status: MilestoneStatus,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneSnapshot> {
-    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
+    let snapshot = snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+        let previous_status = snapshot.status;
         update_status_locked(
             snapshot_store,
             journal_store,
@@ -1511,8 +1542,16 @@ pub fn update_status(
             new_status,
             now,
         )?;
+        tracing::info!(
+            operation = "update_status",
+            outcome = "success",
+            from_status = %previous_status,
+            to_status = %snapshot.status,
+            "updated milestone status"
+        );
         Ok(snapshot)
-    })
+    })?;
+    Ok(snapshot)
 }
 
 /// Persist a plan bundle: writes plan.json, plan.md, and updates the snapshot.
@@ -1895,6 +1934,14 @@ fn clear_task_run_lineage(base_dir: &Path, milestone_id: &MilestoneId) -> AppRes
 
 /// Record the start of a bead task run.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    skip_all,
+    fields(
+        milestone_id = %milestone_id,
+        bead_id = %bead_id,
+        task_id = %project_id
+    )
+)]
 pub fn record_bead_start(
     snapshot_store: &impl MilestoneSnapshotPort,
     journal_store: &impl MilestoneJournalPort,
@@ -1983,6 +2030,12 @@ pub fn record_bead_start(
             "milestone journal commit failed after bead start snapshot write",
         )?;
 
+        tracing::info!(
+            operation = "record_bead_start",
+            outcome = "success",
+            run_id = run_id,
+            "recorded bead start"
+        );
         Ok(())
     })
 }
@@ -1992,6 +2045,14 @@ pub fn record_bead_start(
 /// This finalizes the existing lineage row created by [`record_bead_start`] and
 /// updates snapshot + journal state in the same flow.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    skip_all,
+    fields(
+        milestone_id = %milestone_id,
+        bead_id = %bead_id,
+        task_id = %project_id
+    )
+)]
 pub fn record_bead_completion(
     snapshot_store: &impl MilestoneSnapshotPort,
     journal_store: &impl MilestoneJournalPort,
@@ -2022,10 +2083,25 @@ pub fn record_bead_completion(
         started_at,
         now,
         CompletionMilestoneDisposition::ReconcileFromLineage,
-    )
+    )?;
+    tracing::info!(
+        operation = "record_bead_completion",
+        outcome = "success",
+        run_id = run_id,
+        "recorded bead completion"
+    );
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    skip_all,
+    fields(
+        milestone_id = %milestone_id,
+        bead_id = %bead_id,
+        task_id = %project_id
+    )
+)]
 pub fn record_bead_completion_with_disposition(
     snapshot_store: &impl MilestoneSnapshotPort,
     journal_store: &impl MilestoneJournalPort,
@@ -2057,16 +2133,31 @@ pub fn record_bead_completion_with_disposition(
         outcome_detail.map(str::to_owned),
         now,
         disposition,
-    )
+    )?;
+    tracing::info!(
+        operation = "record_bead_completion_with_disposition",
+        outcome = "success",
+        run_id = run_id,
+        "recorded bead completion with disposition"
+    );
+    Ok(())
 }
 
 /// Read the journal for a milestone.
+#[tracing::instrument(skip_all, level = "debug", fields(milestone_id = %milestone_id))]
 pub fn read_journal(
     journal_store: &impl MilestoneJournalPort,
     base_dir: &Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<Vec<MilestoneJournalEvent>> {
-    journal_store.read_journal(base_dir, milestone_id)
+    let journal = journal_store.read_journal(base_dir, milestone_id)?;
+    tracing::debug!(
+        operation = "read_journal",
+        outcome = "success",
+        event_count = journal.len(),
+        "read milestone journal"
+    );
+    Ok(journal)
 }
 
 fn load_plan_bundle(
@@ -2257,6 +2348,11 @@ fn shared_plan_hash_for_runs(runs: &[TaskRunEntry]) -> Result<Option<&str>, ()> 
 
 /// Read milestone/bead lineage metadata, only projecting plan details when the
 /// current plan matches the persisted plan provenance for the task/run.
+#[tracing::instrument(
+    skip_all,
+    level = "debug",
+    fields(milestone_id = %milestone_id, bead_id = %bead_id)
+)]
 pub fn read_bead_lineage(
     store: &(impl MilestoneStorePort + ?Sized),
     plan_store: &(impl MilestonePlanPort + ?Sized),
@@ -2277,7 +2373,18 @@ pub fn read_bead_lineage(
         .as_ref()
         .map(|(bundle, plan_hash)| (bundle, plan_hash.as_str()));
 
-    build_bead_lineage_from_current_plan(&milestone, current_plan, bead_id, expected_plan_hash)
+    let lineage = build_bead_lineage_from_current_plan(
+        &milestone,
+        current_plan,
+        bead_id,
+        expected_plan_hash,
+    )?;
+    tracing::debug!(
+        operation = "read_bead_lineage",
+        outcome = "success",
+        "read bead lineage"
+    );
+    Ok(lineage)
 }
 
 /// Read the task-run lineage for a milestone.
@@ -2370,6 +2477,7 @@ pub fn bead_execution_history(
 }
 
 /// List Ralph tasks linked to a milestone.
+#[tracing::instrument(skip_all, level = "debug", fields(milestone_id = %milestone_id))]
 pub fn list_tasks_for_milestone(
     store: &impl MilestoneStorePort,
     plan_store: &impl MilestonePlanPort,
@@ -2423,11 +2531,18 @@ pub fn list_tasks_for_milestone(
             .then_with(|| left.project_id.cmp(&right.project_id))
     });
 
-    Ok(MilestoneTaskListView {
+    let view = MilestoneTaskListView {
         milestone_id: milestone.id.to_string(),
         milestone_name: milestone.name,
         tasks,
-    })
+    };
+    tracing::debug!(
+        operation = "list_tasks_for_milestone",
+        outcome = "success",
+        task_count = view.tasks.len(),
+        "listed milestone tasks"
+    );
+    Ok(view)
 }
 
 /// Update an existing task run's outcome after completion.
@@ -2437,6 +2552,14 @@ pub fn list_tasks_for_milestone(
 /// same terminal completion can finish a partially failed write without
 /// duplicating counters or events.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    skip_all,
+    fields(
+        milestone_id = %milestone_id,
+        bead_id = %bead_id,
+        task_id = %project_id
+    )
+)]
 pub fn update_task_run(
     snapshot_store: &impl MilestoneSnapshotPort,
     journal_store: &impl MilestoneJournalPort,
@@ -2467,7 +2590,14 @@ pub fn update_task_run(
         outcome_detail,
         finished_at,
         CompletionMilestoneDisposition::ReconcileFromLineage,
-    )
+    )?;
+    tracing::info!(
+        operation = "update_task_run",
+        outcome = "success",
+        run_id = run_id,
+        "updated task run"
+    );
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2565,6 +2695,14 @@ fn update_task_run_with_disposition(
 /// stale terminal row. Generic duplicate finalization continues to be rejected
 /// by [`update_task_run`].
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    skip_all,
+    fields(
+        milestone_id = %milestone_id,
+        bead_id = %bead_id,
+        task_id = %project_id
+    )
+)]
 pub fn repair_task_run(
     snapshot_store: &impl MilestoneSnapshotPort,
     journal_store: &impl MilestoneJournalPort,
@@ -2595,7 +2733,14 @@ pub fn repair_task_run(
         outcome_detail,
         finished_at,
         CompletionMilestoneDisposition::ReconcileFromLineage,
-    )
+    )?;
+    tracing::info!(
+        operation = "repair_task_run",
+        outcome = "success",
+        run_id = run_id,
+        "repaired task run"
+    );
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3077,142 +3222,143 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
     created_in_pass: &mut usize,
     now: DateTime<Utc>,
 ) -> AppResult<ProposeNewBeadOutcome> {
-    let br_read = br_mutation.inner();
+    async move {
+        let br_read = br_mutation.inner();
 
-    if let Some(existing_bead_id) =
-        load_existing_proposed_bead_creation(journal_store, base_dir, milestone_id, input)?
-    {
-        match br_read
-            .exec_json::<BeadDetail>(&BrCommand::show(existing_bead_id.clone()))
-            .await
+        if let Some(existing_bead_id) =
+            load_existing_proposed_bead_creation(journal_store, base_dir, milestone_id, input)?
         {
-            Ok(detail) => {
-                if !proposed_bead_depends_on_active_bead(&detail, &input.active_bead_id) {
-                    ensure_beads_mutation_health(
-                        base_dir,
-                        milestone_id,
-                        "repair journaled proposed bead dependency",
-                    )?;
-                    br_mutation
-                        .add_dependency(&detail.id, &input.active_bead_id)
-                        .await
-                        .map_err(|error| AppError::MilestoneOperationFailed {
-                            milestone_id: milestone_id.to_string(),
-                            action: "repair journaled proposed bead dependency".to_owned(),
-                            details: error.to_string(),
-                        })?;
-                    sync_beads_mutation_if_dirty_when_healthy(
+            match br_read
+                .exec_json::<BeadDetail>(&BrCommand::show(existing_bead_id.clone()))
+                .await
+            {
+                Ok(detail) => {
+                    if !proposed_bead_depends_on_active_bead(&detail, &input.active_bead_id) {
+                        ensure_beads_mutation_health(
+                            base_dir,
+                            milestone_id,
+                            "repair journaled proposed bead dependency",
+                        )?;
+                        br_mutation
+                            .add_dependency(&detail.id, &input.active_bead_id)
+                            .await
+                            .map_err(|error| AppError::MilestoneOperationFailed {
+                                milestone_id: milestone_id.to_string(),
+                                action: "repair journaled proposed bead dependency".to_owned(),
+                                details: error.to_string(),
+                            })?;
+                        sync_beads_mutation_if_dirty_when_healthy(
+                            br_mutation,
+                            base_dir,
+                            milestone_id,
+                            "sync journaled proposed bead dependency repair",
+                        )
+                        .await?;
+                    }
+
+                    sync_recovered_proposed_bead_replay_if_dirty(
                         br_mutation,
                         base_dir,
                         milestone_id,
-                        "sync journaled proposed bead dependency repair",
+                        "sync recovered journaled proposed bead replay",
                     )
                     .await?;
+
+                    return Ok(ProposeNewBeadOutcome::Created { bead_id: detail.id });
                 }
-
-                sync_recovered_proposed_bead_replay_if_dirty(
-                    br_mutation,
-                    base_dir,
-                    milestone_id,
-                    "sync recovered journaled proposed bead replay",
-                )
-                .await?;
-
-                return Ok(ProposeNewBeadOutcome::Created { bead_id: detail.id });
-            }
-            Err(error) if is_missing_bead_error(&error) => {
-                tracing::warn!(
-                    active_bead_id = input.active_bead_id.as_str(),
-                    created_bead_id = existing_bead_id.as_str(),
-                    error = %error,
-                    "journaled proposed bead no longer exists; re-running defensive lookup and creation flow"
-                );
-            }
-            Err(error) => {
-                return Err(AppError::MilestoneOperationFailed {
-                    milestone_id: milestone_id.to_string(),
-                    action: "verify journaled proposed bead".to_owned(),
-                    details: error.to_string(),
-                });
+                Err(error) if is_missing_bead_error(&error) => {
+                    tracing::warn!(
+                        active_bead_id = input.active_bead_id.as_str(),
+                        created_bead_id = existing_bead_id.as_str(),
+                        error = %error,
+                        "journaled proposed bead no longer exists; re-running defensive lookup and creation flow"
+                    );
+                }
+                Err(error) => {
+                    return Err(AppError::MilestoneOperationFailed {
+                        milestone_id: milestone_id.to_string(),
+                        action: "verify journaled proposed bead".to_owned(),
+                        details: error.to_string(),
+                    });
+                }
             }
         }
-    }
 
-    let matching_beads = list_matching_beads_by_title(br_read, &input.proposed_title)
-        .await
-        .map_err(|error| AppError::MilestoneOperationFailed {
-            milestone_id: milestone_id.to_string(),
-            action: "query existing beads".to_owned(),
-            details: error.to_string(),
-        })?;
-
-    for existing in matching_beads
-        .iter()
-        .filter(|existing| eligible_existing_proposed_bead_match(existing, &input.active_bead_id))
-    {
-        let detail = br_read
-            .exec_json::<BeadDetail>(&BrCommand::show(existing.id.clone()))
+        let matching_beads = list_matching_beads_by_title(br_read, &input.proposed_title)
             .await
             .map_err(|error| AppError::MilestoneOperationFailed {
                 milestone_id: milestone_id.to_string(),
-                action: "inspect existing proposed bead".to_owned(),
+                action: "query existing beads".to_owned(),
                 details: error.to_string(),
             })?;
 
-        if !existing_bead_semantically_matches_proposed_work(&detail, input) {
-            continue;
-        }
-
-        if !proposed_bead_depends_on_active_bead(&detail, &input.active_bead_id) {
-            ensure_beads_mutation_health(
-                base_dir,
-                milestone_id,
-                "place recovered proposed bead dependency",
-            )?;
-            br_mutation
-                .add_dependency(&detail.id, &input.active_bead_id)
+        for existing in matching_beads
+        .iter()
+        .filter(|existing| eligible_existing_proposed_bead_match(existing, &input.active_bead_id))
+        {
+            let detail = br_read
+                .exec_json::<BeadDetail>(&BrCommand::show(existing.id.clone()))
                 .await
                 .map_err(|error| AppError::MilestoneOperationFailed {
                     milestone_id: milestone_id.to_string(),
-                    action: "place recovered proposed bead dependency".to_owned(),
+                    action: "inspect existing proposed bead".to_owned(),
                     details: error.to_string(),
                 })?;
-            sync_beads_mutation_if_dirty_when_healthy(
+
+            if !existing_bead_semantically_matches_proposed_work(&detail, input) {
+                continue;
+            }
+
+            if !proposed_bead_depends_on_active_bead(&detail, &input.active_bead_id) {
+                ensure_beads_mutation_health(
+                    base_dir,
+                    milestone_id,
+                    "place recovered proposed bead dependency",
+                )?;
+                br_mutation
+                    .add_dependency(&detail.id, &input.active_bead_id)
+                    .await
+                    .map_err(|error| AppError::MilestoneOperationFailed {
+                        milestone_id: milestone_id.to_string(),
+                        action: "place recovered proposed bead dependency".to_owned(),
+                        details: error.to_string(),
+                    })?;
+                sync_beads_mutation_if_dirty_when_healthy(
+                    br_mutation,
+                    base_dir,
+                    milestone_id,
+                    "sync recovered proposed bead placement",
+                )
+                .await?;
+            }
+
+            sync_recovered_proposed_bead_replay_if_dirty(
                 br_mutation,
                 base_dir,
                 milestone_id,
-                "sync recovered proposed bead placement",
+                "sync recovered proposed bead replay",
             )
             .await?;
+
+            record_proposed_bead_created_event(
+                journal_store,
+                base_dir,
+                milestone_id,
+                input,
+                &detail.id,
+                "recovered previously created bead by matching title and rendered proposal payload",
+                now,
+            )?;
+            return Ok(ProposeNewBeadOutcome::Created { bead_id: detail.id });
         }
 
-        sync_recovered_proposed_bead_replay_if_dirty(
-            br_mutation,
-            base_dir,
-            milestone_id,
-            "sync recovered proposed bead replay",
-        )
-        .await?;
-
-        record_proposed_bead_created_event(
-            journal_store,
-            base_dir,
-            milestone_id,
-            input,
-            &detail.id,
-            "recovered previously created bead by matching title and rendered proposal payload",
-            now,
-        )?;
-        return Ok(ProposeNewBeadOutcome::Created { bead_id: detail.id });
-    }
-
-    for existing in matching_beads
+        for existing in matching_beads
         .into_iter()
         .filter(|existing| eligible_existing_proposed_bead_match(existing, &input.active_bead_id))
-    {
-        let detail = br_read
-            .exec_json::<BeadDetail>(&BrCommand::show(existing.id.clone()))
-            .await
+        {
+            let detail = br_read
+                .exec_json::<BeadDetail>(&BrCommand::show(existing.id.clone()))
+                .await
             .map_err(|error| AppError::MilestoneOperationFailed {
                 milestone_id: milestone_id.to_string(),
                 action: "inspect planned-elsewhere candidate".to_owned(),
@@ -3330,7 +3476,14 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
         );
     }
 
-    Ok(ProposeNewBeadOutcome::Created { bead_id })
+        Ok(ProposeNewBeadOutcome::Created { bead_id })
+    }
+    .instrument(tracing::info_span!(
+        "handle_propose_new_bead",
+        milestone_id = %milestone_id,
+        bead_id = input.active_bead_id.as_str()
+    ))
+    .await
 }
 
 /// Record a planned-elsewhere mapping: the finding in `active_bead_id` is

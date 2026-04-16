@@ -261,13 +261,20 @@ pub trait MilestoneControllerResumePort {
     fn all_beads_closed(&self) -> AppResult<bool>;
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        milestone_id = %milestone_id,
+        bead_id = tracing::field::Empty
+    )
+)]
 pub fn initialize_controller(
     store: &impl MilestoneControllerPort,
     base_dir: &Path,
     milestone_id: &MilestoneId,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneControllerRecord> {
-    initialize_controller_with_request(
+    let controller = initialize_controller_with_request(
         store,
         base_dir,
         milestone_id,
@@ -276,9 +283,22 @@ pub fn initialize_controller(
             controller_initialization_reason(MilestoneControllerState::Idle),
         ),
         now,
-    )
+    )?;
+    tracing::info!(
+        operation = "initialize_controller",
+        outcome = "success",
+        "initialized milestone controller"
+    );
+    Ok(controller)
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        milestone_id = %milestone_id,
+        bead_id = tracing::field::Empty
+    )
+)]
 pub fn initialize_controller_with_state(
     store: &impl MilestoneControllerPort,
     base_dir: &Path,
@@ -286,7 +306,7 @@ pub fn initialize_controller_with_state(
     initial_state: MilestoneControllerState,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneControllerRecord> {
-    initialize_controller_with_request(
+    let controller = initialize_controller_with_request(
         store,
         base_dir,
         milestone_id,
@@ -295,9 +315,16 @@ pub fn initialize_controller_with_state(
             controller_initialization_reason(initial_state),
         ),
         now,
-    )
+    )?;
+    tracing::info!(
+        operation = "initialize_controller_with_state",
+        outcome = "success",
+        "initialized milestone controller with requested state"
+    );
+    Ok(controller)
 }
 
+#[tracing::instrument(skip_all, fields(milestone_id = %milestone_id))]
 pub fn initialize_controller_with_request(
     store: &impl MilestoneControllerPort,
     base_dir: &Path,
@@ -305,16 +332,30 @@ pub fn initialize_controller_with_request(
     request: ControllerTransitionRequest,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneControllerRecord> {
-    store.with_controller_lock(base_dir, milestone_id, || {
+    let controller = store.with_controller_lock(base_dir, milestone_id, || {
         if let Some(existing) = hydrate_controller_locked(store, base_dir, milestone_id)? {
             existing.validate_semantics()?;
             return Ok(existing);
         }
 
         initialize_controller_from_request_locked(store, base_dir, milestone_id, request, now)
-    })
+    })?;
+    tracing::info!(
+        operation = "initialize_controller_with_request",
+        outcome = "success",
+        "initialized milestone controller from transition request"
+    );
+    Ok(controller)
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        milestone_id = %milestone_id,
+        bead_id = %bead_id,
+        task_id = %task_id
+    )
+)]
 pub fn sync_controller_task_claimed(
     store: &impl MilestoneControllerPort,
     base_dir: &Path,
@@ -324,7 +365,7 @@ pub fn sync_controller_task_claimed(
     reason: impl Into<String>,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneControllerRecord> {
-    store.with_controller_lock(base_dir, milestone_id, || {
+    let controller = store.with_controller_lock(base_dir, milestone_id, || {
         let reason = reason.into();
         let claim_request = ControllerTransitionRequest::new(
             MilestoneControllerState::Claimed,
@@ -389,9 +430,23 @@ pub fn sync_controller_task_claimed(
                 "cannot re-claim a task after the controller marked the milestone completed",
             )),
         }
-    })
+    })?;
+    tracing::info!(
+        operation = "sync_controller_task_claimed",
+        outcome = "success",
+        "synced controller claimed state"
+    );
+    Ok(controller)
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        milestone_id = %milestone_id,
+        bead_id = %bead_id,
+        task_id = %task_id
+    )
+)]
 pub fn sync_controller_task_running(
     store: &impl MilestoneControllerPort,
     base_dir: &Path,
@@ -401,7 +456,7 @@ pub fn sync_controller_task_running(
     reason: impl Into<String>,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneControllerRecord> {
-    store.with_controller_lock(base_dir, milestone_id, || {
+    let controller = store.with_controller_lock(base_dir, milestone_id, || {
         let reason = reason.into();
         let running_request = ControllerTransitionRequest::new(
             MilestoneControllerState::Running,
@@ -470,9 +525,23 @@ pub fn sync_controller_task_running(
                 "cannot restart a task after the controller marked the milestone completed",
             )),
         }
-    })
+    })?;
+    tracing::info!(
+        operation = "sync_controller_task_running",
+        outcome = "success",
+        "synced controller running state"
+    );
+    Ok(controller)
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        milestone_id = %milestone_id,
+        bead_id = %bead_id,
+        task_id = %task_id
+    )
+)]
 pub fn sync_controller_task_reconciling(
     store: &impl MilestoneControllerPort,
     base_dir: &Path,
@@ -482,7 +551,7 @@ pub fn sync_controller_task_reconciling(
     reason: impl Into<String>,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneControllerRecord> {
-    store.with_controller_lock(base_dir, milestone_id, || {
+    let controller = store.with_controller_lock(base_dir, milestone_id, || {
         let reason = reason.into();
         let reconciling_request =
             ControllerTransitionRequest::new(MilestoneControllerState::Reconciling, reason.clone())
@@ -544,7 +613,13 @@ pub fn sync_controller_task_reconciling(
                 checkpoint_existing_controller_locked(store, base_dir, milestone_id, current, now)
             }
         }
-    })
+    })?;
+    tracing::info!(
+        operation = "sync_controller_task_reconciling",
+        outcome = "success",
+        "synced controller reconciling state"
+    );
+    Ok(controller)
 }
 
 fn initialize_controller_from_request_locked(
@@ -712,20 +787,28 @@ fn sync_existing_state_locked(
     Ok(synced)
 }
 
+#[tracing::instrument(skip_all, fields(milestone_id = %milestone_id))]
 pub fn load_controller(
     store: &impl MilestoneControllerPort,
     base_dir: &Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<Option<MilestoneControllerRecord>> {
-    store.with_controller_lock(base_dir, milestone_id, || {
+    let controller = store.with_controller_lock(base_dir, milestone_id, || {
         let controller = hydrate_controller_locked(store, base_dir, milestone_id)?;
         if let Some(ref record) = controller {
             record.validate_semantics()?;
         }
         Ok(controller)
-    })
+    })?;
+    tracing::info!(
+        operation = "load_controller",
+        outcome = "success",
+        "loaded milestone controller"
+    );
+    Ok(controller)
 }
 
+#[tracing::instrument(skip_all, fields(milestone_id = %milestone_id))]
 pub fn transition_controller(
     store: &impl MilestoneControllerPort,
     base_dir: &Path,
@@ -733,11 +816,17 @@ pub fn transition_controller(
     request: ControllerTransitionRequest,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneControllerRecord> {
-    store.with_controller_lock(base_dir, milestone_id, || {
+    let controller = store.with_controller_lock(base_dir, milestone_id, || {
         let current = hydrate_controller_locked(store, base_dir, milestone_id)?
             .unwrap_or_else(|| MilestoneControllerRecord::idle(milestone_id.clone(), now));
         transition_from_current_locked(store, base_dir, milestone_id, current, request, now)
-    })
+    })?;
+    tracing::info!(
+        operation = "transition_controller",
+        outcome = "success",
+        "transitioned milestone controller"
+    );
+    Ok(controller)
 }
 
 pub fn sync_controller_state(
@@ -766,20 +855,28 @@ pub fn sync_controller_state(
     })
 }
 
+#[tracing::instrument(skip_all, fields(milestone_id = %milestone_id))]
 pub fn checkpoint_controller_stop(
     store: &impl MilestoneControllerPort,
     base_dir: &Path,
     milestone_id: &MilestoneId,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneControllerRecord> {
-    store.with_controller_lock(base_dir, milestone_id, || {
+    let controller = store.with_controller_lock(base_dir, milestone_id, || {
         let controller = hydrate_controller_locked(store, base_dir, milestone_id)?
             .unwrap_or_else(|| MilestoneControllerRecord::idle(milestone_id.clone(), now));
         controller.validate_semantics()?;
         checkpoint_existing_controller_locked(store, base_dir, milestone_id, controller, now)
-    })
+    })?;
+    tracing::info!(
+        operation = "checkpoint_controller_stop",
+        outcome = "success",
+        "checkpointed milestone controller stop"
+    );
+    Ok(controller)
 }
 
+#[tracing::instrument(skip_all, fields(milestone_id = %milestone_id))]
 pub fn resume_controller(
     store: &impl MilestoneControllerPort,
     runtime: &impl MilestoneControllerResumePort,
@@ -787,7 +884,7 @@ pub fn resume_controller(
     milestone_id: &MilestoneId,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneControllerRecord> {
-    store.with_controller_lock(base_dir, milestone_id, || {
+    let controller = store.with_controller_lock(base_dir, milestone_id, || {
         let current = hydrate_controller_locked(store, base_dir, milestone_id)?
             .unwrap_or_else(|| MilestoneControllerRecord::idle(milestone_id.clone(), now));
 
@@ -796,7 +893,13 @@ pub fn resume_controller(
         } else {
             Ok(current)
         }
-    })
+    })?;
+    tracing::info!(
+        operation = "resume_controller",
+        outcome = "success",
+        "resumed milestone controller"
+    );
+    Ok(controller)
 }
 
 fn hydrate_controller_locked(

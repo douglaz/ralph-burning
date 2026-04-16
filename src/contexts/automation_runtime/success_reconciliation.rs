@@ -14,6 +14,7 @@
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
+use tracing::Instrument;
 
 use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 use crate::adapters::br_models::BeadStatus;
@@ -28,7 +29,7 @@ use crate::adapters::fs::{
 use crate::cli::run::{select_next_milestone_bead, select_next_milestone_bead_from_recommendation};
 use crate::contexts::milestone_record::controller as milestone_controller;
 use crate::contexts::milestone_record::model::{
-    MilestoneId, MilestoneStatus, PlannedElsewhereMapping, TaskRunOutcome,
+    MilestoneEventType, MilestoneId, MilestoneStatus, PlannedElsewhereMapping, TaskRunOutcome,
 };
 use crate::contexts::milestone_record::service::{
     self as milestone_service, CompletionMilestoneDisposition, ProposeNewBeadInput,
@@ -191,190 +192,335 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
     started_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Result<ReconciliationOutcome, ReconciliationError> {
-    let milestone_id = MilestoneId::new(milestone_id_str).map_err(|e| {
-        ReconciliationError::MilestoneUpdateFailed {
-            bead_id: bead_id.to_owned(),
-            task_id: task_id.to_owned(),
-            details: format!("invalid milestone id: {e}"),
-        }
-    })?;
-
-    // Guard: if a previous reconciliation already succeeded and the selector
-    // advanced the controller to the next bead, `sync_controller_task_reconciling`
-    // would reject the replay because the active bead no longer matches.
-    // Detect this case and skip the reconciling transition — the rest of the
-    // reconciliation steps (close, sync, milestone update) are already idempotent.
-    let controller_already_advanced =
-        milestone_controller::load_controller(&FsMilestoneControllerStore, base_dir, &milestone_id)
-            .map_err(|e| ReconciliationError::MilestoneUpdateFailed {
+    async move {
+        let milestone_id = MilestoneId::new(milestone_id_str).map_err(|e| {
+            ReconciliationError::MilestoneUpdateFailed {
                 bead_id: bead_id.to_owned(),
                 task_id: task_id.to_owned(),
-                details: format!("failed to load controller for replay guard: {e}"),
-            })?
-            .is_some_and(|c| {
-                c.active_bead_id.as_deref() != Some(bead_id)
-                    && c.active_bead_id.is_some()
-                    && !matches!(
-                        c.state,
-                        milestone_controller::MilestoneControllerState::Idle
-                    )
-            });
+                details: format!("invalid milestone id: {e}"),
+            }
+        })?;
+        let proposed_bead_events_before =
+            count_proposed_bead_creations(base_dir, &milestone_id, bead_id, run_id);
+        let planned_elsewhere_mappings_before =
+            count_planned_elsewhere_mappings(base_dir, &milestone_id, bead_id, run_id);
+        let amendments_processed = count_propose_new_bead_amendments(base_dir, project_id, run_id);
 
-    if !controller_already_advanced {
-        milestone_controller::sync_controller_task_reconciling(
+        // Guard: if a previous reconciliation already succeeded and the selector
+        // advanced the controller to the next bead, `sync_controller_task_reconciling`
+        // would reject the replay because the active bead no longer matches.
+        // Detect this case and skip the reconciling transition — the rest of the
+        // reconciliation steps (close, sync, milestone update) are already idempotent.
+        let controller_already_advanced = milestone_controller::load_controller(
             &FsMilestoneControllerStore,
             base_dir,
             &milestone_id,
-            bead_id,
-            project_id,
-            "workflow execution completed successfully; reconciling milestone state",
-            now,
         )
         .map_err(|e| ReconciliationError::MilestoneUpdateFailed {
             bead_id: bead_id.to_owned(),
             task_id: task_id.to_owned(),
-            details: e.to_string(),
-        })?;
-    }
+            details: format!("failed to load controller for replay guard: {e}"),
+        })?
+        .is_some_and(|c| {
+            c.active_bead_id.as_deref() != Some(bead_id)
+                && c.active_bead_id.is_some()
+                && !matches!(
+                    c.state,
+                    milestone_controller::MilestoneControllerState::Idle
+                )
+        });
 
-    // Step 1: Close the bead idempotently.
-    let was_already_closed =
-        close_bead_idempotent(base_dir, br_mutation, br_read, bead_id, task_id).await?;
-
-    // Step 2: Sync flush — always runs, even if bead was already closed.
-    // A crash between br close and sync would leave local bead state dirty.
-    // On re-run the bead appears closed but the flush never happened, so we
-    // must sync unconditionally to guarantee crash-safe idempotency.
-    //
-    // Note: was_already_closed is NOT a safe proxy for "sync already completed".
-    // A crash between close and sync produces was_already_closed=true with an
-    // un-flushed local state. Sync failures must remain fatal regardless of
-    // was_already_closed to prevent proceeding with an un-synced bead close.
-    sync_after_close(base_dir, br_mutation, bead_id, task_id).await?;
-
-    // Step 3: Update milestone state.
-    let milestone_status = update_milestone_state(
-        base_dir,
-        bead_id,
-        task_id,
-        project_id,
-        &milestone_id,
-        run_id,
-        plan_hash,
-        started_at,
-        now,
-        controller_already_advanced,
-    )?;
-
-    // Step 3b: Verify planned-elsewhere mappings and post comments (best-effort).
-    // The engine records unverified mappings during final-review; this step
-    // performs the actual stale-bead lookup and optional br comment posting
-    // that the engine cannot do (it lacks BrAdapter access).
-    verify_planned_elsewhere_after_success(
-        br_mutation,
-        br_read,
-        base_dir,
-        bead_id,
-        milestone_id_str,
-        project_id,
-        run_id,
-    )
-    .await;
-
-    reconcile_proposed_beads_after_success(
-        br_mutation,
-        base_dir,
-        bead_id,
-        task_id,
-        milestone_id_str,
-        project_id,
-        run_id,
-    )
-    .await?;
-
-    // Step 4: Capture next-step hints (best-effort, never blocks reconciliation).
-    let (next_step_hint, prefetched_selection) = if let Some(bv_adapter) = bv {
-        match capture_next_step_hint(bv_adapter).await {
-            HintCaptureOutcome::Captured(hint) => {
-                // Step 4b: Persist hint to disk so downstream selection logic
-                // can read it in a later daemon cycle. Overwrites any stale hint
-                // from a previous bead's run.
-                persist_next_step_hint(base_dir, milestone_id_str, &hint);
-                (Some(hint.clone()), Some(Some(hint)))
-            }
-            HintCaptureOutcome::NoRecommendation => {
-                // bv succeeded but has no actionable recommendation.
-                // Remove any previously persisted hint so downstream
-                // selection does not act on a stale pointer to an
-                // already-completed bead.
-                delete_stale_hint(base_dir, milestone_id_str);
-                (None, Some(None))
-            }
-            HintCaptureOutcome::BvFailed => {
-                // bv failed (transient error, binary not found, etc.).
-                // Leave any existing hint untouched — a transient bv outage
-                // should not erase a previously persisted valid hint.
-                (None, None)
-            }
+        if !controller_already_advanced {
+            milestone_controller::sync_controller_task_reconciling(
+                &FsMilestoneControllerStore,
+                base_dir,
+                &milestone_id,
+                bead_id,
+                project_id,
+                "workflow execution completed successfully; reconciling milestone state",
+                now,
+            )
+            .map_err(|e| ReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: e.to_string(),
+            })?;
         }
-    } else {
-        // bv not configured — leave any existing hint untouched.
-        (None, None)
-    };
 
-    let mut next_step_selection_warning = None;
-    if milestone_status != MilestoneStatus::Completed && !controller_already_advanced {
-        if let Some(bv_adapter) = bv {
-            // Reconciliation already closed and synced the completed bead, so
-            // it is safe to continue directly into the same bv/br-validated
-            // selection flow that the CLI uses. This keeps daemon-driven
-            // milestones from stalling in `selecting` until an operator reruns
-            // the CLI helper manually.
-            let selection_result = match prefetched_selection {
-                Some(recommendation) => {
-                    select_next_milestone_bead_from_recommendation(
+        // Step 1: Close the bead idempotently.
+        let was_already_closed =
+            close_bead_idempotent(base_dir, br_mutation, br_read, bead_id, task_id).await?;
+
+        // Step 2: Sync flush — always runs, even if bead was already closed.
+        // A crash between br close and sync would leave local bead state dirty.
+        // On re-run the bead appears closed but the flush never happened, so we
+        // must sync unconditionally to guarantee crash-safe idempotency.
+        //
+        // Note: was_already_closed is NOT a safe proxy for "sync already completed".
+        // A crash between close and sync produces was_already_closed=true with an
+        // un-flushed local state. Sync failures must remain fatal regardless of
+        // was_already_closed to prevent proceeding with an un-synced bead close.
+        sync_after_close(base_dir, br_mutation, bead_id, task_id).await?;
+
+        // Step 3: Update milestone state.
+        let milestone_status = update_milestone_state(
+            base_dir,
+            bead_id,
+            task_id,
+            project_id,
+            &milestone_id,
+            run_id,
+            plan_hash,
+            started_at,
+            now,
+            controller_already_advanced,
+        )?;
+
+        // Step 3b: Verify planned-elsewhere mappings and post comments (best-effort).
+        // The engine records unverified mappings during final-review; this step
+        // performs the actual stale-bead lookup and optional br comment posting
+        // that the engine cannot do (it lacks BrAdapter access).
+        verify_planned_elsewhere_after_success(
+            br_mutation,
+            br_read,
+            base_dir,
+            bead_id,
+            milestone_id_str,
+            project_id,
+            run_id,
+        )
+        .await;
+
+        reconcile_proposed_beads_after_success(
+            br_mutation,
+            base_dir,
+            bead_id,
+            task_id,
+            milestone_id_str,
+            project_id,
+            run_id,
+        )
+        .await?;
+
+        // Step 4: Capture next-step hints (best-effort, never blocks reconciliation).
+        let (next_step_hint, prefetched_selection) = if let Some(bv_adapter) = bv {
+            match capture_next_step_hint(bv_adapter).await {
+                HintCaptureOutcome::Captured(hint) => {
+                    // Step 4b: Persist hint to disk so downstream selection logic
+                    // can read it in a later daemon cycle. Overwrites any stale hint
+                    // from a previous bead's run.
+                    persist_next_step_hint(base_dir, milestone_id_str, &hint);
+                    (Some(hint.clone()), Some(Some(hint)))
+                }
+                HintCaptureOutcome::NoRecommendation => {
+                    // bv succeeded but has no actionable recommendation.
+                    // Remove any previously persisted hint so downstream
+                    // selection does not act on a stale pointer to an
+                    // already-completed bead.
+                    delete_stale_hint(base_dir, milestone_id_str);
+                    (None, Some(None))
+                }
+                HintCaptureOutcome::BvFailed => {
+                    // bv failed (transient error, binary not found, etc.).
+                    // Leave any existing hint untouched — a transient bv outage
+                    // should not erase a previously persisted valid hint.
+                    (None, None)
+                }
+            }
+        } else {
+            // bv not configured — leave any existing hint untouched.
+            (None, None)
+        };
+
+        let mut next_step_selection_warning = None;
+        if milestone_status != MilestoneStatus::Completed && !controller_already_advanced {
+            if let Some(bv_adapter) = bv {
+                // Reconciliation already closed and synced the completed bead, so
+                // it is safe to continue directly into the same bv/br-validated
+                // selection flow that the CLI uses. This keeps daemon-driven
+                // milestones from stalling in `selecting` until an operator reruns
+                // the CLI helper manually.
+                let selection_result = match prefetched_selection {
+                    Some(recommendation) => {
+                        select_next_milestone_bead_from_recommendation(
+                            base_dir,
+                            &milestone_id,
+                            br_read,
+                            recommendation,
+                            now,
+                        )
+                        .await
+                    }
+                    None => {
+                        select_next_milestone_bead(
+                            base_dir,
+                            &milestone_id,
+                            br_read,
+                            bv_adapter,
+                            now,
+                        )
+                        .await
+                    }
+                };
+
+                if let Err(error) = selection_result {
+                    let warning = persist_selection_failure_after_reconciliation(
                         base_dir,
                         &milestone_id,
-                        br_read,
-                        recommendation,
+                        bead_id,
+                        task_id,
+                        error.to_string(),
                         now,
-                    )
-                    .await
+                    )?;
+                    tracing::warn!(
+                        bead_id = bead_id,
+                        task_id = task_id,
+                        warning = %warning,
+                        "post-reconciliation selection failed after bead close+sync"
+                    );
+                    next_step_selection_warning = Some(warning);
                 }
-                None => {
-                    select_next_milestone_bead(base_dir, &milestone_id, br_read, bv_adapter, now)
-                        .await
-                }
-            };
-
-            if let Err(error) = selection_result {
-                let warning = persist_selection_failure_after_reconciliation(
-                    base_dir,
-                    &milestone_id,
-                    bead_id,
-                    task_id,
-                    error.to_string(),
-                    now,
-                )?;
-                tracing::warn!(
-                    bead_id = bead_id,
-                    task_id = task_id,
-                    warning = %warning,
-                    "post-reconciliation selection failed after bead close+sync"
-                );
-                next_step_selection_warning = Some(warning);
             }
         }
-    }
 
-    Ok(ReconciliationOutcome {
-        bead_id: bead_id.to_owned(),
-        task_id: task_id.to_owned(),
-        was_already_closed,
-        next_step_hint,
-        next_step_selection_warning,
-        reconciled_at: now,
-    })
+        let proposed_bead_events_after =
+            count_proposed_bead_creations(base_dir, &milestone_id, bead_id, run_id);
+        let planned_elsewhere_mappings_after =
+            count_planned_elsewhere_mappings(base_dir, &milestone_id, bead_id, run_id);
+        tracing::info!(
+            operation = "reconcile_success",
+            outcome = "success",
+            amendments_processed = amendments_processed.unwrap_or(0),
+            beads_created = proposed_bead_events_after.saturating_sub(proposed_bead_events_before),
+            planned_elsewhere_mappings =
+                planned_elsewhere_mappings_after.saturating_sub(planned_elsewhere_mappings_before),
+            "success reconciliation completed"
+        );
+
+        Ok(ReconciliationOutcome {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            was_already_closed,
+            next_step_hint,
+            next_step_selection_warning,
+            reconciled_at: now,
+        })
+    }
+    .instrument(tracing::info_span!(
+        "reconcile_success",
+        milestone_id = milestone_id_str,
+        bead_id = bead_id,
+        task_id = task_id
+    ))
+    .await
+}
+
+fn count_proposed_bead_creations(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    run_id: &str,
+) -> usize {
+    match milestone_service::read_journal(&FsMilestoneJournalStore, base_dir, milestone_id) {
+        Ok(journal) => journal
+            .into_iter()
+            .filter(|event| {
+                event.event_type == MilestoneEventType::ProposedBeadCreated
+                    && event.bead_id.as_deref() == Some(bead_id)
+                    && event
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("run_id"))
+                        .and_then(|value| value.as_str())
+                        == Some(run_id)
+            })
+            .count(),
+        Err(error) => {
+            tracing::debug!(
+                bead_id = bead_id,
+                error = %error,
+                "failed to count proposed bead creation events for reconciliation summary"
+            );
+            0
+        }
+    }
+}
+
+fn count_planned_elsewhere_mappings(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    run_id: &str,
+) -> usize {
+    match milestone_service::load_planned_elsewhere_mappings(
+        &FsPlannedElsewhereMappingStore,
+        &FsMilestoneJournalStore,
+        base_dir,
+        milestone_id,
+    ) {
+        Ok(mappings) => mappings
+            .into_iter()
+            .filter(|mapping| {
+                mapping.active_bead_id == bead_id && mapping.run_id.as_deref() == Some(run_id)
+            })
+            .count(),
+        Err(error) => {
+            tracing::debug!(
+                bead_id = bead_id,
+                error = %error,
+                "failed to count planned-elsewhere mappings for reconciliation summary"
+            );
+            0
+        }
+    }
+}
+
+fn count_propose_new_bead_amendments(
+    base_dir: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Option<usize> {
+    let pid = ProjectId::new(project_id).ok()?;
+    let payloads = match FsArtifactStore.list_payloads(base_dir, &pid) {
+        Ok(payloads) => payloads,
+        Err(error) => {
+            tracing::debug!(
+                project_id = project_id,
+                error = %error,
+                "failed to list payloads for reconciliation summary"
+            );
+            return None;
+        }
+    };
+
+    let latest_payload = payloads
+        .iter()
+        .filter(|payload| {
+            payload.stage_id == StageId::FinalReview
+                && payload.record_kind == RecordKind::StageAggregate
+                && payload.payload_id.starts_with(&format!("{run_id}-"))
+        })
+        .max_by_key(|payload| (payload.completion_round, payload.created_at))?;
+
+    match serde_json::from_value::<FinalReviewAggregatePayload>(latest_payload.payload.clone()) {
+        Ok(aggregate) => Some(
+            aggregate
+                .final_accepted_amendments
+                .iter()
+                .filter(|amendment| {
+                    amendment.classification == AmendmentClassification::ProposeNewBead
+                })
+                .count(),
+        ),
+        Err(error) => {
+            tracing::debug!(
+                project_id = project_id,
+                error = %error,
+                "failed to parse final-review aggregate for reconciliation summary"
+            );
+            None
+        }
+    }
 }
 
 fn persist_selection_failure_after_reconciliation(

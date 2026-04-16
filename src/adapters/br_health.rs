@@ -17,7 +17,48 @@ pub enum BeadsHealthStatus {
 
 /// Inspect the local beads export and the `br` binary before mutation flows.
 pub fn check_beads_health(base_dir: &Path) -> BeadsHealthStatus {
-    check_beads_health_with_availability(base_dir, br_available_for_health_check)
+    let status = check_beads_health_with_availability(base_dir, br_available_for_health_check);
+    match &status {
+        BeadsHealthStatus::Healthy => tracing::info!(
+            base_dir = %base_dir.display(),
+            operation = "check_beads_health",
+            outcome = "success",
+            "beads export is healthy"
+        ),
+        BeadsHealthStatus::ConflictMarkers => tracing::warn!(
+            base_dir = %base_dir.display(),
+            operation = "check_beads_health",
+            outcome = "failure",
+            "detected conflict markers in beads export"
+        ),
+        BeadsHealthStatus::MissingFile => tracing::warn!(
+            base_dir = %base_dir.display(),
+            operation = "check_beads_health",
+            outcome = "failure",
+            "missing beads export"
+        ),
+        BeadsHealthStatus::MalformedJsonl(details) => tracing::warn!(
+            base_dir = %base_dir.display(),
+            operation = "check_beads_health",
+            outcome = "failure",
+            details = details.as_str(),
+            "beads export is malformed"
+        ),
+        BeadsHealthStatus::BrUnavailable => tracing::warn!(
+            base_dir = %base_dir.display(),
+            operation = "check_beads_health",
+            outcome = "failure",
+            "br is unavailable during beads health check"
+        ),
+        BeadsHealthStatus::IoError(details) => tracing::warn!(
+            base_dir = %base_dir.display(),
+            operation = "check_beads_health",
+            outcome = "failure",
+            details = details.as_str(),
+            "beads health check hit an I/O error"
+        ),
+    }
+    status
 }
 
 /// Return an operator-facing explanation when bead mutations must be blocked.
