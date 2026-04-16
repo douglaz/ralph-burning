@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-vote-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260415203322-final_review-vote-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T00:06:45.335937056Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nVerified the amendment against actual source code. The canonicalize_milestone_bead_ref function at bead_refs.rs:11 treats any bead ID containing a dot as already fully-qualified, but the codebase demonstrably uses dotted short-form bead IDs (e.g., 8.5.3 vs 9ni.8.5.3 in planned_elsewhere.rs tests). This causes milestone_bead_refs_match to return false for equivalent references, breaking collapse_task_run_attempts, find_runs_for_bead, and bead_execution_history for the dotted bead ID patterns this project actively uses. Existing tests only cover non-dotted bead IDs (bead-1, ms-1.bead-1) and miss this case entirely.\n\n## Votes\n\n- `fr-7-4d952349`: Accept\n  Verified the bug is real and impactful. canonicalize_milestone_bead_ref(\"9ni\", \"8.5.3\") returns \"8.5.3\" (because it contains a dot), while canonicalize_milestone_bead_ref(\"9ni\", \"9ni.8.5.3\") returns \"9ni.8.5.3\" — these don't match. The codebase uses exactly this pattern: planned_elsewhere.rs:882-884 shows active_bead_id \"9ni.8.5.2\" paired with mapped_to_bead_id \"8.5.3\", and tests at lines 870-960 exercise short→qualified alias resolution. The task-run lineage functions (task_run_entries_share_bead, collapse_task_run_attempts, find_runs_for_bead) all call milestone_bead_refs_match, so mixed short/qualified rows for dotted bead IDs won't collapse together — producing duplicate or missing execution history entries. The existing test at bead_refs.rs:36 only covers non-dotted IDs like \"bead-2\" and misses this entirely. The remediation is correct: canonicalization should check whether stripping the milestone prefix yields a valid remainder rather than using a blanket contains('.') guard.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 7
+}

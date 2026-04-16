@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260415203322-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T00:06:30.992235394Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe amendment describes a real correctness regression in bead-reference normalization. The current matcher only canonicalizes undotted short refs, so milestone-local hierarchical ids like `8.5.3` no longer match their canonical `9ni.8.5.3` form, and that breaks downstream task-run grouping/history logic.\n\n## Votes\n\n- `fr-7-4d952349`: Accept\n  `canonicalize_milestone_bead_ref()` currently returns any dotted ref unchanged, so for a milestone prefix like `9ni`, `8.5.3` and `9ni.8.5.3` compare unequal under `milestone_bead_refs_match()`. This repo explicitly uses that alias shape, so the defect is not hypothetical. That matcher is then used by `TaskRunEntry::same_attempt()`, `collapse_task_run_attempts()`, and `FsTaskRunLineageStore::find_runs_for_bead()`. As a result, mixed short/qualified rows for the same bead/run stop collapsing together, and execution-history lookups can omit or duplicate attempts depending on which form is queried. The existing tests only cover undotted short ids such as `bead-1`, so they miss the dotted short-form case. This is a real high-severity bug and the proposed remediation direction is sound.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

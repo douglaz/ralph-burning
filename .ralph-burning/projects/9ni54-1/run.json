@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260415203322",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 7
+      "completion_round": 8
     },
     "started_at": "2026-04-15T20:33:22.775220229Z",
     "prompt_hash_at_cycle_start": "114c5c4c96be38bce1fad837b98c1556dd8e6c3226fb6705a6716b84f71843fa",
     "prompt_hash_at_stage_start": "114c5c4c96be38bce1fad837b98c1556dd8e6c3226fb6705a6716b84f71843fa",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 6
+    "final_review_restart_count": 7
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 7,
+  "completion_rounds": 8,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-7-4d952349",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "finding_summary: The new bead-alias matching only adds the milestone prefix when the bead id contains no dot, so short-form ids like `8.5.3` are treated as already-qualified and no longer match `9ni.8.5.3` [src/contexts/milestone_record/bead_refs.rs:8-15]. That bad canonicalization now feeds `TaskRunEntry::same_attempt()` / `canonical_task_run_bead_ref()` and `FsTaskRunLineageStore::find_runs_for_bead()`, so mixed short/qualified task-run rows for the same bead will not collapse together and `bead_execution_history()` can return duplicate or missing attempts for the dot-separated bead ids this repo actually uses [src/contexts/milestone_record/model.rs:452-472, src/adapters/fs.rs:5173-5183]. severity: high. affected_files: [\"src/contexts/milestone_record/bead_refs.rs\", \"src/contexts/milestone_record/model.rs\", \"src/adapters/fs.rs\"]. remediation_hint: canonicalize short dotted aliases against the current milestone instead of treating every dotted id as foreign/fully-qualified, and add coverage for a real alias pair such as `9ni.8.5.3` versus `8.5.3`.",
+        "created_at": "2026-04-16T00:06:45.349290318Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "0329dc9b8ca2f3067b21795670061ba019e6aebb8826aecb2b0e85ed6a1fba93"
+      }
+    ],
     "processed_count": 17
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 8 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-15T23:26:58.104604861Z",
+    "resolved_at": "2026-04-15T23:53:30.160881984Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
