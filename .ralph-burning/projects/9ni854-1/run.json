@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 5
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-4-9658f485",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "finding_summary: Failure reconciliation guesses the current run from the latest journal metadata when `workflow_run_id` is missing, so a retry/manual rerun can be reconciled against the wrong historical attempt.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs:1913-1926\n- src/contexts/automation_runtime/daemon_loop.rs:1997-2006\nremediation_hint: Mirror the success path and require a durable task-to-run binding, or at minimum an exact active/interrupted snapshot attempt, before reconciling. Do not infer `run_id`/`started_at` from the latest journal entry.",
-        "created_at": "2026-04-16T18:59:02.185571636Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "f8f936132e8eb6809559336c555847378f3229d6ae6ad04c51bfa2a217a86fd7"
-      },
-      {
-        "amendment_id": "fr-4-63eb15de",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "finding_summary: When daemon-side failure reconciliation cannot determine milestone metadata, the task is marked failed but the milestone controller is left in its prior active state instead of being pushed to `NeedsOperator`.\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs:1183-1201\n- src/contexts/automation_runtime/daemon_loop.rs:1781-1799\n- src/contexts/automation_runtime/daemon_loop.rs:1866-1931\n- src/contexts/automation_runtime/daemon_loop.rs:2001-2008\nremediation_hint: For milestone-backed tasks, convert hard reconciliation metadata failures into a controller `NeedsOperator` transition before returning the task failure, matching the existing success-reconciliation behavior.",
-        "created_at": "2026-04-16T18:59:02.185575684Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "c29df43e7dc363e9f08f746142d677f6564534339637c65494e48d69d480124b"
-      }
-    ],
-    "processed_count": 10
+    "pending": [],
+    "processed_count": 12
   },
-  "status_summary": "running: final review restart round 5 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T18:43:17.778063377Z",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260416164042-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-16T19:13:07.687167255Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nHardened daemon-side failure reconciliation in `src/contexts/automation_runtime/daemon_loop.rs` so failed milestone tasks now reconcile only from a durable `workflow_run_id` binding or an exact `active_run`/`interrupted_run` snapshot attempt, never by guessing from the latest journal metadata. Metadata failures now best-effort transition the milestone controller to `NeedsOperator` with project-backed bead context and monotonic controller timestamps, and the daemon failure tests were updated to cover the stricter binding rules without regressing the snapshot-fallback path.\n\n## Steps\n\n1. [Completed] Patched `try_reconcile_failure` to parse milestone metadata earlier, stop inferring `run_id` from the latest journal entry, and require either a durable task binding or an exact snapshot attempt before reconciling a failed milestone run.\n2. [Completed] Added a shared failure-metadata error path that pushes milestone-backed tasks into controller `NeedsOperator` state with an operator-facing reason and a non-regressing transition timestamp before returning the task failure.\n3. [Completed] Added and updated daemon failure-reconciliation regression tests for durable-binding enforcement, exact snapshot fallback, and successful failed-attempt recording under the stricter rules.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo clippy --features test-stub -- -D warnings` passed.\n- `BR_BIN=/home/master/bin/br cargo test` passed.\n- `cargo test --features test-stub contexts::automation_runtime::daemon_loop::tests::try_reconcile_failure -- --nocapture` passed; all 3 daemon failure-reconciliation tests succeeded.\n- `nix build` was launched and reached the active derivation build stage, but no final success/failure exit was observed in-session.\n\n## Outstanding Risks\n\n- `nix build` was started on the updated tree and is still running in-session with no final exit status yet, so the authoritative Nix gate remains unresolved.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 5
+}
