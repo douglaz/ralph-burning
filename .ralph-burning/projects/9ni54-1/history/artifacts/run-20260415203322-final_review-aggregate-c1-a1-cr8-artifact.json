@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260415203322-final_review-aggregate-c1-a1-cr8-artifact",
+  "payload_id": "run-20260415203322-final_review-aggregate-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T00:34:54.307680783Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 8/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-8-e4025c8d`\n- `fr-8-f2b6e0b1`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-8-e4025c8d`\n\nfinding_summary: `canonicalize_milestone_bead_ref` now treats every all-numeric dotted bead ref as a local short alias, which breaks matching when milestone IDs themselves are numeric.\nseverity: medium\naffected_files:\n- `src/contexts/milestone_record/bead_refs.rs:8-23`\n- `src/adapters/fs.rs:4371-4372`\n- `src/adapters/fs.rs:4997-4998`\n- `src/adapters/fs.rs:5180-5183`\nremediation_hint: Do not blindly prefix every numeric dotted ref. Either prove the dotted alias belongs to the current milestone (for example from the current plan/bead graph) before canonicalizing, or narrow the heuristic so fully qualified foreign numeric milestone refs are preserved.\n\n### `fr-8-f2b6e0b1`\n\nfinding_summary: The new lineage queries silently swallow every `load_plan_bundle` failure and return fallback lineage instead of surfacing unexpected plan-store errors.\nseverity: low\naffected_files:\n- `src/contexts/milestone_record/service.rs:2247-2250`\n- `src/contexts/milestone_record/service.rs:2286-2288`\n- `src/contexts/milestone_record/service.rs:2352-2353`\nremediation_hint: Keep the current fallback for expected stale-plan cases, but propagate unrelated `AppError`s such as filesystem/permission failures so callers can distinguish \"plan unavailable/corrupt\" from \"the store is broken\".\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 8
+}

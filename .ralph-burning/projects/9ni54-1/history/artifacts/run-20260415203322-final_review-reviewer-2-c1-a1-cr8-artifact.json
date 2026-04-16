@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-reviewer-2-c1-a1-cr8-artifact",
+  "payload_id": "run-20260415203322-final_review-reviewer-2-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T00:22:53.460317719Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed all 18 changed files (excluding .ralph-burning orchestration state). The implementation adds four lineage query types: (1) run history with milestone_id/bead_id, (2) task detail with BeadLineageView, (3) bead execution history with retries/durations, and (4) milestone task listing. All fields are backward-compatible (optional/nullable). Plan hash validation correctly prevents stale plan metadata from being projected. Graceful fallbacks handle missing milestones, corrupt plans, and mismatched plan hashes. The bead ref matching logic properly handles short vs qualified refs (including numeric dotted patterns like '8.5.3'). New inject_task_source_initial_details consolidates previously duplicated code. 12 new unit tests in milestone service, 6 in project service, plus CLI integration tests and model-level tests. All 18 new/modified tests pass. No correctness bugs, safety issues, or significant robustness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 8
+}

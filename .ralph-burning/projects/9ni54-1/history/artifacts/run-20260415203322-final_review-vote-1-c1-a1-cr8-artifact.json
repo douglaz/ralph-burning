@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260415203322-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T00:34:54.293280792Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real robustness defects. The numeric dotted bead-ref heuristic introduces ambiguous matching for valid numeric milestone IDs, and the lineage queries currently collapse all plan-load failures into fallback views, masking unexpected storage/I/O problems that callers should see.\n\n## Votes\n\n- `fr-8-e4025c8d`: Accept\n  `MilestoneId::new` allows fully numeric milestone IDs, so an ID like `8.5.3` is not reliably distinguishable from a local short alias such as `<current>.8.5.3`. `canonicalize_milestone_bead_ref` now rewrites every all-numeric dotted ref as local, which can create false matches and misidentify active/finalized runs when foreign fully qualified refs are present. The heuristic needs additional proof that the dotted form belongs to the current milestone before rewriting it.\n- `fr-8-f2b6e0b1`: Accept\n  The new `.ok()`/`Err(_) => fallback` paths swallow every `load_plan_bundle` failure, including `AppError::Io` cases such as permission errors or broken filesystem state. That makes read-side APIs report a benign \"no lineage details\" result instead of surfacing that the plan store is unhealthy, which weakens diagnostics and can mislead callers. Preserving fallback for expected stale/corrupt-plan cases while propagating unrelated storage failures is the safer behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}
