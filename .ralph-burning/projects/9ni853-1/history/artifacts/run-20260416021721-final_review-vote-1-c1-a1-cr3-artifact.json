@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416021721-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260416021721-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T03:37:07.407451540Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real defects. The first is a durability/recovery hole in success reconciliation for accepted propose-new-bead findings. The second is a duplicate-detection gap that ignores deferred beads even though they are already tracked backlog items.\n\n## Votes\n\n- `fr-3-179aeb40`: Accept\n  `reconcile_success` closes and syncs the active bead, then updates milestone state, and only afterward calls `reconcile_proposed_beads_after_success`. Inside that helper, any `handle_propose_new_bead` failure is logged as non-blocking and discarded. That means transient failures in the create/add-dependency/sync/journal path can leave an accepted propose-new-bead finding unapplied while the reconciliation still reports success, with no retry marker or needs-operator escalation. The aggregate payload remains on disk, but there is no automatic durable recovery path, so the finding can effectively disappear from normal backlog processing.\n- `fr-3-67b73d09`: Accept\n  The code explicitly queries `br list --all --deferred`, so deferred beads are part of the defensive duplicate search space, but `eligible_existing_proposed_bead_match` rejects everything except `open` and `in_progress`. As a result, a same-title deferred bead is ignored by both the recovery loop and the planned-elsewhere fallback, and the handler proceeds to create a new bead. Closed beads are intentionally excluded by tests, but deferred is different: it still represents existing planned work, so treating it as ineligible creates avoidable duplicate backlog entries.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

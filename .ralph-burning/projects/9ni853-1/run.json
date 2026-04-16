@@ -1,0 +1,86 @@
+{
+  "active_run": {
+    "run_id": "run-20260416021721",
+    "stage_cursor": {
+      "stage": "plan_and_implement",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 5
+    },
+    "started_at": "2026-04-16T02:17:21.815687034Z",
+    "prompt_hash_at_cycle_start": "f3f8e1c67feaa8fcb2f35e4bb5fe9c83ad8eb5aca643141d0b75594e799ddeb8",
+    "prompt_hash_at_stage_start": "f3f8e1c67feaa8fcb2f35e4bb5fe9c83ad8eb5aca643141d0b75594e799ddeb8",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 4
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 5,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [
+      {
+        "amendment_id": "fr-4-b6989cd5",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "finding_summary: `handle_propose_new_bead()` trusts `ProposedBeadCreated` journal entries and returns before querying `br`, so a follow-up bead that was later removed from `.beads` or lost its dependency on the active bead is treated as already created and never recreated or repaired. affected_files: [\"src/contexts/milestone_record/service.rs\"] refs: src/contexts/milestone_record/service.rs:2838-2848,2970-2975 severity: medium remediation_hint: Verify the journaled `created_bead_id` with `br show` (and repair the dependency if needed) before returning; if the bead is missing, fall back to the normal search/create path.",
+        "created_at": "2026-04-16T03:59:40.571825376Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "647f6916389c3a0cb0338d4c23315215c4206c46536428560d4d3f799802e950"
+      },
+      {
+        "amendment_id": "fr-4-c044f649",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "finding_summary: The defensive re-check reclassifies any open/in-progress/deferred bead with the same normalized title as planned-elsewhere, without checking `finding_summary`, `proposed_scope`, or `rationale`. A generic title collision will therefore suppress creation of genuinely new follow-up work and record a verified mapping to the wrong bead. affected_files: [\"src/contexts/milestone_record/service.rs\"] refs: src/contexts/milestone_record/service.rs:2978-2984,3034-3056 severity: high remediation_hint: Require a stronger semantic match before reclassifying (for example compare the rendered description/scope or another stable fingerprint), and only mark the mapping verified after that richer match succeeds.",
+        "created_at": "2026-04-16T03:59:40.571828331Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "b89fa7323e4af6e07f4deaaa264feba42b5033bd1491ff37833a2ec799225b91"
+      },
+      {
+        "amendment_id": "fr-4-30c03445",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "finding_summary: `reconcile_proposed_beads_after_success()` treats payload listing failures, aggregate parse failures, and missing propose-new-bead metadata as non-blocking and continues success reconciliation. Because propose-new-bead amendments are no longer queued anywhere else, those accepted findings are silently lost instead of keeping reconciliation open for retry. affected_files: [\"src/contexts/automation_runtime/success_reconciliation.rs\"] refs: src/contexts/automation_runtime/success_reconciliation.rs:935-943,968-977,987-998 severity: medium remediation_hint: Once a final-review aggregate is expected for the run, bubble these cases up as `ReconciliationError::MilestoneUpdateFailed` so operators can retry rather than completing the bead with dropped follow-up work.",
+        "created_at": "2026-04-16T03:59:40.571830665Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "45f58d49d3412a6cc017c9efe57a0ccf56c3690ec62b66dcf2c90855a3576f6e"
+      }
+    ],
+    "processed_count": 7
+  },
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-16T03:50:51.516429055Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416021721-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416021721-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T02:45:07.828315161Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 fix-now issues: restart-path routing still treats `ProposeNewBead` like immediate remediation in mixed rounds, and the title-based duplicate check can suppress valid follow-up bead creation by matching closed/self beads.\n\n## Amendments\n\n1. finding_summary: `ProposeNewBead` findings are still routed into the restart amendment queue whenever the same final-review round also contains at least one `FixNow` item.\nseverity: high\naffected_files:\n- src/contexts/workflow_composition/engine.rs:3312-3325\n- src/contexts/workflow_composition/engine.rs:7885-7906\nremediation_hint: Partition accepted amendments by `classification`, not just `mapped_to_bead_id`. Only `FixNow` should be enqueued for remediation; `PlannedElsewhere` should record mappings, and `ProposeNewBead` should stay deferred for downstream bead creation.\n   Rationale: `execute_final_review_panel` now carries the three-way classification through to `FinalReviewQueuedAmendment`, but the restart path still uses `mapped_to_bead_id.is_some()` as the only routing signal. In a mixed round, a valid `propose-new-bead` amendment lands in `regular_amendments` and gets written to the immediate amendment queue, which contradicts the new contract and can cause downstream follow-up work to be incorrectly forced into the current bead.\n2. finding_summary: The defensive duplicate check reclassifies against any same-title bead returned by `br list --all`, including closed beads (and the active bead itself), so it can suppress creation of a required follow-up bead by mapping to work that is no longer actionable.\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/service.rs:2756-2764\n- src/contexts/milestone_record/service.rs:2871-2897\nremediation_hint: When rechecking for an existing match, ignore terminal/self matches or explicitly require an open/in-progress target before converting the finding to `planned-elsewhere`.\n   Rationale: `list_matching_bead_by_title()` returns the first exact title match from `br list --all` without filtering on status or identity. `handle_propose_new_bead()` then immediately records a planned-elsewhere mapping to that bead and skips creation. A historical closed bead with the same title is enough to drop the newly accepted follow-up work.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

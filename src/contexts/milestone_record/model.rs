@@ -299,6 +299,7 @@ pub enum MilestoneEventType {
     BeadSkipped,
     ProgressUpdated,
     PlannedElsewhereMapped,
+    ProposedBeadCreated,
     /// Catch-all for event types added in newer versions. Allows older code
     /// to read journals that contain events from future versions without
     /// failing deserialization. Consumers should skip `Unknown` events.

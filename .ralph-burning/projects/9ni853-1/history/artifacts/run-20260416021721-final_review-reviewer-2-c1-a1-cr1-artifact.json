@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416021721-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416021721-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T02:44:05.054069979Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThorough review of the propose-new-bead handler implementation. The change adds ProposeNewBeadInput/ProposeNewBeadOutcome types and handle_propose_new_bead() in milestone_record/service.rs, wires dispatch via reconcile_proposed_beads_after_success() in success_reconciliation.rs, adds ProposedBeadCreated journal event type, and extends FinalReviewProposal and FinalReviewCanonicalAmendment with proposed_title/proposed_scope/severity fields with conservative merge semantics. All 794 tests pass, clippy is clean. The implementation correctly follows the PlannedElsewhere handler pattern: defensive re-check prevents duplicate bead creation, bead creation flows through BrMutationAdapter, sync occurs after creation, journal events record full evidence, and a conservative threshold (>2 per pass) logs an error-level warning. The merge logic in final_review.rs appropriately downgrades ProposeNewBead to FixNow on any reviewer disagreement about metadata fields. No correctness bugs, safety issues, or significant maintainability risks found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

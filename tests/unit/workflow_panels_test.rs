@@ -140,6 +140,9 @@ fn final_review_proposal_payload_round_trips() {
             rationale: Some("Clarifies the edge case.".to_string()),
             mapped_to_bead_id: None,
             classification: None,
+            proposed_title: None,
+            proposed_scope: None,
+            severity: None,
         }],
     };
     let json = serde_json::to_string(&payload).expect("serializes");
@@ -185,6 +188,10 @@ fn final_review_aggregate_payload_round_trips() {
         sources: vec![],
         mapped_to_bead_id: None,
         classification: AmendmentClassification::FixNow,
+        rationale: None,
+        proposed_title: None,
+        proposed_scope: None,
+        severity: None,
     };
     let payload = FinalReviewAggregatePayload {
         restart_required: true,
@@ -219,6 +226,10 @@ fn final_review_aggregate_planned_elsewhere_no_restart() {
         sources: vec![],
         mapped_to_bead_id: Some("other-bead-42".to_string()),
         classification: AmendmentClassification::PlannedElsewhere,
+        rationale: None,
+        proposed_title: None,
+        proposed_scope: None,
+        severity: None,
     };
     let payload = FinalReviewAggregatePayload {
         restart_required: false,

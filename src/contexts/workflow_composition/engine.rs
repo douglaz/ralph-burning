@@ -3143,11 +3143,9 @@ where
                     // orphaned mappings for an uncommitted stage.
                     // Always called (even with no PE amendments) so that a PE
                     // round sentinel is written for correct round supersession.
-                    let pe_amendments: Vec<_> = commit_data
-                        .accepted_amendments
-                        .iter()
-                        .filter(|a| a.mapped_to_bead_id.is_some())
-                        .collect();
+                    let (pe_amendments, _) = partition_final_review_amendments_by_route(
+                        &commit_data.accepted_amendments,
+                    );
                     record_planned_elsewhere_amendments(
                         log_write,
                         base_dir,
@@ -3312,10 +3310,10 @@ where
                     // Partition: planned-elsewhere amendments are routed to
                     // the mapping handler; only regular amendments enter the queue.
                     // Recording is deferred until after the stage commit succeeds.
-                    let (planned_elsewhere, regular_amendments): (Vec<_>, Vec<_>) = commit_data
-                        .accepted_amendments
-                        .iter()
-                        .partition(|a| a.mapped_to_bead_id.is_some());
+                    let (planned_elsewhere, regular_amendments) =
+                        partition_final_review_amendments_by_route(
+                            &commit_data.accepted_amendments,
+                        );
 
                     let mut written_ids: Vec<String> = Vec::new();
                     for amendment in &regular_amendments {
@@ -7121,8 +7119,29 @@ struct FinalReviewQueuedAmendment {
     /// the mapping handler instead of the amendment queue.
     mapped_to_bead_id: Option<String>,
     /// Three-way classification for downstream routing.
-    #[allow(dead_code)]
     classification: crate::contexts::workflow_composition::panel_contracts::AmendmentClassification,
+}
+
+fn partition_final_review_amendments_by_route(
+    amendments: &[FinalReviewQueuedAmendment],
+) -> (
+    Vec<&FinalReviewQueuedAmendment>,
+    Vec<&FinalReviewQueuedAmendment>,
+) {
+    let mut planned_elsewhere = Vec::new();
+    let mut restart_queue = Vec::new();
+    for amendment in amendments {
+        match amendment.classification {
+            crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::PlannedElsewhere => {
+                planned_elsewhere.push(amendment);
+            }
+            crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::FixNow => {
+                restart_queue.push(amendment);
+            }
+            crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::ProposeNewBead => {}
+        }
+    }
+    (planned_elsewhere, restart_queue)
 }
 
 enum FinalReviewPanelOutcome {
@@ -8566,8 +8585,9 @@ mod tests {
     use super::{
         build_final_review_snapshot, build_prompt_review_snapshot, complete_run,
         drift_still_satisfies_requirements, mark_running_run_interrupted,
-        milestone_lineage_plan_hash, pause_run, resolution_has_drifted, resume_run_with_retry,
-        sync_milestone_bead_start, InterruptedRunContext, InterruptedRunUpdate,
+        milestone_lineage_plan_hash, partition_final_review_amendments_by_route, pause_run,
+        resolution_has_drifted, resume_run_with_retry, sync_milestone_bead_start,
+        FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate, QueuedAmendment,
         RunningAttemptIdentity,
     };
 
@@ -8590,6 +8610,55 @@ mod tests {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
         EffectiveConfig::load(temp_dir.path()).expect("load effective config")
+    }
+
+    #[test]
+    fn final_review_routes_only_fix_now_into_restart_queue() {
+        let queued = |id: &str, classification, mapped_to_bead_id: Option<&str>| {
+            FinalReviewQueuedAmendment {
+                queued: QueuedAmendment {
+                    amendment_id: id.to_owned(),
+                    source_stage: StageId::FinalReview,
+                    source_cycle: 1,
+                    source_completion_round: 2,
+                    body: format!("body-{id}"),
+                    created_at: Utc::now(),
+                    batch_sequence: 1,
+                    source:
+                        crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage,
+                    dedup_key: format!("dedup-{id}"),
+                },
+                reviewer_sources: Vec::new(),
+                mapped_to_bead_id: mapped_to_bead_id.map(str::to_owned),
+                classification,
+            }
+        };
+
+        let amendments = vec![
+            queued(
+                "fix",
+                crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::FixNow,
+                None,
+            ),
+            queued(
+                "planned",
+                crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::PlannedElsewhere,
+                Some("bead-elsewhere"),
+            ),
+            queued(
+                "proposed",
+                crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::ProposeNewBead,
+                None,
+            ),
+        ];
+
+        let (planned_elsewhere, restart_queue) =
+            partition_final_review_amendments_by_route(&amendments);
+
+        assert_eq!(planned_elsewhere.len(), 1);
+        assert_eq!(planned_elsewhere[0].queued.amendment_id, "planned");
+        assert_eq!(restart_queue.len(), 1);
+        assert_eq!(restart_queue[0].queued.amendment_id, "fix");
     }
 
     fn sample_milestone_bundle(milestone_id: &str) -> MilestoneBundle {

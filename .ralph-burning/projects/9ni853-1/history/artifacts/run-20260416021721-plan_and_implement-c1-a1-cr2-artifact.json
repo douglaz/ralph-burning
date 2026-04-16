@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416021721-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260416021721-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-16T03:03:05.525984848Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdjusted final-review amendment routing so only FixNow findings enter the restart queue while PlannedElsewhere stays on the mapping path and ProposeNewBead remains deferred for downstream bead creation. Tightened propose-new-bead duplicate suppression so only non-self open or in-progress title matches reclassify to planned-elsewhere, and added regressions covering the routing split plus closed/self duplicate cases.\n\n## Steps\n\n1. [Completed] Inspect the existing propose-new-bead implementation and final-review restart routing to isolate the two pending amendments without touching `.ralph-burning/` state.\n2. [Completed] Update final-review routing in `src/contexts/workflow_composition/engine.rs` to partition accepted amendments by explicit classification so only FixNow findings are enqueued for restart and PlannedElsewhere is the only mapping path.\n3. [Completed] Update `src/contexts/milestone_record/service.rs` so defensive title rechecks ignore terminal beads and the active bead itself before reclassifying a propose-new-bead finding as planned-elsewhere.\n4. [Completed] Add regression tests for classification-based routing and for closed/self duplicate matches continuing through new bead creation.\n5. [Completed] Run `cargo fmt`, `cargo test`, `cargo clippy -- -D warnings`, and `cargo fmt --check` on the final tree.\n6. [Skipped] Run the authoritative `nix build` gate.\n\n## Validation Evidence\n\n- `cargo fmt` completed successfully.\n- `cargo test` completed successfully on the modified tree.\n- `cargo clippy -- -D warnings` completed successfully.\n- `cargo fmt --check` completed successfully.\n- Targeted regressions passed for `handle_propose_new_bead_ignores_closed_duplicate_match` and `final_review_routes_only_fix_now_into_restart_queue`.\n- `nix build` was started and entered the sandboxed release-test phase, but it produced no further output for an extended period and was interrupted before completion, so there is no passing result to report.\n\n## Outstanding Risks\n\n- Duplicate prevention still matches on normalized title only, so semantically duplicate follow-up work with different titles can still create separate beads.\n- The authoritative `nix build` gate did not complete in this session; it was started, remained in a long-running sandboxed test phase with no further output, and was interrupted before a pass/fail result was produced.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 2
+}
