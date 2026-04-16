@@ -23,6 +23,10 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default timeout for mutation br commands (60 seconds).
 const DEFAULT_MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Marker persisted inside `.beads/` whenever a mutation may still need
+/// `br sync --flush-only` before external imports are safe again.
+const PENDING_MUTATIONS_MARKER: &str = ".beads/.br-unsynced-mutations";
+
 // ── Errors ──────────────────────────────────────────────────────────────────
 
 /// Structured error for br subprocess execution.
@@ -482,10 +486,13 @@ impl<R: ProcessRunner> BrAdapter<R> {
 ///
 /// Sync lifecycle invariants:
 /// - successful local mutations set `has_unsync_mutations`
+/// - pending mutation state is also persisted to `.beads/.br-unsynced-mutations`
+///   so a fresh adapter can recover crash-safe import guards after restart
 /// - `sync_flush` is the only operation that clears the dirty flag
 /// - `sync_import` never sets the dirty flag and refuses to run while local
 ///   mutations are still pending, preventing upstream imports from being mixed
-///   with unflushed local state
+///   with unflushed local state; callers must also provide a working directory
+///   so the persisted marker can prove the workspace was recovered cleanly
 /// - `sync_if_dirty` is the safe convenience path when callers want to flush
 ///   only if prior mutation steps actually dirtied the local workspace
 pub struct BrMutationAdapter<R: ProcessRunner = OsProcessRunner> {
@@ -510,9 +517,10 @@ impl Default for BrMutationAdapter<OsProcessRunner> {
 
 impl<R: ProcessRunner> BrMutationAdapter<R> {
     pub fn with_adapter(adapter: BrAdapter<R>) -> Self {
+        let has_unsync_mutations = Self::recover_pending_mutation_state(&adapter);
         Self {
             adapter,
-            has_unsync_mutations: AtomicBool::new(false),
+            has_unsync_mutations: AtomicBool::new(has_unsync_mutations),
         }
     }
 
@@ -526,9 +534,70 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         &self.adapter
     }
 
+    fn pending_mutation_marker_path_for(adapter: &BrAdapter<R>) -> Option<PathBuf> {
+        adapter
+            .working_dir
+            .as_ref()
+            .map(|dir| dir.join(PENDING_MUTATIONS_MARKER))
+    }
+
+    fn pending_mutation_marker_path(&self) -> Option<PathBuf> {
+        Self::pending_mutation_marker_path_for(&self.adapter)
+    }
+
+    fn recover_pending_mutation_state(adapter: &BrAdapter<R>) -> bool {
+        let Some(marker_path) = Self::pending_mutation_marker_path_for(adapter) else {
+            return false;
+        };
+
+        match std::fs::metadata(&marker_path) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                tracing::warn!(
+                    marker_path = %marker_path.display(),
+                    %error,
+                    "failed to inspect br pending-mutation marker; assuming workspace is dirty"
+                );
+                true
+            }
+        }
+    }
+
+    fn persist_pending_mutation_marker(&self) -> Result<(), BrError> {
+        let Some(marker_path) = self.pending_mutation_marker_path() else {
+            return Ok(());
+        };
+        let Some(parent) = marker_path.parent() else {
+            return Ok(());
+        };
+
+        std::fs::create_dir_all(parent)?;
+        std::fs::write(&marker_path, b"pending br sync --flush-only\n")?;
+        Ok(())
+    }
+
+    fn clear_pending_mutation_marker(&self) -> Result<(), BrError> {
+        let Some(marker_path) = self.pending_mutation_marker_path() else {
+            return Ok(());
+        };
+
+        match std::fs::remove_file(&marker_path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(BrError::Io(error)),
+        }
+    }
+
     /// Refuse operations that require a clean bead workspace while pending
     /// local mutations still need `br sync --flush-only`.
     pub fn ensure_synced(&self) -> Result<(), BrError> {
+        if self.pending_mutation_marker_path().is_none() {
+            return Err(BrError::Io(std::io::Error::other(
+                "br sync --import-only requires a configured working directory so pending mutation state can be recovered across restarts",
+            )));
+        }
+
         if !self.has_pending_mutations() {
             return Ok(());
         }
@@ -551,6 +620,9 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         bead_id: Option<&str>,
         cmd: &BrCommand,
     ) -> Result<BrOutput, BrError> {
+        let already_dirty = self.has_pending_mutations();
+        self.persist_pending_mutation_marker()?;
+
         let start = Instant::now();
         let result = self.adapter.exec_mutation(cmd).await;
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -567,6 +639,9 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
                 );
             }
             Err(err) => {
+                if !already_dirty {
+                    self.clear_pending_mutation_marker()?;
+                }
                 let stderr_content = match err {
                     BrError::BrExitError { stderr, .. } => stderr.as_str(),
                     _ => "",
@@ -656,9 +731,10 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     ///
     /// Call this after one or more successful mutation commands once the local
     /// mutation set is ready to be published. A successful flush clears the
-    /// adapter's dirty flag. On failure the dirty flag remains set so crash
-    /// recovery or a later retry can safely re-run `br sync --flush-only`
-    /// without losing the local mutation intent.
+    /// adapter's dirty flag and removes the persisted pending-mutation marker.
+    /// On failure both remain in place so crash recovery or a later retry can
+    /// safely re-run `br sync --flush-only` without losing the local mutation
+    /// intent.
     pub async fn sync_flush(&self) -> Result<BrOutput, BrError> {
         let cmd = BrCommand::sync_flush();
         let start = Instant::now();
@@ -667,6 +743,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
 
         match &result {
             Ok(_) => {
+                self.clear_pending_mutation_marker()?;
                 self.has_unsync_mutations.store(false, Ordering::Release);
                 tracing::info!(
                     operation = "sync_flush",
@@ -714,8 +791,10 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// publishing any local mutations.
     ///
     /// Use this after `git pull`, merge, or other external `.beads/` updates.
-    /// The method refuses to run while local unsynced mutations are pending so
-    /// imported state cannot be mixed with a dirty local mutation set.
+    /// The method refuses to run while local unsynced mutations are pending,
+    /// including mutations recovered from `.beads/.br-unsynced-mutations`
+    /// after a restart, so imported state cannot be mixed with a dirty local
+    /// mutation set.
     pub async fn sync_import(&self) -> Result<BrOutput, BrError> {
         self.ensure_synced()?;
 
@@ -1087,6 +1166,19 @@ mod tests {
         BrMutationAdapter::with_adapter(adapter)
     }
 
+    fn make_mutation_adapter_in(
+        base_dir: &std::path::Path,
+        responses: Vec<Result<BrOutput, BrError>>,
+    ) -> (
+        BrMutationAdapter<MockRunner>,
+        std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    ) {
+        let runner = MockRunner::new(responses);
+        let command_log = runner.command_log();
+        let adapter = BrAdapter::with_runner(runner).with_working_dir(base_dir.to_path_buf());
+        (BrMutationAdapter::with_adapter(adapter), command_log)
+    }
+
     #[tokio::test]
     async fn mutation_sets_dirty_flag() -> Result<(), Box<dyn std::error::Error>> {
         let ma = make_mutation_adapter(vec![MockRunner::success("created")]);
@@ -1240,6 +1332,79 @@ mod tests {
             "--status=in_progress".to_owned(),
         ]));
         assert!(commands.contains(&vec!["sync".to_owned(), "--flush-only".to_owned()]));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_import_rejects_dirty_adapter_without_invoking_br(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let (ma, command_log) = make_mutation_adapter_in(
+            tmp.path(),
+            vec![
+                MockRunner::success("updated"),
+                MockRunner::success("imported"),
+            ],
+        );
+
+        ma.update_bead_status("bead-1", "in_progress").await?;
+        let error = ma.sync_import().await.expect_err("dirty import must fail");
+
+        assert!(error
+            .to_string()
+            .contains("pending local br mutations detected"));
+        let commands = command_log.lock().expect("command log");
+        assert_eq!(
+            commands.len(),
+            1,
+            "sync_import should not spawn br when dirty"
+        );
+        assert_eq!(
+            commands[0],
+            vec![
+                "update".to_owned(),
+                "bead-1".to_owned(),
+                "--status=in_progress".to_owned(),
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_import_recovers_pending_mutation_marker_after_restart(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+
+        let (first_adapter, _) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("updated")]);
+        first_adapter
+            .update_bead_status("bead-1", "in_progress")
+            .await?;
+
+        let marker_path = tmp.path().join(PENDING_MUTATIONS_MARKER);
+        assert!(
+            marker_path.is_file(),
+            "mutation marker should persist to disk"
+        );
+
+        let (restarted_adapter, command_log) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("imported")]);
+        assert!(
+            restarted_adapter.has_pending_mutations(),
+            "fresh adapter should recover pending state from marker"
+        );
+
+        let error = restarted_adapter
+            .sync_import()
+            .await
+            .expect_err("restarted import must fail while marker is present");
+        assert!(error
+            .to_string()
+            .contains("pending local br mutations detected"));
+        assert!(
+            command_log.lock().expect("command log").is_empty(),
+            "guarded sync_import should not invoke br after restart"
+        );
         Ok(())
     }
 }
