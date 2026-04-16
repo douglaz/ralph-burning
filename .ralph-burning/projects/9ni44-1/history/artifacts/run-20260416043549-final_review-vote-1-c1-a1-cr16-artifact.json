@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T10:58:36.893808052Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness defects caused by treating BrMutationAdapter's cached dirty flag as authoritative in paths where `sync_if_dirty()` is explicitly designed to re-read persisted pending-mutation state under the repo lock. That mismatch can bypass required flush or safety checks when pending mutation state appears after adapter construction.\n\n## Votes\n\n- `fr-16-a620e15c`: Accept\n  `sync_after_close` is meant to guarantee the post-close crash-recovery flush, but its early return on `has_pending_mutations()` makes the cached adapter bit authoritative instead of `sync_if_dirty()`'s locked repo re-scan. If another adapter or process leaves `.beads/.br-unsynced-mutations*` after this adapter was created, reconciliation can skip the required flush and still advance milestone/controller state while the bead close remains only locally persisted. That is a real correctness issue.\n- `fr-16-64d223fe`: Accept\n  The helper only runs the pre-flush health gate when the cached dirty bit is already set, then calls `sync_if_dirty()`, which may discover newly persisted pending mutations and flush them anyway. In that path a missing or conflicted `.beads/issues.jsonl` is checked only after the flush, which defeats the intended rule to block unsafe bead mutations before replay. The finding is valid; the most robust fix is to combine the repo-state recheck and health gate under the same lock.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}

@@ -15,9 +15,10 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
+use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 use crate::adapters::br_models::BeadStatus;
 use crate::adapters::br_process::{
-    BrAdapter, BrCommand, BrError, BrMutationAdapter, ProcessRunner,
+    BrAdapter, BrCommand, BrError, BrMutationAdapter, ProcessRunner, SyncIfDirtyHealthError,
 };
 use crate::adapters::bv_process::{BvAdapter, BvProcessRunner, NextBeadResponse};
 use crate::adapters::fs::{
@@ -113,6 +114,41 @@ impl std::fmt::Display for ReconciliationError {
     }
 }
 
+fn ensure_beads_mutation_health(
+    base_dir: &Path,
+    bead_id: &str,
+    task_id: &str,
+) -> Result<(), ReconciliationError> {
+    if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
+        return Err(ReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!("refusing to mutate beads because bead state is unsafe: {details}"),
+        });
+    }
+
+    Ok(())
+}
+
+fn make_beads_sync_health_error(
+    bead_id: &str,
+    task_id: &str,
+    details: &str,
+) -> ReconciliationError {
+    ReconciliationError::BrSyncFailed {
+        bead_id: bead_id.to_owned(),
+        task_id: task_id.to_owned(),
+        details: format!(
+            "bead '{bead_id}' was locally closed but bead state became unsafe before br sync --flush-only: {details}. The bead remains locally closed in br; resolve the bead-state issue and rerun `br sync --flush-only`."
+        ),
+    }
+}
+
+fn beads_mutation_health_warning(base_dir: &Path) -> Option<String> {
+    beads_health_failure_details(&check_beads_health(base_dir))
+        .map(|details| format!("refusing to mutate beads because bead state is unsafe: {details}"))
+}
+
 /// Check whether a bead is already closed by querying `br show <id> --json`.
 ///
 /// Returns `true` if the bead status is `Closed`, `false` otherwise.
@@ -202,7 +238,8 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
     }
 
     // Step 1: Close the bead idempotently.
-    let was_already_closed = close_bead_idempotent(br_mutation, br_read, bead_id, task_id).await?;
+    let was_already_closed =
+        close_bead_idempotent(base_dir, br_mutation, br_read, bead_id, task_id).await?;
 
     // Step 2: Sync flush — always runs, even if bead was already closed.
     // A crash between br close and sync would leave local bead state dirty.
@@ -213,7 +250,7 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
     // A crash between close and sync produces was_already_closed=true with an
     // un-flushed local state. Sync failures must remain fatal regardless of
     // was_already_closed to prevent proceeding with an un-synced bead close.
-    sync_after_close(br_mutation, bead_id, task_id).await?;
+    sync_after_close(base_dir, br_mutation, bead_id, task_id).await?;
 
     // Step 3: Update milestone state.
     let milestone_status = update_milestone_state(
@@ -375,6 +412,7 @@ fn persist_selection_failure_after_reconciliation(
 ///
 /// On failure, returns `ReconciliationError::BrCloseFailed`.
 async fn close_bead_idempotent<R: ProcessRunner>(
+    base_dir: &Path,
     br_mutation: &BrMutationAdapter<R>,
     br_read: &BrAdapter<R>,
     bead_id: &str,
@@ -396,6 +434,7 @@ async fn close_bead_idempotent<R: ProcessRunner>(
         }
     }
 
+    ensure_beads_mutation_health(base_dir, bead_id, task_id)?;
     let reason = format!("task {task_id} completed successfully");
     match br_mutation.close_bead(bead_id, &reason).await {
         Ok(_) => Ok(false),
@@ -416,18 +455,31 @@ async fn close_bead_idempotent<R: ProcessRunner>(
 
 /// Run `br sync --flush-only` after a successful close.
 async fn sync_after_close<R: ProcessRunner>(
+    base_dir: &Path,
     br_mutation: &BrMutationAdapter<R>,
     bead_id: &str,
     task_id: &str,
 ) -> Result<(), ReconciliationError> {
-    br_mutation
-        .sync_flush()
-        .await
-        .map_err(|e| ReconciliationError::BrSyncFailed {
-            bead_id: bead_id.to_owned(),
-            task_id: task_id.to_owned(),
-            details: e.to_string(),
-        })?;
+    match br_mutation.sync_own_dirty_if_beads_healthy(base_dir).await {
+        Ok(crate::adapters::br_process::SyncIfDirtyOutcome::Clean) => {
+            tracing::debug!(
+                bead_id = bead_id,
+                task_id = task_id,
+                "no pending local bead mutations remain after close replay; skipping br sync --flush-only"
+            );
+        }
+        Ok(crate::adapters::br_process::SyncIfDirtyOutcome::Flushed { .. }) => {}
+        Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
+            return Err(make_beads_sync_health_error(bead_id, task_id, &details));
+        }
+        Err(SyncIfDirtyHealthError::Br(error)) => {
+            return Err(ReconciliationError::BrSyncFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: error.to_string(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -859,6 +911,15 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
             if !durably_verified_indices.contains(&idx) {
                 continue;
             }
+            if let Some(details) = beads_mutation_health_warning(base_dir) {
+                tracing::warn!(
+                    active_bead_id = bead_id,
+                    mapped_to_bead_id = outcome.mapping.mapped_to_bead_id.as_str(),
+                    details = details.as_str(),
+                    "skipping planned-elsewhere comment because bead state is unsafe"
+                );
+                break;
+            }
             let comment_text = format!(
                 "Planned-elsewhere mapping from {}: {}",
                 outcome.mapping.active_bead_id, outcome.mapping.finding_summary
@@ -896,7 +957,13 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     // Best-effort: if flush fails, comments may be lost but the mapping is
     // already recorded as verified above.
     if commented_count > 0 {
-        if let Err(e) = br_mutation.sync_flush().await {
+        if let Some(details) = beads_mutation_health_warning(base_dir) {
+            tracing::warn!(
+                active_bead_id = bead_id,
+                details = details.as_str(),
+                "skipping br sync after planned-elsewhere comments because bead state is unsafe"
+            );
+        } else if let Err(e) = br_mutation.sync_flush().await {
             tracing::warn!(
                 error = %e,
                 "failed to flush br mutations after planned-elsewhere comments (non-blocking)"
@@ -1213,7 +1280,7 @@ mod tests {
     use crate::contexts::project_run_record::model::PayloadRecord;
     use crate::contexts::workflow_composition::panel_contracts::FinalReviewCanonicalAmendment;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     // ── Mock BR runner ─────────────────────────────────────────────────
@@ -1260,6 +1327,15 @@ mod tests {
                 .pop()
                 .unwrap_or_else(|| panic!("MockBrRunner: no more responses"))
         }
+    }
+
+    fn write_beads_export(base_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        std::fs::create_dir_all(base_dir.join(".beads"))?;
+        std::fs::write(
+            base_dir.join(".beads/issues.jsonl"),
+            "{\"id\":\"seed-bead\"}\n",
+        )?;
+        Ok(())
     }
 
     // ── Mock BV runner ─────────────────────────────────────────────────
@@ -1332,10 +1408,92 @@ mod tests {
         }
     }
 
+    type BrHook = Arc<dyn Fn(&[String], Option<&Path>) + Send + Sync>;
+
+    struct RecordingBrRunner {
+        responses: Mutex<Vec<Result<BrOutput, BrError>>>,
+        invocations: Arc<Mutex<Vec<Vec<String>>>>,
+        after_run: Option<BrHook>,
+    }
+
+    impl RecordingBrRunner {
+        fn new(
+            responses: Vec<Result<BrOutput, BrError>>,
+            invocations: Arc<Mutex<Vec<Vec<String>>>>,
+            after_run: Option<BrHook>,
+        ) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+                invocations,
+                after_run,
+            }
+        }
+    }
+
+    impl ProcessRunner for RecordingBrRunner {
+        async fn run(
+            &self,
+            args: Vec<String>,
+            _timeout: Duration,
+            working_dir: Option<&Path>,
+        ) -> Result<BrOutput, BrError> {
+            self.invocations.lock().unwrap().push(args.clone());
+            if let Some(after_run) = &self.after_run {
+                after_run(&args, working_dir);
+            }
+            self.responses
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or_else(|| panic!("RecordingBrRunner: no more responses"))
+        }
+    }
+
+    fn seed_planned_elsewhere_mapping(
+        base_dir: &Path,
+        milestone_id: &str,
+        active_bead_id: &str,
+        mapped_to_bead_id: &str,
+        run_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::FsMilestoneStore;
+        use crate::contexts::milestone_record::service::{create_milestone, CreateMilestoneInput};
+
+        let now = Utc::now();
+        let record = create_milestone(
+            &FsMilestoneStore,
+            base_dir,
+            CreateMilestoneInput {
+                id: milestone_id.to_owned(),
+                name: format!("Milestone {milestone_id}"),
+                description: "planned-elsewhere reconciliation test".to_owned(),
+            },
+            now,
+        )?;
+        let mapping = PlannedElsewhereMapping {
+            active_bead_id: active_bead_id.to_owned(),
+            finding_summary: "needs follow-up elsewhere".to_owned(),
+            mapped_to_bead_id: mapped_to_bead_id.to_owned(),
+            recorded_at: now,
+            mapped_bead_verified: false,
+            run_id: Some(run_id.to_owned()),
+            completion_round: Some(1),
+        };
+        milestone_service::record_planned_elsewhere_mapping(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            base_dir,
+            &record.id,
+            &mapping,
+        )?;
+        Ok(())
+    }
+
     // ── Tests ──────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn close_bead_idempotent_already_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
         // br show returns closed status
         let show_json =
             r#"{"id":"b1","title":"Test","status":"closed","priority":2,"bead_type":"task"}"#;
@@ -1345,13 +1503,17 @@ mod tests {
         let mutation_runner = MockBrRunner::new(vec![]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
 
-        let result = close_bead_idempotent(&br_mutation, &br_adapter, "b1", "task-1").await?;
+        let result =
+            close_bead_idempotent(temp_dir.path(), &br_mutation, &br_adapter, "b1", "task-1")
+                .await?;
         assert!(result, "should report bead was already closed");
         Ok(())
     }
 
     #[tokio::test]
     async fn close_bead_idempotent_open_then_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
         // br show returns open, then close succeeds
         let show_json =
             r#"{"id":"b1","title":"Test","status":"open","priority":2,"bead_type":"task"}"#;
@@ -1363,13 +1525,17 @@ mod tests {
         let mutation_runner = MockBrRunner::new(vec![close_output]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
 
-        let result = close_bead_idempotent(&br_mutation, &br_adapter, "b1", "task-1").await?;
+        let result =
+            close_bead_idempotent(temp_dir.path(), &br_mutation, &br_adapter, "b1", "task-1")
+                .await?;
         assert!(!result, "should report bead was freshly closed");
         Ok(())
     }
 
     #[tokio::test]
     async fn close_bead_failure_returns_error() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
         // br show returns open, close fails, second show also returns open
         let show_open =
             r#"{"id":"b1","title":"Test","status":"open","priority":2,"bead_type":"task"}"#;
@@ -1383,7 +1549,8 @@ mod tests {
         let mutation_runner = MockBrRunner::new(vec![MockBrRunner::error(1, "close failed")]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
 
-        let result = close_bead_idempotent(&br_mutation, &br_adapter, "b1", "task-1").await;
+        let result =
+            close_bead_idempotent(temp_dir.path(), &br_mutation, &br_adapter, "b1", "task-1").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1396,6 +1563,8 @@ mod tests {
     #[tokio::test]
     async fn close_failure_but_already_closed_is_idempotent(
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
         // br show returns open, close fails, second show returns closed
         let show_open =
             r#"{"id":"b1","title":"Test","status":"open","priority":2,"bead_type":"task"}"#;
@@ -1411,7 +1580,9 @@ mod tests {
         let mutation_runner = MockBrRunner::new(vec![MockBrRunner::error(1, "already closed")]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
 
-        let result = close_bead_idempotent(&br_mutation, &br_adapter, "b1", "task-1").await?;
+        let result =
+            close_bead_idempotent(temp_dir.path(), &br_mutation, &br_adapter, "b1", "task-1")
+                .await?;
         assert!(
             result,
             "should be idempotent when close fails but bead is closed"
@@ -1421,24 +1592,192 @@ mod tests {
 
     #[tokio::test]
     async fn sync_after_close_success() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
+        let adapter_id = "reconciliation-owner";
+        let own_record = temp_dir
+            .path()
+            .join(format!(".beads/.br-unsynced-mutations.d/{adapter_id}.json"));
+        std::fs::create_dir_all(
+            own_record
+                .parent()
+                .expect("own pending record must have a parent dir"),
+        )?;
+        std::fs::write(
+            &own_record,
+            r#"{"adapter_id":"reconciliation-owner","operation":"close_bead","bead_id":"b1","status":null}"#,
+        )?;
         let runner = MockBrRunner::new(vec![MockBrRunner::success("")]);
-        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
+        let br_mutation = BrMutationAdapter::with_adapter_id(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+            adapter_id,
+        );
 
-        sync_after_close(&br_mutation, "b1", "task-1").await?;
+        sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn sync_after_close_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
+        let adapter_id = "reconciliation-owner";
+        let own_record = temp_dir
+            .path()
+            .join(format!(".beads/.br-unsynced-mutations.d/{adapter_id}.json"));
+        std::fs::create_dir_all(
+            own_record
+                .parent()
+                .expect("own pending record must have a parent dir"),
+        )?;
+        std::fs::write(
+            &own_record,
+            r#"{"adapter_id":"reconciliation-owner","operation":"close_bead","bead_id":"b1","status":null}"#,
+        )?;
         let runner = MockBrRunner::new(vec![MockBrRunner::error(1, "sync failed")]);
-        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
+        let br_mutation = BrMutationAdapter::with_adapter_id(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+            adapter_id,
+        );
 
-        let result = sync_after_close(&br_mutation, "b1", "task-1").await;
+        let result = sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await;
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
             ReconciliationError::BrSyncFailed { .. }
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_after_close_rechecks_beads_health_before_flush(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp_dir.path().join(".beads"))?;
+        std::fs::write(
+            temp_dir.path().join(".beads/.br-unsynced-mutations"),
+            "pending\n",
+        )?;
+        std::fs::write(
+            temp_dir.path().join(".beads/issues.jsonl"),
+            "<<<<<<< HEAD\n{\"id\":\"b1\"}\n=======\n{\"id\":\"b2\"}\n>>>>>>> branch\n",
+        )?;
+        let runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+        );
+
+        let result = sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await;
+        let error = result.expect_err("unsafe beads export should block sync flush");
+        match error {
+            ReconciliationError::BrSyncFailed { details, .. } => {
+                assert!(
+                    details.contains("bead state became unsafe before br sync --flush-only"),
+                    "error should explain the blocked sync: {details}"
+                );
+                assert!(
+                    details.contains("resolve the conflict"),
+                    "error should direct the operator to resolve the conflict: {details}"
+                );
+            }
+            other => panic!("expected BrSyncFailed, got {other}"),
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_after_close_rechecks_repo_pending_state_before_guarded_flush(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
+        let runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+        );
+
+        std::fs::write(
+            temp_dir.path().join(".beads/.br-unsynced-mutations"),
+            "pending\n",
+        )?;
+        std::fs::remove_file(temp_dir.path().join(".beads/issues.jsonl"))?;
+
+        let result = sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await;
+        let error = result.expect_err("recovered pending sync should recheck bead export health");
+        match error {
+            ReconciliationError::BrSyncFailed { details, .. } => {
+                assert!(
+                    details.contains("missing .beads/issues.jsonl"),
+                    "error should explain the blocked replay sync: {details}"
+                );
+            }
+            other => panic!("expected BrSyncFailed, got {other}"),
+        }
+        assert!(
+            temp_dir
+                .path()
+                .join(".beads/.br-unsynced-mutations")
+                .exists(),
+            "blocked replay must preserve the pending marker for a later clean retry"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_after_close_rejects_foreign_pending_mutation_replay(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
+        let journal_path = temp_dir
+            .path()
+            .join(".beads/.br-unsynced-mutations.d/foreign.json");
+        std::fs::create_dir_all(
+            journal_path
+                .parent()
+                .expect("journal path must have a parent dir"),
+        )?;
+        std::fs::write(
+            &journal_path,
+            r#"{"adapter_id":"other-workflow","operation":"create_bead","bead_id":"bead-foreign","status":null}"#,
+        )?;
+        let runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter_id(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+            "reconcile-success-owner",
+        );
+
+        let result = sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await;
+        let error = result.expect_err("foreign pending mutation should block replay sync");
+        match error {
+            ReconciliationError::BrSyncFailed { details, .. } => {
+                assert!(
+                    details.contains("another local bead workflow still has pending `create_bead`"),
+                    "error should explain the blocked foreign replay: {details}"
+                );
+            }
+            other => panic!("expected BrSyncFailed, got {other}"),
+        }
+        assert!(
+            journal_path.exists(),
+            "blocking the replay must leave the foreign journal record in place"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_after_close_skips_unhealthy_export_when_no_pending_mutations(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp_dir.path().join(".beads"))?;
+        std::fs::write(
+            temp_dir.path().join(".beads/issues.jsonl"),
+            "<<<<<<< HEAD\n{\"id\":\"b1\"}\n=======\n{\"id\":\"b2\"}\n>>>>>>> branch\n",
+        )?;
+        let runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+        );
+
+        sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await?;
         Ok(())
     }
 
@@ -1449,6 +1788,11 @@ mod tests {
     #[tokio::test]
     async fn sync_failure_on_replay_is_still_fatal() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
+        std::fs::write(
+            temp_dir.path().join(".beads/.br-unsynced-mutations"),
+            "pending\n",
+        )?;
         std::fs::create_dir_all(temp_dir.path().join(".ralph-burning/milestones/ms-1"))?;
 
         // br show returns closed (bead already closed from prior attempt)
@@ -1459,7 +1803,9 @@ mod tests {
 
         // Mutation adapter: sync fails (no close needed since bead already closed)
         let mutation_runner = MockBrRunner::new(vec![MockBrRunner::error(1, "sync failed")]);
-        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(mutation_runner).with_working_dir(temp_dir.path().to_path_buf()),
+        );
 
         let now = chrono::Utc::now();
         let result = reconcile_success(
@@ -1490,6 +1836,225 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reconcile_success_rejects_conflicted_beads_before_close(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp_dir.path().join(".beads"))?;
+        std::fs::write(
+            temp_dir.path().join(".beads/issues.jsonl"),
+            r#"<<<<<<< HEAD
+{"id":"b1"}
+=======
+{"id":"b2"}
+>>>>>>> branch
+"#,
+        )?;
+        std::fs::create_dir_all(temp_dir.path().join(".ralph-burning/milestones/ms-1"))?;
+
+        let show_open =
+            r#"{"id":"b1","title":"Test","status":"open","priority":2,"bead_type":"task"}"#;
+        let br_read =
+            BrAdapter::with_runner(MockBrRunner::new(vec![MockBrRunner::success(show_open)]));
+        let br_mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+
+        let now = chrono::Utc::now();
+        let result = reconcile_success(
+            &br_mutation,
+            &br_read,
+            None::<&BvAdapter<MockBvRunner>>,
+            temp_dir.path(),
+            "b1",
+            "task-1",
+            "proj-1",
+            "ms-1",
+            "run-1",
+            None,
+            now - chrono::Duration::seconds(10),
+            now,
+        )
+        .await;
+
+        let error = result.expect_err("conflicted beads export should block reconciliation");
+        assert!(
+            matches!(error, ReconciliationError::MilestoneUpdateFailed { .. }),
+            "expected milestone update failure, got {error}"
+        );
+        assert!(
+            error.to_string().contains("conflict"),
+            "error should direct the operator to resolve conflicts: {error}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_success_rejects_malformed_beads_before_close(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp_dir.path().join(".beads"))?;
+        std::fs::write(
+            temp_dir.path().join(".beads/issues.jsonl"),
+            "{\"id\":\"b1\"}\n{\"id\": }\n",
+        )?;
+        std::fs::create_dir_all(temp_dir.path().join(".ralph-burning/milestones/ms-1"))?;
+
+        let show_open =
+            r#"{"id":"b1","title":"Test","status":"open","priority":2,"bead_type":"task"}"#;
+        let br_read =
+            BrAdapter::with_runner(MockBrRunner::new(vec![MockBrRunner::success(show_open)]));
+        let br_mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+
+        let now = chrono::Utc::now();
+        let result = reconcile_success(
+            &br_mutation,
+            &br_read,
+            None::<&BvAdapter<MockBvRunner>>,
+            temp_dir.path(),
+            "b1",
+            "task-1",
+            "proj-1",
+            "ms-1",
+            "run-1",
+            None,
+            now - chrono::Duration::seconds(10),
+            now,
+        )
+        .await;
+
+        let error = result.expect_err("malformed beads export should block reconciliation");
+        assert!(
+            matches!(error, ReconciliationError::MilestoneUpdateFailed { .. }),
+            "expected milestone update failure, got {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("malformed .beads/issues.jsonl line 2"),
+            "error should direct the operator to repair malformed JSONL: {error}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verify_planned_elsewhere_skips_comment_mutations_when_beads_export_is_unhealthy(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let base_dir = temp_dir.path();
+        seed_planned_elsewhere_mapping(base_dir, "ms-pe-conflict", "bead-A", "bead-B", "run-1")?;
+        std::fs::create_dir_all(base_dir.join(".beads"))?;
+        std::fs::write(
+            base_dir.join(".beads/issues.jsonl"),
+            r#"<<<<<<< HEAD
+{"id":"bead-A"}
+=======
+{"id":"bead-B"}
+>>>>>>> branch
+"#,
+        )?;
+
+        let read_invocations = Arc::new(Mutex::new(Vec::new()));
+        let read_runner = RecordingBrRunner::new(
+            vec![MockBrRunner::success(
+                r#"{"id":"bead-B","title":"Target bead","status":"open","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}"#,
+            )],
+            read_invocations,
+            None,
+        );
+        let br_read = BrAdapter::with_runner(read_runner).with_working_dir(base_dir.to_path_buf());
+        let mutation_invocations = Arc::new(Mutex::new(Vec::new()));
+        let mutation_runner =
+            RecordingBrRunner::new(Vec::new(), mutation_invocations.clone(), None);
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(mutation_runner).with_working_dir(base_dir.to_path_buf()),
+        );
+
+        verify_planned_elsewhere_after_success(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "bead-A",
+            "ms-pe-conflict",
+            "proj-1",
+            "run-1",
+        )
+        .await;
+
+        assert!(
+            mutation_invocations.lock().unwrap().is_empty(),
+            "unhealthy bead exports should block planned-elsewhere comment mutations"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verify_planned_elsewhere_rechecks_health_before_comment_flush(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let base_dir = temp_dir.path();
+        seed_planned_elsewhere_mapping(base_dir, "ms-pe-flush", "bead-A", "bead-B", "run-1")?;
+        write_beads_export(base_dir)?;
+
+        let read_invocations = Arc::new(Mutex::new(Vec::new()));
+        let read_runner = RecordingBrRunner::new(
+            vec![MockBrRunner::success(
+                r#"{"id":"bead-B","title":"Target bead","status":"open","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}"#,
+            )],
+            read_invocations,
+            None,
+        );
+        let br_read = BrAdapter::with_runner(read_runner).with_working_dir(base_dir.to_path_buf());
+        let mutation_invocations = Arc::new(Mutex::new(Vec::new()));
+        let issues_path = base_dir.join(".beads/issues.jsonl");
+        let after_run: BrHook = Arc::new(move |args, _working_dir| {
+            if args.first().map(String::as_str) == Some("comments") {
+                std::fs::write(
+                    &issues_path,
+                    r#"<<<<<<< HEAD
+{"id":"bead-A"}
+=======
+{"id":"bead-B"}
+>>>>>>> branch
+"#,
+                )
+                .expect("rewrite issues.jsonl with conflict markers");
+            }
+        });
+        let mutation_runner = RecordingBrRunner::new(
+            vec![MockBrRunner::success("commented")],
+            mutation_invocations.clone(),
+            Some(after_run),
+        );
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(mutation_runner).with_working_dir(base_dir.to_path_buf()),
+        );
+
+        verify_planned_elsewhere_after_success(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "bead-A",
+            "ms-pe-flush",
+            "proj-1",
+            "run-1",
+        )
+        .await;
+
+        let invocations = mutation_invocations.lock().unwrap();
+        assert_eq!(
+            invocations.len(),
+            1,
+            "health should be rechecked before flush so only the comment mutation runs"
+        );
+        assert_eq!(
+            invocations[0].first().map(String::as_str),
+            Some("comments"),
+            "the only planned-elsewhere mutation should be the comment itself"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn reconcile_success_persists_reconciling_before_close_failure(
     ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::adapters::fs::{FsMilestonePlanStore, FsMilestoneStore};
@@ -1504,6 +2069,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -1730,6 +2296,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -1894,6 +2461,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2121,6 +2689,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2299,6 +2868,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2469,6 +3039,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2631,6 +3202,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2808,6 +3380,198 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn reconcile_success_replay_after_final_completion_skips_unnecessary_sync_when_beads_export_is_now_unhealthy(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::{
+            FsMilestoneControllerStore, FsMilestonePlanStore, FsMilestoneStore,
+        };
+        use crate::contexts::milestone_record::bundle::{
+            AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+        };
+        use crate::contexts::milestone_record::controller as milestone_controller;
+        use crate::contexts::milestone_record::model::{MilestoneEventType, MilestoneId};
+        use crate::contexts::milestone_record::service::{
+            create_milestone, persist_plan, read_journal, read_task_runs, CreateMilestoneInput,
+        };
+        use chrono::Utc;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        write_beads_export(base)?;
+        std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
+
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+
+        let now = Utc::now();
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "ms-replay-unhealthy".to_owned(),
+                name: "Replay unhealthy milestone".to_owned(),
+                description: "Replays after bead export corruption.".to_owned(),
+            },
+            now,
+        )?;
+
+        let bundle = MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: "ms-replay-unhealthy".to_owned(),
+                name: "Replay unhealthy milestone".to_owned(),
+            },
+            executive_summary: "Replay unhealthy test.".to_owned(),
+            goals: vec!["Verify replay idempotency".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Bead completes".to_owned(),
+                covered_by: vec!["bead-replay-unhealthy".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Core".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    bead_id: Some("bead-replay-unhealthy".to_owned()),
+                    explicit_id: Some(true),
+                    title: "Replay bead".to_owned(),
+                    description: None,
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec![],
+                    depends_on: vec![],
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: None,
+                }],
+            }],
+            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            agents_guidance: None,
+        };
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &bundle,
+            now + chrono::Duration::milliseconds(1),
+        )?;
+
+        let started_at = now + chrono::Duration::seconds(1);
+        milestone_service::record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-replay-unhealthy",
+            "proj-replay-unhealthy",
+            "run-replay-unhealthy",
+            "plan-v1",
+            started_at,
+        )?;
+        milestone_controller::sync_controller_task_running(
+            &FsMilestoneControllerStore,
+            base,
+            &record.id,
+            "bead-replay-unhealthy",
+            "proj-replay-unhealthy",
+            "workflow execution started",
+            started_at,
+        )?;
+
+        let show_open = r#"{"id":"bead-replay-unhealthy","title":"Replay bead","status":"open","priority":2,"bead_type":"task"}"#;
+        let show_closed = r#"{"id":"bead-replay-unhealthy","title":"Replay bead","status":"closed","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(show_closed),
+            MockBrRunner::success(show_open),
+        ]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(""),
+            MockBrRunner::success(""),
+            MockBrRunner::success(""),
+        ]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let first = reconcile_success(
+            &br_mutation,
+            &br_read,
+            None::<&BvAdapter<MockBvRunner>>,
+            base,
+            "bead-replay-unhealthy",
+            "task-replay-unhealthy",
+            "proj-replay-unhealthy",
+            "ms-replay-unhealthy",
+            "run-replay-unhealthy",
+            Some("plan-v1"),
+            started_at,
+            now + chrono::Duration::seconds(10),
+        )
+        .await?;
+        assert!(!first.was_already_closed);
+
+        std::fs::write(
+            base.join(".beads/issues.jsonl"),
+            r#"<<<<<<< HEAD
+{"id":"bead-replay-unhealthy"}
+=======
+{"id":"other"}
+>>>>>>> branch
+"#,
+        )?;
+
+        let replay = reconcile_success(
+            &br_mutation,
+            &br_read,
+            None::<&BvAdapter<MockBvRunner>>,
+            base,
+            "bead-replay-unhealthy",
+            "task-replay-unhealthy",
+            "proj-replay-unhealthy",
+            "ms-replay-unhealthy",
+            "run-replay-unhealthy",
+            Some("plan-v1"),
+            started_at,
+            now + chrono::Duration::seconds(11),
+        )
+        .await?;
+        assert!(replay.was_already_closed);
+
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &record.id)?
+                .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Completed
+        );
+
+        let milestone_id = MilestoneId::new("ms-replay-unhealthy")?;
+        let journal = read_journal(&journal_store, base, &milestone_id)?;
+        let completion_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadCompleted)
+            .collect();
+        assert_eq!(completion_events.len(), 1);
+
+        let task_runs = read_task_runs(&lineage_store, base, &milestone_id)?;
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-replay-unhealthy"));
+        assert_eq!(
+            task_runs[0].task_id.as_deref(),
+            Some("task-replay-unhealthy")
+        );
+
+        Ok(())
+    }
+
     /// When the exact attempt was already finalized with a different
     /// outcome_detail (e.g. "first bead completed" from the CLI path),
     /// `update_milestone_state` must succeed by routing through
@@ -2828,6 +3592,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2987,6 +3752,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -3324,6 +4090,8 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         std::fs::create_dir_all(base.join(".git"))?;
+        std::fs::create_dir_all(base.join(".beads"))?;
+        std::fs::write(base.join(".beads/issues.jsonl"), "")?;
 
         let store = FsMilestoneStore;
         let now = Utc::now();
@@ -3506,6 +4274,8 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         std::fs::create_dir_all(base.join(".git"))?;
+        std::fs::create_dir_all(base.join(".beads"))?;
+        std::fs::write(base.join(".beads/issues.jsonl"), "")?;
 
         let store = FsMilestoneStore;
         let now = Utc::now();
@@ -3559,6 +4329,8 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         std::fs::create_dir_all(base.join(".git"))?;
+        std::fs::create_dir_all(base.join(".beads"))?;
+        std::fs::write(base.join(".beads/issues.jsonl"), "")?;
 
         let store = FsMilestoneStore;
         let now = Utc::now();
@@ -3627,6 +4399,8 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         std::fs::create_dir_all(base.join(".git"))?;
+        std::fs::create_dir_all(base.join(".beads"))?;
+        std::fs::write(base.join(".beads/issues.jsonl"), "")?;
 
         let store = FsMilestoneStore;
         let now = Utc::now();
@@ -3727,6 +4501,8 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         std::fs::create_dir_all(base.join(".git"))?;
+        std::fs::create_dir_all(base.join(".beads"))?;
+        std::fs::write(base.join(".beads/issues.jsonl"), "")?;
 
         let store = FsMilestoneStore;
         let now = Utc::now();

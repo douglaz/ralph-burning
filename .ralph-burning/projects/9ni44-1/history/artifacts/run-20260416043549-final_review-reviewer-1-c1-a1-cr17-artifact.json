@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T11:17:54.865905656Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the sync/import safety work across the br adapter, CLI claim flow, and propose-new-bead reconciliation. The new guarded sync helper fixes the replay paths it is used on, but one remaining TOCTOU sync-safety gap is still present in the claim/propose flush call sites.\n\n## Amendments\n\n1. finding_summary: The late-health-check fix is still missing from the remaining claim/propose flush paths, so a conflict or missing `.beads/issues.jsonl` introduced after the precheck can still be flushed. In `src/cli/project.rs:968-975`, recovered claim replay still uses `sync_if_dirty()` instead of the new locked health-gated helper, and `src/cli/project.rs:1007-1008` plus `src/contexts/milestone_record/service.rs:3081-3086`, `3162-3169`, and `3283-3286` still do an unlocked `check_beads_health(...)` precheck before calling raw `sync_flush()`. If the export becomes unsafe after that probe but before the sync acquires `.beads/.br-sync.lock`, these paths will still publish the local mutation, which reopens the same TOCTOU hole the new `sync_if_dirty_when_beads_healthy()` code was added to close.\nseverity: medium\naffected_files:\n- src/cli/project.rs\n- src/contexts/milestone_record/service.rs\nremediation_hint: Route these flushes through a lock-held health-gated helper (`sync_if_dirty_when_beads_healthy(base_dir)` or a dedicated `sync_flush_when_beads_healthy(base_dir)`), and add a regression test where `.beads/issues.jsonl` becomes unsafe after the precheck but before the flush starts.\n   Rationale: This bead is specifically about preventing unsafe `br sync` operations on conflicted or missing bead exports. The remaining raw `sync_if_dirty()`/`sync_flush()` call sites still have an unchecked window between the health probe and the actual sync, so the safety guarantee is incomplete in production claim/propose flows.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

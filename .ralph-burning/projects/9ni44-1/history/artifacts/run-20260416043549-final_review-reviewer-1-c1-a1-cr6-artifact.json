@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T06:51:45.321870797Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, with focus on the new `br` sync/import safety code and the mutation call sites that now depend on it. I found two fix-now issues: the recovered dirty-marker path is not used when retrying bead claims after a sync failure, and the new health check accepts non-record JSON lines as healthy.\n\n## Amendments\n\n1. finding_summary: Retrying a bead claim after `br update --status=in_progress` succeeds but `br sync --flush-only` fails will replay `update` instead of flushing the recovered pending mutation marker. `BrMutationAdapter::with_adapter()` restores dirty state from `.beads/.br-unsynced-mutations` ([src/adapters/br_process.rs:572-579]) and `sync_if_dirty()` exists for this exact replay path ([src/adapters/br_process.rs:870-881]), but `claim_bead_in_br()` still unconditionally calls `update_bead_status()` before `sync_flush()` ([src/cli/project.rs:972-988]). If `br` treats setting `in_progress` twice as an error, a transient sync failure becomes a hard claim failure on retry instead of replaying the already-successful local mutation.\nseverity: medium\naffected_files:\n- src/cli/project.rs:972-988\n- src/adapters/br_process.rs:572-579\n- src/adapters/br_process.rs:870-881\nremediation_hint: When a freshly constructed adapter comes up dirty, flush first with `sync_if_dirty()` (or otherwise honor the recovered pending-mutation marker) before issuing another `update_bead_status()` call.\n   Rationale: The new crash-recovery machinery is supposed to preserve successful local mutations across restarts. The claim path bypasses that machinery and can no longer reliably recover from the sync failure it explicitly tells operators to retry.\n2. finding_summary: The new JSONL health check only verifies that each non-empty line parses as any JSON value, so semantically broken exports such as `[]`, `42`, or a quoted string are treated as `Healthy`. All of the new mutation gates rely on this helper, so they will still mutate `.beads` on a corrupted export that is not actually newline-delimited issue records ([src/adapters/br_health.rs:94-109]). That leaves a real malformed-JSONL hole in the safety layer this bead is adding.\nseverity: medium\naffected_files:\n- src/adapters/br_health.rs:94-109\nremediation_hint: Tighten `validate_jsonl_records()` so each non-empty line must deserialize to an object with the fields an issue export line is required to carry (at minimum `id`), and add a regression test for array/scalar lines.\n   Rationale: This helper is now the central preflight gate before claim/create/close flows. Accepting arbitrary JSON values undermines the promised malformed-export protection and lets mutation paths proceed on corrupted bead state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

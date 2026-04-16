@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416043549-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260416043549-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T06:19:06.569997015Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-964ac48b`\n- `fr-4-149a93d0`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-964ac48b`\n\nfinding_summary: The new `.br-unsynced-mutations` marker is not serialized with mutation/sync execution, so concurrent callers can delete it while unsynced work still exists.\nseverity: high\naffected_files:\n- src/adapters/br_process.rs\nfile_refs:\n- src/adapters/br_process.rs:627-653\n- src/adapters/br_process.rs:755-765\nremediation_hint: Serialize `exec_tracked_mutation` and `sync_flush` behind a mutex or generation-based guard so only the operation that actually drains the last pending mutation can clear the on-disk marker.\n\n### `fr-4-149a93d0`\n\nfinding_summary: `sync_import()` does not run the new beads export health check, so import-only sync still executes against missing or conflict-marked `.beads/issues.jsonl`.\nseverity: medium\naffected_files:\n- src/adapters/br_process.rs\n- src/adapters/br_health.rs\nfile_refs:\n- src/adapters/br_process.rs:815-846\n- src/adapters/br_health.rs:17-70\nremediation_hint: Reuse `check_beads_health()` (or a shared lower-level guard) inside `sync_import()` and fail before spawning `br` when the export is missing, unreadable, or contains merge markers.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416043549-final_review-aggregate-c1-a1-cr17-artifact",
+  "payload_id": "run-20260416043549-final_review-aggregate-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T11:20:17.298392679Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 17/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-17-5a240f7c`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-17-5a240f7c`\n\nfinding_summary: The late-health-check fix is still missing from the remaining claim/propose flush paths, so a conflict or missing `.beads/issues.jsonl` introduced after the precheck can still be flushed. In `src/cli/project.rs:968-975`, recovered claim replay still uses `sync_if_dirty()` instead of the new locked health-gated helper, and `src/cli/project.rs:1007-1008` plus `src/contexts/milestone_record/service.rs:3081-3086`, `3162-3169`, and `3283-3286` still do an unlocked `check_beads_health(...)` precheck before calling raw `sync_flush()`. If the export becomes unsafe after that probe but before the sync acquires `.beads/.br-sync.lock`, these paths will still publish the local mutation, which reopens the same TOCTOU hole the new `sync_if_dirty_when_beads_healthy()` code was added to close.\nseverity: medium\naffected_files:\n- src/cli/project.rs\n- src/contexts/milestone_record/service.rs\nremediation_hint: Route these flushes through a lock-held health-gated helper (`sync_if_dirty_when_beads_healthy(base_dir)` or a dedicated `sync_flush_when_beads_healthy(base_dir)`), and add a regression test where `.beads/issues.jsonl` becomes unsafe after the precheck but before the flush starts.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 17
+}

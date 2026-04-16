@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416043549-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260416043549-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T05:31:08.840006426Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-2088a645`\n- `fr-2-67d5a423`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-2-3b291c96`\n\n## Final Accepted Amendments\n\n### `fr-2-2088a645`\n\nfinding_summary: `BrMutationAdapter::sync_import()` only checks the adapter's in-memory dirty flag, so every fresh adapter instance is treated as clean even after a prior process crashed with unflushed `br` state. `BrMutationAdapter::new()` / `with_adapter()` always initialize `has_unsync_mutations` to `false` (src/adapters/br_process.rs:496-516), and `sync_import()` relies exclusively on `ensure_synced()` before running `br sync --import-only` (src/adapters/br_process.rs:529-543, 713-724). That means the documented recovery flow after `git pull` / failed-run restart can still import upstream JSONL over stale local mutations, which defeats the safety guarantee this bead is adding. severity: high. affected_files: src/adapters/br_process.rs. remediation_hint: persist or reconstruct pending-mutation state across restarts before allowing `sync_import()`, or narrow the API so import is rejected unless the caller has independently proven the workspace is clean.\n\n### `fr-2-67d5a423`\n\nMissing test for `BrMutationAdapter::sync_import()` refusing to run when the adapter has pending (dirty) mutations. The doc comments and `ensure_synced` guard in `sync_import()` codify this as a key safety invariant, but no test exercises this rejection path. Add a test in `src/adapters/br_process.rs` that: (1) makes a mutation to set the dirty flag, (2) calls `sync_import()`, (3) asserts the call returns an error about pending mutations, and (4) verifies no subprocess was actually invoked via the command log.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T07:40:53.436139961Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real regressions in the new `br` mutation recovery flow: the repo-wide lock file is now a stageable transient artifact, and claim recovery now trusts journal metadata that is not authoritative for final bead state.\n\n## Votes\n\n- `fr-8-448db1d7`: Accept\n  `BrMutationAdapter::with_adapter()` calls `recover_pending_mutation_state()`, which opens `.beads/.br-sync.lock` with `create(true)` for working-dir adapters, but `.gitignore` only excludes the legacy marker and journal directory. That means the documented `git add .beads/` workflow will stage a transient lock file. The finding is correct, and extending the existing ignore regression test to cover the lock file is the right remediation.\n- `fr-8-08534a0a`: Accept\n  `claim_bead_in_br()` now treats `recovered_flush.includes_update_status(bead_id, \"in_progress\")` as proof that the recovered claim succeeded, but `matching_update_status` is derived only from persisted journal records. Those records are written before `exec_mutation()` runs, so after a crash they prove intent, not the bead's final effective status; recovery can therefore return success even if the original `br update` never actually took effect. The fast path also ignores legacy `.br-unsynced-mutations` recovery, so an upgraded workspace can flush a previously successful claim and then incorrectly attempt a second claim. The removed post-flush status verification was guarding against exactly this ambiguity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T08:25:44.026895434Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the sync/import safety change set end-to-end across `br_process`, `br_health`, `milestone_record/service`, `success_reconciliation`, and the related CLI path. Targeted tests for `br_process`, `br_health`, `claim_bead_in_br`, and `handle_propose_new_bead` pass, but I found 2 fix-now correctness gaps: recovered bead claims are not ownership-safe, and post-reconciliation comment writes still bypass the new beads-health guard.\n\n## Amendments\n\n1. finding_summary: `claim_bead_in_br` can mistake another adapter's recovered `update --status=in_progress` as proof that the current caller already owns the bead.\nseverity: high\naffected_files:\n- src/adapters/br_process.rs:191-202\n- src/adapters/br_process.rs:1233-1243\n- src/cli/project.rs:973-989\nremediation_hint: `sync_if_dirty()` currently reports every recovered `update_bead_status` record without preserving ownership, and `claim_bead_in_br()` returns success if the flushed repo now shows the target bead as `in_progress`. That means a second operator/process can flush someone else's failed-sync claim and then silently adopt it, creating a Ralph task without ever winning the claim itself. Only skip the explicit `br update` when you can match a stable claim identity, or always retry `br update` after a recovered flush and let br surface collisions.\n   Rationale: This is a real ownership/safety regression in the new recovery path: a recovered pending claim for the same bead is treated as interchangeable across operators/processes, so duplicate or stolen task creation becomes possible after a prior sync failure.\n2. finding_summary: The new beads-health guard is only enforced for the initial close path; later `comment_bead` mutations in success reconciliation still write to `.beads/` without rechecking health.\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/success_reconciliation.rs:222\n- src/contexts/automation_runtime/success_reconciliation.rs:875-917\nremediation_hint: Re-run `ensure_beads_mutation_health` (or an equivalent guard) immediately before posting planned-elsewhere comments and before the follow-up `sync_flush`, and skip the non-blocking comment path when `.beads/issues.jsonl` is missing/conflicted/malformed.\n   Rationale: The change is supposed to prevent bead mutations on unsafe exports, but reconciliation still has an ungated mutation phase after the initial close+sync. A concurrent pull/merge or manual conflict introduced between those phases would still let this code mutate corrupted bead state, which defeats the new safety contract.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}

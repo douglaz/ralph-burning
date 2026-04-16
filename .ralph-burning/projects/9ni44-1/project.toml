@@ -1,0 +1,7 @@
+id = "9ni44-1"
+name = "sync-safety-rules"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85"
+created_at = "2026-04-16T04:35:44.171182497Z"
+status_summary = "created"

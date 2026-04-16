@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T10:56:20.995554989Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the diff against `origin/master` excluding `.ralph-burning/`, read the key `br` safety/reconciliation implementation files, and found 2 correctness gaps where cached dirty-state checks bypass the new repo-rescanning sync path. `cargo test -q` passed on the reviewed tree.\n\n## Amendments\n\n1. finding_summary: \"`sync_after_close` can silently skip the required crash-recovery flush because it checks `has_pending_mutations()` before calling `sync_if_dirty()`. `has_pending_mutations()` is only the adapter's cached flag, while `sync_if_dirty()` explicitly re-reads `.beads/.br-unsynced-mutations*` under the repo lock (`src/adapters/br_process.rs:1233-1263`). If pending state appears after the adapter was constructed, success reconciliation returns from `sync_after_close` without flushing and can advance milestone/controller state while the bead close is still only local.\"\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/success_reconciliation.rs:461\n- src/contexts/automation_runtime/success_reconciliation.rs:467\n- src/adapters/br_process.rs:1233\nremediation_hint: \"Do not gate this path on `has_pending_mutations()`. Always call `sync_if_dirty()` here and branch on `SyncIfDirtyOutcome` so the repo-state recheck stays authoritative.\"\n   Rationale: The new adapter code was written specifically so crash recovery is driven by the persisted journal, not by an in-memory boolean. This wrapper reintroduces the stale-flag problem at the one place where the code comments say sync must remain unconditional after close.\n2. finding_summary: \"`sync_recovered_proposed_bead_replay_if_dirty` only performs the pre-flush safety check when `has_pending_mutations()` is already set. That flag is just a cached snapshot; `sync_if_dirty()` may still discover newly persisted pending mutations after adapter construction. In that case this helper will flush them without first rejecting conflicted/missing `.beads/issues.jsonl`, which defeats the new 'block unsafe bead mutations before replay' rule.\"\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/service.rs:3014\n- src/contexts/milestone_record/service.rs:3020\n- src/adapters/br_process.rs:1233\nremediation_hint: \"Make the health gate authoritative at flush time: either run the health check unconditionally before `sync_if_dirty()`, or add a `BrMutationAdapter` helper that combines 're-read repo pending state' with the health check under the same lock.\"\n   Rationale: The current code does a post-flush health check, but by then the unsafe `br sync --flush-only` has already happened. The whole point of this bead was to stop mutations from proceeding when `.beads/issues.jsonl` is conflicted or missing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}

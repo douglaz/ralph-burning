@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr13-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T09:45:47.899200699Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real defensive gaps in crash-recovery idempotency paths. Amendment fr-13-80401345 correctly shows that the unconditional health gate in sync_after_close() blocks fully-completed replays when an unrelated JSONL corruption appears post-success. Amendment fr-13-658a8d49 correctly identifies an asymmetry where the recovered-claim short-circuit in claim_bead_in_br() skips the post-flush health recheck that the explicit-claim path performs. Both are accepted.\n\n## Votes\n\n- `fr-13-80401345`: Accept\n  Verified in source. Lines 244-257 of success_reconciliation.rs run the health gate (ensure_beads_mutation_health at L245) and unconditional sync_after_close (L257) regardless of whether the bead was already closed AND already synced. sync_after_close() at L459-474 calls ensure_beads_sync_health() before sync_flush(), so a fully-completed replay (where was_already_closed=true and no pending mutations exist) still fails if an unrelated JSONL issue arose after the original success. Meanwhile, sync_if_dirty() at br_process.rs:1200-1230 correctly short-circuits to Clean when no pending mutations exist, skipping the subprocess entirely. The remediation — using sync_if_dirty() for the replay path and only gating the branch that will actually call close_bead — is sound and would not regress the crash-window between close and sync (sync_if_dirty detects pending mutations from an un-flushed close). The code comments at L248-256 defend the unconditional sync as necessary, but they address the close-then-crash-before-sync window, not the fully-completed-replay case. Medium severity is appropriate.\n- `fr-13-658a8d49`: Accept\n  Verified in source. At project.rs:984-989, the recovered-claim path returns Ok(()) immediately after sync_if_dirty() replays the bead claim, without calling ensure_beads_claim_health() (L992) or ensure_beads_claim_sync_health() (L1001) that the explicit-claim path at L992-1008 uses. This is a real asymmetry. While sync_if_dirty() succeeding generally implies a clean state, the explicit path adds a post-flush health check specifically to catch cases where the sync itself left .beads/issues.jsonl in a bad state (conflict markers, malformed JSON). The recovered path lacks this same guard, so a replayed sync --flush-only that succeeds but leaves garbage would let the controller record a successful claim against corrupted bead state. The fix is trivial — add the same ensure_beads_claim_sync_health() call before the early return — and the suggested regression test (replayed flush that both replays the claim and corrupts JSONL) would be valuable. Medium severity is appropriate for this defensive gap.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 13
+}

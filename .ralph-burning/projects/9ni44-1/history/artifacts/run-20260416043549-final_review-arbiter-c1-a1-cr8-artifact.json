@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-arbiter-c1-a1-cr8-artifact",
+  "payload_id": "run-20260416043549-final_review-arbiter-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T07:43:35.226751058Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the disputed amendment. The current recovered-claim fast path trusts pre-execution journal metadata that proves intent, not final bead status, and it provides no equivalent proof path for legacy-marker recovery, so `claim_bead_in_br()` can return the wrong result after a recovered flush.\n\n## Rulings\n\n- `fr-8-08534a0a`: Accept\n  Accept. The decisive evidence is that the recovery journal is written before the `br update` subprocess runs, so it is not authoritative proof of the bead’s final state. In `exec_tracked_mutation_locked()`, the pending record is persisted at `src/adapters/br_process.rs:1029-1034` before `exec_mutation()` executes, which means a crash in that window can leave an `update_bead_status(..., in_progress)` record even though the bead was never actually updated. `sync_if_dirty()` then rebuilds `matching_update_status` only from recovered journal records (`src/adapters/br_process.rs:1233-1244`), and `claim_bead_in_br()` now returns success solely because that metadata exists (`src/cli/project.rs:974-981`) without re-checking the bead’s post-flush status. That false-positive path does not require a `br sync --flush-only` bug; it follows directly from the ordering above. The legacy-marker point is also valid: `legacy_marker_present` only affects `flushed_mutations` (`src/adapters/br_process.rs:1250-1252`) and never contributes evidence to `includes_update_status()`, so a recovered claim from the older `.beads/.br-unsynced-mutations` mechanism falls through to a fresh `update`, which can incorrectly fail after the recovered flush. The immediately prior implementation guarded against this ambiguity by verifying `br show` after a recovered flush before returning success; removing that check regressed correctness.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

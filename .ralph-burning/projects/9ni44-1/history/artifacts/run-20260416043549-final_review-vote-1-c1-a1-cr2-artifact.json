@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T05:29:01.434217126Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept fr-2-2088a645 and fr-2-67d5a423. Reject fr-2-3b291c96 because malformed JSONL is already blocked by `br`'s own preflight validation on the guarded mutation paths, so the claimed unsafe mutation hole is not substantiated.\n\n## Votes\n\n- `fr-2-2088a645`: Accept\n  `sync_import()` relies on an instance-local `AtomicBool` initialized to `false`, which cannot prove the underlying bead workspace is clean across process restarts or external `br` activity. That makes the method's safety contract too strong for the state it actually checks. A fresh adapter can call `br sync --import-only` even when the DB is already dirty from prior local mutations, and `br` will import newer JSONL over that dirty DB state. This is a real robustness/safety gap in the API design.\n- `fr-2-3b291c96`: Reject\n  The health probe itself does not parse JSONL, but the conclusion in the amendment is too strong: the guarded mutation flows still invoke `br`, and `br`'s preflight checks reject malformed `.beads/issues.jsonl` before mutating state. That means truncated/corrupt JSONL without merge markers does not silently pass through to an unsafe mutation. Adding JSONL parsing to `check_beads_health_with()` could improve operator UX, but it is redundant hardening rather than a demonstrated correctness defect.\n- `fr-2-67d5a423`: Accept\n  There is no test covering the explicit `ensure_synced()` rejection path inside `sync_import()`. Since the method documents refusal as a core safety invariant, the missing test leaves an important regression hole: a future change could accidentally invoke `br sync --import-only` despite pending local mutations. Verifying both the error and the absence of subprocess execution is appropriate and maintainable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

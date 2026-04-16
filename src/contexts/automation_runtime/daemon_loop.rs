@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::adapters::fs::{
     FileSystem, FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
@@ -79,6 +80,17 @@ type ConfiguredRequirementsServiceBuilder = Box<
         + Send
         + Sync,
 >;
+
+fn reconcile_success_adapter_id(project_id: &str, bead_id: &str, task_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"reconcile-success:");
+    hasher.update(project_id.as_bytes());
+    hasher.update(b":");
+    hasher.update(bead_id.as_bytes());
+    hasher.update(b":");
+    hasher.update(task_id.as_bytes());
+    format!("reconcile-success-{:x}", hasher.finalize())
+}
 
 fn aborted_dispatch_cleanup_error<T>(outcome: AppResult<T>) -> Option<AppError> {
     match outcome {
@@ -2070,8 +2082,9 @@ where
         };
         // Anchor br/bv adapters to project_dir so commands target the
         // correct repo's .beads/ graph (matters in multi-repo mode).
-        let br_mutation = BrMutationAdapter::with_adapter(
+        let br_mutation = BrMutationAdapter::with_adapter_id(
             BrAdapter::<OsProcessRunner>::new().with_working_dir(project_dir.to_path_buf()),
+            reconcile_success_adapter_id(project_id.as_str(), &task_source.bead_id, &task.task_id),
         );
         let br_read =
             BrAdapter::<OsProcessRunner>::new().with_working_dir(project_dir.to_path_buf());

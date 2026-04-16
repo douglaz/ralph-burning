@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T05:50:21.421075483Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the diff against `origin/master` and read the changed br safety implementation files end-to-end, including `src/adapters/br_process.rs`, `src/adapters/br_health.rs`, `src/contexts/milestone_record/service.rs`, `src/contexts/automation_runtime/success_reconciliation.rs`, and `src/cli/project.rs`. Found 2 fix-now issues in the new sync/import safety changes.\n\n## Amendments\n\n1. finding_summary: The new pending-mutation marker is written inside `.beads/` but is not ignored, so the repo's standard `git add .beads/` workflow can stage and commit transient dirty-state into source control. severity: high. affected_files: `src/adapters/br_process.rs`, `.gitignore`. remediation_hint: Move the marker outside `.beads/` or add an explicit ignore rule and regression test so `git add .beads/` cannot pick it up. evidence: `src/adapters/br_process.rs:26-28` defines `.beads/.br-unsynced-mutations`, and `src/adapters/br_process.rs:567-576` writes it for every tracked mutation. `.gitignore:24-47` ignores other transient runtime artifacts but has no rule for this file. Once committed, other checkouts/restarts will falsely recover a dirty workspace and block import safety flows until a manual flush clears it.\n   Rationale: This marker is process-local crash-recovery state, not durable project state. Persisting it through Git can poison later operator sessions and make unrelated workspaces appear to have unsynced local mutations.\n2. finding_summary: `BrAdapter::check_available()` treats any successful spawn of `br --version` as healthy, even when the command exits non-zero, so the new health gate can report `Healthy` when `br` is actually unusable. severity: medium. affected_files: `src/adapters/br_process.rs`, `src/adapters/br_health.rs`. remediation_hint: Require `status.success()` and convert non-zero exits into `BrUnavailable` (or a structured `BrExitError`) so callers get the intended early failure. evidence: `src/adapters/br_process.rs:380-396` ignores the returned `ExitStatus` entirely and returns `Ok(())` after any completed process. `src/adapters/br_health.rs:18-19` and `src/adapters/br_health.rs:66-68` rely on that result to distinguish `Healthy` from `BrUnavailable`, so a broken `br` binary named `br` still passes preflight and only fails later during real mutations.\n   Rationale: The purpose of the new health check is to stop unsafe mutation flows early with a clear operator-facing diagnosis. Ignoring non-zero exit codes defeats that safety contract and turns it into a later, less actionable runtime failure.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

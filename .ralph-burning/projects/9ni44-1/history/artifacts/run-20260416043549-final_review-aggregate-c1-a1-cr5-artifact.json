@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416043549-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260416043549-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T06:38:13.264725807Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 5/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-5-b34ccfd7`\n- `fr-5-f135cb6b`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-b34ccfd7`\n\nfinding_summary: `check_beads_health()` never validates that `.beads/issues.jsonl` is parseable JSONL, so truncated or otherwise malformed exports are classified as `Healthy` and the new mutation guards still allow `br update/create/close` to run against corrupted bead state. severity: medium. affected_files: [\"src/adapters/br_health.rs\", \"src/cli/project.rs\", \"src/contexts/milestone_record/service.rs\", \"src/contexts/automation_runtime/success_reconciliation.rs\"]. evidence: `src/adapters/br_health.rs:44-70` only checks file readability, conflict markers, and `br` availability; the new guard sites in `src/cli/project.rs:965-974`, `src/contexts/milestone_record/service.rs:2998-3020`, and `src/contexts/automation_runtime/success_reconciliation.rs:117-123,221-223` trust that result before mutating beads. remediation_hint: treat malformed JSONL as unhealthy by parsing each line (or performing an equivalent bounded `br`-backed validation) before returning `Healthy`.\n\n### `fr-5-f135cb6b`\n\nfinding_summary: the new health-check path can hang bead mutations indefinitely because `check_beads_health()` calls `BrAdapter::check_available()`, and that probe uses blocking `std::process::Command::output()` with no timeout. severity: medium. affected_files: [\"src/adapters/br_health.rs\", \"src/adapters/br_process.rs\"]. evidence: `src/adapters/br_health.rs:18-20,91-95` invokes `BrAdapter::new().check_available()` on every health check, and `src/adapters/br_process.rs:386-389` runs `br --version` via `output()` instead of the timeout-governed process runner used elsewhere. remediation_hint: run the availability probe through the existing timed process path (or cache a startup check) so a wedged `br` binary cannot stall claim/close/create flows forever.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T05:23:36.621913853Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed all changes for the sync/import safety rules bead. Implementation is correct and well-structured: br_health.rs health checks, sync_import/sync_if_dirty/ensure_synced in br_process.rs, and pre-operation health guards in service.rs, success_reconciliation.rs, and project.rs. Conflict marker detection properly avoids false positives on embedded marker substrings. Dirty-flag lifecycle invariants are correctly maintained (sync_import does not set dirty, ensure_synced gates on dirty state). Tests cover health check variants and sync_if_dirty paths. One gap found: the key safety invariant that sync_import() refuses to run when dirty mutations are pending is documented but has no dedicated test.\n\n## Amendments\n\n1. Missing test for `BrMutationAdapter::sync_import()` refusing to run when the adapter has pending (dirty) mutations. The doc comments and `ensure_synced` guard in `sync_import()` codify this as a key safety invariant, but no test exercises this rejection path. Add a test in `src/adapters/br_process.rs` that: (1) makes a mutation to set the dirty flag, (2) calls `sync_import()`, (3) asserts the call returns an error about pending mutations, and (4) verifies no subprocess was actually invoked via the command log.\n   Rationale: This is the central safety rule the bead is codifying — that upstream imports cannot be mixed with unflushed local state. The production code is correct, but leaving this invariant untested means regressions could silently remove the guard. The MockRunner with command logging is already set up to verify this cheaply.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 2
+}

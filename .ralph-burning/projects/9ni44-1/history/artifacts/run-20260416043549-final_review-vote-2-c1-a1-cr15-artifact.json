@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr15-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T10:42:39.017205048Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nEvaluated one amendment about an ordering inversion in sync_recovered_proposed_bead_replay_if_dirty where br sync --flush-only runs against potentially corrupted .beads/issues.jsonl before the health gate has a chance to block. The codebase itself confirms the bug: the correct pattern (health check before flush) is already established in success_reconciliation.rs:476-478 and sync_import's ensure_healthy_beads_for_import(), but this helper inverts the order. The recovery scenario where dirty mutations survive from a crashed run is exactly when the JSONL file is most likely to be unhealthy.\n\n## Votes\n\n- `fr-15-7c6a4163`: Accept\n  The ordering inversion is real and confirmed by the codebase. sync_recovered_proposed_bead_replay_if_dirty (service.rs:3014) calls sync_if_dirty() first (which immediately flushes via sync_flush_locked with no health guard), then checks ensure_beads_mutation_health only after the flush completes. This is backwards compared to the correct pattern already established in two other places: (1) success_reconciliation.rs:476-478 calls ensure_beads_sync_health BEFORE sync_if_dirty, and (2) sync_import at br_process.rs:1303 calls ensure_healthy_beads_for_import before running its sync. The recovery scenario — where dirty mutations survive from a crashed previous run via .beads/.br-unsynced-mutations — is precisely when .beads/issues.jsonl is most likely to have conflict markers or be missing, making this ordering critical. The post-flush health check at line 3031 is checking the barn door after the horse has bolted. The remediation (moving the health gate before sync_if_dirty) is consistent with established patterns and straightforward to implement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 15
+}

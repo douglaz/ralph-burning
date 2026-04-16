@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-arbiter-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416043549-final_review-arbiter-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T05:02:04.102065944Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted. The health-check helper is only applied to proposed-bead creation, while claim/close flows still bypass it. Although conflicted exports are already rejected by `br`, missing `.beads/issues.jsonl` is not, so the new guard’s safety policy is inconsistently enforced across mutation entrypoints.\n\n## Rulings\n\n- `fr-1-ae70f96c`: Accept\n  `ensure_beads_mutation_health` is only wired into `handle_propose_new_bead`; there are no corresponding calls on the normal claim/close paths. `claim_bead_in_br` in `src/cli/project.rs` directly does `br.update_bead_status(...)` and `br.sync_flush()`, and `reconcile_success` in `success_reconciliation.rs` goes straight into `close_bead_idempotent`/`sync_after_close`, which call `br.close_bead(...)` and `br.sync_flush()` with no preflight. The tipping evidence is that the underlying `br` commands do not uniformly fail closed for all health states: with `.beads/issues.jsonl` removed in a temp workspace, `br update ralph-burning-9ni.3.2.2 --status=in_progress` and `br close ...` still succeed, so the new `MissingFile` guard is only partially enforced today. The reject vote is correct that merge-conflict cases are already rejected by `br`, so the impact is narrower than 'every unhealthy state slips through', but the amendment correctly identifies a real gap in guard coverage.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

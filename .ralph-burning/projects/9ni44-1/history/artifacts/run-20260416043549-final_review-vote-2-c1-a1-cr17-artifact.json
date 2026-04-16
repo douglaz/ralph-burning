@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr17-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T11:20:17.284300367Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nVerified the amendment against the actual code. The TOCTOU finding is valid: `sync_if_dirty_when_beads_healthy()` was introduced to atomically hold locks during both health check and flush (br_process.rs:1329-1372), but several flush paths still use the old pattern of unlocked `check_beads_health()` followed by separately-locked `sync_flush()` or `sync_if_dirty()`. Specifically: (1) `claim_bead_in_br` at project.rs:975 calls `sync_if_dirty()` which has NO health check — the pre-check at line 968 is unlocked, (2) project.rs:1007-1008 does unlocked `ensure_beads_claim_sync_health` then `sync_flush()`, and (3) three locations in milestone_record/service.rs (lines 3081-3086, 3162-3169, 3283-3286) follow the same unlocked-check-then-locked-flush pattern. The gap between unlocked health verification and lock acquisition inside sync_flush creates a window where beads state can degrade, exactly the bug that the health-gated helper was designed to prevent.\n\n## Votes\n\n- `fr-17-5a240f7c`: Accept\n  Verified all five call sites in the code. The finding is accurate: `sync_if_dirty_when_beads_healthy()` (br_process.rs:1329) was purposefully created to close the TOCTOU gap by checking health under the same lock guard used for the flush. However, it was only adopted in two call sites (success_reconciliation.rs:463, milestone_record/service.rs:3022). The remaining paths — claim_bead_in_br's recovered-flush replay (project.rs:975 uses `sync_if_dirty()` with zero health check), claim_bead_in_br's post-update flush (project.rs:1007-1008), and three propose-bead paths in milestone_record/service.rs (lines 3081-3086, 3162-3169, 3283-3286) — all use unlocked `ensure_beads_*_health()` followed by separately-locked `sync_flush()`. Comparing `sync_if_dirty()` to `sync_if_dirty_when_beads_healthy()`, the former performs no health check at all (br_process.rs:1283-1319), so the pre-check at project.rs:968 is the sole guard, and it runs completely outside the flush lock. This is a genuine inconsistency in applying a safety invariant the codebase already acknowledges is necessary. The severity of medium is appropriate — the race window is narrow but real, and the consequences (flushing mutations atop a conflicted or missing issues.jsonl) could corrupt shared bead state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 17
+}

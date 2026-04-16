@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr8-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T07:40:23.173566279Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed two amendments. The .gitignore omission for the lock file (fr-8-448db1d7) is a clear, verified defect — the lock file is eagerly created and will be staged by documented workflows. The claim recovery correctness finding (fr-8-08534a0a) overstates the risk: the legacy-marker path correctly falls through to a fresh re-claim (safe behavior, not a bug), and the journal path's reliance on a successful br sync --flush-only as proof of mutation application is a reasonable guarantee, not a gap.\n\n## Votes\n\n- `fr-8-448db1d7`: Accept\n  Verified: REPO_OPERATION_LOCK at br_process.rs:51 defines `.beads/.br-sync.lock`; recover_pending_mutation_state() at line 797 creates it with .create(true) on every BrMutationAdapter::with_adapter() call; .gitignore lines 24-26 only exclude `.br-unsynced-mutations*`. Any `git add .beads/` will stage this transient lock artifact. Fix is straightforward — add the entry and extend the ignore regression test.\n- `fr-8-08534a0a`: Reject\n  The amendment's two claims don't hold up on close reading. (1) Legacy-marker recovery: when only the legacy marker is present (no journal records), matching_update_status is empty so includes_update_status returns false — but the code correctly falls through to a fresh update_bead_status + sync_flush at lines 984-998. This is correct behavior, not a missed case. (2) Journal-record recovery: the code reads intent from journal records then confirms execution via a successful br sync --flush-only subprocess. For this to 'return the wrong answer' requires the flush subprocess to exit 0 while silently dropping mutations — that would be a br bug, not a defect in this code. The removed br show fallback was defensive but added a subprocess call on every recovery path for a scenario that requires a bug in an external tool. The current trade-off is reasonable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 8
+}

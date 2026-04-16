@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T10:06:32.964405379Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the committed diff against the pre-project base, read the br health/sync, claim, reconciliation, and propose-new-bead paths end-to-end, and found 2 fix-now correctness issues in the new recovery logic.\n\n## Amendments\n\n1. finding_summary: `claim_bead_in_br()` can treat another process's recovered `br update --status=in_progress` as proof that the current claim already succeeded.\nseverity: high\naffected_files:\n- src/cli/project.rs:984-990\n- src/adapters/br_process.rs:109-115\n- src/adapters/br_process.rs:1233-1243\nremediation_hint: Persist and check a stable claim-attempt ownership token in `PendingMutationRecord` before short-circuiting, rather than accepting any repo-global `(bead_id, status)` match from `sync_if_dirty()`.\n   Rationale: The recovered-flush short-circuit is keyed only by bead id/status from the shared pending-mutation journal. In a shared working tree, one actor can flush another actor's pending claim and incorrectly return success, violating the existing \"someone else may have won the race\" safety rule and letting the controller proceed on a bead it never actually claimed.\n2. finding_summary: `handle_propose_new_bead()` can report success on replay without replaying a previously failed `br sync --flush-only`, leaving the created bead only in local br state while `.beads/issues.jsonl` stays stale.\nseverity: high\naffected_files:\n- src/contexts/milestone_record/service.rs:3026-3062\n- src/contexts/milestone_record/service.rs:3090-3145\n- src/contexts/milestone_record/service.rs:3234-3242\nremediation_hint: Recover pending mutation state with `sync_if_dirty()` before reusing an already-created proposed bead, or require the replay paths that return `Created` to flush any outstanding dirty state before returning success.\n   Rationale: After `create_bead` and `add_dependency` succeed, a failed flush leaves the repo dirty. On retry, the new early-return paths can find the locally created bead and return `Created` without ever flushing that recovered mutation set, so reconciliation records success even though the durable bead export was never updated.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}

@@ -63,6 +63,12 @@ fn initialize_workspace_fixture() -> tempfile::TempDir {
         .output()
         .expect("run init");
     assert!(output.status.success());
+    fs::create_dir_all(temp_dir.path().join(".beads")).expect("create .beads");
+    fs::write(
+        temp_dir.path().join(".beads/issues.jsonl"),
+        "{\"id\":\"seed-bead\"}\n",
+    )
+    .expect("write issues.jsonl");
     temp_dir
 }
 
@@ -552,6 +558,11 @@ fn write_editor_script(
     contents: &str,
 ) -> std::path::PathBuf {
     let script_path = base_dir.join(name);
+    let contents = if name == "br" {
+        inject_fake_br_version_handler(contents)
+    } else {
+        contents.to_owned()
+    };
     fs::write(&script_path, contents).expect("write editor script");
     let mut permissions = fs::metadata(&script_path)
         .expect("script metadata")
@@ -559,6 +570,19 @@ fn write_editor_script(
     permissions.set_mode(0o755);
     fs::set_permissions(&script_path, permissions).expect("set script permissions");
     script_path
+}
+
+fn inject_fake_br_version_handler(contents: &str) -> String {
+    if contents.contains("--version") {
+        return contents.to_owned();
+    }
+
+    let version_handler =
+        "if [ \"$1\" = \"--version\" ]; then\nprintf '%s\\n' 'br test stub'\nexit 0\nfi\n";
+    match contents.split_once('\n') {
+        Some((shebang, rest)) => format!("{shebang}\n{version_handler}{rest}"),
+        None => format!("#!/bin/sh\n{version_handler}{contents}"),
+    }
 }
 
 fn prepend_path(dir: &std::path::Path) -> std::ffi::OsString {

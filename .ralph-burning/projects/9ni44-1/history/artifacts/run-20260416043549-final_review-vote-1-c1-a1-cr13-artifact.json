@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T09:46:44.104080088Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth findings are technically sound. They expose recovery-path regressions around the new bead-health checks: one over-blocks an idempotent success replay that no longer needs bead mutation, and the other under-checks the recovered-claim fast path after replaying pending mutations.\n\n## Votes\n\n- `fr-13-80401345`: Accept\n  `reconcile_success()` now checks `ensure_beads_mutation_health()` before `close_bead_idempotent()`, so a replay cannot reach the helper's read-first `already closed` short-circuit when `.beads/issues.jsonl` later becomes unhealthy. `sync_after_close()` also always calls `sync_flush()` instead of using pending-mutation state, so the code cannot distinguish `close succeeded but flush is still pending` from `close and flush already completed`. That turns unrelated later export corruption into a blocker for milestone-state repair even when no additional bead mutation is required.\n- `fr-13-658a8d49`: Accept\n  `claim_bead_in_br()` enforces a post-update health check on the normal path, but the recovered-claim short-circuit returns success immediately after `sync_if_dirty()` reports that it replayed `update_bead_status(..., \"in_progress\")`. There is no equivalent post-flush validation on that branch, and `sync_if_dirty()` itself just performs the flush and reports replayed mutations. As a result, a recovered flush can leave `.beads/issues.jsonl` conflicted or malformed while the controller still records the claim as successful, which is a real robustness bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

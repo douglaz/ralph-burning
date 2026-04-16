@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr9-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T08:06:29.864729982Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify genuine defects. Amendment fr-9-b01a51df catches a real ownership-verification gap in claim_bead_in_br where the short-circuit path accepts any recovered flush plus any in_progress status rather than verifying the flush actually contained this bead's claim — the matching_update_status field on SyncIfDirtyOutcome::Flushed exists precisely for this purpose but is ignored. Amendment fr-9-b0f0c664 correctly identifies that the upfront beads-health gate in handle_propose_new_bead blocks idempotent read-only recovery paths (returning an already-created bead, recording a planned-elsewhere mapping) that don't perform br mutations, reducing replay resilience.\n\n## Votes\n\n- `fr-9-b01a51df`: Accept\n  The defect is real and the severity is warranted. At src/cli/project.rs:979-989, the short-circuit checks `!recovered_flush.is_clean()` and `bead_status_is_in_progress(base_dir, bead_id)` but never inspects `recovered_flush.matching_update_status` to confirm the flushed mutations actually included this specific bead's `update_status(bead_id, in_progress)`. The SyncIfDirtyOutcome::Flushed variant at src/adapters/br_process.rs:163-167 already carries `matching_update_status: Vec<(String, String)>` populated from the pending mutation records (lines 1233-1244), so the data to do the correct check is available and already computed. Without this verification, a recovered flush containing only unrelated mutations combined with another operator having claimed the bead produces a false positive — Ralph proceeds as if it owns the bead when it does not, leading to incorrect project state and potential concurrent work collisions.\n- `fr-9-b0f0c664`: Accept\n  The analysis is correct. The `ensure_beads_mutation_health` call at line 3020 runs before any of the recovery branches. The first recovery branch (lines 3023-3067) can return at line 3049 without any br mutation when the existing bead's dependency already matches. The third branch (lines 3125-3159) writes only to the journal and mapping store via `record_planned_elsewhere_mapping`, not through br mutation. These non-mutating paths are blocked by the upfront health check. On replay after a previous successful create, a temporarily conflicted `.beads/issues.jsonl` would cause unnecessary failure. The health gate should be moved to guard only the actual mutation call-sites: the `add_dependency`/`sync_flush` calls in the first two recovery branches (lines 3032-3047, 3094-3111) and the `create_bead`/`sync_flush` calls at the bottom (lines 3177+). This preserves the safety invariant while keeping idempotent recovery resilient.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 9
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T06:18:49.740998254Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real safety gaps in BrMutationAdapter. The concurrency finding (fr-4-964ac48b) correctly identifies that AtomicBool + &self async methods enable interleaving without compound-operation serialization. The health check finding (fr-4-149a93d0) correctly identifies that sync_import skips the beads health guard that all mutation paths enforce, allowing import against corrupted state.\n\n## Votes\n\n- `fr-4-964ac48b`: Accept\n  The BrMutationAdapter exposes &self async methods with interior mutability (AtomicBool), which explicitly enables concurrent use via tokio::join! or similar patterns. The compound operations in exec_tracked_mutation (persist marker → await mutation → update flag) and sync_flush (await sync → clear marker → clear flag) are not serialized as atomic units. A concurrent sync_flush completing between another task's persist_pending_mutation_marker and the mutation's success path would clear the on-disk marker while unsynced work still exists. The AtomicBool provides per-store consistency but not compound-operation atomicity. The remediation (mutex or generation guard) is proportionate — it serializes the check-execute-update sequences that must be atomic for the dirty-tracking invariant to hold.\n- `fr-4-149a93d0`: Accept\n  sync_import() at line 815 only calls ensure_synced() before spawning br sync --import-only, but ensure_synced only checks the pending-mutations flag — it does not validate issues.jsonl health. All three mutation callsites (success_reconciliation:122, milestone_record/service:2999, cli/project:966) guard with check_beads_health(), but sync_import bypasses this entirely. Since br sync --import-only reads and reconciles the local issues.jsonl with upstream, running it against a file with git conflict markers could silently produce corrupted state rather than failing cleanly. The adapter already has working_dir available (used for the marker file path), so calling check_beads_health(working_dir) inside sync_import before spawning the subprocess is straightforward and closes the gap.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 4
+}
