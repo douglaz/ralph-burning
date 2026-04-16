@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T18:56:21.944721054Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify genuine asymmetries between the success and failure reconciliation paths in daemon_loop.rs. Amendment fr-4-9658f485 correctly identifies that the failure path's journal-based run_id fallback can bind reconciliation to the wrong historical attempt — an issue the success path explicitly rejected with commentary at lines 2190-2195. Amendment fr-4-63eb15de correctly identifies that metadata errors during failure reconciliation leave the milestone controller in its prior state rather than transitioning to NeedsOperator, unlike the success path which has an explicit NeedsOperator transition in missing_workflow_run_id_failure.\n\n## Votes\n\n- `fr-4-9658f485`: Accept\n  The code at lines 1913-1926 falls back to scanning journal events for the most recent run_id when workflow_run_id is absent. The success path at line 2196 explicitly refuses to do this, with comments at 2190-2195 explaining why: 'a newer manual re-run may have appended its own run identity.' The same risk applies to the failure path. The snapshot_attempt fallback (tier 2) is somewhat safer but still not a durable task-to-run binding. The persist_workflow_run_id helper (line 1812) is best-effort and can fail silently, so workflow_run_id can legitimately be None even after a run completes. In that scenario, the journal fallback silently reconciles against whatever run_id appears most recently — which after a retry could be an entirely different attempt. This is a real correctness bug that can cause wrong-attempt failure recording in production retry scenarios.\n- `fr-4-63eb15de`: Accept\n  When try_reconcile_failure returns Err on metadata errors (invalid project_id at line 1866, unreadable journal at line 1893, missing run_id at line 1926, missing started_at at line 2001), the callers at lines 1183-1201 and 1781-1799 mark the task failed but do not touch the milestone controller. Compare with the success path: missing_workflow_run_id_failure at line 2091 explicitly transitions the controller to NeedsOperator. The inconsistency means a failure-reconciliation metadata error leaves the milestone controller appearing healthy when it actually requires operator intervention. The task failure message contains the details, but operators monitoring milestone controller state won't see the problem. This is a meaningful operational gap — when failure reconciliation itself fails, you're in a doubly-broken state that should be surfaced at the controller level.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 4
+}

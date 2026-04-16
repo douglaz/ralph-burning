@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T18:55:03.720675916Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the new failure-reconciliation path plus the related controller/CLI wiring, and ran `cargo test`, `cargo clippy -- -D warnings`, and `cargo fmt --check` successfully. I found two correctness gaps in daemon-side failure reconciliation; `nix build` did not complete during this review.\n\n## Amendments\n\n1. finding_summary: Failure reconciliation guesses the current run from the latest journal metadata when `workflow_run_id` is missing, so a retry/manual rerun can be reconciled against the wrong historical attempt.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs:1913-1926\n- src/contexts/automation_runtime/daemon_loop.rs:1997-2006\nremediation_hint: Mirror the success path and require a durable task-to-run binding, or at minimum an exact active/interrupted snapshot attempt, before reconciling. Do not infer `run_id`/`started_at` from the latest journal entry.\n   Rationale: `try_reconcile_failure()` falls back to `latest_run_id_from_journal()` and then derives `started_at` from the latest `run_started`/`run_resumed` event. The success reconciliation code in the same file explicitly treats that strategy as unsafe because a newer rerun can append its own run identity. On the failure path this can silently mark the wrong attempt as failed, skew retry counts, and escalate the bead based on another run's history.\n2. finding_summary: When daemon-side failure reconciliation cannot determine milestone metadata, the task is marked failed but the milestone controller is left in its prior active state instead of being pushed to `NeedsOperator`.\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs:1183-1201\n- src/contexts/automation_runtime/daemon_loop.rs:1781-1799\n- src/contexts/automation_runtime/daemon_loop.rs:1866-1931\n- src/contexts/automation_runtime/daemon_loop.rs:2001-2008\nremediation_hint: For milestone-backed tasks, convert hard reconciliation metadata failures into a controller `NeedsOperator` transition before returning the task failure, matching the existing success-reconciliation behavior.\n   Rationale: All of the early `reconciliation_metadata_error` returns from `try_reconcile_failure()` flow into the generic `mark_failed()` branches. Unlike the success path, there is no controller-side escalation when the daemon cannot safely bind the failed run back to milestone state. That leaves the controller in `Claimed`/`Running`, so later milestone commands keep operating on stale active-bead state instead of surfacing operator intervention.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
