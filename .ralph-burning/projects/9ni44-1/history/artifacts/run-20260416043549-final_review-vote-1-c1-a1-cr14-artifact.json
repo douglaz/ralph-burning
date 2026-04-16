@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T10:10:22.348035739Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real recovery/ownership defects in the br mutation replay logic: one can misattribute another process's recovered claim as the current claim, and the other can treat locally replayed proposed-bead state as durable success without ensuring the pending sync actually completed.\n\n## Votes\n\n- `fr-14-39c81306`: Accept\n  `claim_bead_in_br()` short-circuits on `recovered_flush.includes_update_status(bead_id, \"in_progress\")` at `src/cli/project.rs:984-990`, but `SyncIfDirtyOutcome` is populated from every pending mutation record in the repo snapshot whose `(operation, bead_id, status)` matches, regardless of ownership (`src/adapters/br_process.rs:109-115` and `1233-1243`). Because each call constructs a fresh `BrMutationAdapter`, the current code has no stable token tying a recovered pending claim to the caller's own prior attempt. A different process's recovered `update_bead_status(..., in_progress)` for the same bead can therefore be flushed and then mistaken for this caller's successful claim, skipping the explicit `br update` that would otherwise detect the collision. That is a genuine ownership/isolation bug, not just a cosmetic replay issue.\n- `fr-14-efa1421d`: Accept\n  The replay/reuse paths in `handle_propose_new_bead()` return `Created` based on `br show`/matching-title inspection at `src/contexts/milestone_record/service.rs:3026-3062` and `3090-3145`, but they do not first recover or flush any pending mutation journal. The only place the normal creation flow makes the operation durable is the later `sync_flush()` at `3234-3242`. If an earlier create or dependency repair succeeded locally and the subsequent flush failed, a retry can still see that locally created bead through `br` reads and return success without replaying the failed flush, leaving the pending mutation state in place and the authoritative `.beads/issues.jsonl` stale. Even if higher-level reconciliation often flushes earlier today, this service function itself does not enforce that invariant, so it can incorrectly promote local-only state to durable success.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr14-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T10:10:39.172683406Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real correctness issues in mutation recovery paths. Amendment 1 targets a missing adapter ownership check in claim_bead_in_br() where includes_update_status() matches (bead_id, status) across all adapter records without verifying the current adapter actually owns the recovered mutation — the adapter_id field exists in PendingMutationRecord but is unused in the critical matching path. Amendment 2 targets early-return paths in handle_propose_new_bead() that skip sync entirely, allowing the bead to exist in local br state while .beads/issues.jsonl remains stale.\n\n## Votes\n\n- `fr-14-39c81306`: Accept\n  Valid correctness issue. The PendingMutationRecord stores adapter_id (a fresh UUID per instance, br_process.rs:692) but includes_update_status (br_process.rs:191-202) matches only on (bead_id, status) without filtering by adapter_id. A concrete failure scenario: Process A persists its pending mutation record (line 1031), the br command fails, and the process crashes hard before the cleanup at lines 1049-1057. The stale record survives with (bead_id=X, status=in_progress) even though the local br state was never modified. Process B's sync_if_dirty() reads this stale record, runs br sync --flush-only (which publishes whatever IS in local br state — which doesn't include the failed claim), and includes_update_status returns true based on the stale record. Process B skips the explicit br update and returns Ok(()) — the bead was never actually claimed. The adapter_id field exists precisely for ownership attribution but is not consulted in the critical path.\n- `fr-14-efa1421d`: Accept\n  Clear consistency bug. The early-return at service.rs:3062 (journaled bead exists, dependency already present) returns Created without any sync. The early-return at service.rs:3145 (title-matched bead found, dependency present) similarly returns Created without flushing. BrMutationAdapter::with_adapter() (br_process.rs:688-696) recovers dirty state by setting has_unsync_mutations but does not flush — that responsibility falls to a later sync_if_dirty() or sync_flush() call. These early-return paths bypass both. If a previous session crashed after create_bead and add_dependency succeeded locally but before sync_flush completed, the pending mutation records persist, the JSONL is stale, and the function reports success. The dependency-repair sub-paths (lines 3035-3059, 3107-3133) DO call sync_flush(), which would incidentally clear all dirty state — but those paths only trigger when the dependency is missing, not in the common case where it was already placed before the crash.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 14
+}
