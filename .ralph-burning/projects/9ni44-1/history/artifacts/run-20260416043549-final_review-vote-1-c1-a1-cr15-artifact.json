@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T10:42:07.532516981Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted 1 of 1 amendments. The replay helper still flushes recovered bead mutations before validating `.beads/issues.jsonl`, so the reported safety gap is real.\n\n## Votes\n\n- `fr-15-7c6a4163`: Accept\n  `handle_propose_new_bead` routes both the journal-replay path and the recovered-existing-bead path through `sync_recovered_proposed_bead_replay_if_dirty` (`src/contexts/milestone_record/service.rs:3085`, `:3167`). That helper currently calls `br_mutation.sync_if_dirty()` first and only runs `ensure_beads_mutation_health(...)` afterward (`service.rs:3014-3031`). In `BrMutationAdapter::sync_if_dirty` (`src/adapters/br_process.rs:1233+`), a dirty repo snapshot immediately falls through to `sync_flush_locked()`, which invokes `br sync --flush-only` with no prior beads-health validation. `sync_flush_locked()` itself has no `.beads/issues.jsonl` guard either. So if replay recovery finds pending mutations while the export is missing, conflicted, or malformed, the flush can run before the new safety check ever executes, which defeats the intended protection and can overwrite unsafe state. The amendment’s proposed fix direction is technically correct.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 15
+}

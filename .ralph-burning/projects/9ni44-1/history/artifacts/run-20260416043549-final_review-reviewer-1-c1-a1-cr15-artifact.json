@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T10:40:34.496284603Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the new br safety paths in `br_process`, `br_health`, `milestone_record::service`, `success_reconciliation`, and `cli/project`. `cargo test --quiet` and `cargo clippy --quiet -- -D warnings` passed locally. I found one high-severity safety regression: propose-new-bead replay still flushes recovered br mutations before the new beads-health gate runs.\n\n## Amendments\n\n1. finding_summary: `handle_propose_new_bead` can still run `br sync --flush-only` against an unsafe `.beads/issues.jsonl` during replay.\nseverity: high\naffected_files:\n- src/contexts/milestone_record/service.rs:3014\n- src/contexts/milestone_record/service.rs:3085\n- src/contexts/milestone_record/service.rs:3167\n- src/adapters/br_process.rs:1233\nremediation_hint: Move the beads-health gate ahead of `sync_if_dirty()` inside `sync_recovered_proposed_bead_replay_if_dirty`, or add an equivalent pre-flush guard there. Right now the helper calls `sync_if_dirty()` first, and `sync_if_dirty()` immediately flushes recovered mutations when the repo marker is dirty. That means the journal-replay and recovered-existing-bead branches can overwrite a conflicted or missing export before the new safety check runs, which is exactly the state this bead is supposed to block.\n   Rationale: The new safety policy is enforced before explicit create/add-dependency/close/update operations, but the replay helper in `milestone_record::service` bypasses it by flushing recovered mutations first. In a crash-recovery scenario with conflict markers or a missing export, retrying propose-new-bead reconciliation can still mutate `.beads/` instead of stopping with an operator-facing error.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 15
+}

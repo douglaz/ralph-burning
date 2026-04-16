@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416043549-final_review-aggregate-c1-a1-cr15-artifact",
+  "payload_id": "run-20260416043549-final_review-aggregate-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T10:42:39.030295884Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 15/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-15-7c6a4163`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-15-7c6a4163`\n\nfinding_summary: `handle_propose_new_bead` can still run `br sync --flush-only` against an unsafe `.beads/issues.jsonl` during replay.\nseverity: high\naffected_files:\n- src/contexts/milestone_record/service.rs:3014\n- src/contexts/milestone_record/service.rs:3085\n- src/contexts/milestone_record/service.rs:3167\n- src/adapters/br_process.rs:1233\nremediation_hint: Move the beads-health gate ahead of `sync_if_dirty()` inside `sync_recovered_proposed_bead_replay_if_dirty`, or add an equivalent pre-flush guard there. Right now the helper calls `sync_if_dirty()` first, and `sync_if_dirty()` immediately flushes recovered mutations when the repo marker is dirty. That means the journal-replay and recovered-existing-bead branches can overwrite a conflicted or missing export before the new safety check runs, which is exactly the state this bead is supposed to block.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 15
+}
