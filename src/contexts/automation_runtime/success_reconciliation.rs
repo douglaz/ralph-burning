@@ -242,8 +242,8 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
     }
 
     // Step 1: Close the bead idempotently.
-    ensure_beads_mutation_health(base_dir, bead_id, task_id)?;
-    let was_already_closed = close_bead_idempotent(br_mutation, br_read, bead_id, task_id).await?;
+    let was_already_closed =
+        close_bead_idempotent(base_dir, br_mutation, br_read, bead_id, task_id).await?;
 
     // Step 2: Sync flush — always runs, even if bead was already closed.
     // A crash between br close and sync would leave local bead state dirty.
@@ -416,6 +416,7 @@ fn persist_selection_failure_after_reconciliation(
 ///
 /// On failure, returns `ReconciliationError::BrCloseFailed`.
 async fn close_bead_idempotent<R: ProcessRunner>(
+    base_dir: &Path,
     br_mutation: &BrMutationAdapter<R>,
     br_read: &BrAdapter<R>,
     bead_id: &str,
@@ -437,6 +438,7 @@ async fn close_bead_idempotent<R: ProcessRunner>(
         }
     }
 
+    ensure_beads_mutation_health(base_dir, bead_id, task_id)?;
     let reason = format!("task {task_id} completed successfully");
     match br_mutation.close_bead(bead_id, &reason).await {
         Ok(_) => Ok(false),
@@ -462,9 +464,18 @@ async fn sync_after_close<R: ProcessRunner>(
     bead_id: &str,
     task_id: &str,
 ) -> Result<(), ReconciliationError> {
+    if !br_mutation.has_pending_mutations() {
+        tracing::debug!(
+            bead_id = bead_id,
+            task_id = task_id,
+            "no pending local bead mutations remain after close replay; skipping br sync --flush-only"
+        );
+        return Ok(());
+    }
+
     ensure_beads_sync_health(base_dir, bead_id, task_id)?;
     br_mutation
-        .sync_flush()
+        .sync_if_dirty()
         .await
         .map_err(|e| ReconciliationError::BrSyncFailed {
             bead_id: bead_id.to_owned(),
@@ -1484,6 +1495,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_bead_idempotent_already_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
         // br show returns closed status
         let show_json =
             r#"{"id":"b1","title":"Test","status":"closed","priority":2,"bead_type":"task"}"#;
@@ -1493,13 +1505,17 @@ mod tests {
         let mutation_runner = MockBrRunner::new(vec![]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
 
-        let result = close_bead_idempotent(&br_mutation, &br_adapter, "b1", "task-1").await?;
+        let result =
+            close_bead_idempotent(temp_dir.path(), &br_mutation, &br_adapter, "b1", "task-1")
+                .await?;
         assert!(result, "should report bead was already closed");
         Ok(())
     }
 
     #[tokio::test]
     async fn close_bead_idempotent_open_then_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
         // br show returns open, then close succeeds
         let show_json =
             r#"{"id":"b1","title":"Test","status":"open","priority":2,"bead_type":"task"}"#;
@@ -1511,13 +1527,17 @@ mod tests {
         let mutation_runner = MockBrRunner::new(vec![close_output]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
 
-        let result = close_bead_idempotent(&br_mutation, &br_adapter, "b1", "task-1").await?;
+        let result =
+            close_bead_idempotent(temp_dir.path(), &br_mutation, &br_adapter, "b1", "task-1")
+                .await?;
         assert!(!result, "should report bead was freshly closed");
         Ok(())
     }
 
     #[tokio::test]
     async fn close_bead_failure_returns_error() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
         // br show returns open, close fails, second show also returns open
         let show_open =
             r#"{"id":"b1","title":"Test","status":"open","priority":2,"bead_type":"task"}"#;
@@ -1531,7 +1551,8 @@ mod tests {
         let mutation_runner = MockBrRunner::new(vec![MockBrRunner::error(1, "close failed")]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
 
-        let result = close_bead_idempotent(&br_mutation, &br_adapter, "b1", "task-1").await;
+        let result =
+            close_bead_idempotent(temp_dir.path(), &br_mutation, &br_adapter, "b1", "task-1").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1544,6 +1565,8 @@ mod tests {
     #[tokio::test]
     async fn close_failure_but_already_closed_is_idempotent(
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
         // br show returns open, close fails, second show returns closed
         let show_open =
             r#"{"id":"b1","title":"Test","status":"open","priority":2,"bead_type":"task"}"#;
@@ -1559,7 +1582,9 @@ mod tests {
         let mutation_runner = MockBrRunner::new(vec![MockBrRunner::error(1, "already closed")]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
 
-        let result = close_bead_idempotent(&br_mutation, &br_adapter, "b1", "task-1").await?;
+        let result =
+            close_bead_idempotent(temp_dir.path(), &br_mutation, &br_adapter, "b1", "task-1")
+                .await?;
         assert!(
             result,
             "should be idempotent when close fails but bead is closed"
@@ -1571,8 +1596,14 @@ mod tests {
     async fn sync_after_close_success() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         write_beads_export(temp_dir.path())?;
+        std::fs::write(
+            temp_dir.path().join(".beads/.br-unsynced-mutations"),
+            "pending\n",
+        )?;
         let runner = MockBrRunner::new(vec![MockBrRunner::success("")]);
-        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+        );
 
         sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await?;
         Ok(())
@@ -1582,8 +1613,14 @@ mod tests {
     async fn sync_after_close_failure() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         write_beads_export(temp_dir.path())?;
+        std::fs::write(
+            temp_dir.path().join(".beads/.br-unsynced-mutations"),
+            "pending\n",
+        )?;
         let runner = MockBrRunner::new(vec![MockBrRunner::error(1, "sync failed")]);
-        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+        );
 
         let result = sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await;
         assert!(result.is_err());
@@ -1600,11 +1637,17 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
         std::fs::create_dir_all(temp_dir.path().join(".beads"))?;
         std::fs::write(
+            temp_dir.path().join(".beads/.br-unsynced-mutations"),
+            "pending\n",
+        )?;
+        std::fs::write(
             temp_dir.path().join(".beads/issues.jsonl"),
             "<<<<<<< HEAD\n{\"id\":\"b1\"}\n=======\n{\"id\":\"b2\"}\n>>>>>>> branch\n",
         )?;
         let runner = MockBrRunner::new(vec![]);
-        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+        );
 
         let result = sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await;
         let error = result.expect_err("unsafe beads export should block sync flush");
@@ -1624,6 +1667,24 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn sync_after_close_skips_unhealthy_export_when_no_pending_mutations(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp_dir.path().join(".beads"))?;
+        std::fs::write(
+            temp_dir.path().join(".beads/issues.jsonl"),
+            "<<<<<<< HEAD\n{\"id\":\"b1\"}\n=======\n{\"id\":\"b2\"}\n>>>>>>> branch\n",
+        )?;
+        let runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+        );
+
+        sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await?;
+        Ok(())
+    }
+
     /// Sync failure when bead was already closed (replay scenario) must still
     /// be treated as a fatal error. `was_already_closed` is not a sound proxy
     /// for "sync already completed" — a crash between close and sync produces
@@ -1632,6 +1693,10 @@ mod tests {
     async fn sync_failure_on_replay_is_still_fatal() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         write_beads_export(temp_dir.path())?;
+        std::fs::write(
+            temp_dir.path().join(".beads/.br-unsynced-mutations"),
+            "pending\n",
+        )?;
         std::fs::create_dir_all(temp_dir.path().join(".ralph-burning/milestones/ms-1"))?;
 
         // br show returns closed (bead already closed from prior attempt)
@@ -1642,7 +1707,9 @@ mod tests {
 
         // Mutation adapter: sync fails (no close needed since bead already closed)
         let mutation_runner = MockBrRunner::new(vec![MockBrRunner::error(1, "sync failed")]);
-        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(mutation_runner).with_working_dir(temp_dir.path().to_path_buf()),
+        );
 
         let now = chrono::Utc::now();
         let result = reconcile_success(
@@ -1688,7 +1755,10 @@ mod tests {
         )?;
         std::fs::create_dir_all(temp_dir.path().join(".ralph-burning/milestones/ms-1"))?;
 
-        let br_read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let show_open =
+            r#"{"id":"b1","title":"Test","status":"open","priority":2,"bead_type":"task"}"#;
+        let br_read =
+            BrAdapter::with_runner(MockBrRunner::new(vec![MockBrRunner::success(show_open)]));
         let br_mutation =
             BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
 
@@ -1732,7 +1802,10 @@ mod tests {
         )?;
         std::fs::create_dir_all(temp_dir.path().join(".ralph-burning/milestones/ms-1"))?;
 
-        let br_read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let show_open =
+            r#"{"id":"b1","title":"Test","status":"open","priority":2,"bead_type":"task"}"#;
+        let br_read =
+            BrAdapter::with_runner(MockBrRunner::new(vec![MockBrRunner::success(show_open)]));
         let br_mutation =
             BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
 
@@ -3207,6 +3280,198 @@ mod tests {
         assert_eq!(task_runs.len(), 1);
         assert_eq!(task_runs[0].run_id.as_deref(), Some("run-replay"));
         assert_eq!(task_runs[0].task_id.as_deref(), Some("task-replay-1"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_success_replay_after_final_completion_skips_unnecessary_sync_when_beads_export_is_now_unhealthy(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::{
+            FsMilestoneControllerStore, FsMilestonePlanStore, FsMilestoneStore,
+        };
+        use crate::contexts::milestone_record::bundle::{
+            AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+        };
+        use crate::contexts::milestone_record::controller as milestone_controller;
+        use crate::contexts::milestone_record::model::{MilestoneEventType, MilestoneId};
+        use crate::contexts::milestone_record::service::{
+            create_milestone, persist_plan, read_journal, read_task_runs, CreateMilestoneInput,
+        };
+        use chrono::Utc;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        write_beads_export(base)?;
+        std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
+
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+
+        let now = Utc::now();
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "ms-replay-unhealthy".to_owned(),
+                name: "Replay unhealthy milestone".to_owned(),
+                description: "Replays after bead export corruption.".to_owned(),
+            },
+            now,
+        )?;
+
+        let bundle = MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: "ms-replay-unhealthy".to_owned(),
+                name: "Replay unhealthy milestone".to_owned(),
+            },
+            executive_summary: "Replay unhealthy test.".to_owned(),
+            goals: vec!["Verify replay idempotency".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Bead completes".to_owned(),
+                covered_by: vec!["bead-replay-unhealthy".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Core".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    bead_id: Some("bead-replay-unhealthy".to_owned()),
+                    explicit_id: Some(true),
+                    title: "Replay bead".to_owned(),
+                    description: None,
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec![],
+                    depends_on: vec![],
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: None,
+                }],
+            }],
+            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            agents_guidance: None,
+        };
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &bundle,
+            now + chrono::Duration::milliseconds(1),
+        )?;
+
+        let started_at = now + chrono::Duration::seconds(1);
+        milestone_service::record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-replay-unhealthy",
+            "proj-replay-unhealthy",
+            "run-replay-unhealthy",
+            "plan-v1",
+            started_at,
+        )?;
+        milestone_controller::sync_controller_task_running(
+            &FsMilestoneControllerStore,
+            base,
+            &record.id,
+            "bead-replay-unhealthy",
+            "proj-replay-unhealthy",
+            "workflow execution started",
+            started_at,
+        )?;
+
+        let show_open = r#"{"id":"bead-replay-unhealthy","title":"Replay bead","status":"open","priority":2,"bead_type":"task"}"#;
+        let show_closed = r#"{"id":"bead-replay-unhealthy","title":"Replay bead","status":"closed","priority":2,"bead_type":"task"}"#;
+        let read_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(show_closed),
+            MockBrRunner::success(show_open),
+        ]);
+        let br_read = BrAdapter::with_runner(read_runner);
+
+        let mutation_runner = MockBrRunner::new(vec![
+            MockBrRunner::success(""),
+            MockBrRunner::success(""),
+            MockBrRunner::success(""),
+        ]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let first = reconcile_success(
+            &br_mutation,
+            &br_read,
+            None::<&BvAdapter<MockBvRunner>>,
+            base,
+            "bead-replay-unhealthy",
+            "task-replay-unhealthy",
+            "proj-replay-unhealthy",
+            "ms-replay-unhealthy",
+            "run-replay-unhealthy",
+            Some("plan-v1"),
+            started_at,
+            now + chrono::Duration::seconds(10),
+        )
+        .await?;
+        assert!(!first.was_already_closed);
+
+        std::fs::write(
+            base.join(".beads/issues.jsonl"),
+            r#"<<<<<<< HEAD
+{"id":"bead-replay-unhealthy"}
+=======
+{"id":"other"}
+>>>>>>> branch
+"#,
+        )?;
+
+        let replay = reconcile_success(
+            &br_mutation,
+            &br_read,
+            None::<&BvAdapter<MockBvRunner>>,
+            base,
+            "bead-replay-unhealthy",
+            "task-replay-unhealthy",
+            "proj-replay-unhealthy",
+            "ms-replay-unhealthy",
+            "run-replay-unhealthy",
+            Some("plan-v1"),
+            started_at,
+            now + chrono::Duration::seconds(11),
+        )
+        .await?;
+        assert!(replay.was_already_closed);
+
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &record.id)?
+                .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Completed
+        );
+
+        let milestone_id = MilestoneId::new("ms-replay-unhealthy")?;
+        let journal = read_journal(&journal_store, base, &milestone_id)?;
+        let completion_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadCompleted)
+            .collect();
+        assert_eq!(completion_events.len(), 1);
+
+        let task_runs = read_task_runs(&lineage_store, base, &milestone_id)?;
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-replay-unhealthy"));
+        assert_eq!(
+            task_runs[0].task_id.as_deref(),
+            Some("task-replay-unhealthy")
+        );
 
         Ok(())
     }

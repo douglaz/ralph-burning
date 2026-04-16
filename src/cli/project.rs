@@ -982,6 +982,7 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
         );
     }
     if recovered_flush.includes_update_status(bead_id, "in_progress") {
+        ensure_beads_claim_post_flush_health(base_dir, bead_id)?;
         tracing::info!(
             bead_id = bead_id,
             "recovered flush already replayed this bead claim; skipping duplicate br update"
@@ -1025,6 +1026,18 @@ fn ensure_beads_claim_sync_health(base_dir: &Path, bead_id: &str) -> AppResult<(
             "bead '{bead_id}' was locally claimed (status set to in_progress) but bead state \
              became unsafe before br sync --flush-only: {details}. The bead remains locally \
              claimed in br; resolve the bead-state issue and rerun `br sync --flush-only`."
+        ))));
+    }
+
+    Ok(())
+}
+
+fn ensure_beads_claim_post_flush_health(base_dir: &Path, bead_id: &str) -> AppResult<()> {
+    if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "bead '{bead_id}' was locally claimed by replaying a recovered br sync --flush-only, \
+             but bead state is still unsafe: {details}. Resolve the bead-state issue before \
+             continuing with milestone work."
         ))));
     }
 
@@ -4325,6 +4338,53 @@ esac
             assert!(
                 !base_dir.join(".beads/update-count").exists(),
                 "the explicit update must not run once the second health check sees a conflict"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_rechecks_health_after_recovered_claim_flush_before_short_circuit(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_conflict_after_recovered_flush(base_dir, "bead-1");
+            let journal_path = base_dir.join(".beads/.br-unsynced-mutations.d/recovered.json");
+            std::fs::create_dir_all(
+                journal_path
+                    .parent()
+                    .expect("journal path must have parent"),
+            )?;
+            std::fs::write(
+                &journal_path,
+                r#"{"adapter_id":"other","operation":"update_bead_status","bead_id":"bead-1","status":"in_progress"}"#,
+            )?;
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            assert!(
+                result.is_err(),
+                "unsafe export after recovered claim flush should block the short-circuit success path"
+            );
+            let error = result.expect_err("claim should fail").to_string();
+            assert!(
+                error.contains("locally claimed by replaying a recovered br sync --flush-only"),
+                "error should explain that the recovered flush replayed the claim: {error}"
+            );
+            assert!(
+                error.contains("resolve the conflict"),
+                "error should direct the operator to resolve the conflict: {error}"
+            );
+            let sync_count = std::fs::read_to_string(base_dir.join(".beads/sync-count"))?;
+            assert_eq!(
+                sync_count.trim(),
+                "1",
+                "recovered claim flush should still run once"
+            );
+            assert!(
+                !base_dir.join(".beads/update-count").exists(),
+                "the explicit update must stay skipped on the recovered-claim short-circuit path"
             );
             Ok(())
         }
