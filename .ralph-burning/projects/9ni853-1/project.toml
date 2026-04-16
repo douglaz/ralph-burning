@@ -1,0 +1,7 @@
+id = "9ni853-1"
+name = "propose-new-bead-handler"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "f3f8e1c67feaa8fcb2f35e4bb5fe9c83ad8eb5aca643141d0b75594e799ddeb8"
+created_at = "2026-04-16T02:17:17.852520144Z"
+status_summary = "created"

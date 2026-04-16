@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416021721-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416021721-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-16T02:39:41.768312567Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented end-to-end `propose-new-bead` handling by preserving creation metadata through final-review aggregates, adding a milestone service handler that re-checks for existing title matches before creating a bead via the `br` adapter, recording `ProposedBeadCreated` journal events, and dispatching accepted propose-new-bead amendments during success reconciliation with conservative per-pass threshold logging. Added unit coverage for creation, duplicate reclassification to planned-elsewhere, threshold logging, journal recording, metadata merge behavior, and aggregate-driven reconciliation.\n\n## Steps\n\n1. [Completed] Extended final-review proposal and canonical amendment payloads to carry `proposed_title`, `proposed_scope`, `severity`, and `rationale`, and merged them conservatively for `ProposeNewBead` outcomes.\n2. [Completed] Added `ProposeNewBeadInput`/`ProposeNewBeadOutcome`, creation helpers, duplicate re-checking, priority/description derivation, `ProposedBeadCreated` journal recording, and threshold logging in `src/contexts/milestone_record/service.rs`.\n3. [Completed] Added `ProposedBeadCreated` to milestone journal event types in `src/contexts/milestone_record/model.rs`.\n4. [Completed] Wired post-success propose-new-bead reconciliation in `src/contexts/automation_runtime/success_reconciliation.rs` so the latest accepted final-review amendments dispatch through the new milestone service handler.\n5. [Completed] Added and updated tests in milestone-record service, success reconciliation, final-review merging, and workflow panel round-trip coverage.\n6. [Completed] Ran formatting, test, lint, and nix validation on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt` completed successfully.\n- `cargo test` completed successfully.\n- `cargo clippy -- -D warnings` completed successfully.\n- `cargo fmt --check` completed successfully.\n- `nix build` completed successfully.\n- Targeted regression checks passed for `propose_new_bead` service tests and `reconcile_proposed_beads_after_success` coverage.\n\n## Outstanding Risks\n\n- Duplicate prevention is intentionally conservative: it matches existing beads by normalized title, so semantically equivalent but differently titled beads will still create new follow-up work.\n- If the active bead lookup fails during creation, the new bead is still created but without inherited labels; that fallback is logged and keeps reconciliation moving.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 1
+}

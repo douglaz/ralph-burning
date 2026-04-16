@@ -59,6 +59,14 @@ pub struct CanonicalAmendment {
     pub mapped_to_bead_id: Option<String>,
     /// Three-way classification for routing.
     pub classification: AmendmentClassification,
+    /// Reviewer-provided rationale preserved for downstream routing.
+    pub rationale: Option<String>,
+    /// Title to use when routing an accepted propose-new-bead amendment.
+    pub proposed_title: Option<String>,
+    /// Scope summary to use when routing an accepted propose-new-bead amendment.
+    pub proposed_scope: Option<String>,
+    /// Severity used to derive bead priority for accepted propose-new-bead amendments.
+    pub severity: Option<review_classification::Severity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +93,14 @@ pub struct FinalReviewAcceptedAmendment {
     pub mapped_to_bead_id: Option<String>,
     /// Three-way classification for routing.
     pub classification: AmendmentClassification,
+    /// Reviewer-provided rationale preserved for downstream routing.
+    pub rationale: Option<String>,
+    /// Title to use when routing an accepted propose-new-bead amendment.
+    pub proposed_title: Option<String>,
+    /// Scope summary to use when routing an accepted propose-new-bead amendment.
+    pub proposed_scope: Option<String>,
+    /// Severity used to derive bead priority for accepted propose-new-bead amendments.
+    pub severity: Option<review_classification::Severity>,
 }
 
 struct ReviewerProposalRecord {
@@ -173,6 +189,53 @@ fn normalize_mapped_to_bead_id(id: Option<&String>) -> Option<String> {
     })
 }
 
+fn normalize_optional_text(value: Option<&String>) -> Option<String> {
+    value.and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
+}
+
+fn normalize_propose_new_bead_fields(
+    proposal: &super::panel_contracts::FinalReviewProposal,
+    classification: AmendmentClassification,
+) -> (
+    AmendmentClassification,
+    Option<String>,
+    Option<String>,
+    Option<review_classification::Severity>,
+    Option<String>,
+) {
+    if classification != AmendmentClassification::ProposeNewBead {
+        return (classification, None, None, None, None);
+    }
+
+    let proposed_title = normalize_optional_text(proposal.proposed_title.as_ref());
+    let proposed_scope = normalize_optional_text(proposal.proposed_scope.as_ref());
+    let rationale = normalize_optional_text(proposal.rationale.as_ref());
+    let severity = proposal.severity;
+
+    if proposed_title.is_some()
+        && proposed_scope.is_some()
+        && severity.is_some()
+        && rationale.is_some()
+    {
+        (
+            classification,
+            proposed_title,
+            proposed_scope,
+            severity,
+            rationale,
+        )
+    } else {
+        (AmendmentClassification::FixNow, None, None, None, None)
+    }
+}
+
 /// Infer classification from proposal fields. When an explicit `classification`
 /// is set, use it. Otherwise fall back to the legacy `mapped_to_bead_id`
 /// heuristic: present → planned-elsewhere, absent → fix-now.
@@ -211,7 +274,14 @@ fn merge_final_review_amendments(
             };
 
             let incoming_mapped = normalize_mapped_to_bead_id(amendment.mapped_to_bead_id.as_ref());
-            let incoming_classification = infer_classification(amendment);
+            let inferred_classification = infer_classification(amendment);
+            let (
+                incoming_classification,
+                incoming_proposed_title,
+                incoming_proposed_scope,
+                incoming_severity,
+                incoming_rationale,
+            ) = normalize_propose_new_bead_fields(amendment, inferred_classification);
 
             match by_body.get_mut(&normalized_body) {
                 Some(existing) => {
@@ -224,6 +294,10 @@ fn merge_final_review_amendments(
                     if existing.classification != incoming_classification {
                         existing.classification = AmendmentClassification::FixNow;
                         existing.mapped_to_bead_id = None;
+                        existing.rationale = None;
+                        existing.proposed_title = None;
+                        existing.proposed_scope = None;
+                        existing.severity = None;
                     }
                     // Conservative merge for planned-elsewhere target:
                     // - If ANY reviewer says "not planned-elsewhere" (None),
@@ -234,16 +308,38 @@ fn merge_final_review_amendments(
                         (Some(_), None) | (None, Some(_)) => {
                             existing.mapped_to_bead_id = None;
                             existing.classification = AmendmentClassification::FixNow;
+                            existing.rationale = None;
+                            existing.proposed_title = None;
+                            existing.proposed_scope = None;
+                            existing.severity = None;
                         }
                         (Some(existing_target), Some(new_target))
                             if existing_target != new_target =>
                         {
                             existing.mapped_to_bead_id = None;
                             existing.classification = AmendmentClassification::FixNow;
+                            existing.rationale = None;
+                            existing.proposed_title = None;
+                            existing.proposed_scope = None;
+                            existing.severity = None;
                         }
                         _ => {
                             // Agreement: both None or both same Some.
                         }
+                    }
+
+                    if existing.classification == AmendmentClassification::ProposeNewBead
+                        && (existing.proposed_title.as_ref() != incoming_proposed_title.as_ref()
+                            || existing.proposed_scope.as_ref() != incoming_proposed_scope.as_ref()
+                            || existing.severity != incoming_severity
+                            || existing.rationale.as_ref() != incoming_rationale.as_ref())
+                    {
+                        existing.classification = AmendmentClassification::FixNow;
+                        existing.mapped_to_bead_id = None;
+                        existing.rationale = None;
+                        existing.proposed_title = None;
+                        existing.proposed_scope = None;
+                        existing.severity = None;
                     }
                 }
                 None => {
@@ -256,6 +352,10 @@ fn merge_final_review_amendments(
                             sources: vec![source],
                             mapped_to_bead_id: incoming_mapped,
                             classification: incoming_classification,
+                            rationale: incoming_rationale,
+                            proposed_title: incoming_proposed_title,
+                            proposed_scope: incoming_proposed_scope,
+                            severity: incoming_severity,
                         },
                     );
                 }
@@ -1516,6 +1616,10 @@ where
                     sources: amendment.sources,
                     mapped_to_bead_id: amendment.mapped_to_bead_id,
                     classification: amendment.classification,
+                    rationale: amendment.rationale,
+                    proposed_title: amendment.proposed_title,
+                    proposed_scope: amendment.proposed_scope,
+                    severity: amendment.severity,
                 })
                 .collect(),
             restart_required: false,
@@ -1580,6 +1684,10 @@ where
                 sources: amendment.sources,
                 mapped_to_bead_id: amendment.mapped_to_bead_id,
                 classification: amendment.classification,
+                rationale: amendment.rationale,
+                proposed_title: amendment.proposed_title,
+                proposed_scope: amendment.proposed_scope,
+                severity: amendment.severity,
             })
             .collect(),
         restart_required: needs_restart,
@@ -1791,6 +1899,10 @@ fn canonical_to_payload(amendment: &CanonicalAmendment) -> FinalReviewCanonicalA
         sources: amendment.sources.clone(),
         mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
         classification: amendment.classification,
+        rationale: amendment.rationale.clone(),
+        proposed_title: amendment.proposed_title.clone(),
+        proposed_scope: amendment.proposed_scope.clone(),
+        severity: amendment.severity,
     }
 }
 
@@ -2496,6 +2608,9 @@ mod tests {
                     rationale: None,
                     mapped_to_bead_id: None,
                     classification: None,
+                    proposed_title: None,
+                    proposed_scope: None,
+                    severity: None,
                 }],
             },
         }
@@ -2586,6 +2701,9 @@ mod tests {
                             rationale: None,
                             mapped_to_bead_id: None,
                             classification: None,
+                            proposed_title: None,
+                            proposed_scope: None,
+                            severity: None,
                         }],
                     },
                 },
@@ -2606,6 +2724,9 @@ mod tests {
                             rationale: None,
                             mapped_to_bead_id: None,
                             classification: None,
+                            proposed_title: None,
+                            proposed_scope: None,
+                            severity: None,
                         }],
                     },
                 },
@@ -2646,6 +2767,46 @@ mod tests {
                     rationale: None,
                     mapped_to_bead_id: mapped_to_bead_id.map(|s| s.to_owned()),
                     classification: None,
+                    proposed_title: None,
+                    proposed_scope: None,
+                    severity: None,
+                }],
+            },
+        }
+    }
+
+    fn proposal_record_propose_new_bead(
+        reviewer_id: &str,
+        body: &str,
+        proposed_title: &str,
+        proposed_scope: &str,
+        severity: review_classification::Severity,
+        rationale: &str,
+    ) -> ReviewerProposalRecord {
+        ReviewerProposalRecord {
+            member_index: reviewer_id
+                .rsplit_once('-')
+                .and_then(|(_, value)| value.parse::<usize>().ok())
+                .unwrap_or(1)
+                .saturating_sub(1),
+            reviewer_id: reviewer_id.to_owned(),
+            required: true,
+            backend_family: "claude".to_owned(),
+            model_id: format!("model-{reviewer_id}"),
+            target: ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                format!("model-{reviewer_id}"),
+            ),
+            payload: FinalReviewProposalPayload {
+                summary: format!("proposal from {reviewer_id}"),
+                amendments: vec![FinalReviewProposal {
+                    body: body.to_owned(),
+                    rationale: Some(rationale.to_owned()),
+                    mapped_to_bead_id: None,
+                    classification: Some(AmendmentClassification::ProposeNewBead),
+                    proposed_title: Some(proposed_title.to_owned()),
+                    proposed_scope: Some(proposed_scope.to_owned()),
+                    severity: Some(severity),
                 }],
             },
         }
@@ -2719,6 +2880,85 @@ mod tests {
             merged[0].mapped_to_bead_id, None,
             "first-None then-Some should clear mapping (disagreement)"
         );
+    }
+
+    #[test]
+    fn merge_propose_new_bead_unanimous_preserves_creation_metadata() {
+        let merged = merge_final_review_amendments(
+            1,
+            &[
+                proposal_record_propose_new_bead(
+                    "reviewer-a",
+                    "missing telemetry for retries",
+                    "Add retry telemetry",
+                    "Instrument retry loops with counters and histograms",
+                    review_classification::Severity::Medium,
+                    "No existing bead covers retry observability",
+                ),
+                proposal_record_propose_new_bead(
+                    "reviewer-b",
+                    "missing telemetry for retries",
+                    "Add retry telemetry",
+                    "Instrument retry loops with counters and histograms",
+                    review_classification::Severity::Medium,
+                    "No existing bead covers retry observability",
+                ),
+            ],
+        );
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].classification,
+            AmendmentClassification::ProposeNewBead
+        );
+        assert_eq!(
+            merged[0].proposed_title.as_deref(),
+            Some("Add retry telemetry")
+        );
+        assert_eq!(
+            merged[0].proposed_scope.as_deref(),
+            Some("Instrument retry loops with counters and histograms")
+        );
+        assert_eq!(
+            merged[0].severity,
+            Some(review_classification::Severity::Medium)
+        );
+        assert_eq!(
+            merged[0].rationale.as_deref(),
+            Some("No existing bead covers retry observability")
+        );
+    }
+
+    #[test]
+    fn merge_propose_new_bead_metadata_disagreement_falls_back_to_fix_now() {
+        let merged = merge_final_review_amendments(
+            1,
+            &[
+                proposal_record_propose_new_bead(
+                    "reviewer-a",
+                    "missing telemetry for retries",
+                    "Add retry telemetry",
+                    "Instrument retry loops with counters and histograms",
+                    review_classification::Severity::Medium,
+                    "No existing bead covers retry observability",
+                ),
+                proposal_record_propose_new_bead(
+                    "reviewer-b",
+                    "missing telemetry for retries",
+                    "Add retry-loop tracing",
+                    "Instrument retry loops with structured tracing",
+                    review_classification::Severity::Medium,
+                    "Need better diagnostics",
+                ),
+            ],
+        );
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].classification, AmendmentClassification::FixNow);
+        assert_eq!(merged[0].proposed_title, None);
+        assert_eq!(merged[0].proposed_scope, None);
+        assert_eq!(merged[0].severity, None);
+        assert_eq!(merged[0].rationale, None);
     }
 
     #[test]

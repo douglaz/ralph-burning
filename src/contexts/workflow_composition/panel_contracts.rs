@@ -10,6 +10,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::contexts::workflow_composition::review_classification::Severity;
 use crate::shared::domain::StageId;
 
 // ── Prompt-Review Contracts ────────────────────────────────────────────────
@@ -186,6 +187,17 @@ pub struct FinalReviewProposal {
     /// `mapped_to_bead_id`: present → planned-elsewhere, absent → fix-now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classification: Option<AmendmentClassification>,
+    /// Title to use when an accepted `propose-new-bead` amendment creates
+    /// follow-up work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_title: Option<String>,
+    /// Scope summary to preserve for accepted `propose-new-bead` amendments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_scope: Option<String>,
+    /// Severity used to derive bead priority for accepted `propose-new-bead`
+    /// amendments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<Severity>,
 }
 
 /// Payload returned by each final-review reviewer during proposal collection.
@@ -265,6 +277,20 @@ pub struct FinalReviewCanonicalAmendment {
     /// Three-way classification for routing and inspectability.
     #[serde(default = "default_fix_now")]
     pub classification: AmendmentClassification,
+    /// Reviewer-provided rationale preserved for downstream routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+    /// Title to use when an accepted `propose-new-bead` amendment creates
+    /// follow-up work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_title: Option<String>,
+    /// Scope summary to preserve for accepted `propose-new-bead` amendments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_scope: Option<String>,
+    /// Severity used to derive bead priority for accepted `propose-new-bead`
+    /// amendments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<Severity>,
 }
 
 fn default_fix_now() -> AmendmentClassification {
