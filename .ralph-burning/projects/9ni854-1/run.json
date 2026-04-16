@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 5
+      "completion_round": 6
     },
     "started_at": "2026-04-16T16:40:42.098700951Z",
     "prompt_hash_at_cycle_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "prompt_hash_at_stage_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 4
+    "final_review_restart_count": 5
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 5,
+  "completion_rounds": 6,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-5-b95d1be3",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: Stale replay of an older failure can corrupt a newer retry that reuses the same `run_id`.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:167-249\n- src/adapters/fs.rs:4536-4583\n- src/adapters/fs.rs:4720-4929\n- src/contexts/milestone_record/service.rs:2633-2674\nremediation_hint: Treat a row with the same `run_id` but a newer `started_at` as a stale replay and refuse to finalize it, or require an exact `(project_id, run_id, started_at)` match before updating a non-terminal row during failure reconciliation.",
+        "created_at": "2026-04-16T19:27:17.754539165Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "bd458a8821fb9002c45a501161d059d25e984a879058921201d28efea436fa9e"
+      },
+      {
+        "amendment_id": "fr-5-0d9f7bd2",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "In `src/cli/run.rs` line 1304, `project_id.as_str()` is passed as the `task_id` parameter to `reconcile_failure_sync`. The daemon_loop call site correctly passes `task.task_id` for this parameter. While `task_id` is only used for diagnostics (error messages, tracing spans, and the `task_id=` field in `format_failure_outcome_detail`), this means CLI-path failure outcome details will contain `task_id=<project_id>` rather than a meaningful daemon task identifier. This is cosmetic since the CLI sync path has no daemon task concept, but the outcome_detail string is persisted in journal state and could confuse debugging. Consider passing a more descriptive value or documenting that task_id is project_id in CLI context.",
+        "created_at": "2026-04-16T19:27:17.754543773Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "b7f759e6d62be5b1ffb14496287d24c018b4b855fd0f37c04dc3346c46bbceac"
+      }
+    ],
     "processed_count": 12
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 6 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T18:43:17.778063377Z",
+    "resolved_at": "2026-04-16T19:13:07.816431823Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T19:22:40.518839855Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed both amendments against the failure reconciliation code. The stale replay amendment identifies a genuine gap in the defense against run_id reuse corruption. The task_id cosmetic amendment is a valid observation but not a functional defect.\n\n## Votes\n\n- `fr-5-b95d1be3`: Accept\n  Valid finding. The code defends against stale replays at line 181 via `newer_attempt_exists`, but only when `already_recorded=true`. When the original failure was recorded in the task-runs NDJSON but the journal write was interrupted (crash between the two file ops), `already_recorded` returns false. A subsequent retry via `reopen_failed_exact_attempt` (line 4536-4583) reuses the same `run_id` with a new `started_at=T2`. If a stale failure for `started_at=T1` then arrives, it bypasses the `newer_attempt_exists` guard, reaches `record_bead_completion_with_disposition`, and `update_task_run` matches the non-terminal (Running) entry by `run_id` alone (lines 4720-4724, 4897-4928) — it never validates that `started_at` on the existing entry matches the incoming `started_at`. This prematurely marks the T2 retry as Failed. The remediation is straightforward: require `started_at` match on non-terminal entries in `update_task_run`, or add a `newer_attempt_exists` check independent of `already_recorded`.\n- `fr-5-0d9f7bd2`: Reject\n  This is a purely cosmetic concern with no functional or safety impact. The amendment itself acknowledges it is cosmetic. In the CLI path, there is no daemon task concept — `project_id` is the most meaningful identifier available and correctly identifies which project triggered the failure. The `task_id` field on `TaskRunEntry` (line 389-391 of model.rs) is only used for informational purposes: `merge_attempt_entries` data propagation, `completion_journal_details` display strings, and NDJSON serialization. It is never used for matching, filtering, or control flow. The persisted value `task_id=<project_id>` is self-consistent within CLI context and provides useful traceability. This does not meet the threshold of a bug, safety issue, or maintainability concern warranting an amendment.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 5
+}
