@@ -98,9 +98,19 @@ fn validate_jsonl_records(contents: &str) -> Result<(), String> {
             continue;
         }
 
-        if let Err(error) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        let value = serde_json::from_str::<serde_json::Value>(trimmed).map_err(|error| {
+            format!("malformed .beads/issues.jsonl line {}: {error}", index + 1)
+        })?;
+        let record = value.as_object().ok_or_else(|| {
+            format!(
+                "malformed .beads/issues.jsonl line {}: expected object record with non-empty string `id` field",
+                index + 1
+            )
+        })?;
+        let id = record.get("id").and_then(serde_json::Value::as_str);
+        if id.is_none_or(|id| id.trim().is_empty()) {
             return Err(format!(
-                "malformed .beads/issues.jsonl line {}: {error}",
+                "malformed .beads/issues.jsonl line {}: expected object record with non-empty string `id` field",
                 index + 1
             ));
         }
@@ -171,6 +181,48 @@ mod tests {
         match status {
             BeadsHealthStatus::MalformedJsonl(details) => {
                 assert!(details.contains("line 2"), "details: {details}");
+            }
+            other => panic!("expected malformed jsonl status, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn check_beads_health_rejects_non_object_jsonl_records(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for contents in ["[]\n", "42\n", "\"bead-1\"\n"] {
+            let tmp = tempfile::tempdir()?;
+            write_issues(tmp.path(), contents);
+
+            let status = check_beads_health_with(tmp.path(), || true);
+
+            match status {
+                BeadsHealthStatus::MalformedJsonl(details) => {
+                    assert!(
+                        details.contains("expected object record with non-empty string `id` field"),
+                        "details: {details}"
+                    );
+                }
+                other => panic!("expected malformed jsonl status, got {other:?}"),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn check_beads_health_rejects_object_records_without_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues(tmp.path(), "{\"title\":\"missing id\"}\n");
+
+        let status = check_beads_health_with(tmp.path(), || true);
+
+        match status {
+            BeadsHealthStatus::MalformedJsonl(details) => {
+                assert!(
+                    details.contains("expected object record with non-empty string `id` field"),
+                    "details: {details}"
+                );
             }
             other => panic!("expected malformed jsonl status, got {other:?}"),
         }
