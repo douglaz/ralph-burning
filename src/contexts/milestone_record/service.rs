@@ -210,8 +210,8 @@ pub trait TaskRunLineagePort {
         started_at: DateTime<Utc>,
     ) -> AppResult<TaskRunEntry>;
     /// Update an existing task run entry's outcome by matching bead_id + project_id + run_id.
-    /// Implementations should reject ambiguous matches instead of rewriting an
-    /// arbitrary historical attempt.
+    /// Implementations should reject ambiguous matches or stale started_at
+    /// mismatches instead of rewriting an arbitrary historical attempt.
     #[allow(clippy::too_many_arguments)]
     fn update_task_run(
         &self,
@@ -9039,6 +9039,98 @@ mod tests {
         assert_eq!(snapshot.progress.completed_beads, 1);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.active_bead, None);
+        Ok(())
+    }
+
+    #[test]
+    fn update_task_run_rejects_stale_same_run_id_completion_after_retry_reopen(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let first_started_at = Utc::now();
+        let second_started_at = first_started_at + chrono::Duration::seconds(30);
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "stale-same-run-id-finalize-test",
+            "Stale Same Run Id Finalize Test",
+            first_started_at,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            first_started_at,
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Failed,
+            Some("first failure"),
+            first_started_at,
+            first_started_at + chrono::Duration::seconds(5),
+        )?;
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            second_started_at,
+        )?;
+
+        let error = update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            first_started_at,
+            TaskRunOutcome::Failed,
+            Some("stale replay".to_owned()),
+            second_started_at + chrono::Duration::seconds(5),
+        )
+        .expect_err("stale same-run-id completion should be rejected");
+        assert!(error.to_string().contains("stale task run update"));
+        assert!(error.to_string().contains("run=run-1"));
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
+        assert_eq!(runs[0].started_at, second_started_at);
+
         Ok(())
     }
 

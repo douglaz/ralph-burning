@@ -4895,6 +4895,16 @@ impl FsTaskRunLineageStore {
                     }
                 }
             } else {
+                if entry.started_at != started_at {
+                    return Err(AppError::CorruptRecord {
+                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                        details: format!(
+                            "stale task run update for bead={bead_id} project={project_id} run={run_id}; active attempt started_at={} but completion targeted started_at={}",
+                            entry.started_at.to_rfc3339(),
+                            started_at.to_rfc3339(),
+                        ),
+                    });
+                }
                 if let Some(plan_hash) = plan_hash {
                     match entry.plan_hash.as_deref() {
                         Some(existing_plan_hash) if existing_plan_hash != plan_hash => {

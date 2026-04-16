@@ -1169,8 +1169,18 @@ fn sync_terminal_milestone_task_with_options(
                     file: format!("projects/{}/journal.ndjson", project_id),
                     details: "run_started event is missing string run_id details".to_owned(),
                 })?;
-            let attempt_started_at =
-                effective_attempt_started_at(&journal_events, run_id, run_started.timestamp);
+            let lineage_started_at = matching_lineage_run
+                .iter()
+                .rev()
+                .find(|entry| {
+                    entry.project_id == project_id.as_str()
+                        && entry.run_id.as_deref() == Some(run_id)
+                        && !entry.outcome.is_terminal()
+                })
+                .map(|entry| entry.started_at);
+            let attempt_started_at = lineage_started_at.unwrap_or_else(|| {
+                effective_attempt_started_at(&journal_events, run_id, run_started.timestamp)
+            });
             let has_exact_lineage = matching_lineage_run.iter().any(|entry| {
                 lineage_entry_matches_attempt(
                     entry,
@@ -1291,6 +1301,7 @@ fn sync_terminal_milestone_task_with_options(
     };
 
     if final_snapshot.status == RunStatus::Failed {
+        let cli_failure_task_id = format!("cli-sync:{project_id}");
         let error_summary = outcome_detail
             .as_deref()
             .unwrap_or(final_snapshot.status_summary.as_str());
@@ -1301,7 +1312,7 @@ fn sync_terminal_milestone_task_with_options(
             &FsMilestoneControllerStore,
             base_dir,
             &task_source.bead_id,
-            project_id.as_str(),
+            cli_failure_task_id.as_str(),
             project_id.as_str(),
             milestone_id.as_str(),
             run_id,
@@ -5807,24 +5818,32 @@ mod tests {
         .expect("controller exists");
         assert_eq!(
             controller.state,
-            milestone_controller::MilestoneControllerState::Claimed
+            milestone_controller::MilestoneControllerState::Blocked
         );
         assert_eq!(
             controller.active_bead_id.as_deref(),
             Some("ms-alpha.bead-2")
         );
         assert_eq!(controller.active_task_id.as_deref(), Some("bead-run"));
+        assert!(controller
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("failed attempt 1/3")));
 
         let task_runs = read_task_runs(&FsTaskRunLineageStore, base_dir, &milestone.id)
             .expect("read task-runs");
         assert_eq!(task_runs.len(), 1);
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
         assert_eq!(task_runs[0].plan_hash.as_deref(), Some("plan-v1"));
+        assert_eq!(task_runs[0].task_id.as_deref(), Some("cli-sync:bead-run"));
         assert!(task_runs[0].finished_at.is_some());
         assert!(task_runs[0]
             .outcome_detail
             .as_deref()
-            .is_some_and(|detail| detail.contains("error=failed after review")));
+            .is_some_and(|detail| {
+                detail.contains("task_id=cli-sync:bead-run")
+                    && detail.contains("error=failed after review")
+            }));
 
         let snapshot = load_snapshot(&FsMilestoneSnapshotStore, base_dir, &milestone.id)
             .expect("load milestone snapshot");
