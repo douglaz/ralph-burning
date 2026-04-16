@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr18-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T11:39:46.519781046Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real consistency defects in the pending-mutation recovery logic. One treats stale journal metadata as proof of the current bead state, and the other allows unrelated operations to flush and clear another workflow's in-flight multi-step mutation set.\n\n## Votes\n\n- `fr-18-e3a8c07d`: Accept\n  `includes_owned_update_status()` is computed from the pre-flush pending-mutation snapshot, not from the post-flush bead state. `sync_if_dirty_when_beads_healthy()` publishes whatever is currently in the local workspace and then clears the journal, so a stale `update_bead_status(..., \"in_progress\")` record can survive even if some later local change put the bead back to `open`. Because `claim_bead_in_br()` short-circuits on that stale record without a `br show` re-check, it can return success when the bead is not actually claimed.\n- `fr-18-8501d767`: Accept\n  `sync_if_dirty_when_beads_healthy()` is repo-global in effect: it re-reads the shared pending journal and flushes any dirty state it finds, regardless of which adapter or workflow owns it. Multi-step sequences such as proposed-bead creation release the repo lock between `create_bead` and `add_dependency`, so an unrelated claim or reconciliation can legally interleave, flush after step 1, and make the half-finished state visible upstream. Since `sync_flush_locked()` then clears all pending-mutation markers, a crash before step 2 loses the durable signal that recovery is still required. That is a real isolation and crash-consistency bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 18
+}
