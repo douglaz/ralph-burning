@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T07:09:15.265370476Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real defects in the pending-mutation marker system. The marker file stores no operation/bead metadata, making it impossible to attribute a recovered flush to a specific bead claim (fr-7-64f61b2c). The per-instance lock combined with a repo-global marker file creates a structurally unsound concurrency model where cross-adapter/cross-process interference can silently corrupt crash-recovery state (fr-7-c08c60fa). Both are accepted.\n\n## Votes\n\n- `fr-7-64f61b2c`: Accept\n  The race condition is real and clearly evidenced. The marker file at line 630 stores only the string 'pending br sync --flush-only\\n' — no bead ID, no operation type, no timestamp. The recovery path at lines 974-989 flushes this generic marker and then checks whether the target bead happens to be in_progress. This cannot distinguish 'we previously claimed this bead and crashed' from 'an unrelated mutation was pending AND another operator won the claim race'. The code's own comment at lines 960-964 explicitly warns that matching active_bead_id alone cannot prove a prior successful claim, yet the recovery logic does exactly that. Severity high is appropriate: this can cause two operators to both believe they hold the claim on the same bead, leading to conflicting parallel work.\n- `fr-7-c08c60fa`: Accept\n  The structural issue is valid. The AtomicBool is initialized once from the on-disk marker at construction (line 573) and never re-read from disk. The operation_lock is a per-instance Mutex (line 552), providing no cross-process or cross-adapter coordination. sync_flush_locked at line 839 unconditionally clears the single repo-wide marker file and sets the in-memory flag to false. If adapter A mutates and sets the marker, then adapter B (same or different process) flushes and clears the marker, adapter A's mutation loses its crash-recovery signal. The API does not prevent creating multiple BrMutationAdapter instances for the same repo, so this is shared mutable state (the marker file) without proper coordination — a defect regardless of whether current callers trigger it. Medium severity is appropriate since it requires concurrent adapter usage, but the code provides no guard against it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 7
+}
