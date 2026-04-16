@@ -253,6 +253,16 @@ where
                 newer_same_run_attempt_exists(&existing_runs, project_id, run_id, started_at),
             "skipping stale failure replay because a newer bead attempt is already active"
         );
+        log_failure_reconciliation(
+            bead_id,
+            task_id,
+            predicted_attempt_number,
+            &error_summary,
+            true,
+            true,
+            repaired_historical_failure,
+            &predicted_outcome,
+        );
         transition_controller_after_failure(
             controller_store,
             base_dir,
@@ -302,6 +312,16 @@ where
             attempt_number = predicted_attempt_number,
             repaired_historical_failure,
             "skipping stale failure replay because a newer bead attempt already exists"
+        );
+        log_failure_reconciliation(
+            bead_id,
+            task_id,
+            predicted_attempt_number,
+            &error_summary,
+            true,
+            true,
+            repaired_historical_failure,
+            &predicted_outcome,
         );
         transition_controller_after_failure(
             controller_store,
@@ -406,17 +426,17 @@ where
         });
     }
 
-    tracing::warn!(
-        bead_id = bead_id,
-        task_id = task_id,
-        attempt_number = attempt_number,
-        max_retries = MAX_FAILURE_RETRIES,
-        error_summary = error_summary.as_str(),
-        already_recorded,
-        "reconciled failed bead attempt"
-    );
-
     let outcome = failure_outcome(bead_id, attempt_number, &error_summary);
+    log_failure_reconciliation(
+        bead_id,
+        task_id,
+        attempt_number,
+        &error_summary,
+        already_recorded,
+        false,
+        false,
+        &outcome,
+    );
     transition_controller_after_failure(
         controller_store,
         base_dir,
@@ -432,22 +452,50 @@ where
         &outcome,
     )?;
 
+    Ok(outcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_failure_reconciliation(
+    bead_id: &str,
+    task_id: &str,
+    attempt_number: u32,
+    error_summary: &str,
+    already_recorded: bool,
+    stale_replay: bool,
+    repaired_historical_failure: bool,
+    outcome: &FailureReconciliationOutcome,
+) {
+    tracing::warn!(
+        bead_id = bead_id,
+        task_id = task_id,
+        attempt_number = attempt_number,
+        max_retries = MAX_FAILURE_RETRIES,
+        error_summary = error_summary,
+        already_recorded,
+        stale_replay,
+        repaired_historical_failure,
+        "reconciled failed bead attempt"
+    );
+
     if let FailureReconciliationOutcome::EscalatedToOperator {
         attempt_number,
         reason,
-    } = &outcome
+    } = outcome
     {
         tracing::error!(
             bead_id = bead_id,
             task_id = task_id,
             attempt_number = *attempt_number,
             max_retries = MAX_FAILURE_RETRIES,
+            error_summary = error_summary,
+            already_recorded,
+            stale_replay,
+            repaired_historical_failure,
             reason = reason.as_str(),
             "failed bead escalated to operator"
         );
     }
-
-    Ok(outcome)
 }
 
 fn normalize_error_summary(error_summary: &str) -> String {
