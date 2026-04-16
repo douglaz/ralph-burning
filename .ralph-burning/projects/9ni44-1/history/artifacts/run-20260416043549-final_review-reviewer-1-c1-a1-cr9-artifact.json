@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T08:04:18.886030997Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the aggregate changes for project `9ni44-1` (relative to `fafda782..HEAD`) and read the key sync/health/claim implementation paths. I found two fix-now correctness regressions: one in recovered bead-claim handling and one in propose-new-bead replay gating.\n\n## Amendments\n\n1. finding_summary: `claim_bead_in_br` now treats any recovered flush plus `br show` reporting `in_progress` as proof that our earlier claim succeeded. At `src/cli/project.rs:979-989`, the new short-circuit no longer checks whether the recovered flush actually contained `update_status(bead_id, in_progress)`. If the repo merely had unrelated pending mutations and another operator already claimed this bead, this path returns `Ok(())`, so Ralph proceeds to create a project and keep the controller in a claimed state for a bead we do not own.\nseverity: high\naffected_files: [\"src/cli/project.rs\"]\nremediation_hint: Only skip the explicit `br update` when `sync_if_dirty()` proves the recovered flush included this bead's `update_status(..., in_progress)` record; otherwise fall through to a real claim attempt and surface the collision.\n   Rationale: This regresses the mutual-exclusion guarantee around bead claiming. A stray recovered flush should never be enough to treat another operator's in-progress bead as our own successful retry.\n2. finding_summary: `handle_propose_new_bead` health-gates the entire function before any of its idempotent recovery branches. The upfront check at `src/contexts/milestone_record/service.rs:3020` runs before the read-only reuse/reclassification paths at `src/contexts/milestone_record/service.rs:3023-3159`, which can return an already-created bead or record a planned-elsewhere mapping without issuing any new `br` mutation. On replay after a previous successful create, a conflicted or temporarily missing `.beads/issues.jsonl` now causes the whole amendment to fail instead of reusing the existing result.\nseverity: medium\naffected_files: [\"src/contexts/milestone_record/service.rs\"]\nremediation_hint: Move the beads-health guard down to the branches that are actually about to call `BrMutationAdapter` mutation methods (`add_dependency`, `create_bead`, `sync_flush`), so non-mutating recovery/bookkeeping paths remain idempotent.\n   Rationale: The project prompt asked to block bead mutations on unsafe state, not to disable read-only replay logic. As written, the new guard breaks existing crash-recovery/idempotency behavior for propose-new-bead handling.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

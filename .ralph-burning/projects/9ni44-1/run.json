@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 9
+      "completion_round": 10
     },
     "started_at": "2026-04-16T04:35:49.747391164Z",
     "prompt_hash_at_cycle_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "prompt_hash_at_stage_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 8
+    "final_review_restart_count": 9
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 9,
+  "completion_rounds": 10,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-9-b01a51df",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "finding_summary: `claim_bead_in_br` now treats any recovered flush plus `br show` reporting `in_progress` as proof that our earlier claim succeeded. At `src/cli/project.rs:979-989`, the new short-circuit no longer checks whether the recovered flush actually contained `update_status(bead_id, in_progress)`. If the repo merely had unrelated pending mutations and another operator already claimed this bead, this path returns `Ok(())`, so Ralph proceeds to create a project and keep the controller in a claimed state for a bead we do not own.\nseverity: high\naffected_files: [\"src/cli/project.rs\"]\nremediation_hint: Only skip the explicit `br update` when `sync_if_dirty()` proves the recovered flush included this bead's `update_status(..., in_progress)` record; otherwise fall through to a real claim attempt and surface the collision.",
+        "created_at": "2026-04-16T08:12:01.038885415Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "2672bf984838186d95b93efb8d1ff9a7be4e4c1cde4ea348bf55b9f2ac0e2814"
+      },
+      {
+        "amendment_id": "fr-9-b0f0c664",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "finding_summary: `handle_propose_new_bead` health-gates the entire function before any of its idempotent recovery branches. The upfront check at `src/contexts/milestone_record/service.rs:3020` runs before the read-only reuse/reclassification paths at `src/contexts/milestone_record/service.rs:3023-3159`, which can return an already-created bead or record a planned-elsewhere mapping without issuing any new `br` mutation. On replay after a previous successful create, a conflicted or temporarily missing `.beads/issues.jsonl` now causes the whole amendment to fail instead of reusing the existing result.\nseverity: medium\naffected_files: [\"src/contexts/milestone_record/service.rs\"]\nremediation_hint: Move the beads-health guard down to the branches that are actually about to call `BrMutationAdapter` mutation methods (`add_dependency`, `create_bead`, `sync_flush`), so non-mutating recovery/bookkeeping paths remain idempotent.",
+        "created_at": "2026-04-16T08:12:01.038889463Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "3e60ea15bb3f9f01875a9103ab3161c45ac9606344a537a1fd85f8f4fc18a416"
+      }
+    ],
     "processed_count": 18
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 10 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T07:32:01.789299399Z",
+    "resolved_at": "2026-04-16T07:56:39.887812187Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

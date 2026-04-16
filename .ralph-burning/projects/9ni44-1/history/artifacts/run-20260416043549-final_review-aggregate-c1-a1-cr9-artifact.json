@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416043549-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260416043549-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T08:12:01.038895615Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 9/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-9-b01a51df`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-9-b0f0c664`\n\n## Final Accepted Amendments\n\n### `fr-9-b01a51df`\n\nfinding_summary: `claim_bead_in_br` now treats any recovered flush plus `br show` reporting `in_progress` as proof that our earlier claim succeeded. At `src/cli/project.rs:979-989`, the new short-circuit no longer checks whether the recovered flush actually contained `update_status(bead_id, in_progress)`. If the repo merely had unrelated pending mutations and another operator already claimed this bead, this path returns `Ok(())`, so Ralph proceeds to create a project and keep the controller in a claimed state for a bead we do not own.\nseverity: high\naffected_files: [\"src/cli/project.rs\"]\nremediation_hint: Only skip the explicit `br update` when `sync_if_dirty()` proves the recovered flush included this bead's `update_status(..., in_progress)` record; otherwise fall through to a real claim attempt and surface the collision.\n\n### `fr-9-b0f0c664`\n\nfinding_summary: `handle_propose_new_bead` health-gates the entire function before any of its idempotent recovery branches. The upfront check at `src/contexts/milestone_record/service.rs:3020` runs before the read-only reuse/reclassification paths at `src/contexts/milestone_record/service.rs:3023-3159`, which can return an already-created bead or record a planned-elsewhere mapping without issuing any new `br` mutation. On replay after a previous successful create, a conflicted or temporarily missing `.beads/issues.jsonl` now causes the whole amendment to fail instead of reusing the existing result.\nseverity: medium\naffected_files: [\"src/contexts/milestone_record/service.rs\"]\nremediation_hint: Move the beads-health guard down to the branches that are actually about to call `BrMutationAdapter` mutation methods (`add_dependency`, `create_bead`, `sync_flush`), so non-mutating recovery/bookkeeping paths remain idempotent.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}

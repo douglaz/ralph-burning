@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-arbiter-c1-a1-cr9-artifact",
+  "payload_id": "run-20260416043549-final_review-arbiter-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T08:12:01.024748149Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted. The disputed amendment identifies a real bug: the function-level beads-health gate is broader than the mutations it is meant to protect, and it can unnecessarily fail idempotent recovery when `.beads/issues.jsonl` is missing even though the required `br` reads can still succeed.\n\n## Rulings\n\n- `fr-9-b0f0c664`: Accept\n  `handle_propose_new_bead` applies `ensure_beads_mutation_health` at `src/contexts/milestone_record/service.rs:3020` before any replay/recovery logic, but several branches can complete without any `BrMutationAdapter` mutation. In particular, the journaled-reuse branch can return at `:3049` when the dependency is already present, and the planned-elsewhere branch records only local journal/mapping state at `:3141-3159`. That broad guard is not just theoretical: `check_beads_health` treats a missing `.beads/issues.jsonl` as fatal (`src/adapters/br_health.rs:31-33,52-57`), yet `br` read commands can still succeed in that state, so the current placement blocks valid idempotent replay/reclassification work that could otherwise finish safely. The conflict-marker example is weaker because `br` itself rejects conflicted exports, but the missing-file case is enough to make the amendment a real correctness/resilience issue. The health check should guard only the actual mutation call-sites (`add_dependency`, `create_bead`, `sync_flush`), not the read-only recovery paths.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}
