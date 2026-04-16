@@ -374,7 +374,7 @@ impl BrAdapter<OsProcessRunner> {
     /// Verify that the `br` binary can be launched from the current
     /// environment without touching repository state.
     pub fn check_available(&self) -> Result<(), BrError> {
-        let status = std::process::Command::new(self.runner.br_path())
+        std::process::Command::new(self.runner.br_path())
             .arg("--version")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -389,16 +389,7 @@ impl BrAdapter<OsProcessRunner> {
                 }
             })?;
 
-        if status.success() {
-            Ok(())
-        } else {
-            Err(BrError::BrExitError {
-                exit_code: status.code().unwrap_or(-1),
-                stdout: String::new(),
-                stderr: "`br --version` exited unsuccessfully".to_owned(),
-                command: "br --version".to_owned(),
-            })
-        }
+        Ok(())
     }
 }
 

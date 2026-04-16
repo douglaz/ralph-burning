@@ -5,17 +5,40 @@
 use std::path::Path;
 
 /// Operator-facing health classification for the local beads export.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BeadsHealthStatus {
     Healthy,
     ConflictMarkers,
     MissingFile,
     BrUnavailable,
+    IoError(String),
 }
 
 /// Inspect the local beads export and the `br` binary before mutation flows.
 pub fn check_beads_health(base_dir: &Path) -> BeadsHealthStatus {
     check_beads_health_with(base_dir, br_available_for_health_check)
+}
+
+/// Return an operator-facing explanation when bead mutations must be blocked.
+pub fn beads_health_failure_details(status: &BeadsHealthStatus) -> Option<String> {
+    match status {
+        BeadsHealthStatus::Healthy => None,
+        BeadsHealthStatus::ConflictMarkers => Some(
+            "detected git conflict markers in .beads/issues.jsonl; resolve the conflict before mutating beads"
+                .to_owned(),
+        ),
+        BeadsHealthStatus::MissingFile => Some(
+            "missing .beads/issues.jsonl; restore the beads export before mutating beads"
+                .to_owned(),
+        ),
+        BeadsHealthStatus::BrUnavailable => Some(
+            "the `br` binary is unavailable; restore `br` in PATH before mutating beads"
+                .to_owned(),
+        ),
+        BeadsHealthStatus::IoError(details) => Some(format!(
+            "{details}; restore readable bead state before mutating beads"
+        )),
+    }
 }
 
 fn check_beads_health_with<F>(base_dir: &Path, br_available: F) -> BeadsHealthStatus
@@ -28,7 +51,12 @@ where
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return BeadsHealthStatus::MissingFile;
         }
-        Err(_) => return BeadsHealthStatus::ConflictMarkers,
+        Err(error) => {
+            return BeadsHealthStatus::IoError(format!(
+                "failed to read {}: {error}",
+                issues_path.display()
+            ));
+        }
     };
 
     if has_git_conflict_markers(&issues_text) {
@@ -43,7 +71,16 @@ where
 }
 
 fn has_git_conflict_markers(contents: &str) -> bool {
-    contents.contains("<<<<<<<") || contents.contains("=======") || contents.contains(">>>>>>>")
+    contents.lines().any(is_git_conflict_marker_line)
+}
+
+fn is_git_conflict_marker_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed == "======="
+        || trimmed == "<<<<<<<"
+        || trimmed.starts_with("<<<<<<< ")
+        || trimmed == ">>>>>>>"
+        || trimmed.starts_with(">>>>>>> ")
 }
 
 #[cfg(test)]
@@ -106,6 +143,38 @@ mod tests {
         let status = check_beads_health_with(tmp.path(), || true);
 
         assert_eq!(status, BeadsHealthStatus::MissingFile);
+        Ok(())
+    }
+
+    #[test]
+    fn check_beads_health_ignores_marker_substrings_inside_json(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues(
+            tmp.path(),
+            r#"{"id":"bead-1","summary":"contains <<<<<<< text but no merge conflict"}
+"#,
+        );
+
+        let status = check_beads_health_with(tmp.path(), || true);
+
+        assert_eq!(status, BeadsHealthStatus::Healthy);
+        Ok(())
+    }
+
+    #[test]
+    fn check_beads_health_reports_io_errors_distinctly() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let beads_dir = tmp.path().join(".beads");
+        std::fs::create_dir_all(&beads_dir)?;
+        std::fs::create_dir(beads_dir.join("issues.jsonl"))?;
+
+        let status = check_beads_health_with(tmp.path(), || true);
+
+        assert!(
+            matches!(status, BeadsHealthStatus::IoError(_)),
+            "expected io error status, got {status:?}"
+        );
         Ok(())
     }
 }

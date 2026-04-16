@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
-use crate::adapters::br_health::{check_beads_health, BeadsHealthStatus};
+use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary};
 use crate::adapters::br_process::{BrAdapter, BrCommand, BrMutationAdapter, ProcessRunner};
 use crate::adapters::fs::FileSystem;
@@ -2996,24 +2996,15 @@ fn record_proposed_bead_created_event(
 }
 
 fn ensure_beads_mutation_health(base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<()> {
-    match check_beads_health(base_dir) {
-        BeadsHealthStatus::Healthy => Ok(()),
-        BeadsHealthStatus::ConflictMarkers => Err(AppError::MilestoneOperationFailed {
+    if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
+        return Err(AppError::MilestoneOperationFailed {
             milestone_id: milestone_id.to_string(),
             action: "prepare bead mutation".to_owned(),
-            details: "detected git conflict markers in .beads/issues.jsonl; resolve the conflict before mutating beads".to_owned(),
-        }),
-        BeadsHealthStatus::MissingFile => Err(AppError::MilestoneOperationFailed {
-            milestone_id: milestone_id.to_string(),
-            action: "prepare bead mutation".to_owned(),
-            details: "missing .beads/issues.jsonl; restore the beads export before mutating beads".to_owned(),
-        }),
-        BeadsHealthStatus::BrUnavailable => Err(AppError::MilestoneOperationFailed {
-            milestone_id: milestone_id.to_string(),
-            action: "prepare bead mutation".to_owned(),
-            details: "the `br` binary is unavailable; restore `br` in PATH before mutating beads".to_owned(),
-        }),
+            details,
+        });
     }
+
+    Ok(())
 }
 
 pub async fn handle_propose_new_bead<R: ProcessRunner>(

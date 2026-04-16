@@ -63,6 +63,12 @@ fn initialize_workspace_fixture() -> tempfile::TempDir {
         .output()
         .expect("run init");
     assert!(output.status.success());
+    fs::create_dir_all(temp_dir.path().join(".beads")).expect("create .beads");
+    fs::write(
+        temp_dir.path().join(".beads/issues.jsonl"),
+        "{\"id\":\"seed-bead\"}\n",
+    )
+    .expect("write issues.jsonl");
     temp_dir
 }
 

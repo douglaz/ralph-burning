@@ -15,6 +15,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
+use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 use crate::adapters::br_models::BeadStatus;
 use crate::adapters::br_process::{
     BrAdapter, BrCommand, BrError, BrMutationAdapter, ProcessRunner,
@@ -113,6 +114,22 @@ impl std::fmt::Display for ReconciliationError {
     }
 }
 
+fn ensure_beads_mutation_health(
+    base_dir: &Path,
+    bead_id: &str,
+    task_id: &str,
+) -> Result<(), ReconciliationError> {
+    if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
+        return Err(ReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!("refusing to mutate beads because bead state is unsafe: {details}"),
+        });
+    }
+
+    Ok(())
+}
+
 /// Check whether a bead is already closed by querying `br show <id> --json`.
 ///
 /// Returns `true` if the bead status is `Closed`, `false` otherwise.
@@ -202,6 +219,7 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
     }
 
     // Step 1: Close the bead idempotently.
+    ensure_beads_mutation_health(base_dir, bead_id, task_id)?;
     let was_already_closed = close_bead_idempotent(br_mutation, br_read, bead_id, task_id).await?;
 
     // Step 2: Sync flush — always runs, even if bead was already closed.
@@ -1262,6 +1280,15 @@ mod tests {
         }
     }
 
+    fn write_beads_export(base_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        std::fs::create_dir_all(base_dir.join(".beads"))?;
+        std::fs::write(
+            base_dir.join(".beads/issues.jsonl"),
+            "{\"id\":\"seed-bead\"}\n",
+        )?;
+        Ok(())
+    }
+
     // ── Mock BV runner ─────────────────────────────────────────────────
 
     struct MockBvRunner {
@@ -1449,6 +1476,7 @@ mod tests {
     #[tokio::test]
     async fn sync_failure_on_replay_is_still_fatal() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
         std::fs::create_dir_all(temp_dir.path().join(".ralph-burning/milestones/ms-1"))?;
 
         // br show returns closed (bead already closed from prior attempt)
@@ -1490,6 +1518,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reconcile_success_rejects_conflicted_beads_before_close(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp_dir.path().join(".beads"))?;
+        std::fs::write(
+            temp_dir.path().join(".beads/issues.jsonl"),
+            r#"<<<<<<< HEAD
+{"id":"b1"}
+=======
+{"id":"b2"}
+>>>>>>> branch
+"#,
+        )?;
+        std::fs::create_dir_all(temp_dir.path().join(".ralph-burning/milestones/ms-1"))?;
+
+        let br_read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let br_mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+
+        let now = chrono::Utc::now();
+        let result = reconcile_success(
+            &br_mutation,
+            &br_read,
+            None::<&BvAdapter<MockBvRunner>>,
+            temp_dir.path(),
+            "b1",
+            "task-1",
+            "proj-1",
+            "ms-1",
+            "run-1",
+            None,
+            now - chrono::Duration::seconds(10),
+            now,
+        )
+        .await;
+
+        let error = result.expect_err("conflicted beads export should block reconciliation");
+        assert!(
+            matches!(error, ReconciliationError::MilestoneUpdateFailed { .. }),
+            "expected milestone update failure, got {error}"
+        );
+        assert!(
+            error.to_string().contains("conflict"),
+            "error should direct the operator to resolve conflicts: {error}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn reconcile_success_persists_reconciling_before_close_failure(
     ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::adapters::fs::{FsMilestonePlanStore, FsMilestoneStore};
@@ -1504,6 +1581,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -1730,6 +1808,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -1894,6 +1973,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2121,6 +2201,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2299,6 +2380,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2469,6 +2551,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2631,6 +2714,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2828,6 +2912,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;
@@ -2987,6 +3072,7 @@ mod tests {
 
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
+        write_beads_export(base)?;
         std::fs::create_dir_all(base.join(".ralph-burning/milestones"))?;
 
         let store = FsMilestoneStore;

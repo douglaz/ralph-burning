@@ -7,6 +7,7 @@ use clap::{ArgGroup, Args, Subcommand};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary, DependencyKind};
 use crate::adapters::br_process::{BrAdapter, BrCommand, BrError, BrMutationAdapter};
 use crate::adapters::fs::{
@@ -962,6 +963,12 @@ enum BrListResponse {
 /// matching `active_bead_id` alone cannot prove a prior successful claim —
 /// it could also be another operator that won the race after our selection.
 async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
+    if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing to claim bead '{bead_id}' because bead state is unsafe: {details}"
+        ))));
+    }
+
     let br =
         BrMutationAdapter::with_adapter(BrAdapter::new().with_working_dir(base_dir.to_path_buf()));
     br.update_bead_status(bead_id, "in_progress")
@@ -3746,9 +3753,16 @@ mod tests {
         };
         use crate::test_support::env::{lock_path_mutex, PathGuard};
 
+        fn write_beads_export(base_dir: &std::path::Path, contents: &str) {
+            let beads_dir = base_dir.join(".beads");
+            std::fs::create_dir_all(&beads_dir).expect("create .beads dir");
+            std::fs::write(beads_dir.join("issues.jsonl"), contents).expect("write issues.jsonl");
+        }
+
         /// Install a fake `br` script that succeeds on `update` and `sync`
         /// subcommands and returns bead detail JSON on `show`.
         fn install_fake_br_claim_success(base_dir: &std::path::Path, bead_id: &str) {
+            write_beads_export(base_dir, "{\"id\":\"seed-bead\"}\n");
             let fake_bin = base_dir.join("fake-bin");
             std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
             let script = format!(
@@ -3783,6 +3797,7 @@ esac
 
         /// Install a fake `br` that fails on `update` (non-zero exit).
         fn install_fake_br_claim_failure(base_dir: &std::path::Path) {
+            write_beads_export(base_dir, "{\"id\":\"seed-bead\"}\n");
             let fake_bin = base_dir.join("fake-bin");
             std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
             let script = r#"#!/bin/sh
@@ -3822,6 +3837,36 @@ esac
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
             super::super::claim_bead_in_br(base_dir, "bead-1").await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_rejects_conflicted_beads_jsonl(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+            write_beads_export(
+                base_dir,
+                r#"<<<<<<< HEAD
+{"id":"bead-1"}
+=======
+{"id":"bead-2"}
+>>>>>>> branch
+"#,
+            );
+
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+
+            assert!(result.is_err());
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains("refusing to claim bead 'bead-1'"),
+                "error should mention the rejected claim: {error}"
+            );
+            assert!(
+                error.contains("conflict"),
+                "error should mention conflict resolution: {error}"
+            );
             Ok(())
         }
 
