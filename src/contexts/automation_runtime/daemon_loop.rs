@@ -1978,6 +1978,8 @@ where
                 .as_ref()
                 .or(snapshot.active_run.as_ref())
         });
+        let snapshot_attempt_identity =
+            snapshot_attempt.map(engine::RunningAttemptIdentity::from_active_run);
 
         let lineage_started_at = |run_id: &str| {
             milestone_service::find_runs_for_bead(
@@ -1998,36 +2000,132 @@ where
                     .map(|entry| entry.started_at)
             })
         };
+        let lineage_attempt_for_run = |run_id: &str| {
+            milestone_service::find_runs_for_bead(
+                &FsTaskRunLineageStore,
+                project_dir,
+                &milestone_id,
+                &task_source.bead_id,
+            )
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|entry| entry.project_id == project_id.as_str())
+                    .filter_map(|entry| {
+                        (entry.run_id.as_deref() == Some(run_id)).then_some(
+                            engine::RunningAttemptIdentity {
+                                run_id: run_id.to_owned(),
+                                started_at: entry.started_at,
+                            },
+                        )
+                    })
+                    .max_by(|left, right| left.started_at.cmp(&right.started_at))
+            })
+        };
+        let journal_attempt_for_run = |run_id: &str| {
+            journal_events.iter().rev().find_map(|event| {
+                (matches!(
+                    event.event_type,
+                    JournalEventType::RunStarted | JournalEventType::RunResumed
+                ) && event
+                    .details
+                    .get("run_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(run_id))
+                .then_some(engine::RunningAttemptIdentity {
+                    run_id: run_id.to_owned(),
+                    started_at: event.timestamp,
+                })
+            })
+        };
+        let validate_failure_attempt =
+            |attempt: &engine::RunningAttemptIdentity| -> Result<(), (String, String)> {
+                if let Some(durable_project_attempt) =
+                    durable_project_attempt_identity(&journal_events)
+                {
+                    if durable_project_attempt != *attempt {
+                        return Err(self.failure_reconciliation_metadata_failure(
+                            project_dir,
+                            task,
+                            task_source,
+                            "reconciliation_metadata_error".to_owned(),
+                            format!(
+                                "durable workflow_run_id={} resolved attempt run_id={} started_at={} but the newest durable project journal attempt is run_id={} started_at={}; the daemon cannot safely determine which workflow attempt failed",
+                                task.workflow_run_id.as_deref().unwrap_or_default(),
+                                attempt.run_id,
+                                attempt.started_at.to_rfc3339(),
+                                durable_project_attempt.run_id,
+                                durable_project_attempt.started_at.to_rfc3339(),
+                            ),
+                        ));
+                    }
+                }
+                if let Some(durable_lineage_attempt) = durable_lineage_attempt_identity(
+                    project_dir,
+                    &milestone_id,
+                    &task_source.bead_id,
+                    &project_id,
+                )
+                .map_err(|error| {
+                    self.failure_reconciliation_metadata_failure(
+                        project_dir,
+                        task,
+                        task_source,
+                        "reconciliation_metadata_error".to_owned(),
+                        format!(
+                            "could not read milestone task-run lineage during failure reconciliation: {error}"
+                        ),
+                    )
+                })? {
+                    if durable_lineage_attempt != *attempt {
+                        return Err(self.failure_reconciliation_metadata_failure(
+                            project_dir,
+                            task,
+                            task_source,
+                            "reconciliation_metadata_error".to_owned(),
+                            format!(
+                                "durable workflow_run_id={} resolved attempt run_id={} started_at={} but the newest durable milestone lineage attempt is run_id={} started_at={}; the daemon cannot safely determine which workflow attempt failed",
+                                task.workflow_run_id.as_deref().unwrap_or_default(),
+                                attempt.run_id,
+                                attempt.started_at.to_rfc3339(),
+                                durable_lineage_attempt.run_id,
+                                durable_lineage_attempt.started_at.to_rfc3339(),
+                            ),
+                        ));
+                    }
+                }
+                if let Some(snapshot_attempt) = snapshot_attempt_identity.as_ref() {
+                    if snapshot_attempt != attempt {
+                        return Err(self.failure_reconciliation_metadata_failure(
+                            project_dir,
+                            task,
+                            task_source,
+                            "reconciliation_metadata_error".to_owned(),
+                            format!(
+                                "durable workflow_run_id={} resolved attempt run_id={} started_at={} but the run snapshot shows run_id={} started_at={}; the daemon cannot safely determine which workflow attempt failed",
+                                task.workflow_run_id.as_deref().unwrap_or_default(),
+                                attempt.run_id,
+                                attempt.started_at.to_rfc3339(),
+                                snapshot_attempt.run_id,
+                                snapshot_attempt.started_at.to_rfc3339(),
+                            ),
+                        ));
+                    }
+                }
+                Ok(())
+            };
 
         let (run_id, started_at) = match task.workflow_run_id.as_deref() {
             Some(bound_run_id) => {
-                let snapshot_started_at = snapshot_attempt
-                    .filter(|run| run.run_id == bound_run_id)
-                    .map(|run| run.started_at);
-                let run_started = journal_events.iter().rev().find(|event| {
-                    event.event_type == JournalEventType::RunStarted
-                        && event
-                            .details
-                            .get("run_id")
-                            .and_then(serde_json::Value::as_str)
-                            == Some(bound_run_id)
-                });
-                let run_resumed_at = journal_events
-                    .iter()
-                    .rev()
-                    .find(|event| {
-                        event.event_type == JournalEventType::RunResumed
-                            && event
-                                .details
-                                .get("run_id")
-                                .and_then(serde_json::Value::as_str)
-                                == Some(bound_run_id)
-                    })
-                    .map(|event| event.timestamp);
-                let started_at = lineage_started_at(bound_run_id)
-                    .or(snapshot_started_at)
-                    .or(run_resumed_at)
-                    .or_else(|| run_started.map(|event| event.timestamp))
+                let attempt = snapshot_attempt_identity
+                    .as_ref()
+                    .filter(|attempt| attempt.run_id == bound_run_id)
+                    .cloned()
+                    .into_iter()
+                    .chain(journal_attempt_for_run(bound_run_id))
+                    .chain(lineage_attempt_for_run(bound_run_id))
+                    .max_by(|left, right| left.started_at.cmp(&right.started_at))
                     .ok_or_else(|| {
                         self.failure_reconciliation_metadata_failure(
                             project_dir,
@@ -2039,7 +2137,8 @@ where
                             ),
                         )
                     })?;
-                (bound_run_id.to_owned(), started_at)
+                validate_failure_attempt(&attempt)?;
+                (attempt.run_id, attempt.started_at)
             }
             None => {
                 let snapshot_attempt = snapshot_attempt.ok_or_else(|| {
@@ -9404,6 +9503,240 @@ mod tests {
         assert_eq!(task_runs.len(), 1);
         assert_eq!(task_runs[0].started_at, resumed_at);
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Running);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn try_reconcile_failure_rejects_stale_bound_attempt_after_newer_durable_attempt_exists()
+    {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        let now = Utc::now();
+        initialize_workspace(base, now).expect("init workspace");
+
+        let milestone_id = create_failure_reconciliation_milestone(base, now);
+        let task_source = TaskSource {
+            milestone_id: milestone_id.to_string(),
+            bead_id: "ms-daemon-failure-reconcile.bead-1".to_owned(),
+            parent_epic_id: None,
+            origin: TaskOrigin::Milestone,
+            plan_hash: Some("plan-v1".to_owned()),
+            plan_version: Some(1),
+        };
+        let project_id = ProjectId::new("daemon-failure-stale-bound-attempt").expect("project id");
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Daemon failure stale bound attempt".to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt"),
+                created_at: now,
+                task_source: Some(task_source.clone()),
+            },
+        )
+        .expect("create project");
+
+        let original_started_at = now + chrono::Duration::seconds(1);
+        let original_failed_at = original_started_at + chrono::Duration::seconds(4);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+            project_id.as_str(),
+            "run-original-attempt",
+            "plan-v1",
+            original_started_at,
+        )
+        .expect("record original bead start");
+        milestone_controller::sync_controller_task_running(
+            &FsMilestoneControllerStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+            project_id.as_str(),
+            "workflow execution started",
+            original_started_at,
+        )
+        .expect("mark controller running");
+
+        let initial_events = FsJournalStore
+            .read_journal(base, &project_id)
+            .expect("read initial journal");
+        let original_run_id = RunId::new("run-original-attempt").expect("run id");
+        let original_started = journal::run_started_event(
+            journal::last_sequence(&initial_events) + 1,
+            original_started_at,
+            &original_run_id,
+            StageId::Implementation,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&original_started).expect("serialize original start"),
+            )
+            .expect("append original run_started");
+        let original_failed = journal::run_failed_event(
+            original_started.sequence + 1,
+            original_failed_at,
+            &original_run_id,
+            StageId::Implementation,
+            "stage_failure",
+            "original attempt failed",
+            0,
+            20,
+            None,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&original_failed).expect("serialize original failed"),
+            )
+            .expect("append original run_failed");
+
+        let newer_started_at = now + chrono::Duration::seconds(20);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+            project_id.as_str(),
+            "run-newer-attempt",
+            "plan-v1",
+            newer_started_at,
+        )
+        .expect("record newer bead start");
+        milestone_controller::sync_controller_task_running(
+            &FsMilestoneControllerStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+            project_id.as_str(),
+            "workflow execution restarted",
+            newer_started_at,
+        )
+        .expect("mark controller running for newer attempt");
+        let newer_run_id = RunId::new("run-newer-attempt").expect("newer run id");
+        let newer_started = journal::run_started_event(
+            original_failed.sequence + 1,
+            newer_started_at,
+            &newer_run_id,
+            StageId::Implementation,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&newer_started).expect("serialize newer start"),
+            )
+            .expect("append newer run_started");
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-newer-attempt".to_owned(),
+                stage_cursor: StageCursor::initial(StageId::Implementation),
+                started_at: newer_started_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "newer attempt failed while the task still points at the old run"
+                .to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base, &project_id, &snapshot)
+            .expect("write failed snapshot");
+
+        let mut task = sample_pending_task("task-daemon-failure-stale-bound", &project_id);
+        task.status = TaskStatus::Active;
+        task.workflow_run_id = Some("run-original-attempt".to_owned());
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let error = daemon
+            .try_reconcile_failure(base, &task, "fallback failure message")
+            .await
+            .expect_err("stale bound workflow_run_id must fail closed");
+        assert_eq!(error.0, "reconciliation_metadata_error");
+        assert!(
+            error
+                .1
+                .contains("newest durable project journal attempt is run_id=run-newer-attempt"),
+            "error should explain the newer durable attempt mismatch: {}",
+            error.1
+        );
+
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &milestone_id)
+                .expect("load controller")
+                .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::NeedsOperator
+        );
+
+        let milestone_journal = read_journal(&FsMilestoneJournalStore, base, &milestone_id)
+            .expect("read milestone journal");
+        assert!(
+            !milestone_journal
+                .iter()
+                .any(|event| event.event_type == MilestoneEventType::BeadFailed),
+            "stale bound attempt must not reconcile the older durable run_failed event"
+        );
+
+        let task_runs = milestone_service::find_runs_for_bead(
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+        )
+        .expect("read task-runs");
+        assert_eq!(task_runs.len(), 2);
+        assert!(task_runs.iter().any(|entry| {
+            entry.run_id.as_deref() == Some("run-newer-attempt")
+                && entry.started_at == newer_started_at
+                && entry.outcome == TaskRunOutcome::Running
+        }));
     }
 
     #[tokio::test(flavor = "multi_thread")]

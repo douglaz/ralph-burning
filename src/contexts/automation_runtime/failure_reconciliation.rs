@@ -180,7 +180,7 @@ where
 
     if !already_recorded
         && !exact_attempt_exists(&existing_runs, project_id, run_id, started_at)
-        && newer_same_run_attempt_exists(&existing_runs, project_id, run_id, started_at)
+        && newer_attempt_exists(&existing_runs, project_id, run_id, started_at)
     {
         let repaired_historical_failure = repair_historical_failure_event(
             journal_store,
@@ -201,8 +201,24 @@ where
             run_id = run_id,
             attempt_number = predicted_attempt_number,
             repaired_historical_failure,
-            "skipping stale failure replay because the active retry reused this run_id with a newer started_at"
+            newer_same_run_attempt =
+                newer_same_run_attempt_exists(&existing_runs, project_id, run_id, started_at),
+            "skipping stale failure replay because a newer bead attempt is already active"
         );
+        transition_controller_after_failure(
+            controller_store,
+            base_dir,
+            &milestone_id,
+            bead_id,
+            task_id,
+            project_id,
+            run_id,
+            started_at,
+            failed_at,
+            true,
+            &existing_runs,
+            &predicted_outcome,
+        )?;
         return Ok(predicted_outcome);
     }
 
@@ -491,7 +507,8 @@ fn newer_attempt_exists(
     started_at: DateTime<Utc>,
 ) -> bool {
     runs.iter().any(|entry| {
-        !attempt_identity_matches(entry, project_id, run_id, started_at)
+        entry.project_id == project_id
+            && !attempt_identity_matches(entry, project_id, run_id, started_at)
             && entry.started_at > started_at
     })
 }
@@ -1443,6 +1460,83 @@ mod tests {
             milestone_controller::MilestoneControllerState::Running
         );
         assert_eq!(controller.active_task_id.as_deref(), Some("proj-failure"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_failure_skips_stale_replay_when_newer_retry_uses_different_run_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        write_beads_export(base)?;
+        let milestone_id = create_test_milestone(base)?;
+        let stale_started_at = Utc::now() + Duration::seconds(1);
+        let newer_started_at = stale_started_at + Duration::seconds(30);
+
+        start_attempt(base, &milestone_id, "task-1", "run-2", newer_started_at)?;
+
+        let replay = reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            stale_started_at,
+            stale_started_at + Duration::seconds(5),
+            "stale failure replay",
+        )
+        .await?;
+        assert_eq!(
+            replay,
+            FailureReconciliationOutcome::Retryable {
+                attempt_number: 1,
+                max_retries: MAX_FAILURE_RETRIES,
+            }
+        );
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base,
+            &milestone_id,
+        )?
+        .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Running
+        );
+        assert_eq!(controller.active_task_id.as_deref(), Some("proj-failure"));
+
+        let runs = milestone_service::find_runs_for_bead(
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            "bead-failure",
+        )?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id.as_deref(), Some("run-2"));
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
+
+        let failed_events = read_journal(&FsMilestoneJournalStore, base, &milestone_id)?
+            .into_iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadFailed)
+            .collect::<Vec<_>>();
+        assert_eq!(failed_events.len(), 1);
+        let repaired_details: crate::contexts::milestone_record::model::CompletionJournalDetails =
+            serde_json::from_str(
+                failed_events[0]
+                    .details
+                    .as_deref()
+                    .expect("bead_failed details"),
+            )?;
+        assert_eq!(repaired_details.run_id.as_deref(), Some("run-1"));
+        assert_eq!(repaired_details.started_at, stale_started_at);
 
         Ok(())
     }

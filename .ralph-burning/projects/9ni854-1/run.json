@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 9
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-8-29764722",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "finding_summary: `try_reconcile_failure()` can reconcile a stale bound attempt after a newer durable attempt already exists. In `src/contexts/automation_runtime/daemon_loop.rs:1859-1864`, `persist_workflow_run_id()` intentionally never overwrites an existing binding, so later reruns/resumes can leave a task durably bound to an older run. The new failure path then derives `started_at` for that bound run by preferring any lineage row for the same `run_id` (`src/contexts/automation_runtime/daemon_loop.rs:1982-2042`) and never performs the newer-attempt checks that the `workflow_run_id == None` branch already does (`src/contexts/automation_runtime/daemon_loop.rs:2056-2093`). A stale `run_failed` from the old attempt can therefore be treated as the current failure, incrementing retry counts or escalating to `NeedsOperator` while a newer attempt is the real owner of the bead.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs\nremediation_hint: Apply the same durable-attempt validation in the `Some(bound_run_id)` branch that the `None` branch already performs, and do not let a terminal lineage row outrank a newer `RunResumed`/snapshot boundary when choosing `started_at`.",
-        "created_at": "2026-04-16T20:53:12.131646001Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "e26d7f434d5451d13c122c45e14e3a473f4aa3ab3e8d66a2839f2dd8be073561"
-      },
-      {
-        "amendment_id": "fr-8-4afd5f48",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "finding_summary: `reconcile_failure_sync()` only suppresses stale replays when the newer retry reused the same `run_id`. The special-case guard at `src/contexts/automation_runtime/failure_reconciliation.rs:181-207` checks `newer_same_run_attempt_exists(...)`, but if the stale replay targets `run-1` and the active retry is `run-2`, the code falls through to `record_bead_completion_with_disposition(...)` at `src/contexts/automation_runtime/failure_reconciliation.rs:281-302`. In that state the lineage store has only the newer attempt open, so the replay turns into a hard reconciliation failure instead of a harmless no-op/repair. The CLI sync path already treats this situation as stale and returns without synthesizing lineage (`src/cli/run.rs:1203-1212`), so the failure handler is now less robust than the rest of the reconciliation logic.\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs\nremediation_hint: Generalize the stale-replay guard to handle any newer active attempt for the bead/project, not just same-`run_id` retries, and skip or repair the historical event instead of trying to finalize against the newer open row.",
-        "created_at": "2026-04-16T20:53:12.131656922Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "37a9dfdf4ca2b704e395f809bb4a62f87826a46bd15d8b16598e0a692ddbff5f"
-      }
-    ],
-    "processed_count": 18
+    "pending": [],
+    "processed_count": 20
   },
-  "status_summary": "running: final review restart round 9 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T20:33:05.521124149Z",
