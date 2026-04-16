@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 16
+      "completion_round": 17
     },
     "started_at": "2026-04-16T04:35:49.747391164Z",
     "prompt_hash_at_cycle_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "prompt_hash_at_stage_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 15
+    "final_review_restart_count": 16
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 16,
+  "completion_rounds": 17,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-16-a620e15c",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 16,
+        "body": "finding_summary: \"`sync_after_close` can silently skip the required crash-recovery flush because it checks `has_pending_mutations()` before calling `sync_if_dirty()`. `has_pending_mutations()` is only the adapter's cached flag, while `sync_if_dirty()` explicitly re-reads `.beads/.br-unsynced-mutations*` under the repo lock (`src/adapters/br_process.rs:1233-1263`). If pending state appears after the adapter was constructed, success reconciliation returns from `sync_after_close` without flushing and can advance milestone/controller state while the bead close is still only local.\"\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/success_reconciliation.rs:461\n- src/contexts/automation_runtime/success_reconciliation.rs:467\n- src/adapters/br_process.rs:1233\nremediation_hint: \"Do not gate this path on `has_pending_mutations()`. Always call `sync_if_dirty()` here and branch on `SyncIfDirtyOutcome` so the repo-state recheck stays authoritative.\"",
+        "created_at": "2026-04-16T10:59:17.837613228Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "24bfa5dc5e15c4571deac6c12e96cde47462211506d1ed6e711c3f819e438575"
+      },
+      {
+        "amendment_id": "fr-16-64d223fe",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 16,
+        "body": "finding_summary: \"`sync_recovered_proposed_bead_replay_if_dirty` only performs the pre-flush safety check when `has_pending_mutations()` is already set. That flag is just a cached snapshot; `sync_if_dirty()` may still discover newly persisted pending mutations after adapter construction. In that case this helper will flush them without first rejecting conflicted/missing `.beads/issues.jsonl`, which defeats the new 'block unsafe bead mutations before replay' rule.\"\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/service.rs:3014\n- src/contexts/milestone_record/service.rs:3020\n- src/adapters/br_process.rs:1233\nremediation_hint: \"Make the health gate authoritative at flush time: either run the health check unconditionally before `sync_if_dirty()`, or add a `BrMutationAdapter` helper that combines 're-read repo pending state' with the health check under the same lock.\"",
+        "created_at": "2026-04-16T10:59:17.837616234Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "48491afb11546747fc6bc4a3835f12606cc63dd49cdaf13ddcbe47ec4d45c71d"
+      }
+    ],
     "processed_count": 30
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 17 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T10:27:16.357931184Z",
+    "resolved_at": "2026-04-16T10:49:58.712180699Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

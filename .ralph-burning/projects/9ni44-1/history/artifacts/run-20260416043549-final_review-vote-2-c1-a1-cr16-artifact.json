@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr16-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T10:59:17.824101668Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify a real class of defect: safety-critical code paths gated on `has_pending_mutations()`, which is a cached `AtomicBool` snapshot that can diverge from the authoritative on-disk state read by `sync_if_dirty()` via `refresh_pending_mutation_state_locked()`. In both cases, the cached flag being false causes the code to skip operations (sync flush in fr-16-a620e15c, pre-flush health check in fr-16-64d223fe) that should be authoritative. The fixes are targeted, low-risk, and align with the codebase's own crash-recovery design philosophy.\n\n## Votes\n\n- `fr-16-a620e15c`: Accept\n  Verified the code at success_reconciliation.rs:467. `sync_after_close` early-returns when `has_pending_mutations()` is false, bypassing both the `ensure_beads_sync_health` check and the `sync_if_dirty()` call. However, `sync_if_dirty()` (br_process.rs:1256) calls `refresh_pending_mutation_state_locked()` which re-reads the `.br-unsynced-mutations.d/` directory under the repo lock, and may discover pending mutations written by other adapter instances or processes after this adapter was constructed. The reconciliation code itself already warns (line 253-256) that crash-between-close-and-sync scenarios require sync to remain mandatory, yet the cached-flag gate can silently skip it. The remediation (always call `sync_if_dirty()` and branch on `SyncIfDirtyOutcome`) is correct — it makes the disk re-read authoritative, adds negligible overhead (just lock acquisition + directory scan when clean), and is consistent with the existing crash-recovery philosophy.\n- `fr-16-64d223fe`: Accept\n  Verified the code at service.rs:3014-3039. The pre-flush health gate (`ensure_beads_mutation_health`) at line 3020-3022 only runs when `has_pending_mutations()` (cached flag) is true. When the flag is false but `sync_if_dirty()` discovers real pending mutations via `refresh_pending_mutation_state_locked()` (br_process.rs:1256), the flush proceeds without the pre-flush safety check. The post-flush health check at line 3034-3036 does catch the problem and returns an error, but by then the mutations have already been flushed to the repo — the safety invariant ('block unsafe bead mutations before replay') is violated because the blocking should happen BEFORE the flush, not after. The remediation (run health check unconditionally before `sync_if_dirty()`) correctly restores the safety gate to an authoritative position. The extra health check cost when no mutations exist is trivial compared to the risk of flushing with a conflicted or missing `.beads/issues.jsonl`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 16
+}
