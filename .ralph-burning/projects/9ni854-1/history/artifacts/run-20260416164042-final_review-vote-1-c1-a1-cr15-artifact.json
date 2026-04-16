@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T23:34:05.356762336Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe amendment identifies a real observability defect in the failure-reconciliation path: stale-replay early returns bypass the structured warning/error telemetry used by the normal path, which makes backfilled failure cases materially harder to detect and diagnose.\n\n## Votes\n\n- `fr-15-7fabe6a3`: Accept\n  In `reconcile_failure_sync`, the stale-replay branches return immediately after the `tracing::info!` calls, so they never execute the common `tracing::warn!` / `tracing::error!` block later in the function. As a result, those reconciliations are the only path that drops the structured `error_summary` field, and any replay case whose computed outcome reaches the escalation threshold also loses the high-severity telemetry entirely. Since the main daemon path does not surface the detailed `FailureReconciliationOutcome` to operators, this is a real production observability gap, not just a cosmetic logging difference. The eventual fix should preserve the nuance that controller transition may still be skipped when a newer attempt exists, but the finding itself is technically sound.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 15
+}

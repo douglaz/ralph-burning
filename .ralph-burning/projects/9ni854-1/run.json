@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 15
+      "completion_round": 16
     },
     "started_at": "2026-04-16T16:40:42.098700951Z",
     "prompt_hash_at_cycle_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "prompt_hash_at_stage_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 14
+    "final_review_restart_count": 15
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 15,
+  "completion_rounds": 16,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-15-7fabe6a3",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 15,
+        "body": "finding_summary: The stale-replay fast paths in `reconcile_failure_sync` return before the shared `tracing::warn!`/`tracing::error!` block, so replayed failures and replay-driven operator escalations are only emitted as `tracing::info!` and never carry the structured `error_summary` field. That misses the feature's explicit observability contract and makes exactly the partial-write recovery cases harder to spot in production logs.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:246\n- src/contexts/automation_runtime/failure_reconciliation.rs:298\n- src/contexts/automation_runtime/failure_reconciliation.rs:409\n- src/contexts/automation_runtime/failure_reconciliation.rs:440\nremediation_hint: Emit the same warning/error telemetry before both early returns, or refactor those branches to flow through the common post-reconciliation logging block so every failed attempt and escalation is logged consistently.",
+        "created_at": "2026-04-16T23:34:05.370821069Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "cebb2ff2820f66d2d1aaa24b15dcd41e0fe617a9cc0d57d80c62b2d8b104e358"
+      }
+    ],
     "processed_count": 31
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 16 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T22:57:20.310136130Z",
+    "resolved_at": "2026-04-16T23:20:58.634120126Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

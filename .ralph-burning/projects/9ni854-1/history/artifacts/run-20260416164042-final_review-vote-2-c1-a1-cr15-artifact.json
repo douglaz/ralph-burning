@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr15-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T23:32:28.376196007Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe amendment correctly identifies that the two stale-replay fast paths (lines 246-270 and 298-320) return before reaching the shared tracing::warn!/tracing::error! block at lines 409-448. Both paths log only at info level without the error_summary field. Critically, predicted_outcome can be EscalatedToOperator (when attempt_number >= MAX_FAILURE_RETRIES), meaning operator escalations from replay paths are silently logged at info level instead of error level. This is a real observability gap that would make partial-write recovery scenarios harder to detect in production.\n\n## Votes\n\n- `fr-15-7fabe6a3`: Accept\n  Verified in the source: both stale-replay fast paths (lines 246-270 and 298-320) return Ok(predicted_outcome) after only a tracing::info! call that lacks the error_summary structured field. The shared tracing::warn! (line 409, includes error_summary) and tracing::error! (line 440, for escalations) are never reached by these paths. Since failure_outcome() can return EscalatedToOperator when attempt_number >= MAX_FAILURE_RETRIES, a replayed failure that triggers operator escalation would only appear as info-level — a genuine observability defect. The remediation (emit warn/error telemetry before early returns, or refactor to flow through the common block) is straightforward and correct.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 15
+}
