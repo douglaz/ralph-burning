@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T21:59:35.069805502Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real defects in the failure-reconciliation recovery paths. Same-run retry history can be erased when a failed lineage row is reopened in place, and already-recorded failures with legacy/plain outcome details can still produce repaired BeadFailed events without task_id metadata.\n\n## Votes\n\n- `fr-11-163f95ac`: Accept\n  `reopen_failed_exact_attempt` rewrites the matched failed lineage row in place for a reused `run_id`, including replacing `started_at`, clearing terminal state, and dropping the prior failure detail. When the first failure only reached lineage and never got a durable `BeadFailed` journal event, that row is the sole persisted evidence of attempt 1. After the reopen, `failure_attempt_number` counts only the rewritten row plus surviving journal failures, so the first attempt disappears and a later same-run failure can be treated as attempt 1 or 2 instead of escalating at the configured retry limit.\n- `fr-11-51435a8c`: Accept\n  For `already_recorded` failures, the reconciler reuses `recorded_provenance.outcome_detail` verbatim whenever it exists. If that stored detail is legacy/plain text and the persisted run or journal entry also lacks `task_id`, `recorded_task_id` is computed from the caller input but never injected into the repaired lineage/journal payload before `repair_task_run_with_disposition` runs. The FS repair path only backfills `task_id` from existing structured details or a `task_id=` prefix in `outcome_detail`, so a repaired `BeadFailed` event can still be written without `task_id`, which violates the stated audit requirement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}
