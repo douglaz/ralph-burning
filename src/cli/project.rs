@@ -962,11 +962,7 @@ enum BrListResponse {
 /// is returned immediately so the caller can transition the milestone
 /// controller to `needs_operator`.
 async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
-    if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
-        return Err(AppError::Io(std::io::Error::other(format!(
-            "refusing to claim bead '{bead_id}' because bead state is unsafe: {details}"
-        ))));
-    }
+    ensure_beads_claim_health(base_dir, bead_id)?;
 
     let br =
         BrMutationAdapter::with_adapter(BrAdapter::new().with_working_dir(base_dir.to_path_buf()));
@@ -984,6 +980,7 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
         );
     }
 
+    ensure_beads_claim_health(base_dir, bead_id)?;
     br.update_bead_status(bead_id, "in_progress")
         .await
         .map_err(|update_error| {
@@ -992,6 +989,7 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
                  {update_error}"
             )))
         })?;
+    ensure_beads_claim_sync_health(base_dir, bead_id)?;
     br.sync_flush().await.map_err(|error| {
         AppError::Io(std::io::Error::other(format!(
             "bead '{bead_id}' was locally claimed (status set to in_progress) but sync \
@@ -999,6 +997,28 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
              a subsequent `br sync --flush-only` will retry the remote push."
         )))
     })?;
+    Ok(())
+}
+
+fn ensure_beads_claim_health(base_dir: &Path, bead_id: &str) -> AppResult<()> {
+    if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "refusing to claim bead '{bead_id}' because bead state is unsafe: {details}"
+        ))));
+    }
+
+    Ok(())
+}
+
+fn ensure_beads_claim_sync_health(base_dir: &Path, bead_id: &str) -> AppResult<()> {
+    if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
+        return Err(AppError::Io(std::io::Error::other(format!(
+            "bead '{bead_id}' was locally claimed (status set to in_progress) but bead state \
+             became unsafe before br sync --flush-only: {details}. The bead remains locally \
+             claimed in br; resolve the bead-state issue and rerun `br sync --flush-only`."
+        ))));
+    }
+
     Ok(())
 }
 
@@ -3968,6 +3988,124 @@ esac
                 .expect("chmod fake br");
         }
 
+        /// Install a fake `br` that flushes recovered work and then leaves the
+        /// bead export conflicted so the explicit claim is blocked before the
+        /// follow-up `br update`.
+        fn install_fake_br_claim_conflict_after_recovered_flush(
+            base_dir: &std::path::Path,
+            bead_id: &str,
+        ) {
+            write_beads_export(base_dir, "{\"id\":\"seed-bead\"}\n");
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+set -eu
+
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  sync)
+    count=0
+    if [ -f .beads/sync-count ]; then
+      count=$(cat .beads/sync-count)
+    fi
+    count=$((count + 1))
+    echo "$count" > .beads/sync-count
+    cat <<'CONFLICT' > .beads/issues.jsonl
+<<<<<<< HEAD
+{{"id":"bead-a"}}
+=======
+{{"id":"bead-b"}}
+>>>>>>> branch
+CONFLICT
+    echo "Synced"
+    exit 0
+    ;;
+  update)
+    count=0
+    if [ -f .beads/update-count ]; then
+      count=$(cat .beads/update-count)
+    fi
+    count=$((count + 1))
+    echo "$count" > .beads/update-count
+    echo "Updated {bead_id}"
+    exit 0
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
+        /// Install a fake `br` that succeeds on `update`, then corrupts the
+        /// bead export so the final `br sync --flush-only` must be blocked.
+        fn install_fake_br_claim_conflict_before_final_sync(
+            base_dir: &std::path::Path,
+            bead_id: &str,
+        ) {
+            write_beads_export(base_dir, "{\"id\":\"seed-bead\"}\n");
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+set -eu
+
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  update)
+    count=0
+    if [ -f .beads/update-count ]; then
+      count=$(cat .beads/update-count)
+    fi
+    count=$((count + 1))
+    echo "$count" > .beads/update-count
+    echo "in_progress" > .beads/{bead_id}.status
+    cat <<'CONFLICT' > .beads/issues.jsonl
+<<<<<<< HEAD
+{{"id":"bead-a"}}
+=======
+{{"id":"bead-b"}}
+>>>>>>> branch
+CONFLICT
+    echo "Updated {bead_id}"
+    exit 0
+    ;;
+  sync)
+    count=0
+    if [ -f .beads/sync-count ]; then
+      count=$(cat .beads/sync-count)
+    fi
+    count=$((count + 1))
+    echo "$count" > .beads/sync-count
+    echo "Synced"
+    exit 0
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
         /// Set up milestone directory so the controller store can write files.
         fn ensure_milestone_dir(base_dir: &std::path::Path, milestone_id: &MilestoneId) {
             let milestone_dir = base_dir
@@ -4063,6 +4201,53 @@ esac
         }
 
         #[tokio::test]
+        async fn claim_bead_in_br_rechecks_health_after_recovered_flush_before_update(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_conflict_after_recovered_flush(base_dir, "bead-1");
+            let journal_path = base_dir.join(".beads/.br-unsynced-mutations.d/unrelated.json");
+            std::fs::create_dir_all(
+                journal_path
+                    .parent()
+                    .expect("journal path must have parent"),
+            )?;
+            std::fs::write(
+                &journal_path,
+                r#"{"adapter_id":"other","operation":"comment_bead","bead_id":"bead-2","status":null}"#,
+            )?;
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            assert!(
+                result.is_err(),
+                "conflicted export after recovered flush should block the explicit claim update"
+            );
+            let error = result.expect_err("claim should fail").to_string();
+            assert!(
+                error.contains("refusing to claim bead 'bead-1'"),
+                "error should describe the blocked explicit claim: {error}"
+            );
+            assert!(
+                error.contains("resolve the conflict"),
+                "error should direct the operator to resolve the conflict: {error}"
+            );
+            let sync_count = std::fs::read_to_string(base_dir.join(".beads/sync-count"))?;
+            assert_eq!(
+                sync_count.trim(),
+                "1",
+                "recovered flush should still happen once"
+            );
+            assert!(
+                !base_dir.join(".beads/update-count").exists(),
+                "the explicit update must not run once the second health check sees a conflict"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
         async fn claim_bead_in_br_retries_by_flushing_recovered_pending_claim(
         ) -> Result<(), Box<dyn std::error::Error>> {
             let _path_lock = lock_path_mutex();
@@ -4088,6 +4273,43 @@ esac
                 sync_count.trim(),
                 "3",
                 "retry should flush the recovered claim and then sync the explicit retry"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_rechecks_health_before_final_sync(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_conflict_before_final_sync(base_dir, "bead-1");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            assert!(
+                result.is_err(),
+                "conflicted export after update should block the final sync"
+            );
+            let error = result.expect_err("claim should fail").to_string();
+            assert!(
+                error.contains("bead 'bead-1' was locally claimed"),
+                "error should report the already-applied local claim: {error}"
+            );
+            assert!(
+                error.contains("resolve the conflict"),
+                "error should direct the operator to resolve the conflict: {error}"
+            );
+            let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
+            assert_eq!(
+                update_count.trim(),
+                "1",
+                "the explicit update should still run"
+            );
+            assert!(
+                !base_dir.join(".beads/sync-count").exists(),
+                "the final sync must not run once the pre-sync health check fails"
             );
             Ok(())
         }

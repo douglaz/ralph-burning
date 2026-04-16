@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 12
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-11-250ddd55",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 11,
-        "body": "finding_summary: The new safety gate is only checked once at the start of multi-step mutation flows, so later bead mutations can still run after `.beads/issues.jsonl` becomes conflicted or malformed. In `src/contexts/milestone_record/service.rs:3178-3217`, `ensure_beads_mutation_health()` runs before `create_bead`, but the follow-up `add_dependency` and `sync_flush` execute without another check. In `src/cli/project.rs:965-1000`, the same pattern exists around `sync_if_dirty()`: the explicit `update --status=in_progress` and final `sync_flush` are not revalidated after the recovered flush. A concurrent `git pull`/merge between those steps defeats the intended \"pre-operation safety checks\" and still allows later mutations on corrupted bead state.",
-        "created_at": "2026-04-16T08:54:15.957707609Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "c2bd6d6131bc9c38218d61a16242266d04a077a7bb739cb3f3e0af9262dee932"
-      }
-    ],
-    "processed_count": 22
+    "pending": [],
+    "processed_count": 23
   },
-  "status_summary": "running: final review restart round 12 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T08:43:03.644248764Z",
