@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416021721-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260416021721-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T03:59:40.557785836Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real correctness gaps in propose-new-bead handling: stale journal trust, title-only misclassification, and silent loss of accepted follow-up work during success reconciliation.\n\n## Votes\n\n- `fr-4-b6989cd5`: Accept\n  `handle_propose_new_bead()` returns immediately when it finds a matching `ProposedBeadCreated` journal event, without re-checking the recorded bead via `br show` or confirming the dependency still exists. That makes the journal entry act as stronger truth than the mutable `.beads` state, so a deleted bead or removed dependency is never repaired and future replays keep reporting success incorrectly.\n- `fr-4-c044f649`: Accept\n  After the description-based recovery path fails, the fallback reclassifies the first open/in-progress/deferred same-title bead as planned-elsewhere using only normalized title equality. That is too weak for correctness: generic titles can collide across unrelated findings, and the code then records `mapped_bead_verified: true`, which suppresses later verification and permanently routes the finding to the wrong bead.\n- `fr-4-30c03445`: Accept\n  `ProposeNewBead` amendments are not routed through the restart queue and are only materialized later by `reconcile_proposed_beads_after_success()`. In that function, payload listing failures, aggregate parse failures, and missing propose-new-bead metadata are treated as non-fatal, so accepted follow-up work can be silently dropped while reconciliation still completes. When a final-review aggregate is expected for the run, those conditions should keep reconciliation open for retry instead of succeeding.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
