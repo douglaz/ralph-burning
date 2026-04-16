@@ -1977,7 +1977,7 @@ mod tests {
         let fake_br = tmp.path().join("fake-br");
         std::fs::write(
             &fake_br,
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  sleep 5\n  exit 0\nfi\nexit 0\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  while :; do\n    :\n  done\nfi\nexit 0\n",
         )?;
         let mut permissions = std::fs::metadata(&fake_br)?.permissions();
         permissions.set_mode(0o755);
