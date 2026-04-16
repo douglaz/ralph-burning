@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
+use crate::adapters::br_health::{check_beads_health, BeadsHealthStatus};
 use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary};
 use crate::adapters::br_process::{BrAdapter, BrCommand, BrMutationAdapter, ProcessRunner};
 use crate::adapters::fs::FileSystem;
@@ -2994,6 +2995,27 @@ fn record_proposed_bead_created_event(
     journal_store.append_event(base_dir, milestone_id, &line)
 }
 
+fn ensure_beads_mutation_health(base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<()> {
+    match check_beads_health(base_dir) {
+        BeadsHealthStatus::Healthy => Ok(()),
+        BeadsHealthStatus::ConflictMarkers => Err(AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "prepare bead mutation".to_owned(),
+            details: "detected git conflict markers in .beads/issues.jsonl; resolve the conflict before mutating beads".to_owned(),
+        }),
+        BeadsHealthStatus::MissingFile => Err(AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "prepare bead mutation".to_owned(),
+            details: "missing .beads/issues.jsonl; restore the beads export before mutating beads".to_owned(),
+        }),
+        BeadsHealthStatus::BrUnavailable => Err(AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "prepare bead mutation".to_owned(),
+            details: "the `br` binary is unavailable; restore `br` in PATH before mutating beads".to_owned(),
+        }),
+    }
+}
+
 pub async fn handle_propose_new_bead<R: ProcessRunner>(
     journal_store: &impl MilestoneJournalPort,
     mapping_store: &impl PlannedElsewhereMappingPort,
@@ -3004,6 +3026,7 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
     created_in_pass: &mut usize,
     now: DateTime<Utc>,
 ) -> AppResult<ProposeNewBeadOutcome> {
+    ensure_beads_mutation_health(base_dir, milestone_id)?;
     let br_read = br_mutation.inner();
 
     if let Some(existing_bead_id) =
@@ -3951,7 +3974,9 @@ mod tests {
     }
 
     fn setup_workspace(dir: &Path) {
+        std::fs::create_dir_all(dir.join(".beads")).unwrap();
         std::fs::create_dir_all(dir.join(".ralph-burning/milestones")).unwrap();
+        std::fs::write(dir.join(".beads/issues.jsonl"), "").unwrap();
     }
 
     fn sample_bundle(
@@ -10631,6 +10656,75 @@ mod tests {
         )?;
         assert_eq!(loaded.len(), 1, "only valid mapping should be returned");
         assert_eq!(loaded[0].active_bead_id, "bead-A");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_propose_new_bead_rejects_conflicted_beads_jsonl(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        std::fs::write(
+            base.join(".beads/issues.jsonl"),
+            "<<<<<<< HEAD\n{\"id\":\"bead-a\"}\n=======\n{\"id\":\"bead-b\"}\n>>>>>>> branch\n",
+        )?;
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pn-conflict".to_owned(),
+                name: "PN conflict".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let runner = MockBrRunner::new(vec![MockBrRunner::success("[]")]);
+        let command_log = runner.command_log();
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
+        let input = ProposeNewBeadInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Retry paths lack telemetry".to_owned(),
+            proposed_title: "Add retry telemetry".to_owned(),
+            proposed_scope: "Instrument retry loops with counters and histograms".to_owned(),
+            severity: Severity::Medium,
+            rationale: "Conflict should block bead mutation".to_owned(),
+            run_id: Some("run-conflict".to_owned()),
+            completion_round: Some(1),
+        };
+
+        let mut created_in_pass = 0usize;
+        let error = handle_propose_new_bead(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            &br_mutation,
+            base,
+            &record.id,
+            &input,
+            &mut created_in_pass,
+            now,
+        )
+        .await
+        .expect_err("conflicted issues.jsonl should block mutation");
+
+        match error {
+            AppError::MilestoneOperationFailed {
+                action, details, ..
+            } => {
+                assert_eq!(action, "prepare bead mutation");
+                assert!(details.contains("resolve the conflict"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        assert!(
+            command_log.lock().expect("command log").is_empty(),
+            "health failure should stop before invoking br"
+        );
         Ok(())
     }
 

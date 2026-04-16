@@ -209,6 +209,11 @@ impl BrCommand {
         Self::new("sync").flag("flush-only")
     }
 
+    /// `br sync --import-only`
+    pub fn sync_import() -> Self {
+        Self::new("sync").flag("import-only")
+    }
+
     /// `br lint`
     pub fn lint() -> Self {
         Self::new("lint")
@@ -365,6 +370,36 @@ impl BrAdapter<OsProcessRunner> {
             working_dir: None,
         }
     }
+
+    /// Verify that the `br` binary can be launched from the current
+    /// environment without touching repository state.
+    pub fn check_available(&self) -> Result<(), BrError> {
+        let status = std::process::Command::new(self.runner.br_path())
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    BrError::BrNotFound {
+                        details: format!("could not find '{}' in PATH", self.runner.br_path()),
+                    }
+                } else {
+                    BrError::Io(error)
+                }
+            })?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(BrError::BrExitError {
+                exit_code: status.code().unwrap_or(-1),
+                stdout: String::new(),
+                stderr: "`br --version` exited unsuccessfully".to_owned(),
+                command: "br --version".to_owned(),
+            })
+        }
+    }
 }
 
 impl Default for BrAdapter<OsProcessRunner> {
@@ -454,8 +489,14 @@ impl<R: ProcessRunner> BrAdapter<R> {
 /// Higher-level adapter that wraps `BrAdapter` and adds dirty tracking,
 /// audit logging, and convenience mutation methods.
 ///
-/// After any successful mutation the `has_unsync_mutations` flag is set.
-/// Calling `sync_flush` clears the flag on success.
+/// Sync lifecycle invariants:
+/// - successful local mutations set `has_unsync_mutations`
+/// - `sync_flush` is the only operation that clears the dirty flag
+/// - `sync_import` never sets the dirty flag and refuses to run while local
+///   mutations are still pending, preventing upstream imports from being mixed
+///   with unflushed local state
+/// - `sync_if_dirty` is the safe convenience path when callers want to flush
+///   only if prior mutation steps actually dirtied the local workspace
 pub struct BrMutationAdapter<R: ProcessRunner = OsProcessRunner> {
     adapter: BrAdapter<R>,
     has_unsync_mutations: AtomicBool,
@@ -492,6 +533,22 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// Provide read-only access to the inner adapter for queries.
     pub fn inner(&self) -> &BrAdapter<R> {
         &self.adapter
+    }
+
+    /// Refuse operations that require a clean bead workspace while pending
+    /// local mutations still need `br sync --flush-only`.
+    pub fn ensure_synced(&self) -> Result<(), BrError> {
+        if !self.has_pending_mutations() {
+            return Ok(());
+        }
+
+        tracing::warn!(
+            operation = "ensure_synced",
+            "refusing br operation while unsynced local mutations are pending"
+        );
+        Err(BrError::Io(std::io::Error::other(
+            "pending local br mutations detected; run `br sync --flush-only` before importing or reconciling external bead changes",
+        )))
     }
 
     // ── mutation helpers ────────────────────────────────────────────────
@@ -604,7 +661,13 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
             .await
     }
 
-    /// Flush pending changes to upstream and clear the dirty flag.
+    /// Flush pending local bead mutations to upstream storage.
+    ///
+    /// Call this after one or more successful mutation commands once the local
+    /// mutation set is ready to be published. A successful flush clears the
+    /// adapter's dirty flag. On failure the dirty flag remains set so crash
+    /// recovery or a later retry can safely re-run `br sync --flush-only`
+    /// without losing the local mutation intent.
     pub async fn sync_flush(&self) -> Result<BrOutput, BrError> {
         let cmd = BrCommand::sync_flush();
         let start = Instant::now();
@@ -632,6 +695,64 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
                     duration_ms = duration_ms,
                     stderr = stderr_content,
                     "br sync flush failed"
+                );
+            }
+        }
+
+        result
+    }
+
+    /// Flush pending mutations only when the adapter is currently dirty.
+    ///
+    /// Returns `Ok(None)` when no successful mutation has happened since the
+    /// last flush, avoiding an unnecessary subprocess.
+    pub async fn sync_if_dirty(&self) -> Result<Option<BrOutput>, BrError> {
+        if !self.has_pending_mutations() {
+            tracing::debug!(
+                operation = "sync_if_dirty",
+                outcome = "skipped",
+                "skipping br sync because no local mutations are pending"
+            );
+            return Ok(None);
+        }
+
+        self.sync_flush().await.map(Some)
+    }
+
+    /// Import upstream JSONL changes into the local workspace without
+    /// publishing any local mutations.
+    ///
+    /// Use this after `git pull`, merge, or other external `.beads/` updates.
+    /// The method refuses to run while local unsynced mutations are pending so
+    /// imported state cannot be mixed with a dirty local mutation set.
+    pub async fn sync_import(&self) -> Result<BrOutput, BrError> {
+        self.ensure_synced()?;
+
+        let cmd = BrCommand::sync_import();
+        let start = Instant::now();
+        let result = self.adapter.exec_mutation(&cmd).await;
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        match &result {
+            Ok(_) => {
+                tracing::info!(
+                    operation = "sync_import",
+                    outcome = "success",
+                    duration_ms = duration_ms,
+                    "br sync import completed"
+                );
+            }
+            Err(err) => {
+                let stderr_content = match err {
+                    BrError::BrExitError { stderr, .. } => stderr.as_str(),
+                    _ => "",
+                };
+                tracing::warn!(
+                    operation = "sync_import",
+                    outcome = "failure",
+                    duration_ms = duration_ms,
+                    stderr = stderr_content,
+                    "br sync import failed"
                 );
             }
         }
@@ -689,6 +810,14 @@ mod tests {
         let cmd = BrCommand::sync_flush();
         let args = cmd.build_args();
         assert_eq!(args, vec!["sync", "--flush-only"]);
+        Ok(())
+    }
+
+    #[test]
+    fn command_builder_sync_import() -> Result<(), Box<dyn std::error::Error>> {
+        let cmd = BrCommand::sync_import();
+        let args = cmd.build_args();
+        assert_eq!(args, vec!["sync", "--import-only"]);
         Ok(())
     }
 
@@ -758,12 +887,14 @@ mod tests {
     /// A mock process runner for unit testing without real br binary.
     struct MockRunner {
         responses: std::sync::Mutex<Vec<Result<BrOutput, BrError>>>,
+        commands: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
     }
 
     impl MockRunner {
         fn new(responses: Vec<Result<BrOutput, BrError>>) -> Self {
             Self {
                 responses: std::sync::Mutex::new(responses),
+                commands: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             }
         }
 
@@ -782,15 +913,23 @@ mod tests {
                 exit_code,
             })
         }
+
+        fn command_log(&self) -> std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>> {
+            std::sync::Arc::clone(&self.commands)
+        }
     }
 
     impl ProcessRunner for MockRunner {
         async fn run(
             &self,
-            _args: Vec<String>,
+            args: Vec<String>,
             _timeout: Duration,
             _working_dir: Option<&std::path::Path>,
         ) -> Result<BrOutput, BrError> {
+            self.commands
+                .lock()
+                .expect("mock command log poisoned")
+                .push(args);
             let mut responses = self.responses.lock().expect("mock lock poisoned");
             if responses.is_empty() {
                 panic!("MockRunner: no more responses configured");
@@ -1068,6 +1207,48 @@ mod tests {
 
         ma.remove_dependency("bead-a", "bead-b").await?;
         assert!(ma.has_pending_mutations());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_if_dirty_skips_when_clean() -> Result<(), Box<dyn std::error::Error>> {
+        let runner = MockRunner::new(Vec::new());
+        let command_log = runner.command_log();
+        let adapter = BrAdapter::with_runner(runner);
+        let ma = BrMutationAdapter::with_adapter(adapter);
+
+        let result = ma.sync_if_dirty().await?;
+
+        assert!(result.is_none());
+        assert!(
+            command_log.lock().expect("command log").is_empty(),
+            "clean sync_if_dirty should not invoke br"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_if_dirty_flushes_when_dirty() -> Result<(), Box<dyn std::error::Error>> {
+        let runner = MockRunner::new(vec![
+            MockRunner::success("updated"),
+            MockRunner::success("synced"),
+        ]);
+        let command_log = runner.command_log();
+        let adapter = BrAdapter::with_runner(runner);
+        let ma = BrMutationAdapter::with_adapter(adapter);
+
+        ma.update_bead_status("bead-1", "in_progress").await?;
+        let result = ma.sync_if_dirty().await?;
+
+        assert!(result.is_some());
+        assert!(!ma.has_pending_mutations());
+        let commands = command_log.lock().expect("command log");
+        assert!(commands.contains(&vec![
+            "update".to_owned(),
+            "bead-1".to_owned(),
+            "--status=in_progress".to_owned(),
+        ]));
+        assert!(commands.contains(&vec!["sync".to_owned(), "--flush-only".to_owned()]));
         Ok(())
     }
 }

@@ -3324,6 +3324,8 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         std::fs::create_dir_all(base.join(".git"))?;
+        std::fs::create_dir_all(base.join(".beads"))?;
+        std::fs::write(base.join(".beads/issues.jsonl"), "")?;
 
         let store = FsMilestoneStore;
         let now = Utc::now();
@@ -3506,6 +3508,8 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         std::fs::create_dir_all(base.join(".git"))?;
+        std::fs::create_dir_all(base.join(".beads"))?;
+        std::fs::write(base.join(".beads/issues.jsonl"), "")?;
 
         let store = FsMilestoneStore;
         let now = Utc::now();
@@ -3559,6 +3563,8 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         std::fs::create_dir_all(base.join(".git"))?;
+        std::fs::create_dir_all(base.join(".beads"))?;
+        std::fs::write(base.join(".beads/issues.jsonl"), "")?;
 
         let store = FsMilestoneStore;
         let now = Utc::now();
@@ -3627,6 +3633,8 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         std::fs::create_dir_all(base.join(".git"))?;
+        std::fs::create_dir_all(base.join(".beads"))?;
+        std::fs::write(base.join(".beads/issues.jsonl"), "")?;
 
         let store = FsMilestoneStore;
         let now = Utc::now();
@@ -3727,6 +3735,8 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         std::fs::create_dir_all(base.join(".git"))?;
+        std::fs::create_dir_all(base.join(".beads"))?;
+        std::fs::write(base.join(".beads/issues.jsonl"), "")?;
 
         let store = FsMilestoneStore;
         let now = Utc::now();
