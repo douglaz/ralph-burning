@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 19
+      "completion_round": 20
     },
     "started_at": "2026-04-16T04:35:49.747391164Z",
     "prompt_hash_at_cycle_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "prompt_hash_at_stage_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 18
+    "final_review_restart_count": 19
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 19,
+  "completion_rounds": 20,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-19-2eaf261c",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 19,
+        "body": "finding_summary: `sync_own_dirty_if_beads_healthy()` does not treat the legacy `.beads/.br-unsynced-mutations` marker as foreign or unknown work, so the supposedly owned-only replay path can still publish someone else's pending mutations.\nseverity: high\naffected_files:\n- src/adapters/br_process.rs:148-163\n- src/adapters/br_process.rs:1425-1467\n- src/cli/project.rs:975-1001\n- src/contexts/automation_runtime/success_reconciliation.rs:456-474\nremediation_hint: When `legacy_marker_present` is set, make the owned-only replay path fail closed unless ownership can be proven (or migrate the legacy marker into an owned record first), and add a regression test for a lone legacy marker.",
+        "created_at": "2026-04-16T12:03:07.175286604Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "59b5d643bfaa9378c4323f08ad956abfddfdad533a5dfd7ac8df43d5e34dfb14"
+      },
+      {
+        "amendment_id": "fr-19-423b48bc",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 19,
+        "body": "finding_summary: The milestone propose-new-bead sync helpers still call the generic `sync_if_dirty_when_beads_healthy()` path, so they will flush foreign pending records if another workflow dirties `.beads/` between `create_bead`/`add_dependency` and the sync point.\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/service.rs:3016-3054\n- src/adapters/br_process.rs:1374-1416\n- src/adapters/br_process.rs:1425-1467\nremediation_hint: Use `sync_own_dirty_if_beads_healthy()` for the propose-new-bead repair/create replay paths, or otherwise reject snapshots that contain records from a different adapter before flushing.",
+        "created_at": "2026-04-16T12:03:07.175289389Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "04e337e38532ee6a2e81ad2eef7592610234d278bcba55a8f5c8c37e413b1ad4"
+      },
+      {
+        "amendment_id": "fr-19-5983b6b3",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 19,
+        "body": "finding_summary: The new bead-health check probes `br` with a fresh default `BrAdapter::new()` instead of the live adapter/runner, so health-gated `sync_import()` and guarded flushes falsely report `BrUnavailable` when callers use an explicit `OsProcessRunner::with_binary(...)` or another non-default runner.\nseverity: low\naffected_files:\n- src/adapters/br_health.rs:18-20\n- src/adapters/br_health.rs:127-131\n- src/adapters/br_process.rs:1043-1059\nremediation_hint: Thread availability checking through the active adapter/runner (or accept an availability probe closure from callers) rather than hardcoding a new default `BrAdapter`.",
+        "created_at": "2026-04-16T12:03:07.175291794Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "205b49987746203a2bb62fd6c7bfe34983031e9c5d7c451d9292897bad737296"
+      }
+    ],
     "processed_count": 35
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 20 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T11:30:29.567770852Z",
+    "resolved_at": "2026-04-16T11:52:28.391716049Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

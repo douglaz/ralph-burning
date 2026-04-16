@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr19-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T12:02:46.044727920Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments are technically valid. Two identify real isolation failures in pending-mutation replay/flush logic, and one identifies a real false-negative health check for non-default `br` runners.\n\n## Votes\n\n- `fr-19-2eaf261c`: Accept\n  `PendingMutationSnapshot::is_dirty()` treats `legacy_marker_present` as dirty state, but the ownership gate only inspects `records`. As a result, a lone `.beads/.br-unsynced-mutations` marker passes `sync_own_dirty_if_beads_healthy()` as if it were owned by the current adapter, and a successful flush will publish and clear unknown pending work. That violates the owned-only contract and can replay someone else's recovered mutations.\n- `fr-19-423b48bc`: Accept\n  The propose-new-bead helpers in `src/contexts/milestone_record/service.rs` call `sync_if_dirty_when_beads_healthy()`, whose working-dir path refreshes the shared pending snapshot and flushes it without any ownership check. If another workflow writes a pending record after this flow's `create_bead` or `add_dependency` step but before the sync helper runs, this code will publish and delete that foreign record. That is a real shared-state isolation defect, not just a theoretical race.\n- `fr-19-5983b6b3`: Accept\n  `ensure_healthy_beads_for_import()` and `ensure_healthy_beads_for_pending_sync()` both delegate to `check_beads_health(base_dir)`, and the non-test availability probe inside `br_health.rs` is hardcoded to `BrAdapter::new().check_available()`. That ignores the live adapter's configured runner and binary path, so callers using `OsProcessRunner::with_binary(...)` or another non-default runner can be rejected with `BrUnavailable` even though their actual adapter would run successfully. This is a real correctness bug in the health gate.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 19
+}
