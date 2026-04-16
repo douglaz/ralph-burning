@@ -18,7 +18,7 @@ use chrono::{DateTime, Utc};
 use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 use crate::adapters::br_models::BeadStatus;
 use crate::adapters::br_process::{
-    BrAdapter, BrCommand, BrError, BrMutationAdapter, ProcessRunner,
+    BrAdapter, BrCommand, BrError, BrMutationAdapter, ProcessRunner, SyncIfDirtyHealthError,
 };
 use crate::adapters::bv_process::{BvAdapter, BvProcessRunner, NextBeadResponse};
 use crate::adapters::fs::{
@@ -130,22 +130,18 @@ fn ensure_beads_mutation_health(
     Ok(())
 }
 
-fn ensure_beads_sync_health(
-    base_dir: &Path,
+fn make_beads_sync_health_error(
     bead_id: &str,
     task_id: &str,
-) -> Result<(), ReconciliationError> {
-    if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
-        return Err(ReconciliationError::BrSyncFailed {
-            bead_id: bead_id.to_owned(),
-            task_id: task_id.to_owned(),
-            details: format!(
-                "bead '{bead_id}' was locally closed but bead state became unsafe before br sync --flush-only: {details}. The bead remains locally closed in br; resolve the bead-state issue and rerun `br sync --flush-only`."
-            ),
-        });
+    details: &str,
+) -> ReconciliationError {
+    ReconciliationError::BrSyncFailed {
+        bead_id: bead_id.to_owned(),
+        task_id: task_id.to_owned(),
+        details: format!(
+            "bead '{bead_id}' was locally closed but bead state became unsafe before br sync --flush-only: {details}. The bead remains locally closed in br; resolve the bead-state issue and rerun `br sync --flush-only`."
+        ),
     }
-
-    Ok(())
 }
 
 fn beads_mutation_health_warning(base_dir: &Path) -> Option<String> {
@@ -464,24 +460,26 @@ async fn sync_after_close<R: ProcessRunner>(
     bead_id: &str,
     task_id: &str,
 ) -> Result<(), ReconciliationError> {
-    if !br_mutation.has_pending_mutations() {
-        tracing::debug!(
-            bead_id = bead_id,
-            task_id = task_id,
-            "no pending local bead mutations remain after close replay; skipping br sync --flush-only"
-        );
-        return Ok(());
+    match br_mutation.sync_if_dirty_when_beads_healthy(base_dir).await {
+        Ok(crate::adapters::br_process::SyncIfDirtyOutcome::Clean) => {
+            tracing::debug!(
+                bead_id = bead_id,
+                task_id = task_id,
+                "no pending local bead mutations remain after close replay; skipping br sync --flush-only"
+            );
+        }
+        Ok(crate::adapters::br_process::SyncIfDirtyOutcome::Flushed { .. }) => {}
+        Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
+            return Err(make_beads_sync_health_error(bead_id, task_id, &details));
+        }
+        Err(SyncIfDirtyHealthError::Br(error)) => {
+            return Err(ReconciliationError::BrSyncFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: error.to_string(),
+            });
+        }
     }
-
-    ensure_beads_sync_health(base_dir, bead_id, task_id)?;
-    br_mutation
-        .sync_if_dirty()
-        .await
-        .map_err(|e| ReconciliationError::BrSyncFailed {
-            bead_id: bead_id.to_owned(),
-            task_id: task_id.to_owned(),
-            details: e.to_string(),
-        })?;
     Ok(())
 }
 
@@ -1664,6 +1662,43 @@ mod tests {
             }
             other => panic!("expected BrSyncFailed, got {other}"),
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_after_close_rechecks_repo_pending_state_before_guarded_flush(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
+        let runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+        );
+
+        std::fs::write(
+            temp_dir.path().join(".beads/.br-unsynced-mutations"),
+            "pending\n",
+        )?;
+        std::fs::remove_file(temp_dir.path().join(".beads/issues.jsonl"))?;
+
+        let result = sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await;
+        let error = result.expect_err("recovered pending sync should recheck bead export health");
+        match error {
+            ReconciliationError::BrSyncFailed { details, .. } => {
+                assert!(
+                    details.contains("missing .beads/issues.jsonl"),
+                    "error should explain the blocked replay sync: {details}"
+                );
+            }
+            other => panic!("expected BrSyncFailed, got {other}"),
+        }
+        assert!(
+            temp_dir
+                .path()
+                .join(".beads/.br-unsynced-mutations")
+                .exists(),
+            "blocked replay must preserve the pending marker for a later clean retry"
+        );
         Ok(())
     }
 

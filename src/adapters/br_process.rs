@@ -227,6 +227,15 @@ impl SyncIfDirtyOutcome {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum SyncIfDirtyHealthError {
+    #[error("{details}")]
+    UnsafeBeadsState { details: String },
+
+    #[error(transparent)]
+    Br(#[from] BrError),
+}
+
 // ── Command builder ─────────────────────────────────────────────────────────
 
 /// Type-safe builder for `br` command lines.
@@ -1031,6 +1040,47 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         Ok(())
     }
 
+    fn ensure_healthy_beads_for_pending_sync(
+        &self,
+        base_dir: &Path,
+    ) -> Result<(), SyncIfDirtyHealthError> {
+        if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
+            return Err(SyncIfDirtyHealthError::UnsafeBeadsState { details });
+        }
+
+        Ok(())
+    }
+
+    fn recovered_status_updates(snapshot: &PendingMutationSnapshot) -> Vec<RecoveredStatusUpdate> {
+        snapshot
+            .records
+            .iter()
+            .filter_map(|record| {
+                record
+                    .bead_id
+                    .as_ref()
+                    .zip(record.status.as_ref())
+                    .filter(|_| record.operation == "update_bead_status")
+                    .map(|(bead_id, status)| RecoveredStatusUpdate {
+                        adapter_id: record.adapter_id.clone(),
+                        bead_id: bead_id.clone(),
+                        status: status.clone(),
+                    })
+            })
+            .collect()
+    }
+
+    fn flushed_sync_if_dirty_outcome(
+        snapshot: &PendingMutationSnapshot,
+        output: BrOutput,
+    ) -> SyncIfDirtyOutcome {
+        SyncIfDirtyOutcome::Flushed {
+            output,
+            flushed_mutations: snapshot.records.len() + usize::from(snapshot.legacy_marker_present),
+            recovered_status_updates: Self::recovered_status_updates(snapshot),
+        }
+    }
+
     // ── mutation helpers ────────────────────────────────────────────────
 
     /// Execute a mutation command with dirty-flag bookkeeping and audit logging.
@@ -1263,31 +1313,62 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
             return Ok(SyncIfDirtyOutcome::Clean);
         }
 
-        let recovered_status_updates = snapshot
-            .records
-            .iter()
-            .filter_map(|record| {
-                record
-                    .bead_id
-                    .as_ref()
-                    .zip(record.status.as_ref())
-                    .filter(|_| record.operation == "update_bead_status")
-                    .map(|(bead_id, status)| RecoveredStatusUpdate {
-                        adapter_id: record.adapter_id.clone(),
-                        bead_id: bead_id.clone(),
-                        status: status.clone(),
-                    })
-            })
-            .collect::<Vec<_>>();
-
         self.sync_flush_locked()
             .await
-            .map(|output| SyncIfDirtyOutcome::Flushed {
-                output,
-                flushed_mutations: snapshot.records.len()
-                    + usize::from(snapshot.legacy_marker_present),
-                recovered_status_updates,
-            })
+            .map(|output| Self::flushed_sync_if_dirty_outcome(&snapshot, output))
+    }
+
+    /// Flush pending mutations only when the repo is dirty and `.beads/` is safe.
+    ///
+    /// Unlike `sync_if_dirty()`, this helper re-checks the shared pending-mutation
+    /// journal under the repo lock and blocks the flush when `.beads/issues.jsonl`
+    /// is missing, conflicted, malformed, unreadable, or the `br` binary is
+    /// unavailable. Callers that need replay-safe idempotency can use the
+    /// returned `SyncIfDirtyOutcome` to distinguish a clean no-op from a
+    /// recovered flush, without relying on the adapter's cached dirty flag.
+    pub async fn sync_if_dirty_when_beads_healthy(
+        &self,
+        base_dir: &Path,
+    ) -> Result<SyncIfDirtyOutcome, SyncIfDirtyHealthError> {
+        let _operation_guard = self.operation_lock.lock().await;
+        let _repo_guard = self.acquire_repo_operation_lock()?;
+        if self.adapter.working_dir.is_none() {
+            if !self.has_pending_mutations() {
+                tracing::debug!(
+                    operation = "sync_if_dirty_when_beads_healthy",
+                    outcome = "skipped",
+                    "skipping guarded br sync because no local mutations are pending"
+                );
+                return Ok(SyncIfDirtyOutcome::Clean);
+            }
+
+            self.ensure_healthy_beads_for_pending_sync(base_dir)?;
+            return self
+                .sync_flush_locked()
+                .await
+                .map(|output| SyncIfDirtyOutcome::Flushed {
+                    output,
+                    flushed_mutations: 1,
+                    recovered_status_updates: Vec::new(),
+                })
+                .map_err(Into::into);
+        }
+
+        let snapshot = self.refresh_pending_mutation_state_locked()?;
+        if !snapshot.is_dirty() {
+            tracing::debug!(
+                operation = "sync_if_dirty_when_beads_healthy",
+                outcome = "skipped",
+                "skipping guarded br sync because no local mutations are pending"
+            );
+            return Ok(SyncIfDirtyOutcome::Clean);
+        }
+
+        self.ensure_healthy_beads_for_pending_sync(base_dir)?;
+        self.sync_flush_locked()
+            .await
+            .map(|output| Self::flushed_sync_if_dirty_outcome(&snapshot, output))
+            .map_err(Into::into)
     }
 
     /// Import upstream JSONL changes into the local workspace without

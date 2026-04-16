@@ -9,7 +9,9 @@ use sha2::{Digest, Sha256};
 
 use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary};
-use crate::adapters::br_process::{BrAdapter, BrCommand, BrMutationAdapter, ProcessRunner};
+use crate::adapters::br_process::{
+    BrAdapter, BrCommand, BrMutationAdapter, ProcessRunner, SyncIfDirtyHealthError,
+};
 use crate::adapters::fs::FileSystem;
 use crate::contexts::project_run_record::service::ProjectStorePort;
 use crate::contexts::workflow_composition::review_classification::Severity;
@@ -3017,19 +3019,23 @@ async fn sync_recovered_proposed_bead_replay_if_dirty<R: ProcessRunner>(
     milestone_id: &MilestoneId,
     action: &str,
 ) -> AppResult<()> {
-    if br_mutation.has_pending_mutations() {
-        ensure_beads_mutation_health(base_dir, milestone_id, action)?;
-    }
-
-    let outcome =
-        br_mutation
-            .sync_if_dirty()
-            .await
-            .map_err(|error| AppError::MilestoneOperationFailed {
+    let outcome = match br_mutation.sync_if_dirty_when_beads_healthy(base_dir).await {
+        Ok(outcome) => outcome,
+        Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
+            return Err(AppError::MilestoneOperationFailed {
+                milestone_id: milestone_id.to_string(),
+                action: action.to_owned(),
+                details,
+            });
+        }
+        Err(SyncIfDirtyHealthError::Br(error)) => {
+            return Err(AppError::MilestoneOperationFailed {
                 milestone_id: milestone_id.to_string(),
                 action: action.to_owned(),
                 details: error.to_string(),
-            })?;
+            });
+        }
+    };
 
     if !outcome.is_clean() {
         ensure_beads_mutation_health(base_dir, milestone_id, action)?;
@@ -12173,6 +12179,122 @@ mod tests {
         assert!(
             base.join(".beads/.br-unsynced-mutations").exists(),
             "blocked replay must leave the pending marker in place for later recovery"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_propose_new_bead_rechecks_repo_pending_state_before_recovered_replay_sync(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pn-journal-reuse-late-dirty".to_owned(),
+                name: "PN journal reuse late dirty".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let input = ProposeNewBeadInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Retry paths lack telemetry".to_owned(),
+            proposed_title: "Add retry telemetry".to_owned(),
+            proposed_scope: "Instrument retry loops with counters and histograms".to_owned(),
+            severity: Severity::Medium,
+            rationale: "Recovered replay must recheck repo pending state under the sync lock"
+                .to_owned(),
+            run_id: Some("run-journal-reuse-late-dirty".to_owned()),
+            completion_round: Some(15),
+        };
+        record_proposed_bead_created_event(
+            &FsMilestoneJournalStore,
+            base,
+            &record.id,
+            &input,
+            "bead-replayed",
+            "replayed from prior success reconciliation",
+            now,
+        )?;
+
+        let runner = MockBrRunner::new(vec![MockBrRunner::success(
+            &serde_json::json!({
+                "id": "bead-replayed",
+                "title": "Add retry telemetry",
+                "status": "open",
+                "priority": 2,
+                "bead_type": "task",
+                "labels": ["backend"],
+                "description": render_proposed_bead_description(&input),
+                "dependencies": [{
+                    "id": "active-bead",
+                    "kind": "blocks",
+                    "title": "Active bead",
+                    "status": "open"
+                }],
+                "dependents": []
+            })
+            .to_string(),
+        )]);
+        let command_log = runner.command_log();
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(runner).with_working_dir(base.to_path_buf()),
+        );
+
+        std::fs::write(base.join(".beads/.br-unsynced-mutations"), "pending\n")?;
+        std::fs::write(
+            base.join(".beads/issues.jsonl"),
+            "<<<<<<< HEAD\n{\"id\":\"bead-a\"}\n=======\n{\"id\":\"bead-b\"}\n>>>>>>> branch\n",
+        )?;
+
+        let mut created_in_pass = 0usize;
+        let error = handle_propose_new_bead(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            &br_mutation,
+            base,
+            &record.id,
+            &input,
+            &mut created_in_pass,
+            now,
+        )
+        .await
+        .expect_err("late recovered dirtiness should still be health-gated before replay sync");
+
+        match error {
+            AppError::MilestoneOperationFailed {
+                action, details, ..
+            } => {
+                assert_eq!(action, "sync recovered journaled proposed bead replay");
+                assert!(
+                    details.contains("resolve the conflict"),
+                    "error should direct the operator to resolve the conflicted export: {details}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        let commands = command_log.lock().expect("command log");
+        assert_eq!(
+            commands.as_slice(),
+            &[vec![
+                "show".to_owned(),
+                "bead-replayed".to_owned(),
+                "--json".to_owned()
+            ]],
+            "late recovered replay should stop before br sync when the export becomes unsafe"
+        );
+        assert!(
+            base.join(".beads/.br-unsynced-mutations").exists(),
+            "blocked replay must preserve the recovered pending marker"
         );
 
         Ok(())
