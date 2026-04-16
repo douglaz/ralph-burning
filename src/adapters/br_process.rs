@@ -6,7 +6,7 @@
 //! and configurable timeouts. Uses direct process execution — never
 //! shells out through sh/bash.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 use tokio::process::Command;
+use tokio::sync::Mutex;
+
+use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
@@ -508,6 +511,7 @@ impl<R: ProcessRunner> BrAdapter<R> {
 pub struct BrMutationAdapter<R: ProcessRunner = OsProcessRunner> {
     adapter: BrAdapter<R>,
     has_unsync_mutations: AtomicBool,
+    operation_lock: Mutex<()>,
 }
 
 impl BrMutationAdapter<OsProcessRunner> {
@@ -515,6 +519,7 @@ impl BrMutationAdapter<OsProcessRunner> {
         Self {
             adapter: BrAdapter::new(),
             has_unsync_mutations: AtomicBool::new(false),
+            operation_lock: Mutex::new(()),
         }
     }
 }
@@ -531,6 +536,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         Self {
             adapter,
             has_unsync_mutations: AtomicBool::new(has_unsync_mutations),
+            operation_lock: Mutex::new(()),
         }
     }
 
@@ -602,11 +608,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// Refuse operations that require a clean bead workspace while pending
     /// local mutations still need `br sync --flush-only`.
     pub fn ensure_synced(&self) -> Result<(), BrError> {
-        if self.pending_mutation_marker_path().is_none() {
-            return Err(BrError::Io(std::io::Error::other(
-                "br sync --import-only requires a configured working directory so pending mutation state can be recovered across restarts",
-            )));
-        }
+        self.working_dir_for_sync_import()?;
 
         if !self.has_pending_mutations() {
             return Ok(());
@@ -621,10 +623,41 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         )))
     }
 
+    fn working_dir_for_sync_import(&self) -> Result<&Path, BrError> {
+        self.adapter.working_dir.as_deref().ok_or_else(|| {
+            BrError::Io(std::io::Error::other(
+                "br sync --import-only requires a configured working directory so pending mutation state can be recovered across restarts",
+            ))
+        })
+    }
+
+    fn ensure_healthy_beads_for_import(&self) -> Result<(), BrError> {
+        let base_dir = self.working_dir_for_sync_import()?;
+        let status = check_beads_health(base_dir);
+        if let Some(details) = beads_health_failure_details(&status) {
+            return Err(BrError::Io(std::io::Error::other(format!(
+                "cannot run `br sync --import-only`: {details}"
+            ))));
+        }
+
+        Ok(())
+    }
+
     // ── mutation helpers ────────────────────────────────────────────────
 
     /// Execute a mutation command with dirty-flag bookkeeping and audit logging.
     async fn exec_tracked_mutation(
+        &self,
+        operation: &str,
+        bead_id: Option<&str>,
+        cmd: &BrCommand,
+    ) -> Result<BrOutput, BrError> {
+        let _operation_guard = self.operation_lock.lock().await;
+        self.exec_tracked_mutation_locked(operation, bead_id, cmd)
+            .await
+    }
+
+    async fn exec_tracked_mutation_locked(
         &self,
         operation: &str,
         bead_id: Option<&str>,
@@ -753,6 +786,11 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// safely re-run `br sync --flush-only` without losing the local mutation
     /// intent.
     pub async fn sync_flush(&self) -> Result<BrOutput, BrError> {
+        let _operation_guard = self.operation_lock.lock().await;
+        self.sync_flush_locked().await
+    }
+
+    async fn sync_flush_locked(&self) -> Result<BrOutput, BrError> {
         let cmd = BrCommand::sync_flush();
         let start = Instant::now();
         let result = self.adapter.exec_mutation(&cmd).await;
@@ -792,6 +830,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// Returns `Ok(None)` when no successful mutation has happened since the
     /// last flush, avoiding an unnecessary subprocess.
     pub async fn sync_if_dirty(&self) -> Result<Option<BrOutput>, BrError> {
+        let _operation_guard = self.operation_lock.lock().await;
         if !self.has_pending_mutations() {
             tracing::debug!(
                 operation = "sync_if_dirty",
@@ -801,7 +840,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
             return Ok(None);
         }
 
-        self.sync_flush().await.map(Some)
+        self.sync_flush_locked().await.map(Some)
     }
 
     /// Import upstream JSONL changes into the local workspace without
@@ -811,9 +850,13 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// The method refuses to run while local unsynced mutations are pending,
     /// including mutations recovered from `.beads/.br-unsynced-mutations`
     /// after a restart, so imported state cannot be mixed with a dirty local
-    /// mutation set.
+    /// mutation set. It also reuses the beads export health check so missing,
+    /// unreadable, or conflict-marked `.beads/issues.jsonl` state is rejected
+    /// before the import subprocess can run.
     pub async fn sync_import(&self) -> Result<BrOutput, BrError> {
+        let _operation_guard = self.operation_lock.lock().await;
         self.ensure_synced()?;
+        self.ensure_healthy_beads_for_import()?;
 
         let cmd = BrCommand::sync_import();
         let start = Instant::now();
@@ -852,6 +895,8 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
 mod tests {
     use super::*;
     use std::process::Command as StdCommand;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -1227,6 +1272,16 @@ mod tests {
         (BrMutationAdapter::with_adapter(adapter), command_log)
     }
 
+    fn write_issues_file(
+        base_dir: &std::path::Path,
+        contents: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let beads_dir = base_dir.join(".beads");
+        std::fs::create_dir_all(&beads_dir)?;
+        std::fs::write(beads_dir.join("issues.jsonl"), contents)?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn mutation_sets_dirty_flag() -> Result<(), Box<dyn std::error::Error>> {
         let ma = make_mutation_adapter(vec![MockRunner::success("created")]);
@@ -1383,6 +1438,99 @@ mod tests {
         Ok(())
     }
 
+    struct BlockingMutationRunner {
+        command_log: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        mutation_started: Arc<Notify>,
+        allow_mutation_finish: Arc<Notify>,
+    }
+
+    impl ProcessRunner for BlockingMutationRunner {
+        async fn run(
+            &self,
+            args: Vec<String>,
+            _timeout: Duration,
+            _working_dir: Option<&std::path::Path>,
+        ) -> Result<BrOutput, BrError> {
+            self.command_log
+                .lock()
+                .expect("command log")
+                .push(args.clone());
+
+            if args.first().map(String::as_str) == Some("update") {
+                self.mutation_started.notify_waiters();
+                self.allow_mutation_finish.notified().await;
+                return MockRunner::success("updated");
+            }
+
+            if args == vec!["sync".to_owned(), "--flush-only".to_owned()] {
+                return MockRunner::success("synced");
+            }
+
+            panic!("unexpected command: {args:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mutation_and_flush_are_serialized_around_pending_marker(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues_file(tmp.path(), "{\"id\":\"bead-1\"}\n")?;
+        let command_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mutation_started = Arc::new(Notify::new());
+        let allow_mutation_finish = Arc::new(Notify::new());
+        let adapter = BrAdapter::with_runner(BlockingMutationRunner {
+            command_log: Arc::clone(&command_log),
+            mutation_started: Arc::clone(&mutation_started),
+            allow_mutation_finish: Arc::clone(&allow_mutation_finish),
+        })
+        .with_working_dir(tmp.path().to_path_buf());
+        let mutation_adapter = Arc::new(BrMutationAdapter::with_adapter(adapter));
+
+        let update_adapter = Arc::clone(&mutation_adapter);
+        let update_task = tokio::spawn(async move {
+            update_adapter
+                .update_bead_status("bead-1", "in_progress")
+                .await
+        });
+
+        mutation_started.notified().await;
+
+        let flush_adapter = Arc::clone(&mutation_adapter);
+        let flush_task = tokio::spawn(async move { flush_adapter.sync_flush().await });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            command_log.lock().expect("command log").len(),
+            1,
+            "sync_flush must wait until the in-flight mutation finishes"
+        );
+
+        allow_mutation_finish.notify_waiters();
+        update_task.await??;
+        flush_task.await??;
+
+        assert!(
+            !mutation_adapter.has_pending_mutations(),
+            "flush should leave the adapter clean after the serialized mutation"
+        );
+        assert!(
+            !tmp.path().join(PENDING_MUTATIONS_MARKER).exists(),
+            "flush should remove the pending marker once the serialized mutation is synced"
+        );
+        assert_eq!(
+            *command_log.lock().expect("command log"),
+            vec![
+                vec![
+                    "update".to_owned(),
+                    "bead-1".to_owned(),
+                    "--status=in_progress".to_owned(),
+                ],
+                vec!["sync".to_owned(), "--flush-only".to_owned()],
+            ]
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn sync_import_rejects_dirty_adapter_without_invoking_br(
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1414,6 +1562,68 @@ mod tests {
                 "bead-1".to_owned(),
                 "--status=in_progress".to_owned(),
             ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_import_rejects_missing_beads_export_without_invoking_br(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let (ma, command_log) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("imported")]);
+
+        let error = ma
+            .sync_import()
+            .await
+            .expect_err("missing issues.jsonl must block import");
+
+        assert!(error.to_string().contains("missing .beads/issues.jsonl"));
+        assert!(
+            command_log.lock().expect("command log").is_empty(),
+            "health-gated sync_import should not invoke br when beads export is missing"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_import_rejects_conflicted_beads_export_without_invoking_br(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues_file(
+            tmp.path(),
+            "<<<<<<< HEAD\n{\"id\":\"bead-1\"}\n=======\n{\"id\":\"bead-2\"}\n>>>>>>> branch\n",
+        )?;
+        let (ma, command_log) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("imported")]);
+
+        let error = ma
+            .sync_import()
+            .await
+            .expect_err("conflicted issues.jsonl must block import");
+
+        assert!(error.to_string().contains("detected git conflict markers"));
+        assert!(
+            command_log.lock().expect("command log").is_empty(),
+            "health-gated sync_import should not invoke br when beads export is conflicted"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_import_runs_when_beads_export_is_healthy(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues_file(tmp.path(), "{\"id\":\"bead-1\"}\n")?;
+        let (ma, command_log) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("imported")]);
+
+        let result = ma.sync_import().await?;
+
+        assert_eq!(result.stdout, "imported");
+        assert_eq!(
+            *command_log.lock().expect("command log"),
+            vec![vec!["sync".to_owned(), "--import-only".to_owned()]]
         );
         Ok(())
     }
