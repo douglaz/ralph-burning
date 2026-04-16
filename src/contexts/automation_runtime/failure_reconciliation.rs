@@ -26,6 +26,7 @@ use crate::contexts::milestone_record::service::{
 };
 
 pub const MAX_FAILURE_RETRIES: u32 = 3;
+const SUPERSEDED_BY_RETRY_ERROR_PREFIX: &str = "superseded by retry started at ";
 
 #[derive(Clone)]
 struct FailureAttemptEvent {
@@ -463,6 +464,10 @@ fn normalize_error_summary(error_summary: &str) -> String {
     }
 }
 
+fn is_superseded_retry_error_summary(error_summary: &str) -> bool {
+    normalize_error_summary(error_summary).starts_with(SUPERSEDED_BY_RETRY_ERROR_PREFIX)
+}
+
 fn format_failure_outcome_detail(
     task_id: &str,
     attempt_number: u32,
@@ -529,6 +534,7 @@ fn normalized_failure_outcome_detail(
     let error_summary = parsed
         .error_summary
         .as_deref()
+        .filter(|summary| !is_superseded_retry_error_summary(summary))
         .unwrap_or(fallback_error_summary);
     format_failure_outcome_detail(task_id, attempt_number, error_summary)
 }
@@ -691,13 +697,21 @@ fn recorded_failure_provenance(
                 && event.details.started_at == started_at
         });
 
-    let outcome_detail = run_provenance
-        .and_then(|entry| entry.outcome_detail.clone())
-        .or_else(|| {
-            journal_provenance
-                .as_ref()
-                .and_then(|event| event.details.outcome_detail.clone())
-        });
+    let authoritative_outcome_detail = |detail: Option<String>| {
+        detail.filter(|detail| {
+            !parse_failure_outcome_detail(detail)
+                .error_summary
+                .as_deref()
+                .is_some_and(is_superseded_retry_error_summary)
+        })
+    };
+    let run_outcome_detail = run_provenance.and_then(|entry| entry.outcome_detail.clone());
+    let journal_outcome_detail = journal_provenance
+        .as_ref()
+        .and_then(|event| event.details.outcome_detail.clone());
+
+    let outcome_detail = authoritative_outcome_detail(run_outcome_detail)
+        .or_else(|| authoritative_outcome_detail(journal_outcome_detail));
     let task_id = run_provenance
         .and_then(|entry| entry.task_id.clone())
         .or_else(|| {
@@ -2759,6 +2773,72 @@ mod tests {
             details.outcome_detail.as_deref(),
             Some("task_id=task-structured\nattempt=1\nerror=stale failure")
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_failure_stale_replay_prefers_real_error_over_superseded_retry_placeholder(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        write_beads_export(base)?;
+        let milestone_id = create_test_milestone(base)?;
+        let first_started_at = Utc::now() + Duration::seconds(1);
+        let second_started_at = first_started_at + Duration::seconds(30);
+
+        start_attempt(base, &milestone_id, "task-1", "run-1", first_started_at)?;
+        start_attempt(base, &milestone_id, "task-1", "run-2", second_started_at)?;
+
+        let outcome = reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            first_started_at,
+            first_started_at + Duration::seconds(5),
+            "actual first failure summary",
+        )
+        .await?;
+        assert_eq!(
+            outcome,
+            FailureReconciliationOutcome::Retryable {
+                attempt_number: 1,
+                max_retries: MAX_FAILURE_RETRIES,
+            }
+        );
+
+        let failure_event = read_journal(&FsMilestoneJournalStore, base, &milestone_id)?
+            .into_iter()
+            .find(|event| {
+                event.event_type == MilestoneEventType::BeadFailed
+                    && serde_json::from_str::<
+                        crate::contexts::milestone_record::model::CompletionJournalDetails,
+                    >(event.details.as_deref().unwrap_or_default())
+                    .ok()
+                    .is_some_and(|details| details.run_id.as_deref() == Some("run-1"))
+            })
+            .expect("stale replay should repair the first failure event");
+        let details: crate::contexts::milestone_record::model::CompletionJournalDetails =
+            serde_json::from_str(
+                failure_event
+                    .details
+                    .as_deref()
+                    .expect("bead_failed details should be present"),
+            )?;
+        let outcome_detail = details
+            .outcome_detail
+            .as_deref()
+            .expect("repaired historical failure should include outcome detail");
+        assert!(outcome_detail.contains("error=actual first failure summary"));
+        assert!(!outcome_detail.contains("superseded by retry"));
 
         Ok(())
     }
