@@ -4271,9 +4271,16 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
 }
 
 /// Extract a `task_id` value from an `outcome_detail` string of the form
-/// `"task_id=<value>"`, returning the `<value>` portion if it matches.
+/// `"task_id=<value>"`, optionally followed by newline/semicolon-delimited
+/// metadata, returning the `<value>` portion if it matches.
 fn extract_task_id_from_outcome_detail(detail: &str) -> Option<&str> {
-    detail.strip_prefix("task_id=")
+    let task_id = detail.strip_prefix("task_id=")?;
+    let task_id = task_id
+        .split(['\n', ';'])
+        .next()
+        .map(str::trim)
+        .unwrap_or(task_id);
+    (!task_id.is_empty()).then_some(task_id)
 }
 
 pub struct FsTaskRunLineageStore;
