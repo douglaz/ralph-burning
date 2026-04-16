@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 8
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-7-64f61b2c",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "finding_summary: `claim_bead_in_br` can report success for a bead we never actually claimed\nseverity: high\naffected_files:\n- src/cli/project.rs\n- src/adapters/br_process.rs\nremediation_hint: Do not treat a generic recovered pending-mutation flush as proof that this bead's earlier `br update --status=in_progress` succeeded. Either persist bead/operation metadata with the marker and verify it matches `bead_id`, or always retry the explicit claim after a recovered flush unless you can prove the pending mutation came from this same claim.\n\nevidence:\n- `src/cli/project.rs:973-989` flushes any recovered `.br-unsynced-mutations` marker and immediately returns `Ok(())` whenever `br show` reports the target bead as `in_progress`.\n- `src/adapters/br_process.rs:32-37` and `src/adapters/br_process.rs:698-706` make that marker repo-global for any successful mutation, not specifically for bead-claim updates.\n- That means an unrelated unsynced mutation plus another operator winning the claim race can now be misclassified as \"our earlier claim succeeded\", which is exactly the race the surrounding comment at `src/cli/project.rs:960-964` says must not be treated as idempotent.",
-        "created_at": "2026-04-16T07:09:51.208960773Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "2858433df71a5a184cf28cf0b1cca03ebad643c61903d08063d1c0656bbf84ce"
-      },
-      {
-        "amendment_id": "fr-7-c08c60fa",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "finding_summary: The new pending-mutation safety signal is only snapshotted once per adapter, so `sync_import()` and `sync_if_dirty()` can miss or erase unsynced state from other adapters/processes\nseverity: medium\naffected_files:\n- src/adapters/br_process.rs\nremediation_hint: Re-read and coordinate the on-disk dirty state under a repo-wide lock before `ensure_synced`, `sync_if_dirty`, and marker clearing, or replace the single shared marker with a multi-producer scheme that cannot be lost when another adapter flushes.\n\nevidence:\n- `src/adapters/br_process.rs:572-577` reads `.beads/.br-unsynced-mutations` only once into `has_unsync_mutations` during construction.\n- `src/adapters/br_process.rs:648-652` and `src/adapters/br_process.rs:870-881` then decide whether import/flush is safe using only that cached boolean.\n- `src/adapters/br_process.rs:549-552` shows synchronization is only per-adapter (`operation_lock`), while `src/adapters/br_process.rs:838-840` unconditionally clears the single repo-wide marker on any successful flush.\n- In a multi-adapter or multi-process repo, one actor can therefore create or clear the marker without another long-lived adapter noticing, defeating the advertised crash-safe import guard and allowing pending local mutations to be missed after a crash/restart.",
-        "created_at": "2026-04-16T07:09:51.208965061Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "dc21f727156eac11d897a65e629658395180525f0e98dbcd4a906d55f6940f65"
-      }
-    ],
-    "processed_count": 14
+    "pending": [],
+    "processed_count": 16
   },
-  "status_summary": "running: final review restart round 8 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T07:01:21.171940585Z",

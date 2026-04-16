@@ -971,21 +971,13 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
 
     let br =
         BrMutationAdapter::with_adapter(BrAdapter::new().with_working_dir(base_dir.to_path_buf()));
-    if br
-        .sync_if_dirty()
-        .await
-        .map_err(|error| {
-            AppError::Io(std::io::Error::other(format!(
-                "failed to replay a previously successful local bead claim for '{bead_id}' via \
+    let recovered_flush = br.sync_if_dirty().await.map_err(|error| {
+        AppError::Io(std::io::Error::other(format!(
+            "failed to replay a previously successful local bead claim for '{bead_id}' via \
                  br sync --flush-only: {error}"
-            )))
-        })?
-        .is_some()
-        && matches!(
-            bead_status_after_recovered_claim_flush(base_dir, bead_id).await?,
-            Some(BeadStatus::InProgress)
-        )
-    {
+        )))
+    })?;
+    if recovered_flush.includes_update_status(bead_id, "in_progress") {
         return Ok(());
     }
 
@@ -1005,29 +997,6 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
         )))
     })?;
     Ok(())
-}
-
-async fn bead_status_after_recovered_claim_flush(
-    base_dir: &Path,
-    bead_id: &str,
-) -> AppResult<Option<BeadStatus>> {
-    let response: BrShowResponse = BrAdapter::new()
-        .with_working_dir(base_dir.to_path_buf())
-        .exec_json(&BrCommand::show(bead_id))
-        .await
-        .map_err(|error| {
-            AppError::Io(std::io::Error::other(format!(
-                "flushed recovered local bead mutations but failed to confirm whether bead \
-                 '{bead_id}' is already claimed: {error}"
-            )))
-        })?;
-
-    let bead = match response {
-        BrShowResponse::Single(bead) => Some(bead),
-        BrShowResponse::Many(beads) => beads.into_iter().find(|bead| bead.id == bead_id),
-    };
-
-    Ok(bead.map(|bead| bead.status))
 }
 
 async fn load_bead_detail(
@@ -3938,6 +3907,58 @@ esac
                 .expect("chmod fake br");
         }
 
+        /// Install a fake `br` where a recovered dirty repo can be flushed, but
+        /// a new explicit claim still fails because another operator already
+        /// owns the bead.
+        fn install_fake_br_claim_after_unrelated_recovered_flush_failure(
+            base_dir: &std::path::Path,
+            bead_id: &str,
+        ) {
+            write_beads_export(base_dir, "{\"id\":\"seed-bead\"}\n");
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+set -eu
+
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  sync)
+    count=0
+    if [ -f .beads/sync-count ]; then
+      count=$(cat .beads/sync-count)
+    fi
+    count=$((count + 1))
+    echo "$count" > .beads/sync-count
+    echo "Synced"
+    exit 0
+    ;;
+  update)
+    count=0
+    if [ -f .beads/update-count ]; then
+      count=$(cat .beads/update-count)
+    fi
+    count=$((count + 1))
+    echo "$count" > .beads/update-count
+    echo "{bead_id} already claimed by another operator" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
         /// Set up milestone directory so the controller store can write files.
         fn ensure_milestone_dir(base_dir: &std::path::Path, milestone_id: &MilestoneId) {
             let milestone_dir = base_dir
@@ -4058,6 +4079,51 @@ esac
                 sync_count.trim(),
                 "2",
                 "retry should perform a second sync flush to publish the recovered claim"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_does_not_treat_unrelated_recovered_flush_as_our_claim(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_after_unrelated_recovered_flush_failure(base_dir, "bead-1");
+            let journal_path = base_dir.join(".beads/.br-unsynced-mutations.d/unrelated.json");
+            std::fs::create_dir_all(
+                journal_path
+                    .parent()
+                    .expect("journal path must have parent"),
+            )?;
+            std::fs::write(
+                &journal_path,
+                r#"{"adapter_id":"other","operation":"comment_bead","bead_id":"bead-2","status":null}"#,
+            )?;
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            assert!(
+                result.is_err(),
+                "flushing unrelated recovered mutations must not be treated as proof that our claim already succeeded"
+            );
+            let error = result.expect_err("claim should fail").to_string();
+            assert!(
+                error.contains("failed to claim bead 'bead-1' via br update --status=in_progress"),
+                "claim should still perform an explicit update after unrelated flushes: {error}"
+            );
+            let sync_count = std::fs::read_to_string(base_dir.join(".beads/sync-count"))?;
+            assert_eq!(
+                sync_count.trim(),
+                "1",
+                "recovered unrelated mutation should flush once"
+            );
+            let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
+            assert_eq!(
+                update_count.trim(),
+                "1",
+                "claim should still attempt its own update"
             );
             Ok(())
         }

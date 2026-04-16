@@ -11,10 +11,12 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use serde::de::DeserializeOwned;
+use nix::fcntl::{Flock, FlockArg};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 
@@ -29,12 +31,24 @@ const DEFAULT_MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
 /// Poll interval for synchronous availability probes.
 const AVAILABILITY_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// Marker persisted inside `.beads/` whenever a mutation may still need
-/// `br sync --flush-only` before external imports are safe again.
+/// Legacy single-file marker from the first crash-recovery implementation.
 ///
-/// `.gitignore` must keep this file out of source control so the standard
-/// `git add .beads/` workflow cannot commit transient adapter state.
-const PENDING_MUTATIONS_MARKER: &str = ".beads/.br-unsynced-mutations";
+/// New code writes per-mutation journal records under `PENDING_MUTATIONS_DIR`,
+/// but we still honor this file as a dirty signal so pre-existing workspaces
+/// stay protected until their next successful flush clears it.
+const LEGACY_PENDING_MUTATIONS_MARKER: &str = ".beads/.br-unsynced-mutations";
+
+/// Per-mutation journal persisted inside `.beads/` whenever a local mutation
+/// may still need `br sync --flush-only` before external imports are safe.
+///
+/// Each successful mutation keeps its own record so recovered adapters can
+/// verify which operation(s) were pending instead of relying on a single
+/// repo-global boolean marker.
+const PENDING_MUTATIONS_DIR: &str = ".beads/.br-unsynced-mutations.d";
+
+/// Repo-wide lock file used to serialize mutation/flush/import decisions across
+/// adapters and processes that share a working tree.
+const REPO_OPERATION_LOCK: &str = ".beads/.br-sync.lock";
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -90,6 +104,103 @@ pub struct BrOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PendingMutationRecord {
+    adapter_id: String,
+    operation: String,
+    bead_id: Option<String>,
+    status: Option<String>,
+}
+
+impl PendingMutationRecord {
+    fn new(
+        adapter_id: String,
+        operation: impl Into<String>,
+        bead_id: Option<&str>,
+        status: Option<&str>,
+    ) -> Self {
+        Self {
+            adapter_id,
+            operation: operation.into(),
+            bead_id: bead_id.map(ToOwned::to_owned),
+            status: status.map(ToOwned::to_owned),
+        }
+    }
+
+    fn unknown(adapter_id: impl Into<String>, operation: impl Into<String>) -> Self {
+        Self {
+            adapter_id: adapter_id.into(),
+            operation: operation.into(),
+            bead_id: None,
+            status: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PendingMutationSnapshot {
+    records: Vec<PendingMutationRecord>,
+    legacy_marker_present: bool,
+}
+
+impl PendingMutationSnapshot {
+    fn is_dirty(&self) -> bool {
+        self.legacy_marker_present || !self.records.is_empty()
+    }
+}
+
+#[derive(Debug)]
+struct RepoOperationGuard {
+    #[cfg(unix)]
+    _file: Flock<std::fs::File>,
+}
+
+#[derive(Debug, Clone)]
+pub enum SyncIfDirtyOutcome {
+    Clean,
+    Flushed {
+        output: BrOutput,
+        flushed_mutations: usize,
+        matching_update_status: Vec<(String, String)>,
+    },
+}
+
+impl SyncIfDirtyOutcome {
+    pub fn is_clean(&self) -> bool {
+        matches!(self, Self::Clean)
+    }
+
+    pub fn output(&self) -> Option<&BrOutput> {
+        match self {
+            Self::Clean => None,
+            Self::Flushed { output, .. } => Some(output),
+        }
+    }
+
+    pub fn flushed_mutations(&self) -> usize {
+        match self {
+            Self::Clean => 0,
+            Self::Flushed {
+                flushed_mutations, ..
+            } => *flushed_mutations,
+        }
+    }
+
+    pub fn includes_update_status(&self, bead_id: &str, status: &str) -> bool {
+        match self {
+            Self::Clean => false,
+            Self::Flushed {
+                matching_update_status,
+                ..
+            } => matching_update_status
+                .iter()
+                .any(|(candidate_bead_id, candidate_status)| {
+                    candidate_bead_id == bead_id && candidate_status == status
+                }),
+        }
+    }
 }
 
 // ── Command builder ─────────────────────────────────────────────────────────
@@ -537,17 +648,21 @@ impl<R: ProcessRunner> BrAdapter<R> {
 ///
 /// Sync lifecycle invariants:
 /// - successful local mutations set `has_unsync_mutations`
-/// - pending mutation state is also persisted to `.beads/.br-unsynced-mutations`
-///   so a fresh adapter can recover crash-safe import guards after restart
+/// - pending mutation state is persisted under `.beads/.br-unsynced-mutations.d/`
+///   with one journal record per adapter instance, and all decisions that can
+///   clear or rely on that state are serialized behind `.beads/.br-sync.lock`
+/// - a fresh adapter re-reads the repo journal under that lock so crash
+///   recovery and long-lived processes see the same pending-mutation view
 /// - `sync_flush` is the only operation that clears the dirty flag
 /// - `sync_import` never sets the dirty flag and refuses to run while local
 ///   mutations are still pending, preventing upstream imports from being mixed
 ///   with unflushed local state; callers must also provide a working directory
-///   so the persisted marker can prove the workspace was recovered cleanly
+///   so the persisted journal can prove the workspace was recovered cleanly
 /// - `sync_if_dirty` is the safe convenience path when callers want to flush
 ///   only if prior mutation steps actually dirtied the local workspace
 pub struct BrMutationAdapter<R: ProcessRunner = OsProcessRunner> {
     adapter: BrAdapter<R>,
+    adapter_id: String,
     has_unsync_mutations: AtomicBool,
     operation_lock: Mutex<()>,
 }
@@ -556,6 +671,7 @@ impl BrMutationAdapter<OsProcessRunner> {
     pub fn new() -> Self {
         Self {
             adapter: BrAdapter::new(),
+            adapter_id: Uuid::new_v4().to_string(),
             has_unsync_mutations: AtomicBool::new(false),
             operation_lock: Mutex::new(()),
         }
@@ -573,6 +689,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         let has_unsync_mutations = Self::recover_pending_mutation_state(&adapter);
         Self {
             adapter,
+            adapter_id: Uuid::new_v4().to_string(),
             has_unsync_mutations: AtomicBool::new(has_unsync_mutations),
             operation_lock: Mutex::new(()),
         }
@@ -588,67 +705,268 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         &self.adapter
     }
 
-    fn pending_mutation_marker_path_for(adapter: &BrAdapter<R>) -> Option<PathBuf> {
+    fn legacy_pending_mutation_marker_path_for(adapter: &BrAdapter<R>) -> Option<PathBuf> {
         adapter
             .working_dir
             .as_ref()
-            .map(|dir| dir.join(PENDING_MUTATIONS_MARKER))
+            .map(|dir| dir.join(LEGACY_PENDING_MUTATIONS_MARKER))
     }
 
-    fn pending_mutation_marker_path(&self) -> Option<PathBuf> {
-        Self::pending_mutation_marker_path_for(&self.adapter)
+    fn legacy_pending_mutation_marker_path(&self) -> Option<PathBuf> {
+        Self::legacy_pending_mutation_marker_path_for(&self.adapter)
     }
 
-    fn recover_pending_mutation_state(adapter: &BrAdapter<R>) -> bool {
-        let Some(marker_path) = Self::pending_mutation_marker_path_for(adapter) else {
-            return false;
+    fn pending_mutations_dir_for(adapter: &BrAdapter<R>) -> Option<PathBuf> {
+        adapter
+            .working_dir
+            .as_ref()
+            .map(|dir| dir.join(PENDING_MUTATIONS_DIR))
+    }
+
+    fn pending_mutations_dir(&self) -> Option<PathBuf> {
+        Self::pending_mutations_dir_for(&self.adapter)
+    }
+
+    fn pending_mutation_record_path_for(
+        adapter: &BrAdapter<R>,
+        adapter_id: &str,
+    ) -> Option<PathBuf> {
+        Self::pending_mutations_dir_for(adapter).map(|dir| dir.join(format!("{adapter_id}.json")))
+    }
+
+    fn pending_mutation_record_path(&self) -> Option<PathBuf> {
+        Self::pending_mutation_record_path_for(&self.adapter, &self.adapter_id)
+    }
+
+    fn repo_operation_lock_path_for(adapter: &BrAdapter<R>) -> Option<PathBuf> {
+        adapter
+            .working_dir
+            .as_ref()
+            .map(|dir| dir.join(REPO_OPERATION_LOCK))
+    }
+
+    fn acquire_repo_operation_lock(&self) -> Result<Option<RepoOperationGuard>, BrError> {
+        let Some(lock_path) = Self::repo_operation_lock_path_for(&self.adapter) else {
+            return Ok(None);
+        };
+        let Some(parent) = lock_path.parent() else {
+            return Ok(None);
         };
 
-        match std::fs::metadata(&marker_path) {
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => {
-                tracing::warn!(
-                    marker_path = %marker_path.display(),
-                    %error,
-                    "failed to inspect br pending-mutation marker; assuming workspace is dirty"
-                );
-                true
-            }
+        std::fs::create_dir_all(parent)?;
+
+        #[cfg(unix)]
+        {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .open(lock_path)?;
+            let lock = Flock::lock(file, FlockArg::LockExclusive)
+                .map_err(|(_, error)| BrError::Io(std::io::Error::from(error)))?;
+            Ok(Some(RepoOperationGuard { _file: lock }))
+        }
+
+        #[cfg(not(unix))]
+        {
+            Ok(Some(RepoOperationGuard {}))
         }
     }
 
-    fn persist_pending_mutation_marker(&self) -> Result<(), BrError> {
-        let Some(marker_path) = self.pending_mutation_marker_path() else {
+    fn recover_pending_mutation_state(adapter: &BrAdapter<R>) -> bool {
+        let Some(working_dir) = adapter.working_dir.as_ref() else {
+            return false;
+        };
+
+        let lock_path = working_dir.join(REPO_OPERATION_LOCK);
+        let Some(parent) = lock_path.parent() else {
+            return false;
+        };
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            tracing::warn!(
+                lock_path = %lock_path.display(),
+                %error,
+                "failed to prepare br repo-operation lock; assuming workspace is dirty"
+            );
+            return true;
+        }
+
+        #[cfg(unix)]
+        let file = match std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+        {
+            Ok(file) => file,
+            Err(error) => {
+                tracing::warn!(
+                    lock_path = %lock_path.display(),
+                    %error,
+                    "failed to open br repo-operation lock; assuming workspace is dirty"
+                );
+                return true;
+            }
+        };
+
+        #[cfg(unix)]
+        let _lock = match Flock::lock(file, FlockArg::LockExclusive) {
+            Ok(lock) => lock,
+            Err((_, error)) => {
+                tracing::warn!(
+                    lock_path = %lock_path.display(),
+                    error = %std::io::Error::from(error),
+                    "failed to acquire br repo-operation lock; assuming workspace is dirty"
+                );
+                return true;
+            }
+        };
+
+        let snapshot = match Self::read_pending_mutation_snapshot(adapter) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!(
+                    lock_path = %lock_path.display(),
+                    %error,
+                    "failed to inspect br pending mutations; assuming workspace is dirty"
+                );
+                PendingMutationSnapshot {
+                    records: Vec::new(),
+                    legacy_marker_present: true,
+                }
+            }
+        };
+        snapshot.is_dirty()
+    }
+
+    fn read_pending_mutation_snapshot(
+        adapter: &BrAdapter<R>,
+    ) -> Result<PendingMutationSnapshot, BrError> {
+        let legacy_marker_present = Self::legacy_pending_mutation_marker_path_for(adapter)
+            .map(|path| path.exists())
+            .unwrap_or(false);
+
+        let Some(records_dir) = Self::pending_mutations_dir_for(adapter) else {
+            return Ok(PendingMutationSnapshot {
+                records: Vec::new(),
+                legacy_marker_present,
+            });
+        };
+
+        let mut records = Vec::new();
+        match std::fs::read_dir(&records_dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = entry?;
+                    let entry_type = entry.file_type()?;
+                    if !entry_type.is_file() {
+                        continue;
+                    }
+
+                    let path = entry.path();
+                    let contents = std::fs::read_to_string(&path)?;
+                    match serde_json::from_str::<PendingMutationRecord>(&contents) {
+                        Ok(record) => records.push(record),
+                        Err(error) => {
+                            tracing::warn!(
+                                record_path = %path.display(),
+                                %error,
+                                "failed to parse pending br mutation record; preserving it as unknown dirty state"
+                            );
+                            let adapter_id = path
+                                .file_stem()
+                                .and_then(|stem| stem.to_str())
+                                .unwrap_or("unknown")
+                                .to_owned();
+                            records.push(PendingMutationRecord::unknown(
+                                adapter_id,
+                                "unknown_pending_mutation_record",
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(BrError::Io(error)),
+        }
+
+        Ok(PendingMutationSnapshot {
+            records,
+            legacy_marker_present,
+        })
+    }
+
+    fn refresh_pending_mutation_state_locked(&self) -> Result<PendingMutationSnapshot, BrError> {
+        let snapshot = Self::read_pending_mutation_snapshot(&self.adapter)?;
+        self.has_unsync_mutations
+            .store(snapshot.is_dirty(), Ordering::Release);
+        Ok(snapshot)
+    }
+
+    fn persist_pending_mutation_record(
+        &self,
+        record: &PendingMutationRecord,
+    ) -> Result<(), BrError> {
+        let Some(record_path) = self.pending_mutation_record_path() else {
             return Ok(());
         };
-        let Some(parent) = marker_path.parent() else {
+        let Some(parent) = record_path.parent() else {
             return Ok(());
         };
 
         std::fs::create_dir_all(parent)?;
-        std::fs::write(&marker_path, b"pending br sync --flush-only\n")?;
+        let payload = serde_json::to_vec(record)
+            .map_err(|error| BrError::Io(std::io::Error::other(error.to_string())))?;
+        std::fs::write(&record_path, payload)?;
         Ok(())
     }
 
-    fn clear_pending_mutation_marker(&self) -> Result<(), BrError> {
-        let Some(marker_path) = self.pending_mutation_marker_path() else {
+    fn clear_own_pending_mutation_record(&self) -> Result<(), BrError> {
+        let Some(record_path) = self.pending_mutation_record_path() else {
             return Ok(());
         };
 
-        match std::fs::remove_file(&marker_path) {
+        match std::fs::remove_file(&record_path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(BrError::Io(error)),
         }
     }
 
+    fn clear_all_pending_mutation_state(&self) -> Result<(), BrError> {
+        if let Some(legacy_marker_path) = self.legacy_pending_mutation_marker_path() {
+            match std::fs::remove_file(&legacy_marker_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(BrError::Io(error)),
+            }
+        }
+
+        if let Some(records_dir) = self.pending_mutations_dir() {
+            match std::fs::remove_dir_all(&records_dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(BrError::Io(error)),
+            }
+        }
+
+        Ok(())
+    }
+
     /// Refuse operations that require a clean bead workspace while pending
     /// local mutations still need `br sync --flush-only`.
-    pub fn ensure_synced(&self) -> Result<(), BrError> {
+    pub async fn ensure_synced(&self) -> Result<(), BrError> {
+        let _operation_guard = self.operation_lock.lock().await;
+        let _repo_guard = self.acquire_repo_operation_lock()?;
+        self.ensure_synced_locked()
+    }
+
+    fn ensure_synced_locked(&self) -> Result<(), BrError> {
         self.working_dir_for_sync_import()?;
 
-        if !self.has_pending_mutations() {
+        if !self.refresh_pending_mutation_state_locked()?.is_dirty() {
             return Ok(());
         }
 
@@ -688,10 +1006,12 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         &self,
         operation: &str,
         bead_id: Option<&str>,
+        status: Option<&str>,
         cmd: &BrCommand,
     ) -> Result<BrOutput, BrError> {
         let _operation_guard = self.operation_lock.lock().await;
-        self.exec_tracked_mutation_locked(operation, bead_id, cmd)
+        let _repo_guard = self.acquire_repo_operation_lock()?;
+        self.exec_tracked_mutation_locked(operation, bead_id, status, cmd)
             .await
     }
 
@@ -699,10 +1019,16 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         &self,
         operation: &str,
         bead_id: Option<&str>,
+        status: Option<&str>,
         cmd: &BrCommand,
     ) -> Result<BrOutput, BrError> {
-        let already_dirty = self.has_pending_mutations();
-        self.persist_pending_mutation_marker()?;
+        let own_record_existed = self
+            .pending_mutation_record_path()
+            .as_ref()
+            .is_some_and(|path| path.exists());
+        let pending_record =
+            PendingMutationRecord::new(self.adapter_id.clone(), operation, bead_id, status);
+        self.persist_pending_mutation_record(&pending_record)?;
 
         let start = Instant::now();
         let result = self.adapter.exec_mutation(cmd).await;
@@ -720,13 +1046,13 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
                 );
             }
             Err(err) => {
-                if !already_dirty {
-                    if let Err(error) = self.clear_pending_mutation_marker() {
+                if !own_record_existed {
+                    if let Err(error) = self.clear_own_pending_mutation_record() {
                         tracing::warn!(
                             operation = operation,
                             bead_id = bead_id.unwrap_or(""),
                             %error,
-                            "failed to clear pending mutation marker after failed br mutation"
+                            "failed to clear pending mutation record after failed br mutation"
                         );
                     }
                 }
@@ -769,20 +1095,21 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         if let Some(desc) = description {
             cmd = cmd.kv("description", desc);
         }
-        self.exec_tracked_mutation("create_bead", None, &cmd).await
+        self.exec_tracked_mutation("create_bead", None, None, &cmd)
+            .await
     }
 
     /// Update the status of an existing bead.
     pub async fn update_bead_status(&self, id: &str, status: &str) -> Result<BrOutput, BrError> {
         let cmd = BrCommand::update_status(id, status);
-        self.exec_tracked_mutation("update_bead_status", Some(id), &cmd)
+        self.exec_tracked_mutation("update_bead_status", Some(id), Some(status), &cmd)
             .await
     }
 
     /// Close a bead with a reason.
     pub async fn close_bead(&self, id: &str, reason: &str) -> Result<BrOutput, BrError> {
         let cmd = BrCommand::close(id, reason);
-        self.exec_tracked_mutation("close_bead", Some(id), &cmd)
+        self.exec_tracked_mutation("close_bead", Some(id), None, &cmd)
             .await
     }
 
@@ -793,7 +1120,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         depends_on_id: &str,
     ) -> Result<BrOutput, BrError> {
         let cmd = BrCommand::dep_add(from_id, depends_on_id);
-        self.exec_tracked_mutation("add_dependency", Some(from_id), &cmd)
+        self.exec_tracked_mutation("add_dependency", Some(from_id), None, &cmd)
             .await
     }
 
@@ -804,14 +1131,14 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         depends_on_id: &str,
     ) -> Result<BrOutput, BrError> {
         let cmd = BrCommand::dep_remove(from_id, depends_on_id);
-        self.exec_tracked_mutation("remove_dependency", Some(from_id), &cmd)
+        self.exec_tracked_mutation("remove_dependency", Some(from_id), None, &cmd)
             .await
     }
 
     /// Add a comment to a bead.
     pub async fn comment_bead(&self, id: &str, text: &str) -> Result<BrOutput, BrError> {
         let cmd = BrCommand::comment(id, text);
-        self.exec_tracked_mutation("comment_bead", Some(id), &cmd)
+        self.exec_tracked_mutation("comment_bead", Some(id), None, &cmd)
             .await
     }
 
@@ -825,6 +1152,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// intent.
     pub async fn sync_flush(&self) -> Result<BrOutput, BrError> {
         let _operation_guard = self.operation_lock.lock().await;
+        let _repo_guard = self.acquire_repo_operation_lock()?;
         self.sync_flush_locked().await
     }
 
@@ -836,7 +1164,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
 
         match &result {
             Ok(_) => {
-                self.clear_pending_mutation_marker()?;
+                self.clear_all_pending_mutation_state()?;
                 self.has_unsync_mutations.store(false, Ordering::Release);
                 tracing::info!(
                     operation = "sync_flush",
@@ -865,20 +1193,64 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
 
     /// Flush pending mutations only when the adapter is currently dirty.
     ///
-    /// Returns `Ok(None)` when no successful mutation has happened since the
-    /// last flush, avoiding an unnecessary subprocess.
-    pub async fn sync_if_dirty(&self) -> Result<Option<BrOutput>, BrError> {
+    /// Returns `SyncIfDirtyOutcome::Clean` when no pending mutation journal is
+    /// present, avoiding an unnecessary subprocess. When a flush does happen,
+    /// the outcome also reports which persisted status updates were replayed so
+    /// callers can distinguish their own recovered claim from unrelated work.
+    pub async fn sync_if_dirty(&self) -> Result<SyncIfDirtyOutcome, BrError> {
         let _operation_guard = self.operation_lock.lock().await;
-        if !self.has_pending_mutations() {
+        let _repo_guard = self.acquire_repo_operation_lock()?;
+        if self.adapter.working_dir.is_none() {
+            if !self.has_pending_mutations() {
+                tracing::debug!(
+                    operation = "sync_if_dirty",
+                    outcome = "skipped",
+                    "skipping br sync because no local mutations are pending"
+                );
+                return Ok(SyncIfDirtyOutcome::Clean);
+            }
+
+            return self
+                .sync_flush_locked()
+                .await
+                .map(|output| SyncIfDirtyOutcome::Flushed {
+                    output,
+                    flushed_mutations: 1,
+                    matching_update_status: Vec::new(),
+                });
+        }
+
+        let snapshot = self.refresh_pending_mutation_state_locked()?;
+        if !snapshot.is_dirty() {
             tracing::debug!(
                 operation = "sync_if_dirty",
                 outcome = "skipped",
                 "skipping br sync because no local mutations are pending"
             );
-            return Ok(None);
+            return Ok(SyncIfDirtyOutcome::Clean);
         }
 
-        self.sync_flush_locked().await.map(Some)
+        let matching_update_status = snapshot
+            .records
+            .iter()
+            .filter_map(|record| {
+                record
+                    .bead_id
+                    .as_ref()
+                    .zip(record.status.as_ref())
+                    .filter(|_| record.operation == "update_bead_status")
+                    .map(|(bead_id, status)| (bead_id.clone(), status.clone()))
+            })
+            .collect::<Vec<_>>();
+
+        self.sync_flush_locked()
+            .await
+            .map(|output| SyncIfDirtyOutcome::Flushed {
+                output,
+                flushed_mutations: snapshot.records.len()
+                    + usize::from(snapshot.legacy_marker_present),
+                matching_update_status,
+            })
     }
 
     /// Import upstream JSONL changes into the local workspace without
@@ -893,7 +1265,8 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// before the import subprocess can run.
     pub async fn sync_import(&self) -> Result<BrOutput, BrError> {
         let _operation_guard = self.operation_lock.lock().await;
-        self.ensure_synced()?;
+        let _repo_guard = self.acquire_repo_operation_lock()?;
+        self.ensure_synced_locked()?;
         self.ensure_healthy_beads_for_import()?;
 
         let cmd = BrCommand::sync_import();
@@ -1471,7 +1844,7 @@ mod tests {
 
         let result = ma.sync_if_dirty().await?;
 
-        assert!(result.is_none());
+        assert!(result.is_clean());
         assert!(
             command_log.lock().expect("command log").is_empty(),
             "clean sync_if_dirty should not invoke br"
@@ -1492,7 +1865,7 @@ mod tests {
         ma.update_bead_status("bead-1", "in_progress").await?;
         let result = ma.sync_if_dirty().await?;
 
-        assert!(result.is_some());
+        assert!(matches!(result, SyncIfDirtyOutcome::Flushed { .. }));
         assert!(!ma.has_pending_mutations());
         let commands = command_log.lock().expect("command log");
         assert!(commands.contains(&vec![
@@ -1501,6 +1874,35 @@ mod tests {
             "--status=in_progress".to_owned(),
         ]));
         assert!(commands.contains(&vec!["sync".to_owned(), "--flush-only".to_owned()]));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_if_dirty_rechecks_repo_pending_state_after_adapter_construction(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let (clean_adapter, clean_log) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("synced")]);
+        assert!(
+            !clean_adapter.has_pending_mutations(),
+            "fresh adapter should start clean before another writer mutates"
+        );
+
+        let (dirty_adapter, _) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("updated")]);
+        dirty_adapter
+            .update_bead_status("bead-1", "in_progress")
+            .await?;
+
+        let result = clean_adapter.sync_if_dirty().await?;
+
+        assert!(matches!(result, SyncIfDirtyOutcome::Flushed { .. }));
+        assert!(result.includes_update_status("bead-1", "in_progress"));
+        assert_eq!(
+            *clean_log.lock().expect("command log"),
+            vec![vec!["sync".to_owned(), "--flush-only".to_owned()]],
+            "clean adapter should re-read repo state and flush recovered work"
+        );
         Ok(())
     }
 
@@ -1580,8 +1982,8 @@ mod tests {
             "flush should leave the adapter clean after the serialized mutation"
         );
         assert!(
-            !tmp.path().join(PENDING_MUTATIONS_MARKER).exists(),
-            "flush should remove the pending marker once the serialized mutation is synced"
+            !tmp.path().join(PENDING_MUTATIONS_DIR).exists(),
+            "flush should remove the pending mutation journal once the serialized mutation is synced"
         );
         assert_eq!(
             *command_log.lock().expect("command log"),
@@ -1628,6 +2030,39 @@ mod tests {
                 "bead-1".to_owned(),
                 "--status=in_progress".to_owned(),
             ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_import_rechecks_repo_pending_state_after_adapter_construction(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues_file(tmp.path(), "{\"id\":\"bead-1\"}\n")?;
+
+        let (clean_adapter, clean_log) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("imported")]);
+        assert!(
+            !clean_adapter.has_pending_mutations(),
+            "adapter should start clean before another writer mutates"
+        );
+
+        let (dirty_adapter, _) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("updated")]);
+        dirty_adapter
+            .update_bead_status("bead-1", "in_progress")
+            .await?;
+
+        let error = clean_adapter
+            .sync_import()
+            .await
+            .expect_err("import must re-read repo state and block on later mutations");
+        assert!(error
+            .to_string()
+            .contains("pending local br mutations detected"));
+        assert!(
+            clean_log.lock().expect("command log").is_empty(),
+            "sync_import should not invoke br when repo became dirty after adapter construction"
         );
         Ok(())
     }
@@ -1728,10 +2163,12 @@ mod tests {
             .update_bead_status("bead-1", "in_progress")
             .await?;
 
-        let marker_path = tmp.path().join(PENDING_MUTATIONS_MARKER);
+        let marker_path = first_adapter
+            .pending_mutation_record_path()
+            .expect("record path should exist for working-dir adapters");
         assert!(
             marker_path.is_file(),
-            "mutation marker should persist to disk"
+            "pending mutation record should persist to disk"
         );
 
         let (restarted_adapter, command_log) =
@@ -1756,7 +2193,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_mutation_marker_is_ignored_by_git_add_beads(
+    fn pending_mutation_artifacts_are_ignored_by_git_add_beads(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         std::fs::write(
@@ -1764,13 +2201,28 @@ mod tests {
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/.gitignore"))?,
         )?;
 
-        let marker_path = tmp.path().join(PENDING_MUTATIONS_MARKER);
+        let marker_path = tmp.path().join(LEGACY_PENDING_MUTATIONS_MARKER);
         std::fs::create_dir_all(
             marker_path
                 .parent()
                 .expect("pending mutation marker must have a parent dir"),
         )?;
         std::fs::write(&marker_path, "pending\n")?;
+        let journal_path = tmp.path().join(PENDING_MUTATIONS_DIR).join("adapter.json");
+        std::fs::create_dir_all(
+            journal_path
+                .parent()
+                .expect("pending mutation journal must have a parent dir"),
+        )?;
+        std::fs::write(
+            &journal_path,
+            serde_json::to_vec(&PendingMutationRecord::new(
+                "adapter".to_owned(),
+                "update_bead_status",
+                Some("bead-1"),
+                Some("in_progress"),
+            ))?,
+        )?;
 
         let init = StdCommand::new("git")
             .args(["init", "-q"])
@@ -1797,7 +2249,7 @@ mod tests {
     }
 
     struct CleanupFailureRunner {
-        marker_path: PathBuf,
+        record_path: PathBuf,
     }
 
     impl ProcessRunner for CleanupFailureRunner {
@@ -1807,8 +2259,8 @@ mod tests {
             _timeout: Duration,
             _working_dir: Option<&std::path::Path>,
         ) -> Result<BrOutput, BrError> {
-            std::fs::remove_file(&self.marker_path)?;
-            std::fs::create_dir(&self.marker_path)?;
+            std::fs::remove_file(&self.record_path)?;
+            std::fs::create_dir(&self.record_path)?;
             Err(BrError::BrExitError {
                 exit_code: 23,
                 stdout: String::new(),
@@ -1822,12 +2274,13 @@ mod tests {
     async fn failed_mutation_preserves_original_error_when_marker_cleanup_fails(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
-        let marker_path = tmp.path().join(PENDING_MUTATIONS_MARKER);
+        let record_path = tmp.path().join(PENDING_MUTATIONS_DIR).join("cleanup.json");
         let adapter = BrAdapter::with_runner(CleanupFailureRunner {
-            marker_path: marker_path.clone(),
+            record_path: record_path.clone(),
         })
         .with_working_dir(tmp.path().to_path_buf());
-        let mutation_adapter = BrMutationAdapter::with_adapter(adapter);
+        let mut mutation_adapter = BrMutationAdapter::with_adapter(adapter);
+        mutation_adapter.adapter_id = "cleanup".to_owned();
 
         let error = mutation_adapter
             .update_bead_status("bead-1", "in_progress")
@@ -1836,7 +2289,7 @@ mod tests {
 
         assert!(matches!(error, BrError::BrExitError { exit_code: 23, .. }));
         assert!(
-            marker_path.is_dir(),
+            record_path.is_dir(),
             "cleanup sabotage should leave a directory behind"
         );
         assert!(
