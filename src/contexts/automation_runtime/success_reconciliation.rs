@@ -130,6 +130,11 @@ fn ensure_beads_mutation_health(
     Ok(())
 }
 
+fn beads_mutation_health_warning(base_dir: &Path) -> Option<String> {
+    beads_health_failure_details(&check_beads_health(base_dir))
+        .map(|details| format!("refusing to mutate beads because bead state is unsafe: {details}"))
+}
+
 /// Check whether a bead is already closed by querying `br show <id> --json`.
 ///
 /// Returns `true` if the bead status is `Closed`, `false` otherwise.
@@ -877,6 +882,15 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
             if !durably_verified_indices.contains(&idx) {
                 continue;
             }
+            if let Some(details) = beads_mutation_health_warning(base_dir) {
+                tracing::warn!(
+                    active_bead_id = bead_id,
+                    mapped_to_bead_id = outcome.mapping.mapped_to_bead_id.as_str(),
+                    details = details.as_str(),
+                    "skipping planned-elsewhere comment because bead state is unsafe"
+                );
+                break;
+            }
             let comment_text = format!(
                 "Planned-elsewhere mapping from {}: {}",
                 outcome.mapping.active_bead_id, outcome.mapping.finding_summary
@@ -914,7 +928,13 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     // Best-effort: if flush fails, comments may be lost but the mapping is
     // already recorded as verified above.
     if commented_count > 0 {
-        if let Err(e) = br_mutation.sync_flush().await {
+        if let Some(details) = beads_mutation_health_warning(base_dir) {
+            tracing::warn!(
+                active_bead_id = bead_id,
+                details = details.as_str(),
+                "skipping br sync after planned-elsewhere comments because bead state is unsafe"
+            );
+        } else if let Err(e) = br_mutation.sync_flush().await {
             tracing::warn!(
                 error = %e,
                 "failed to flush br mutations after planned-elsewhere comments (non-blocking)"
@@ -1231,7 +1251,7 @@ mod tests {
     use crate::contexts::project_run_record::model::PayloadRecord;
     use crate::contexts::workflow_composition::panel_contracts::FinalReviewCanonicalAmendment;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     // ── Mock BR runner ─────────────────────────────────────────────────
@@ -1357,6 +1377,87 @@ mod tests {
                 .expect("DeletingBvRunner should remove the milestone root");
             response
         }
+    }
+
+    type BrHook = Arc<dyn Fn(&[String], Option<&Path>) + Send + Sync>;
+
+    struct RecordingBrRunner {
+        responses: Mutex<Vec<Result<BrOutput, BrError>>>,
+        invocations: Arc<Mutex<Vec<Vec<String>>>>,
+        after_run: Option<BrHook>,
+    }
+
+    impl RecordingBrRunner {
+        fn new(
+            responses: Vec<Result<BrOutput, BrError>>,
+            invocations: Arc<Mutex<Vec<Vec<String>>>>,
+            after_run: Option<BrHook>,
+        ) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+                invocations,
+                after_run,
+            }
+        }
+    }
+
+    impl ProcessRunner for RecordingBrRunner {
+        async fn run(
+            &self,
+            args: Vec<String>,
+            _timeout: Duration,
+            working_dir: Option<&Path>,
+        ) -> Result<BrOutput, BrError> {
+            self.invocations.lock().unwrap().push(args.clone());
+            if let Some(after_run) = &self.after_run {
+                after_run(&args, working_dir);
+            }
+            self.responses
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or_else(|| panic!("RecordingBrRunner: no more responses"))
+        }
+    }
+
+    fn seed_planned_elsewhere_mapping(
+        base_dir: &Path,
+        milestone_id: &str,
+        active_bead_id: &str,
+        mapped_to_bead_id: &str,
+        run_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::FsMilestoneStore;
+        use crate::contexts::milestone_record::service::{create_milestone, CreateMilestoneInput};
+
+        let now = Utc::now();
+        let record = create_milestone(
+            &FsMilestoneStore,
+            base_dir,
+            CreateMilestoneInput {
+                id: milestone_id.to_owned(),
+                name: format!("Milestone {milestone_id}"),
+                description: "planned-elsewhere reconciliation test".to_owned(),
+            },
+            now,
+        )?;
+        let mapping = PlannedElsewhereMapping {
+            active_bead_id: active_bead_id.to_owned(),
+            finding_summary: "needs follow-up elsewhere".to_owned(),
+            mapped_to_bead_id: mapped_to_bead_id.to_owned(),
+            recorded_at: now,
+            mapped_bead_verified: false,
+            run_id: Some(run_id.to_owned()),
+            completion_round: Some(1),
+        };
+        milestone_service::record_planned_elsewhere_mapping(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            base_dir,
+            &record.id,
+            &mapping,
+        )?;
+        Ok(())
     }
 
     // ── Tests ──────────────────────────────────────────────────────────
@@ -1608,6 +1709,124 @@ mod tests {
                 .to_string()
                 .contains("malformed .beads/issues.jsonl line 2"),
             "error should direct the operator to repair malformed JSONL: {error}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verify_planned_elsewhere_skips_comment_mutations_when_beads_export_is_unhealthy(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let base_dir = temp_dir.path();
+        seed_planned_elsewhere_mapping(base_dir, "ms-pe-conflict", "bead-A", "bead-B", "run-1")?;
+        std::fs::create_dir_all(base_dir.join(".beads"))?;
+        std::fs::write(
+            base_dir.join(".beads/issues.jsonl"),
+            r#"<<<<<<< HEAD
+{"id":"bead-A"}
+=======
+{"id":"bead-B"}
+>>>>>>> branch
+"#,
+        )?;
+
+        let read_invocations = Arc::new(Mutex::new(Vec::new()));
+        let read_runner = RecordingBrRunner::new(
+            vec![MockBrRunner::success(
+                r#"{"id":"bead-B","title":"Target bead","status":"open","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}"#,
+            )],
+            read_invocations,
+            None,
+        );
+        let br_read = BrAdapter::with_runner(read_runner).with_working_dir(base_dir.to_path_buf());
+        let mutation_invocations = Arc::new(Mutex::new(Vec::new()));
+        let mutation_runner =
+            RecordingBrRunner::new(Vec::new(), mutation_invocations.clone(), None);
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(mutation_runner).with_working_dir(base_dir.to_path_buf()),
+        );
+
+        verify_planned_elsewhere_after_success(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "bead-A",
+            "ms-pe-conflict",
+            "proj-1",
+            "run-1",
+        )
+        .await;
+
+        assert!(
+            mutation_invocations.lock().unwrap().is_empty(),
+            "unhealthy bead exports should block planned-elsewhere comment mutations"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verify_planned_elsewhere_rechecks_health_before_comment_flush(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let base_dir = temp_dir.path();
+        seed_planned_elsewhere_mapping(base_dir, "ms-pe-flush", "bead-A", "bead-B", "run-1")?;
+        write_beads_export(base_dir)?;
+
+        let read_invocations = Arc::new(Mutex::new(Vec::new()));
+        let read_runner = RecordingBrRunner::new(
+            vec![MockBrRunner::success(
+                r#"{"id":"bead-B","title":"Target bead","status":"open","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}"#,
+            )],
+            read_invocations,
+            None,
+        );
+        let br_read = BrAdapter::with_runner(read_runner).with_working_dir(base_dir.to_path_buf());
+        let mutation_invocations = Arc::new(Mutex::new(Vec::new()));
+        let issues_path = base_dir.join(".beads/issues.jsonl");
+        let after_run: BrHook = Arc::new(move |args, _working_dir| {
+            if args.first().map(String::as_str) == Some("comments") {
+                std::fs::write(
+                    &issues_path,
+                    r#"<<<<<<< HEAD
+{"id":"bead-A"}
+=======
+{"id":"bead-B"}
+>>>>>>> branch
+"#,
+                )
+                .expect("rewrite issues.jsonl with conflict markers");
+            }
+        });
+        let mutation_runner = RecordingBrRunner::new(
+            vec![MockBrRunner::success("commented")],
+            mutation_invocations.clone(),
+            Some(after_run),
+        );
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(mutation_runner).with_working_dir(base_dir.to_path_buf()),
+        );
+
+        verify_planned_elsewhere_after_success(
+            &br_mutation,
+            &br_read,
+            base_dir,
+            "bead-A",
+            "ms-pe-flush",
+            "proj-1",
+            "run-1",
+        )
+        .await;
+
+        let invocations = mutation_invocations.lock().unwrap();
+        assert_eq!(
+            invocations.len(),
+            1,
+            "health should be rechecked before flush so only the comment mutation runs"
+        );
+        assert_eq!(
+            invocations[0].first().map(String::as_str),
+            Some("comments"),
+            "the only planned-elsewhere mutation should be the comment itself"
         );
         Ok(())
     }

@@ -976,17 +976,12 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
                  br sync --flush-only: {error}"
         )))
     })?;
-    if recovered_flush.includes_update_status(bead_id, "in_progress")
-        && bead_status_is_in_progress(base_dir, bead_id)
-            .await
-            .map_err(|error| {
-                AppError::Io(std::io::Error::other(format!(
-                    "failed to verify recovered bead claim for '{bead_id}' after \
-                 br sync --flush-only: {error}"
-                )))
-            })?
-    {
-        return Ok(());
+    if !recovered_flush.is_clean() {
+        tracing::info!(
+            bead_id = bead_id,
+            flushed_mutations = recovered_flush.flushed_mutations(),
+            "flushed recovered local bead mutations before issuing an explicit claim update"
+        );
     }
 
     br.update_bead_status(bead_id, "in_progress")
@@ -1005,55 +1000,6 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
         )))
     })?;
     Ok(())
-}
-
-async fn bead_status_is_in_progress(base_dir: &Path, bead_id: &str) -> AppResult<bool> {
-    let response: BrShowResponse = BrAdapter::new()
-        .with_working_dir(base_dir.to_path_buf())
-        .exec_json(&BrCommand::show(bead_id))
-        .await
-        .map_err(|error| match error {
-            BrError::BrExitError { stderr, stdout, .. }
-                if br_show_output_indicates_missing(&stderr, &stdout) =>
-            {
-                AppError::Io(std::io::Error::other(format!(
-                    "bead '{bead_id}' was not found"
-                )))
-            }
-            BrError::BrExitError { stderr, .. } => {
-                AppError::Io(std::io::Error::other(stderr.trim().to_owned()))
-            }
-            other => AppError::Io(std::io::Error::other(other.to_string())),
-        })?;
-
-    let bead = match response {
-        BrShowResponse::Single(bead) => {
-            if bead.id == bead_id {
-                bead
-            } else {
-                return Err(AppError::Io(std::io::Error::other(format!(
-                    "br show returned bead '{}' instead of '{bead_id}'",
-                    bead.id
-                ))));
-            }
-        }
-        BrShowResponse::Many(beads) => {
-            let mut matches = beads.into_iter().filter(|bead| bead.id == bead_id);
-            let bead = matches.next().ok_or_else(|| {
-                AppError::Io(std::io::Error::other(format!(
-                    "br show returned no matching bead for '{bead_id}'"
-                )))
-            })?;
-            if matches.next().is_some() {
-                return Err(AppError::Io(std::io::Error::other(format!(
-                    "br show returned multiple matching beads for '{bead_id}'"
-                ))));
-            }
-            bead
-        }
-    };
-
-    Ok(bead.status == BeadStatus::InProgress)
 }
 
 async fn load_bead_detail(
@@ -3894,8 +3840,8 @@ esac
         }
 
         /// Install a fake `br` that fails the first `sync --flush-only` after a
-        /// successful claim update, then succeeds on retry without allowing a
-        /// second `update --status=in_progress`.
+        /// successful claim update, then succeeds on retry while tolerating an
+        /// idempotent second `update --status=in_progress`.
         fn install_fake_br_claim_retry_after_sync_failure(
             base_dir: &std::path::Path,
             bead_id: &str,
@@ -3919,10 +3865,6 @@ case "$1" in
     fi
     count=$((count + 1))
     echo "$count" > .beads/update-count
-    if [ "$count" -gt 1 ]; then
-      echo "bead already in progress" >&2
-      exit 1
-    fi
     echo "in_progress" > .beads/{bead_id}.status
     echo "Updated {bead_id}"
     exit 0
@@ -4138,14 +4080,14 @@ esac
             let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
             assert_eq!(
                 update_count.trim(),
-                "1",
-                "retry should flush the recovered claim instead of replaying update"
+                "2",
+                "retry should still issue an explicit claim update after flushing recovered state"
             );
             let sync_count = std::fs::read_to_string(base_dir.join(".beads/sync-count"))?;
             assert_eq!(
                 sync_count.trim(),
-                "2",
-                "retry should perform a second sync flush to publish the recovered claim"
+                "3",
+                "retry should flush the recovered claim and then sync the explicit retry"
             );
             Ok(())
         }
