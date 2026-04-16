@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416043549-final_review-aggregate-c1-a1-cr10-artifact",
+  "payload_id": "run-20260416043549-final_review-aggregate-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T08:28:30.508944403Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 10/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-10-4d6d0ae6`\n- `fr-10-bda1f1b7`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-10-4d6d0ae6`\n\nfinding_summary: `claim_bead_in_br` can mistake another adapter's recovered `update --status=in_progress` as proof that the current caller already owns the bead.\nseverity: high\naffected_files:\n- src/adapters/br_process.rs:191-202\n- src/adapters/br_process.rs:1233-1243\n- src/cli/project.rs:973-989\nremediation_hint: `sync_if_dirty()` currently reports every recovered `update_bead_status` record without preserving ownership, and `claim_bead_in_br()` returns success if the flushed repo now shows the target bead as `in_progress`. That means a second operator/process can flush someone else's failed-sync claim and then silently adopt it, creating a Ralph task without ever winning the claim itself. Only skip the explicit `br update` when you can match a stable claim identity, or always retry `br update` after a recovered flush and let br surface collisions.\n\n### `fr-10-bda1f1b7`\n\nfinding_summary: The new beads-health guard is only enforced for the initial close path; later `comment_bead` mutations in success reconciliation still write to `.beads/` without rechecking health.\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/success_reconciliation.rs:222\n- src/contexts/automation_runtime/success_reconciliation.rs:875-917\nremediation_hint: Re-run `ensure_beads_mutation_health` (or an equivalent guard) immediately before posting planned-elsewhere comments and before the follow-up `sync_flush`, and skip the non-blocking comment path when `.beads/issues.jsonl` is missing/conflicted/malformed.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 10
+}

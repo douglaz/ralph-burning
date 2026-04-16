@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr10-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T08:28:30.477548337Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real defects in the codebase. Amendment 1 is a genuine ownership-confusion bug where adapter_id (a per-instance UUID) is tracked in PendingMutationRecord but discarded during the matching_update_status collection, allowing one process to silently adopt another's claim. Amendment 2 identifies an inconsistent health-guard application where the critical close path is guarded but the downstream comment mutations are not.\n\n## Votes\n\n- `fr-10-4d6d0ae6`: Accept\n  Verified in code: PendingMutationRecord stores adapter_id (a per-instance UUID, line 674/692) but sync_if_dirty at lines 1233-1243 strips it when building matching_update_status, collecting only (bead_id, status). This means includes_update_status (line 191) cannot distinguish the current adapter's mutations from another's. If process A's pending claim (adapter_id='aaa') is flushed by process B (adapter_id='bbb'), process B will see the flushed (bead_id, 'in_progress') tuple, confirm the bead is in_progress via br show, and return Ok at line 989 without ever issuing its own br update. Process B then proceeds to create a Ralph task believing it owns the claim, bypassing br's collision detection entirely. The adapter_id infrastructure exists specifically for provenance tracking but is unused at the critical ownership check point. The severity is appropriately high.\n- `fr-10-bda1f1b7`: Accept\n  The health guard ensure_beads_mutation_health is called at line 222 before close_bead_idempotent, but the planned-elsewhere comment path (lines 875-917) — which runs later via verify_planned_elsewhere_after_success at line 254 — calls comment_bead and sync_flush without rechecking health. While both operations are wrapped in non-blocking error handlers (lines 902-908, 917-922), the absence of a health check means: (1) pending mutation records are written for operations that will never successfully sync, accumulating dead state; (2) the adapter may write mutations against a corrupted .beads/issues.jsonl, potentially compounding corruption; (3) the code is inconsistent — the same module gates the critical close path but not the comment path, violating the principle that was clearly intended. Adding a health guard before the comment phase is low-cost and consistent with the existing pattern. Medium severity is appropriate given the best-effort error handling already in place.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 10
+}
