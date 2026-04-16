@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T05:52:02.735209606Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real defects in the new `br` adapter paths. The pending-mutation marker can leak into version control, the health probe can misclassify a broken `br` binary as healthy, and failed mutation cleanup can overwrite the primary mutation error; each issue affects correctness or operability in a concrete way.\n\n## Votes\n\n- `fr-3-211fa9f9`: Accept\n  `PENDING_MUTATIONS_MARKER` is stored at `.beads/.br-unsynced-mutations`, and the repository workflow explicitly stages `.beads/`. Because `.gitignore` has no ignore rule for that file, `git add .beads/` can stage the transient marker, and if it is committed or carried into another checkout the restart recovery path will incorrectly treat the workspace as dirty and block guarded import flows. That is a real source-control and recovery correctness bug.\n- `fr-3-a804e338`: Accept\n  `BrAdapter::check_available()` currently ignores the returned `ExitStatus` and returns `Ok(())` for any successfully spawned `br --version` process, even when that process exits non-zero. `check_beads_health()` uses `.check_available().is_ok()` to report `Healthy` versus `BrUnavailable`, so a present-but-broken `br` executable can pass preflight and fail only later during actual mutations. That is a genuine false-positive health check.\n- `fr-3-9f03de88`: Accept\n  In the error branch of `exec_tracked_mutation`, `self.clear_pending_mutation_marker()?` can early-return with a cleanup `Io` error and discard the original mutation failure from `result`. That masks the primary failure mode (`BrExitError`, timeout, etc.), making diagnosis and caller behavior worse. The original mutation error should remain the returned error, with marker-cleanup failure surfaced separately.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

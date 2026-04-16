@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T05:46:28.673294240Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed all changed files end-to-end (br_health.rs, br_process.rs, project.rs, success_reconciliation.rs, service.rs, tests/cli.rs, mod.rs). The implementation is well-structured: sync_import with dirty-guard, sync_if_dirty convenience method, JSONL health checks with conflict marker detection, pre-operation safety gates at all mutation sites, crash-safe pending-mutation marker, and comprehensive unit tests. One correctness bug found in the error-handling path of exec_tracked_mutation.\n\n## Amendments\n\n1. Bug in `exec_tracked_mutation` (src/adapters/br_process.rs:643): the `?` on `self.clear_pending_mutation_marker()?` in the `Err` branch will early-return with a marker-cleanup IO error, masking the original mutation error stored in `result`. When a mutation fails AND the adapter was not already dirty AND marker cleanup fails (e.g. disk full, permissions), the caller receives an IO error about file removal instead of the actual `BrExitError`/`BrTimeout`/etc. Fix: replace `self.clear_pending_mutation_marker()?` with `if let Err(e) = self.clear_pending_mutation_marker() { tracing::warn!(..., \"failed to clear pending mutation marker after failed mutation: {e}\"); }` so the original mutation error is always propagated.\n   Rationale: Severity: medium. The `?` operator causes an early return from the function before reaching `result` on line 660, so the original mutation error is lost. While the triggering scenario is narrow (requires both a mutation failure and a filesystem failure), it violates the function's contract of returning the mutation outcome and would produce confusing error messages for operators debugging failed bead operations.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}
