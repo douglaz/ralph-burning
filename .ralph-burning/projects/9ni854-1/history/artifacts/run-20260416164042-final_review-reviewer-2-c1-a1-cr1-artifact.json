@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T17:02:04.866759415Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe failure reconciliation implementation is solid and well-tested. Core logic (retry counting, idempotency, controller transitions, journal recording, bead immutability) is correct. It follows the success_reconciliation.rs patterns faithfully: uses the same port traits, delegates to `record_bead_completion` for lineage/journal writes, and uses `sync_controller_task_reconciling` → final-state transition pattern. The `extract_task_id_from_outcome_detail` change in fs.rs correctly handles the new multi-line outcome_detail format. All 4 tests pass, clippy is clean. No bugs, safety problems, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}
