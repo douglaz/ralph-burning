@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 4
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-3-211fa9f9",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "finding_summary: The new pending-mutation marker is written inside `.beads/` but is not ignored, so the repo's standard `git add .beads/` workflow can stage and commit transient dirty-state into source control. severity: high. affected_files: `src/adapters/br_process.rs`, `.gitignore`. remediation_hint: Move the marker outside `.beads/` or add an explicit ignore rule and regression test so `git add .beads/` cannot pick it up. evidence: `src/adapters/br_process.rs:26-28` defines `.beads/.br-unsynced-mutations`, and `src/adapters/br_process.rs:567-576` writes it for every tracked mutation. `.gitignore:24-47` ignores other transient runtime artifacts but has no rule for this file. Once committed, other checkouts/restarts will falsely recover a dirty workspace and block import safety flows until a manual flush clears it.",
-        "created_at": "2026-04-16T05:52:02.749068048Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "be2c6760d1fc9b64cd1f5c2e2a698918e3c9685c6a7fa25475fcb558331d600a"
-      },
-      {
-        "amendment_id": "fr-3-a804e338",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "finding_summary: `BrAdapter::check_available()` treats any successful spawn of `br --version` as healthy, even when the command exits non-zero, so the new health gate can report `Healthy` when `br` is actually unusable. severity: medium. affected_files: `src/adapters/br_process.rs`, `src/adapters/br_health.rs`. remediation_hint: Require `status.success()` and convert non-zero exits into `BrUnavailable` (or a structured `BrExitError`) so callers get the intended early failure. evidence: `src/adapters/br_process.rs:380-396` ignores the returned `ExitStatus` entirely and returns `Ok(())` after any completed process. `src/adapters/br_health.rs:18-19` and `src/adapters/br_health.rs:66-68` rely on that result to distinguish `Healthy` from `BrUnavailable`, so a broken `br` binary named `br` still passes preflight and only fails later during real mutations.",
-        "created_at": "2026-04-16T05:52:02.749071244Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "dcc31ab17a30058bc3bc4c7542fb13a764b20c1fbbf48fd8ca0005b7d305dcbf"
-      },
-      {
-        "amendment_id": "fr-3-9f03de88",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "Bug in `exec_tracked_mutation` (src/adapters/br_process.rs:643): the `?` on `self.clear_pending_mutation_marker()?` in the `Err` branch will early-return with a marker-cleanup IO error, masking the original mutation error stored in `result`. When a mutation fails AND the adapter was not already dirty AND marker cleanup fails (e.g. disk full, permissions), the caller receives an IO error about file removal instead of the actual `BrExitError`/`BrTimeout`/etc. Fix: replace `self.clear_pending_mutation_marker()?` with `if let Err(e) = self.clear_pending_mutation_marker() { tracing::warn!(..., \"failed to clear pending mutation marker after failed mutation: {e}\"); }` so the original mutation error is always propagated.",
-        "created_at": "2026-04-16T05:52:02.749073588Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "ffc1078c2a4e172c0c3a6c7822beda94d4ea1e6fa86704f977be1bb56d57eb2e"
-      }
-    ],
-    "processed_count": 5
+    "pending": [],
+    "processed_count": 8
   },
-  "status_summary": "running: final review restart round 4 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T05:44:20.166749549Z",

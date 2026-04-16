@@ -3768,6 +3768,10 @@ mod tests {
             let script = format!(
                 r#"#!/bin/sh
 case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
   update)
     echo "Updated {bead_id}"
     exit 0
@@ -3802,6 +3806,10 @@ esac
             std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
             let script = r#"#!/bin/sh
 case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
   update)
     echo "update failed: permission denied" >&2
     exit 1

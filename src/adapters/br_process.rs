@@ -25,6 +25,9 @@ const DEFAULT_MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Marker persisted inside `.beads/` whenever a mutation may still need
 /// `br sync --flush-only` before external imports are safe again.
+///
+/// `.gitignore` must keep this file out of source control so the standard
+/// `git add .beads/` workflow cannot commit transient adapter state.
 const PENDING_MUTATIONS_MARKER: &str = ".beads/.br-unsynced-mutations";
 
 // ── Errors ──────────────────────────────────────────────────────────────────
@@ -378,11 +381,9 @@ impl BrAdapter<OsProcessRunner> {
     /// Verify that the `br` binary can be launched from the current
     /// environment without touching repository state.
     pub fn check_available(&self) -> Result<(), BrError> {
-        std::process::Command::new(self.runner.br_path())
+        let output = std::process::Command::new(self.runner.br_path())
             .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .output()
             .map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     BrError::BrNotFound {
@@ -393,7 +394,16 @@ impl BrAdapter<OsProcessRunner> {
                 }
             })?;
 
-        Ok(())
+        if output.status.success() {
+            return Ok(());
+        }
+
+        Err(BrError::BrExitError {
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            command: format!("{} --version", self.runner.br_path()),
+        })
     }
 }
 
@@ -640,7 +650,14 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
             }
             Err(err) => {
                 if !already_dirty {
-                    self.clear_pending_mutation_marker()?;
+                    if let Err(error) = self.clear_pending_mutation_marker() {
+                        tracing::warn!(
+                            operation = operation,
+                            bead_id = bead_id.unwrap_or(""),
+                            %error,
+                            "failed to clear pending mutation marker after failed br mutation"
+                        );
+                    }
                 }
                 let stderr_content = match err {
                     BrError::BrExitError { stderr, .. } => stderr.as_str(),
@@ -834,6 +851,10 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command as StdCommand;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn command_builder_show() -> Result<(), Box<dyn std::error::Error>> {
@@ -1127,6 +1148,33 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn check_available_rejects_non_zero_version_exit() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let fake_br = tmp.path().join("fake-br");
+        std::fs::write(
+            &fake_br,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo broken >&2\n  exit 7\nfi\nexit 0\n",
+        )?;
+        let mut permissions = std::fs::metadata(&fake_br)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_br, permissions)?;
+
+        let adapter = BrAdapter {
+            runner: OsProcessRunner::with_binary(fake_br),
+            read_timeout: DEFAULT_READ_TIMEOUT,
+            mutation_timeout: DEFAULT_MUTATION_TIMEOUT,
+            working_dir: None,
+        };
+
+        let error = adapter
+            .check_available()
+            .expect_err("non-zero --version exit must be unavailable");
+        assert!(matches!(error, BrError::BrExitError { exit_code: 7, .. }));
+        Ok(())
+    }
+
     // ── BrCommand dep/create constructors ─────────────────────────────
 
     #[test]
@@ -1404,6 +1452,97 @@ mod tests {
         assert!(
             command_log.lock().expect("command log").is_empty(),
             "guarded sync_import should not invoke br after restart"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pending_mutation_marker_is_ignored_by_git_add_beads(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        std::fs::write(
+            tmp.path().join(".gitignore"),
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/.gitignore"))?,
+        )?;
+
+        let marker_path = tmp.path().join(PENDING_MUTATIONS_MARKER);
+        std::fs::create_dir_all(
+            marker_path
+                .parent()
+                .expect("pending mutation marker must have a parent dir"),
+        )?;
+        std::fs::write(&marker_path, "pending\n")?;
+
+        let init = StdCommand::new("git")
+            .args(["init", "-q"])
+            .current_dir(tmp.path())
+            .status()?;
+        assert!(init.success(), "git init should succeed");
+
+        let add = StdCommand::new("git")
+            .args(["add", ".beads"])
+            .current_dir(tmp.path())
+            .status()?;
+        assert!(add.success(), "git add .beads should succeed");
+
+        let staged = StdCommand::new("git")
+            .args(["diff", "--cached", "--name-only", "--", ".beads"])
+            .current_dir(tmp.path())
+            .output()?;
+        assert!(staged.status.success(), "git diff --cached should succeed");
+        assert!(
+            String::from_utf8_lossy(&staged.stdout).trim().is_empty(),
+            "ignored pending marker must not be staged by git add .beads"
+        );
+        Ok(())
+    }
+
+    struct CleanupFailureRunner {
+        marker_path: PathBuf,
+    }
+
+    impl ProcessRunner for CleanupFailureRunner {
+        async fn run(
+            &self,
+            _args: Vec<String>,
+            _timeout: Duration,
+            _working_dir: Option<&std::path::Path>,
+        ) -> Result<BrOutput, BrError> {
+            std::fs::remove_file(&self.marker_path)?;
+            std::fs::create_dir(&self.marker_path)?;
+            Err(BrError::BrExitError {
+                exit_code: 23,
+                stdout: String::new(),
+                stderr: "mutation failed".to_owned(),
+                command: "br update bead-1 --status=in_progress".to_owned(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_mutation_preserves_original_error_when_marker_cleanup_fails(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let marker_path = tmp.path().join(PENDING_MUTATIONS_MARKER);
+        let adapter = BrAdapter::with_runner(CleanupFailureRunner {
+            marker_path: marker_path.clone(),
+        })
+        .with_working_dir(tmp.path().to_path_buf());
+        let mutation_adapter = BrMutationAdapter::with_adapter(adapter);
+
+        let error = mutation_adapter
+            .update_bead_status("bead-1", "in_progress")
+            .await
+            .expect_err("mutation should still fail");
+
+        assert!(matches!(error, BrError::BrExitError { exit_code: 23, .. }));
+        assert!(
+            marker_path.is_dir(),
+            "cleanup sabotage should leave a directory behind"
+        );
+        assert!(
+            !mutation_adapter.has_pending_mutations(),
+            "failed mutation should not mark the adapter dirty"
         );
         Ok(())
     }

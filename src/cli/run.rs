@@ -4556,7 +4556,7 @@ mod tests {
 
         let escaped_ready_json = ready_json.replace('\'', "'\"'\"'");
         let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = \"ready\" ] && [ \"$2\" = \"--json\" ]; then\n  printf '%s\\n' '{escaped_ready_json}'\n  exit 0\nfi\nprintf 'unexpected br invocation: %s\\n' \"$*\" >&2\nexit 1\n"
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' 'br test stub'\n  exit 0\nfi\nif [ \"$1\" = \"ready\" ] && [ \"$2\" = \"--json\" ]; then\n  printf '%s\\n' '{escaped_ready_json}'\n  exit 0\nfi\nprintf 'unexpected br invocation: %s\\n' \"$*\" >&2\nexit 1\n"
         );
         let br_path = fake_bin.join("br");
         std::fs::write(&br_path, script).expect("write fake br");
@@ -4571,7 +4571,7 @@ mod tests {
 
         let escaped_show_json = show_json.replace('\'', "'\"'\"'");
         let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = \"show\" ] && [ \"$3\" = \"--json\" ]; then\n  printf '%s\\n' '{escaped_show_json}'\n  exit 0\nfi\nprintf 'unexpected br invocation: %s\\n' \"$*\" >&2\nexit 1\n"
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' 'br test stub'\n  exit 0\nfi\nif [ \"$1\" = \"show\" ] && [ \"$3\" = \"--json\" ]; then\n  printf '%s\\n' '{escaped_show_json}'\n  exit 0\nfi\nprintf 'unexpected br invocation: %s\\n' \"$*\" >&2\nexit 1\n"
         );
         let br_path = fake_bin.join("br");
         std::fs::write(&br_path, script).expect("write fake br");
