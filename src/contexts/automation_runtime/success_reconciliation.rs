@@ -29,7 +29,7 @@ use crate::adapters::fs::{
 use crate::cli::run::{select_next_milestone_bead, select_next_milestone_bead_from_recommendation};
 use crate::contexts::milestone_record::controller as milestone_controller;
 use crate::contexts::milestone_record::model::{
-    MilestoneEventType, MilestoneId, MilestoneStatus, PlannedElsewhereMapping, TaskRunOutcome,
+    MilestoneId, MilestoneStatus, PlannedElsewhereMapping, TaskRunOutcome,
 };
 use crate::contexts::milestone_record::service::{
     self as milestone_service, CompletionMilestoneDisposition, ProposeNewBeadInput,
@@ -56,6 +56,18 @@ pub struct ReconciliationOutcome {
     pub next_step_selection_warning: Option<String>,
     /// Timestamp of the reconciliation.
     pub reconciled_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct PlannedElsewhereVerificationSummary {
+    mappings_verified: usize,
+    comments_posted: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ProposedBeadReconciliationSummary {
+    amendments_processed: usize,
+    beads_created: usize,
 }
 
 /// Error conditions that require operator intervention.
@@ -200,11 +212,6 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
                 details: format!("invalid milestone id: {e}"),
             }
         })?;
-        let proposed_bead_events_before =
-            count_proposed_bead_creations(base_dir, &milestone_id, bead_id, run_id);
-        let planned_elsewhere_mappings_before =
-            count_planned_elsewhere_mappings(base_dir, &milestone_id, bead_id, run_id);
-        let amendments_processed = count_propose_new_bead_amendments(base_dir, project_id, run_id);
 
         // Guard: if a previous reconciliation already succeeded and the selector
         // advanced the controller to the next bead, `sync_controller_task_reconciling`
@@ -280,7 +287,7 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         // The engine records unverified mappings during final-review; this step
         // performs the actual stale-bead lookup and optional br comment posting
         // that the engine cannot do (it lacks BrAdapter access).
-        verify_planned_elsewhere_after_success(
+        let planned_elsewhere_summary = verify_planned_elsewhere_after_success(
             br_mutation,
             br_read,
             base_dir,
@@ -291,7 +298,7 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         )
         .await;
 
-        reconcile_proposed_beads_after_success(
+        let proposed_bead_summary = reconcile_proposed_beads_after_success(
             br_mutation,
             base_dir,
             bead_id,
@@ -383,17 +390,13 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
             }
         }
 
-        let proposed_bead_events_after =
-            count_proposed_bead_creations(base_dir, &milestone_id, bead_id, run_id);
-        let planned_elsewhere_mappings_after =
-            count_planned_elsewhere_mappings(base_dir, &milestone_id, bead_id, run_id);
         tracing::info!(
             operation = "reconcile_success",
             outcome = "success",
-            amendments_processed = amendments_processed.unwrap_or(0),
-            beads_created = proposed_bead_events_after.saturating_sub(proposed_bead_events_before),
-            planned_elsewhere_mappings =
-                planned_elsewhere_mappings_after.saturating_sub(planned_elsewhere_mappings_before),
+            amendments_processed = proposed_bead_summary.amendments_processed,
+            beads_created = proposed_bead_summary.beads_created,
+            planned_elsewhere_mappings = planned_elsewhere_summary.mappings_verified,
+            comments_posted = planned_elsewhere_summary.comments_posted,
             "success reconciliation completed"
         );
 
@@ -413,114 +416,6 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         task_id = task_id
     ))
     .await
-}
-
-fn count_proposed_bead_creations(
-    base_dir: &Path,
-    milestone_id: &MilestoneId,
-    bead_id: &str,
-    run_id: &str,
-) -> usize {
-    match milestone_service::read_journal(&FsMilestoneJournalStore, base_dir, milestone_id) {
-        Ok(journal) => journal
-            .into_iter()
-            .filter(|event| {
-                event.event_type == MilestoneEventType::ProposedBeadCreated
-                    && event.bead_id.as_deref() == Some(bead_id)
-                    && event
-                        .metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.get("run_id"))
-                        .and_then(|value| value.as_str())
-                        == Some(run_id)
-            })
-            .count(),
-        Err(error) => {
-            tracing::debug!(
-                bead_id = bead_id,
-                error = %error,
-                "failed to count proposed bead creation events for reconciliation summary"
-            );
-            0
-        }
-    }
-}
-
-fn count_planned_elsewhere_mappings(
-    base_dir: &Path,
-    milestone_id: &MilestoneId,
-    bead_id: &str,
-    run_id: &str,
-) -> usize {
-    match milestone_service::load_planned_elsewhere_mappings(
-        &FsPlannedElsewhereMappingStore,
-        &FsMilestoneJournalStore,
-        base_dir,
-        milestone_id,
-    ) {
-        Ok(mappings) => mappings
-            .into_iter()
-            .filter(|mapping| {
-                mapping.active_bead_id == bead_id && mapping.run_id.as_deref() == Some(run_id)
-            })
-            .count(),
-        Err(error) => {
-            tracing::debug!(
-                bead_id = bead_id,
-                error = %error,
-                "failed to count planned-elsewhere mappings for reconciliation summary"
-            );
-            0
-        }
-    }
-}
-
-fn count_propose_new_bead_amendments(
-    base_dir: &Path,
-    project_id: &str,
-    run_id: &str,
-) -> Option<usize> {
-    let pid = ProjectId::new(project_id).ok()?;
-    let payloads = match FsArtifactStore.list_payloads(base_dir, &pid) {
-        Ok(payloads) => payloads,
-        Err(error) => {
-            tracing::debug!(
-                project_id = project_id,
-                error = %error,
-                "failed to list payloads for reconciliation summary"
-            );
-            return None;
-        }
-    };
-
-    let latest_payload = payloads
-        .iter()
-        .filter(|payload| {
-            payload.stage_id == StageId::FinalReview
-                && payload.record_kind == RecordKind::StageAggregate
-                && payload.payload_id.starts_with(&format!("{run_id}-"))
-        })
-        .max_by_key(|payload| (payload.completion_round, payload.created_at))?;
-
-    match serde_json::from_value::<FinalReviewAggregatePayload>(latest_payload.payload.clone()) {
-        Ok(aggregate) => Some(
-            aggregate
-                .final_accepted_amendments
-                .iter()
-                .filter(|amendment| {
-                    amendment.classification == AmendmentClassification::ProposeNewBead
-                })
-                .count(),
-        ),
-        Err(error) => {
-            tracing::debug!(
-                project_id = project_id,
-                error = %error,
-                "failed to parse final-review aggregate for reconciliation summary"
-            );
-            None
-        }
-    }
 }
 
 fn persist_selection_failure_after_reconciliation(
@@ -906,9 +801,9 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     milestone_id_str: &str,
     project_id: &str,
     run_id: &str,
-) {
+) -> PlannedElsewhereVerificationSummary {
     let Ok(milestone_id) = MilestoneId::new(milestone_id_str) else {
-        return;
+        return PlannedElsewhereVerificationSummary::default();
     };
     let mappings = match milestone_service::load_planned_elsewhere_mappings(
         &FsPlannedElsewhereMappingStore,
@@ -922,7 +817,7 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
                 error = %e,
                 "failed to load planned-elsewhere mappings for verification (non-blocking)"
             );
-            return;
+            return PlannedElsewhereVerificationSummary::default();
         }
     };
 
@@ -986,7 +881,7 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     unverified.extend(reconstructed);
 
     if unverified.is_empty() {
-        return;
+        return PlannedElsewhereVerificationSummary::default();
     }
 
     let post_comments = std::env::var("RALPH_BURNING_PLANNED_ELSEWHERE_COMMENTS")
@@ -1118,6 +1013,10 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
     }
 
     let verified_count = outcomes.iter().filter(|o| o.verified).count();
+    let summary = PlannedElsewhereVerificationSummary {
+        mappings_verified: durably_verified_indices.len(),
+        comments_posted: commented_count,
+    };
     if !outcomes.is_empty() {
         tracing::info!(
             bead_id = bead_id,
@@ -1127,6 +1026,7 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
             "planned-elsewhere post-run verification complete"
         );
     }
+    summary
 }
 
 async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
@@ -1137,18 +1037,18 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
     milestone_id_str: &str,
     project_id: &str,
     run_id: &str,
-) -> Result<(), ReconciliationError> {
+) -> Result<ProposedBeadReconciliationSummary, ReconciliationError> {
     let milestone_error = |details: String| ReconciliationError::MilestoneUpdateFailed {
         bead_id: bead_id.to_owned(),
         task_id: task_id.to_owned(),
         details,
     };
     let Ok(milestone_id) = MilestoneId::new(milestone_id_str) else {
-        return Ok(());
+        return Ok(ProposedBeadReconciliationSummary::default());
     };
     let pid = match ProjectId::new(project_id) {
         Ok(pid) => pid,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(ProposedBeadReconciliationSummary::default()),
     };
     let payloads = match FsArtifactStore.list_payloads(base_dir, &pid) {
         Ok(payloads) => payloads,
@@ -1176,10 +1076,10 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
     }
 
     let Some(authoritative_round) = latest_by_round.keys().copied().max() else {
-        return Ok(());
+        return Ok(ProposedBeadReconciliationSummary::default());
     };
     let Some(payload) = latest_by_round.get(&authoritative_round) else {
-        return Ok(());
+        return Ok(ProposedBeadReconciliationSummary::default());
     };
     let aggregate: FinalReviewAggregatePayload = match serde_json::from_value(
         payload.payload.clone(),
@@ -1193,11 +1093,13 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
         }
     };
 
+    let mut amendments_processed = 0usize;
     let mut created_in_pass = 0usize;
     for amendment in &aggregate.final_accepted_amendments {
         if amendment.classification != AmendmentClassification::ProposeNewBead {
             continue;
         }
+        amendments_processed += 1;
 
         let (Some(proposed_title), Some(proposed_scope), Some(severity), Some(rationale)) = (
             amendment.proposed_title.as_ref(),
@@ -1250,7 +1152,10 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
         }
     }
 
-    Ok(())
+    Ok(ProposedBeadReconciliationSummary {
+        amendments_processed,
+        beads_created: created_in_pass,
+    })
 }
 
 /// Reconstruct any planned-elsewhere mappings from persisted final-review

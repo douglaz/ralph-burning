@@ -322,6 +322,27 @@ impl BrCommand {
         let args = self.build_args();
         format!("br {}", args.join(" "))
     }
+
+    /// Return a bounded operation identifier for structured tracing fields.
+    fn operation_name(&self) -> String {
+        match self.subcommand.as_str() {
+            "dep" | "comments" => self
+                .positional_args
+                .first()
+                .map(|arg| format!("{} {}", self.subcommand, arg))
+                .unwrap_or_else(|| self.subcommand.clone()),
+            "sync" => {
+                if self.flags.iter().any(|flag| flag == "flush-only") {
+                    "sync flush-only".to_owned()
+                } else if self.flags.iter().any(|flag| flag == "import-only") {
+                    "sync import-only".to_owned()
+                } else {
+                    self.subcommand.clone()
+                }
+            }
+            _ => self.subcommand.clone(),
+        }
+    }
 }
 
 // ── Common command constructors ─────────────────────────────────────────────
@@ -653,7 +674,7 @@ impl<R: ProcessRunner> BrAdapter<R> {
 
     /// Execute a read-only br command and return raw output.
     pub async fn exec_read(&self, cmd: &BrCommand) -> Result<BrOutput, BrError> {
-        let operation = cmd.display_string();
+        let operation = cmd.operation_name();
         async move {
             let args = cmd.build_args();
             let output = self
@@ -681,7 +702,7 @@ impl<R: ProcessRunner> BrAdapter<R> {
 
     /// Execute a mutation br command and return raw output.
     pub async fn exec_mutation(&self, cmd: &BrCommand) -> Result<BrOutput, BrError> {
-        let operation = cmd.display_string();
+        let operation = cmd.operation_name();
         let span_operation = operation.clone();
         async move {
             let start = Instant::now();
@@ -724,7 +745,7 @@ impl<R: ProcessRunner> BrAdapter<R> {
 
     /// Execute a read-only command and parse the JSON output.
     pub async fn exec_json<T: DeserializeOwned>(&self, cmd: &BrCommand) -> Result<T, BrError> {
-        let operation = cmd.display_string();
+        let operation = cmd.operation_name();
         let span_operation = operation.clone();
         async move {
             let output = self.exec_read(cmd).await?;
@@ -1747,6 +1768,23 @@ mod tests {
     fn command_display_string() -> Result<(), Box<dyn std::error::Error>> {
         let cmd = BrCommand::show("bead-1");
         assert_eq!(cmd.display_string(), "br show bead-1 --json");
+        Ok(())
+    }
+
+    #[test]
+    fn command_operation_name_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+        let create = BrCommand::create("Long free-form title", "task", "2")
+            .kv("description", "Long free-form description");
+        assert_eq!(create.operation_name(), "create");
+
+        let comment = BrCommand::comment("bead-1", "Long free-form review text");
+        assert_eq!(comment.operation_name(), "comments add");
+
+        let dep_tree = BrCommand::dep_tree("bead-1");
+        assert_eq!(dep_tree.operation_name(), "dep tree");
+
+        let sync = BrCommand::sync_flush();
+        assert_eq!(sync.operation_name(), "sync flush-only");
         Ok(())
     }
 
