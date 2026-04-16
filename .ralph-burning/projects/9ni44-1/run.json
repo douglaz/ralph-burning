@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 12
+      "completion_round": 13
     },
     "started_at": "2026-04-16T04:35:49.747391164Z",
     "prompt_hash_at_cycle_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "prompt_hash_at_stage_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 11
+    "final_review_restart_count": 12
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 12,
+  "completion_rounds": 13,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-12-b5ef9e8d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 12,
+        "body": "finding_summary: `claim_bead_in_br` throws away the new `SyncIfDirtyOutcome` signal and always issues a second `br update --status=in_progress` after flushing recovered local mutations. In `src/cli/project.rs:969-992`, the retry path logs `recovered_flush.flushed_mutations()` but never checks whether the flushed journal already contained `update_bead_status(bead_id, \"in_progress\")`; `src/adapters/br_process.rs:1194-1253` added exactly that metadata. This means a retry after a successful local claim plus failed `sync --flush-only` still depends on `br update` being idempotent for an already-in-progress bead. The new tests even have to stub a backend that tolerates that second update. If real `br` rejects the no-op update, the recovered-claim retry path will keep failing even though the original claim was already flushed.",
+        "created_at": "2026-04-16T09:21:13.959850804Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "971c7e0663d3da2f87a0bde0c308a6371b401a97775d86a3be681174cfb321f6"
+      },
+      {
+        "amendment_id": "fr-12-041822e1",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 12,
+        "body": "finding_summary: success reconciliation only health-checks `.beads/issues.jsonl` before `br close`, not before the mandatory `br sync --flush-only` that follows it. `src/contexts/automation_runtime/success_reconciliation.rs:226-239` now calls `ensure_beads_mutation_health(...)` before `close_bead_idempotent(...)`, but `src/contexts/automation_runtime/success_reconciliation.rs:440-454` still runs `sync_after_close()` unconditionally with no second health gate. If the export becomes conflicted, malformed, or missing after the local close but before the flush, this path bypasses the new operator-facing safety error and falls back to whatever raw `br sync` does. The claim and propose-new-bead paths already re-check health before their final flushes; reconciliation should do the same for the close-and-sync sequence.",
+        "created_at": "2026-04-16T09:21:13.959853590Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "96524194549a76ec8a08a1277b485a4c8cda09c58021961a461717d6b3e32e3d"
+      }
+    ],
     "processed_count": 23
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 13 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T08:43:03.644248764Z",
+    "resolved_at": "2026-04-16T09:05:42.204963860Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

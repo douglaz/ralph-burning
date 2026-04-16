@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T09:12:34.359565382Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the br sync/import safety changes and the main mutation call sites. Found 2 fix-now correctness gaps: the recovered-claim retry path still depends on a second idempotent `br update`, and success reconciliation skips the new health gate between `br close` and the required `br sync --flush-only`.\n\n## Amendments\n\n1. finding_summary: `claim_bead_in_br` throws away the new `SyncIfDirtyOutcome` signal and always issues a second `br update --status=in_progress` after flushing recovered local mutations. In `src/cli/project.rs:969-992`, the retry path logs `recovered_flush.flushed_mutations()` but never checks whether the flushed journal already contained `update_bead_status(bead_id, \"in_progress\")`; `src/adapters/br_process.rs:1194-1253` added exactly that metadata. This means a retry after a successful local claim plus failed `sync --flush-only` still depends on `br update` being idempotent for an already-in-progress bead. The new tests even have to stub a backend that tolerates that second update. If real `br` rejects the no-op update, the recovered-claim retry path will keep failing even though the original claim was already flushed.\n   Rationale: This is within the bead's retry/sync-safety scope and can strand operators in a false failure state after the very crash-recovery path this change is trying to harden.\n2. finding_summary: success reconciliation only health-checks `.beads/issues.jsonl` before `br close`, not before the mandatory `br sync --flush-only` that follows it. `src/contexts/automation_runtime/success_reconciliation.rs:226-239` now calls `ensure_beads_mutation_health(...)` before `close_bead_idempotent(...)`, but `src/contexts/automation_runtime/success_reconciliation.rs:440-454` still runs `sync_after_close()` unconditionally with no second health gate. If the export becomes conflicted, malformed, or missing after the local close but before the flush, this path bypasses the new operator-facing safety error and falls back to whatever raw `br sync` does. The claim and propose-new-bead paths already re-check health before their final flushes; reconciliation should do the same for the close-and-sync sequence.\n   Rationale: This leaves one of the core close/sync mutation flows outside the new safety rule, so the branch does not consistently enforce the promised conflict/missing-file protections before publishing bead mutations.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

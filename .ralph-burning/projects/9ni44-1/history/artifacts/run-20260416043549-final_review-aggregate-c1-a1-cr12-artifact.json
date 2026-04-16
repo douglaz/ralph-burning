@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416043549-final_review-aggregate-c1-a1-cr12-artifact",
+  "payload_id": "run-20260416043549-final_review-aggregate-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T09:21:13.959858829Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 12/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-12-b5ef9e8d`\n- `fr-12-041822e1`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-12-b5ef9e8d`\n\nfinding_summary: `claim_bead_in_br` throws away the new `SyncIfDirtyOutcome` signal and always issues a second `br update --status=in_progress` after flushing recovered local mutations. In `src/cli/project.rs:969-992`, the retry path logs `recovered_flush.flushed_mutations()` but never checks whether the flushed journal already contained `update_bead_status(bead_id, \"in_progress\")`; `src/adapters/br_process.rs:1194-1253` added exactly that metadata. This means a retry after a successful local claim plus failed `sync --flush-only` still depends on `br update` being idempotent for an already-in-progress bead. The new tests even have to stub a backend that tolerates that second update. If real `br` rejects the no-op update, the recovered-claim retry path will keep failing even though the original claim was already flushed.\n\n### `fr-12-041822e1`\n\nfinding_summary: success reconciliation only health-checks `.beads/issues.jsonl` before `br close`, not before the mandatory `br sync --flush-only` that follows it. `src/contexts/automation_runtime/success_reconciliation.rs:226-239` now calls `ensure_beads_mutation_health(...)` before `close_bead_idempotent(...)`, but `src/contexts/automation_runtime/success_reconciliation.rs:440-454` still runs `sync_after_close()` unconditionally with no second health gate. If the export becomes conflicted, malformed, or missing after the local close but before the flush, this path bypasses the new operator-facing safety error and falls back to whatever raw `br sync` does. The claim and propose-new-bead paths already re-check health before their final flushes; reconciliation should do the same for the close-and-sync sequence.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 12
+}
