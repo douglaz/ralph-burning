@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr14-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T23:12:09.739633530Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real bugs confirmed by code inspection. Amendment fr-14-e83d51a1 correctly identifies that the three-way attempt identity validation in try_reconcile_failure() will mismatch for paused-then-resumed runs because record_task_run_start() reuses the lineage entry with the original started_at while the snapshot carries the resume timestamp. Amendment fr-14-b1ccfa10 correctly identifies that fail_superseded_running_attempt() writes synthetic placeholder text to the lineage, which recorded_failure_provenance() then prefers over the actual error summary, corrupting the repaired BeadFailed journal event.\n\n## Votes\n\n- `fr-14-e83d51a1`: Accept\n  Confirmed by code inspection. record_task_run_start() (fs.rs:5065-5091) reuses the existing running entry without updating started_at for resumed runs. merge_attempt_entries() takes min(started_at), preserving the original timestamp. Meanwhile try_reconcile_failure() (daemon_loop.rs:2081-2096) requires durable_lineage_attempt to match the snapshot attempt exactly. For a paused-then-resumed run, the lineage retains the original started_at (T1) while the snapshot reflects the resume timestamp (T3), triggering reconciliation_metadata_error and forcing NeedsOperator. While a test exists that expects this rejection for stale failures from prior attempts, the same validation also catches legitimate current failures on resumed runs — these should be reconcilable, not escalated. The remediation hint is sound: either update the lineage started_at on resume or relax validation for active same-run_id rows.\n- `fr-14-b1ccfa10`: Accept\n  Confirmed by code inspection. fail_superseded_running_attempt() (fs.rs:4606-4627) writes a synthetic 'superseded by retry started at ...' string to outcome_detail. recorded_failure_provenance() (failure_reconciliation.rs:674-700) prefers the lineage row's outcome_detail over the journal's, so the synthetic placeholder takes priority. parse_failure_outcome_detail() (lines 474-516) treats this unstructured text as the error summary since it has no structured field prefixes. normalized_failure_outcome_detail() (lines 518-534) then uses parsed.error_summary (the synthetic text) over the fallback_error_summary (the actual failure reason). The result is a repaired BeadFailed event with operational metadata instead of the real error. The fix is straightforward: treat 'superseded by retry...' lineage details as non-authoritative and prefer the fresh error_summary.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 14
+}

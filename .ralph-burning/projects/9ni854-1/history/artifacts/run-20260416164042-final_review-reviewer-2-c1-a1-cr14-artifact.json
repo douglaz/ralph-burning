@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr14-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T23:00:18.325885908Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nComprehensive review of the failure reconciliation implementation. The core handler (failure_reconciliation.rs, ~1100 lines of logic + ~1500 lines of tests) is well-structured, follows the success_reconciliation patterns, and handles critical edge cases: idempotent replays, stale-attempt protection, same-run-id retries, and historical event repair. The controller state machine changes (Blocked preserving active context, new Blocked→Running/Reconciling transitions) are internally consistent. The CLI sync path correctly delegates failed runs to reconcile_failure_sync and early-returns before the success path (making the `unreachable!()` on the old Failed branch safe). The daemon integration in daemon_loop.rs gracefully falls back when reconciliation itself fails, enriching the error rather than masking it. The stale started_at rejection in fs.rs adds a necessary safety guard. The queries.rs refactoring to scope terminal events within attempt boundaries prevents stale run_failed events from being matched after resume. Test coverage is thorough across all acceptance criteria. No critical or high-severity bugs found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 14
+}

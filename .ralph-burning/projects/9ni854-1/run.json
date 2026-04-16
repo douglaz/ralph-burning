@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 14
+      "completion_round": 15
     },
     "started_at": "2026-04-16T16:40:42.098700951Z",
     "prompt_hash_at_cycle_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "prompt_hash_at_stage_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 13
+    "final_review_restart_count": 14
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 14,
+  "completion_rounds": 15,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-14-e83d51a1",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 14,
+        "body": "finding_summary: `try_reconcile_failure()` now fails closed on legitimate paused-then-resumed runs that later fail. The new validation requires the milestone lineage attempt identity to match the latest durable project attempt timestamp, but the lineage layer intentionally keeps the original `started_at` when the same `run_id` is resumed. Because `record_task_run_start()` reuses the existing running row without moving its `started_at`, any resumed failure can trip `reconciliation_metadata_error` and force `NeedsOperator` instead of running failure reconciliation.\nseverity: high\naffected_files:\n- `src/contexts/automation_runtime/daemon_loop.rs:148-168`\n- `src/contexts/automation_runtime/daemon_loop.rs:2042-2095`\n- `src/adapters/fs.rs:5065-5090`\nremediation_hint: derive the lineage-side attempt identity with the same resume semantics as the project journal/snapshot, or relax the lineage validation for active same-`run_id` rows so paused/resumed attempts are not required to reuse the original `started_at`.",
+        "created_at": "2026-04-16T23:12:09.752958399Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "1fdefea76b5eda1a4e1b3c18164874c52a00fa0ac9f244c583ae11abbcbeb253"
+      },
+      {
+        "amendment_id": "fr-14-b1ccfa10",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 14,
+        "body": "finding_summary: stale failure replays can record the placeholder `superseded by retry...` text instead of the task's real error summary. When a retry starts before the old failure is reconciled, `fail_superseded_running_attempt()` rewrites the old lineage row with that synthetic detail. `recorded_failure_provenance()` then prefers the lineage row over the replayed `error_summary`, so the repaired `BeadFailed` journal event preserves the retry placeholder rather than the actual failure reason required by this bead.\nseverity: medium\naffected_files:\n- `src/contexts/automation_runtime/failure_reconciliation.rs:210-244`\n- `src/contexts/automation_runtime/failure_reconciliation.rs:674-700`\n- `src/adapters/fs.rs:4606-4623`\n- `src/adapters/fs.rs:5105-5107`\nremediation_hint: when replaying a stale failure, treat `superseded by retry...` lineage details as non-authoritative and prefer the fresh error summary passed into reconciliation, or an existing `BeadFailed` journal payload if one already exists.",
+        "created_at": "2026-04-16T23:12:09.752963739Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "69cb1ef44c045671881f0682cc7b757605304464c674e53e4200eb1b65004bba"
+      }
+    ],
     "processed_count": 29
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 15 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T22:30:29.803506456Z",
+    "resolved_at": "2026-04-16T22:57:20.310136130Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
