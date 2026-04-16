@@ -420,7 +420,9 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
     // Claim the bead in br before creating the project. If the claim
     // fails, transition the milestone controller to needs_operator so
     // the operator can investigate before any Ralph task is created.
-    if let Err(claim_error) = claim_bead_in_br(&current_dir, &bead.id).await {
+    if let Err(claim_error) =
+        claim_bead_in_br(&current_dir, &bead.id, effective_project_id.as_str()).await
+    {
         let now = Utc::now();
         let reason = format!("br claim failed for bead '{}': {claim_error}", bead.id);
         if let Err(controller_error) = milestone_controller::sync_controller_state(
@@ -958,16 +960,18 @@ enum BrListResponse {
 ///
 /// Recovered local pending mutations are flushed first so a retry after a
 /// failed `br sync --flush-only` can publish the earlier local claim before
-/// attempting a new `br update`. When that recovered flush already replayed
-/// `update_bead_status(<bead>, "in_progress")`, the claim is considered
-/// complete and the duplicate `br update` is skipped. If `br update` fails for
-/// any other reason the error is returned immediately so the caller can
-/// transition the milestone controller to `needs_operator`.
-async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
+/// attempting a new `br update`. The recovered-flush short-circuit is only
+/// taken when the replayed `update_bead_status(<bead>, "in_progress")` record
+/// carries the same stable claim-owner token, so another process's recovered
+/// claim cannot be mistaken for the current caller's success.
+async fn claim_bead_in_br(base_dir: &Path, bead_id: &str, claim_owner: &str) -> AppResult<()> {
     ensure_beads_claim_health(base_dir, bead_id)?;
 
-    let br =
-        BrMutationAdapter::with_adapter(BrAdapter::new().with_working_dir(base_dir.to_path_buf()));
+    let claim_owner_token = claim_owner_token(claim_owner, bead_id);
+    let br = BrMutationAdapter::with_adapter_id(
+        BrAdapter::new().with_working_dir(base_dir.to_path_buf()),
+        claim_owner_token.clone(),
+    );
     let recovered_flush = br.sync_if_dirty().await.map_err(|error| {
         AppError::Io(std::io::Error::other(format!(
             "failed to replay a previously successful local bead claim for '{bead_id}' via \
@@ -981,10 +985,11 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
             "flushed recovered local bead mutations before issuing an explicit claim update"
         );
     }
-    if recovered_flush.includes_update_status(bead_id, "in_progress") {
+    if recovered_flush.includes_owned_update_status(&claim_owner_token, bead_id, "in_progress") {
         ensure_beads_claim_post_flush_health(base_dir, bead_id)?;
         tracing::info!(
             bead_id = bead_id,
+            claim_owner = claim_owner,
             "recovered flush already replayed this bead claim; skipping duplicate br update"
         );
         return Ok(());
@@ -1008,6 +1013,15 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
         )))
     })?;
     Ok(())
+}
+
+fn claim_owner_token(claim_owner: &str, bead_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"project-claim:");
+    hasher.update(claim_owner.as_bytes());
+    hasher.update(b":");
+    hasher.update(bead_id.as_bytes());
+    format!("project-claim-{:x}", hasher.finalize())
 }
 
 fn ensure_beads_claim_health(base_dir: &Path, bead_id: &str) -> AppResult<()> {
@@ -3814,6 +3828,14 @@ mod tests {
             std::fs::write(beads_dir.join("issues.jsonl"), contents).expect("write issues.jsonl");
         }
 
+        fn claim_owner() -> &'static str {
+            "project-claim-test"
+        }
+
+        fn other_claim_owner() -> &'static str {
+            "other-project-claim-test"
+        }
+
         /// Install a fake `br` script that succeeds on `update` and `sync`
         /// subcommands and returns bead detail JSON on `show`.
         fn install_fake_br_claim_success(base_dir: &std::path::Path, bead_id: &str) {
@@ -4219,7 +4241,7 @@ esac
             install_fake_br_claim_success(base_dir, "bead-1");
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
-            super::super::claim_bead_in_br(base_dir, "bead-1").await?;
+            super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await?;
             Ok(())
         }
 
@@ -4238,7 +4260,7 @@ esac
 "#,
             );
 
-            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
 
             assert!(result.is_err());
             let error = result.unwrap_err().to_string();
@@ -4260,7 +4282,7 @@ esac
             let base_dir = temp_dir.path();
             write_beads_export(base_dir, "{\"id\":\"bead-1\"}\n{\"id\": }\n");
 
-            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
 
             assert!(result.is_err());
             let error = result.unwrap_err().to_string();
@@ -4285,7 +4307,7 @@ esac
             install_fake_br_claim_failure(base_dir);
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
-            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
             assert!(result.is_err());
             let error = result.unwrap_err().to_string();
             assert!(
@@ -4315,7 +4337,7 @@ esac
             )?;
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
-            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
             assert!(
                 result.is_err(),
                 "conflicted export after recovered flush should block the explicit claim update"
@@ -4343,7 +4365,7 @@ esac
         }
 
         #[tokio::test]
-        async fn claim_bead_in_br_rechecks_health_after_recovered_claim_flush_before_short_circuit(
+        async fn claim_bead_in_br_rechecks_health_after_owned_recovered_claim_flush_before_short_circuit(
         ) -> Result<(), Box<dyn std::error::Error>> {
             let _path_lock = lock_path_mutex();
             let temp_dir = tempfile::tempdir()?;
@@ -4358,11 +4380,14 @@ esac
             )?;
             std::fs::write(
                 &journal_path,
-                r#"{"adapter_id":"other","operation":"update_bead_status","bead_id":"bead-1","status":"in_progress"}"#,
+                format!(
+                    r#"{{"adapter_id":"{}","operation":"update_bead_status","bead_id":"bead-1","status":"in_progress"}}"#,
+                    super::super::claim_owner_token(claim_owner(), "bead-1")
+                ),
             )?;
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
-            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
             assert!(
                 result.is_err(),
                 "unsafe export after recovered claim flush should block the short-circuit success path"
@@ -4390,6 +4415,48 @@ esac
         }
 
         #[tokio::test]
+        async fn claim_bead_in_br_does_not_short_circuit_on_other_claim_owners_recovered_update(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_after_unrelated_recovered_flush_failure(base_dir, "bead-1");
+            let journal_path = base_dir.join(".beads/.br-unsynced-mutations.d/recovered.json");
+            std::fs::create_dir_all(
+                journal_path
+                    .parent()
+                    .expect("journal path must have parent"),
+            )?;
+            std::fs::write(
+                &journal_path,
+                format!(
+                    r#"{{"adapter_id":"{}","operation":"update_bead_status","bead_id":"bead-1","status":"in_progress"}}"#,
+                    super::super::claim_owner_token(other_claim_owner(), "bead-1")
+                ),
+            )?;
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
+            assert!(
+                result.is_err(),
+                "another claim owner's recovered update must not be treated as our success"
+            );
+            let error = result.expect_err("claim should fail").to_string();
+            assert!(
+                error.contains("failed to claim bead 'bead-1' via br update --status=in_progress"),
+                "the explicit update should still run after flushing another owner's recovered claim: {error}"
+            );
+            let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
+            assert_eq!(
+                update_count.trim(),
+                "1",
+                "the duplicate-claim collision should come from the explicit update, not a short-circuit"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
         async fn claim_bead_in_br_retries_by_flushing_recovered_pending_claim(
         ) -> Result<(), Box<dyn std::error::Error>> {
             let _path_lock = lock_path_mutex();
@@ -4399,10 +4466,11 @@ esac
             install_fake_br_claim_retry_requires_recovered_claim_short_circuit(base_dir, "bead-1");
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
-            let first_attempt = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            let first_attempt =
+                super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
             assert!(first_attempt.is_err(), "first sync should fail");
 
-            super::super::claim_bead_in_br(base_dir, "bead-1").await?;
+            super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await?;
 
             let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
             assert_eq!(
@@ -4429,7 +4497,7 @@ esac
             install_fake_br_claim_conflict_before_final_sync(base_dir, "bead-1");
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
-            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
             assert!(
                 result.is_err(),
                 "conflicted export after update should block the final sync"
@@ -4469,7 +4537,7 @@ esac
             std::fs::write(base_dir.join(".beads/sync-count"), "1\n")?;
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
-            super::super::claim_bead_in_br(base_dir, "bead-1").await?;
+            super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await?;
 
             let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
             assert_eq!(
@@ -4506,7 +4574,7 @@ esac
             )?;
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
-            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
             assert!(
                 result.is_err(),
                 "flushing unrelated recovered mutations must not be treated as proof that our claim already succeeded"
@@ -4552,7 +4620,7 @@ esac
             )?;
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
-            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
             assert!(
                 result.is_err(),
                 "another operator's in-progress status must not be treated as proof that our recovered claim succeeded"
@@ -4603,7 +4671,7 @@ esac
             install_fake_br_claim_failure(base_dir);
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
-            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
             assert!(
                 result.is_err(),
                 "claim must fail even though controller has the bead selected — \
@@ -4638,7 +4706,8 @@ esac
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
             // Claim should fail
-            let claim_result = super::super::claim_bead_in_br(base_dir, "bead-claim-1").await;
+            let claim_result =
+                super::super::claim_bead_in_br(base_dir, "bead-claim-1", claim_owner()).await;
             assert!(claim_result.is_err());
 
             // Simulate the transition that handle_create_from_bead would do
@@ -4704,7 +4773,7 @@ esac
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
             // Claim succeeds
-            super::super::claim_bead_in_br(base_dir, "bead-link-1").await?;
+            super::super::claim_bead_in_br(base_dir, "bead-link-1", claim_owner()).await?;
 
             // Record the linked task/project ID
             let now = chrono::Utc::now();

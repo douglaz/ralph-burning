@@ -158,12 +158,19 @@ struct RepoOperationGuard {
 }
 
 #[derive(Debug, Clone)]
+pub struct RecoveredStatusUpdate {
+    adapter_id: String,
+    bead_id: String,
+    status: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum SyncIfDirtyOutcome {
     Clean,
     Flushed {
         output: BrOutput,
         flushed_mutations: usize,
-        matching_update_status: Vec<(String, String)>,
+        recovered_status_updates: Vec<RecoveredStatusUpdate>,
     },
 }
 
@@ -192,13 +199,30 @@ impl SyncIfDirtyOutcome {
         match self {
             Self::Clean => false,
             Self::Flushed {
-                matching_update_status,
+                recovered_status_updates,
                 ..
-            } => matching_update_status
+            } => recovered_status_updates
                 .iter()
-                .any(|(candidate_bead_id, candidate_status)| {
-                    candidate_bead_id == bead_id && candidate_status == status
-                }),
+                .any(|candidate| candidate.bead_id == bead_id && candidate.status == status),
+        }
+    }
+
+    pub fn includes_owned_update_status(
+        &self,
+        adapter_id: &str,
+        bead_id: &str,
+        status: &str,
+    ) -> bool {
+        match self {
+            Self::Clean => false,
+            Self::Flushed {
+                recovered_status_updates,
+                ..
+            } => recovered_status_updates.iter().any(|candidate| {
+                candidate.adapter_id == adapter_id
+                    && candidate.bead_id == bead_id
+                    && candidate.status == status
+            }),
         }
     }
 }
@@ -686,10 +710,14 @@ impl Default for BrMutationAdapter<OsProcessRunner> {
 
 impl<R: ProcessRunner> BrMutationAdapter<R> {
     pub fn with_adapter(adapter: BrAdapter<R>) -> Self {
+        Self::with_adapter_id(adapter, Uuid::new_v4().to_string())
+    }
+
+    pub fn with_adapter_id(adapter: BrAdapter<R>, adapter_id: impl Into<String>) -> Self {
         let has_unsync_mutations = Self::recover_pending_mutation_state(&adapter);
         Self {
             adapter,
-            adapter_id: Uuid::new_v4().to_string(),
+            adapter_id: adapter_id.into(),
             has_unsync_mutations: AtomicBool::new(has_unsync_mutations),
             operation_lock: Mutex::new(()),
         }
@@ -698,6 +726,10 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// Returns `true` if any mutation has succeeded since the last sync.
     pub fn has_pending_mutations(&self) -> bool {
         self.has_unsync_mutations.load(Ordering::Acquire)
+    }
+
+    pub fn adapter_id(&self) -> &str {
+        &self.adapter_id
     }
 
     /// Provide read-only access to the inner adapter for queries.
@@ -1195,8 +1227,9 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     ///
     /// Returns `SyncIfDirtyOutcome::Clean` when no pending mutation journal is
     /// present, avoiding an unnecessary subprocess. When a flush does happen,
-    /// the outcome also reports which persisted status updates were replayed so
-    /// callers can distinguish their own recovered claim from unrelated work.
+    /// the outcome also reports which persisted status updates were replayed,
+    /// including the adapter ownership token for each record, so callers can
+    /// distinguish their own recovered claim from unrelated work.
     pub async fn sync_if_dirty(&self) -> Result<SyncIfDirtyOutcome, BrError> {
         let _operation_guard = self.operation_lock.lock().await;
         let _repo_guard = self.acquire_repo_operation_lock()?;
@@ -1216,7 +1249,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
                 .map(|output| SyncIfDirtyOutcome::Flushed {
                     output,
                     flushed_mutations: 1,
-                    matching_update_status: Vec::new(),
+                    recovered_status_updates: Vec::new(),
                 });
         }
 
@@ -1230,7 +1263,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
             return Ok(SyncIfDirtyOutcome::Clean);
         }
 
-        let matching_update_status = snapshot
+        let recovered_status_updates = snapshot
             .records
             .iter()
             .filter_map(|record| {
@@ -1239,7 +1272,11 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
                     .as_ref()
                     .zip(record.status.as_ref())
                     .filter(|_| record.operation == "update_bead_status")
-                    .map(|(bead_id, status)| (bead_id.clone(), status.clone()))
+                    .map(|(bead_id, status)| RecoveredStatusUpdate {
+                        adapter_id: record.adapter_id.clone(),
+                        bead_id: bead_id.clone(),
+                        status: status.clone(),
+                    })
             })
             .collect::<Vec<_>>();
 
@@ -1249,7 +1286,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
                 output,
                 flushed_mutations: snapshot.records.len()
                     + usize::from(snapshot.legacy_marker_present),
-                matching_update_status,
+                recovered_status_updates,
             })
     }
 
@@ -1902,6 +1939,42 @@ mod tests {
             *clean_log.lock().expect("command log"),
             vec![vec!["sync".to_owned(), "--flush-only".to_owned()]],
             "clean adapter should re-read repo state and flush recovered work"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_if_dirty_tracks_recovered_update_status_by_adapter_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let claim_adapter_id = "project-claim-owner";
+        let (claim_adapter, _) = {
+            let runner = MockRunner::new(vec![MockRunner::success("updated")]);
+            let adapter = BrAdapter::with_runner(runner).with_working_dir(tmp.path().to_path_buf());
+            (
+                BrMutationAdapter::with_adapter_id(adapter, claim_adapter_id),
+                (),
+            )
+        };
+        claim_adapter
+            .update_bead_status("bead-1", "in_progress")
+            .await?;
+
+        let observer_runner = MockRunner::new(vec![MockRunner::success("synced")]);
+        let observer_log = observer_runner.command_log();
+        let observer_adapter =
+            BrAdapter::with_runner(observer_runner).with_working_dir(tmp.path().to_path_buf());
+        let observer = BrMutationAdapter::with_adapter(observer_adapter);
+
+        let result = observer.sync_if_dirty().await?;
+
+        assert!(matches!(result, SyncIfDirtyOutcome::Flushed { .. }));
+        assert!(result.includes_update_status("bead-1", "in_progress"));
+        assert!(result.includes_owned_update_status(claim_adapter_id, "bead-1", "in_progress"));
+        assert!(!result.includes_owned_update_status("different-owner", "bead-1", "in_progress"));
+        assert_eq!(
+            *observer_log.lock().expect("command log"),
+            vec![vec!["sync".to_owned(), "--flush-only".to_owned()]],
         );
         Ok(())
     }
