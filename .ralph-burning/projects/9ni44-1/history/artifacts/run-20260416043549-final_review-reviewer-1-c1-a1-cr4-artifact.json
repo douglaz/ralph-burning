@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T06:16:45.502954351Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the sync/health/reconciliation implementation paths, and ran `cargo test --quiet` successfully. I found 2 fix-now correctness issues in the new sync-safety layer.\n\n## Amendments\n\n1. finding_summary: The new `.br-unsynced-mutations` marker is not serialized with mutation/sync execution, so concurrent callers can delete it while unsynced work still exists.\nseverity: high\naffected_files:\n- src/adapters/br_process.rs\nfile_refs:\n- src/adapters/br_process.rs:627-653\n- src/adapters/br_process.rs:755-765\nremediation_hint: Serialize `exec_tracked_mutation` and `sync_flush` behind a mutex or generation-based guard so only the operation that actually drains the last pending mutation can clear the on-disk marker.\n   Rationale: Both helpers mutate shared dirty state from a stale snapshot. If two mutations start while the adapter is clean, one can succeed and set `has_unsync_mutations=true` while the other fails and removes the marker because it saw `already_dirty=false`. Likewise, a `sync_flush()` that finishes while another mutation is in flight clears the marker and dirty flag unconditionally. After a crash/restart, `with_adapter()` will reconstruct a clean state and allow `sync_import()` against unflushed local mutations, which defeats the crash-safety invariant this change is introducing.\n2. finding_summary: `sync_import()` does not run the new beads export health check, so import-only sync still executes against missing or conflict-marked `.beads/issues.jsonl`.\nseverity: medium\naffected_files:\n- src/adapters/br_process.rs\n- src/adapters/br_health.rs\nfile_refs:\n- src/adapters/br_process.rs:815-846\n- src/adapters/br_health.rs:17-70\nremediation_hint: Reuse `check_beads_health()` (or a shared lower-level guard) inside `sync_import()` and fail before spawning `br` when the export is missing, unreadable, or contains merge markers.\n   Rationale: The bead is explicitly codifying sync/import safety for the post-`git pull` path, and the new health checker already knows how to reject missing/conflicted exports. However, the public `sync_import()` API only calls `ensure_synced()`. A caller that follows the advertised import flow can still invoke `br sync --import-only` while `.beads/issues.jsonl` is unresolved or missing, which is exactly the unsafe state this change is supposed to fence off.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

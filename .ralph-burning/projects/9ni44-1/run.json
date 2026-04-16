@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
     "started_at": "2026-04-16T04:35:49.747391164Z",
     "prompt_hash_at_cycle_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "prompt_hash_at_stage_start": "79c440e1845ca3691c046089d5d3e58ee7d5f2fb3b78db268e827a4348615c85",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-964ac48b",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "finding_summary: The new `.br-unsynced-mutations` marker is not serialized with mutation/sync execution, so concurrent callers can delete it while unsynced work still exists.\nseverity: high\naffected_files:\n- src/adapters/br_process.rs\nfile_refs:\n- src/adapters/br_process.rs:627-653\n- src/adapters/br_process.rs:755-765\nremediation_hint: Serialize `exec_tracked_mutation` and `sync_flush` behind a mutex or generation-based guard so only the operation that actually drains the last pending mutation can clear the on-disk marker.",
+        "created_at": "2026-04-16T06:19:06.569989330Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "32497ac2f706ee1ede4d34c810be217e7844a1b4721bca34efe987090498ee35"
+      },
+      {
+        "amendment_id": "fr-4-149a93d0",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "finding_summary: `sync_import()` does not run the new beads export health check, so import-only sync still executes against missing or conflict-marked `.beads/issues.jsonl`.\nseverity: medium\naffected_files:\n- src/adapters/br_process.rs\n- src/adapters/br_health.rs\nfile_refs:\n- src/adapters/br_process.rs:815-846\n- src/adapters/br_health.rs:17-70\nremediation_hint: Reuse `check_beads_health()` (or a shared lower-level guard) inside `sync_import()` and fail before spawning `br` when the export is missing, unreadable, or contains merge markers.",
+        "created_at": "2026-04-16T06:19:06.569991675Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "0829e6f02e0a2dc4db7eee1fbc5cddd4dee535ebcd0909019ec7d64a667181a0"
+      }
+    ],
     "processed_count": 8
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T05:44:20.166749549Z",
+    "resolved_at": "2026-04-16T06:09:12.885051436Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T06:19:06.555432226Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real defects in `BrMutationAdapter`: pending-mutation marker handling is racy under concurrent calls, and `sync_import()` bypasses the new beads export health guard.\n\n## Votes\n\n- `fr-4-964ac48b`: Accept\n  Accept. `exec_tracked_mutation()` and `sync_flush()` both mutate the shared dirty state and `.br-unsynced-mutations` file without any serialization. `exec_tracked_mutation()` snapshots `already_dirty` before awaiting the subprocess, then may clear the marker later based on that stale value, while `sync_flush()` unconditionally clears the marker on success. With concurrent mutation/flush calls, one operation can remove the marker even though another successful mutation still leaves unsynced local state. That breaks the documented crash-recovery/import guard and is a real correctness bug.\n- `fr-4-149a93d0`: Accept\n  Accept. `sync_import()` currently only calls `ensure_synced()` and then spawns `br sync --import-only`; it does not run `check_beads_health()` or any equivalent validation of `.beads/issues.jsonl`. As written, import-only sync can be invoked when the export is missing, unreadable, or contains merge markers, which is exactly the unsafe workspace state the new health check is meant to block before bead-mutating operations. Because `sync_import()` is a public API intended for post-merge/import recovery, the guard needs to live here rather than relying on callers to remember it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
