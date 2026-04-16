@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416021721-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416021721-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T02:46:39.725887256Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify genuine bugs in the final-review and propose-new-bead routing logic. Amendment fr-1-7a875718 correctly identifies that the partition at engine.rs:3315-3318 uses mapped_to_bead_id as a proxy for classification, which fails for ProposeNewBead items (they have mapped_to_bead_id=None, confirmed by test data at success_reconciliation.rs:3348) and get queued alongside FixNow items during restarts. The classification field exists on the struct but is marked #[allow(dead_code)] and never consulted for routing. Amendment fr-1-aceccf36 correctly identifies that list_matching_bead_by_title uses BrCommand::list_all() without filtering by BeadStatus or excluding the active bead, meaning Closed beads and self-matches can suppress required new-bead creation.\n\n## Votes\n\n- `fr-1-7a875718`: Accept\n  Verified in code: the partition at engine.rs:3315-3318 splits on mapped_to_bead_id.is_some(), but ProposeNewBead amendments always have mapped_to_bead_id=None (confirmed at success_reconciliation.rs:3348). This causes them to fall into regular_amendments and get written to the amendment queue via write_amendment (line 3322), then journaled as amendment_queued_event (line 3362) — identical treatment to FixNow items. The classification field is present on FinalReviewQueuedAmendment (line 7125) but marked #[allow(dead_code)] and never consulted for routing. In a restart scenario with mixed FixNow + ProposeNewBead findings, the implementation agent would receive ProposeNewBead items as amendments to remediate, which is incorrect — they should be deferred for downstream bead creation (as handled separately in success_reconciliation.rs:981). This is a high-severity routing defect.\n- `fr-1-aceccf36`: Accept\n  Verified in code: list_matching_bead_by_title (service.rs:2756-2764) calls BrCommand::list_all() and finds the first title match with no filters. BeadSummary includes both id and status fields (br_models.rs:242-251), and BeadStatus includes Closed (br_models.rs:22), but neither is checked. When a match is found (lines 2871-2897), the finding is immediately reclassified as PlannedElsewhere with mapped_bead_verified=true and the function returns early, skipping new-bead creation entirely. Two concrete failure modes: (1) a Closed bead matching by title suppresses creation of a needed follow-up bead even though the closed bead cannot accept new work, and (2) the active bead itself can self-match if its title is similar to the proposed title, creating a nonsensical self-mapping. The fix is straightforward — filter out Closed/terminal statuses and exclude the active_bead_id from matches.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

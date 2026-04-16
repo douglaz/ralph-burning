@@ -2,29 +2,74 @@
   "active_run": {
     "run_id": "run-20260416021721",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-16T02:17:21.815687034Z",
     "prompt_hash_at_cycle_start": "f3f8e1c67feaa8fcb2f35e4bb5fe9c83ad8eb5aca643141d0b75594e799ddeb8",
     "prompt_hash_at_stage_start": "f3f8e1c67feaa8fcb2f35e4bb5fe9c83ad8eb5aca643141d0b75594e799ddeb8",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-7a875718",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: `ProposeNewBead` findings are still routed into the restart amendment queue whenever the same final-review round also contains at least one `FixNow` item.\nseverity: high\naffected_files:\n- src/contexts/workflow_composition/engine.rs:3312-3325\n- src/contexts/workflow_composition/engine.rs:7885-7906\nremediation_hint: Partition accepted amendments by `classification`, not just `mapped_to_bead_id`. Only `FixNow` should be enqueued for remediation; `PlannedElsewhere` should record mappings, and `ProposeNewBead` should stay deferred for downstream bead creation.",
+        "created_at": "2026-04-16T02:48:54.648574152Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "bbcb6d57480b723ff4e6bf6fc7617b88c649359ccc79b5430f5f6d96a39bcaa3"
+      },
+      {
+        "amendment_id": "fr-1-aceccf36",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: The defensive duplicate check reclassifies against any same-title bead returned by `br list --all`, including closed beads (and the active bead itself), so it can suppress creation of a required follow-up bead by mapping to work that is no longer actionable.\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/service.rs:2756-2764\n- src/contexts/milestone_record/service.rs:2871-2897\nremediation_hint: When rechecking for an existing match, ignore terminal/self matches or explicitly require an open/in-progress target before converting the finding to `planned-elsewhere`.",
+        "created_at": "2026-04-16T02:48:54.648576807Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "08ecc0380c4fa0f2ce4f2e92964dd5ee123dad408bf3fbd2c8c5e406169ea17a"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-16T02:39:41.876948769Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
 }
