@@ -64,7 +64,9 @@ use crate::contexts::milestone_record::service::{
 use crate::contexts::project_run_record::model::{
     JournalEvent, JournalEventType, ProjectRecord, RunSnapshot, RunStatus,
 };
-use crate::contexts::project_run_record::queries::{RunStatusJsonView, RunStatusView};
+use crate::contexts::project_run_record::queries::{
+    terminal_event_for_attempt, RunStatusJsonView, RunStatusView,
+};
 use crate::contexts::project_run_record::service::{
     self, ArtifactStorePort, JournalStorePort, ProjectStorePort, RunSnapshotPort,
     RunSnapshotWritePort, RuntimeLogStorePort, RuntimeLogWritePort,
@@ -1272,9 +1274,12 @@ fn sync_terminal_milestone_task_with_options(
     };
     let finished_at = match final_snapshot.status {
         RunStatus::Completed => {
-            let Some(timestamp) =
-                terminal_run_event_timestamp(&journal_events, run_id, RunStatus::Completed)
-            else {
+            let Some(timestamp) = terminal_run_event_timestamp(
+                &journal_events,
+                run_id,
+                started_at,
+                RunStatus::Completed,
+            ) else {
                 return Err(AppError::CorruptRecord {
                     file: format!("projects/{}/journal.ndjson", project_id),
                     details: format!(
@@ -1285,13 +1290,17 @@ fn sync_terminal_milestone_task_with_options(
             timestamp
         }
         RunStatus::Failed => {
-            let Some(timestamp) =
-                terminal_run_event_timestamp(&journal_events, run_id, RunStatus::Failed)
-            else {
+            let Some(timestamp) = terminal_run_event_timestamp(
+                &journal_events,
+                run_id,
+                started_at,
+                RunStatus::Failed,
+            ) else {
                 return Err(AppError::CorruptRecord {
                     file: format!("projects/{}/journal.ndjson", project_id),
                     details: format!(
-                        "run snapshot is failed but missing durable run_failed event for run_id={run_id}"
+                        "run snapshot is failed but missing durable run_failed event for current attempt run_id={run_id} started_at={}",
+                        started_at.to_rfc3339(),
                     ),
                 });
             };
@@ -1493,20 +1502,10 @@ fn effective_attempt_started_at(
 fn terminal_run_event_timestamp(
     journal_events: &[JournalEvent],
     run_id: &str,
+    started_at: chrono::DateTime<chrono::Utc>,
     status: RunStatus,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    let terminal_event_type = match status {
-        RunStatus::Completed => JournalEventType::RunCompleted,
-        RunStatus::Failed => JournalEventType::RunFailed,
-        RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => return None,
-    };
-
-    journal_events
-        .iter()
-        .rev()
-        .find(|event| {
-            event.event_type == terminal_event_type && journal_run_id(event) == Some(run_id)
-        })
+    terminal_event_for_attempt(run_id, started_at, status, journal_events)
         .map(|event| event.timestamp)
 }
 
@@ -6493,7 +6492,9 @@ mod tests {
     fn sync_terminal_milestone_task_repairs_legacy_failed_start_without_run_started() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
-        let now = Utc::now();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse now")
+            .with_timezone(&Utc);
 
         std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
             .expect("create project dir");
@@ -8219,6 +8220,139 @@ mod tests {
             .collect();
         assert_eq!(failure_events.len(), 1);
         assert_eq!(failure_events[0].timestamp, stale_failed_at);
+    }
+
+    #[test]
+    fn sync_terminal_milestone_task_rejects_stale_run_failed_from_prior_resumed_attempt() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let original_started_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse original_started_at")
+            .with_timezone(&Utc);
+        let first_failed_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:05:00Z")
+            .expect("parse first_failed_at")
+            .with_timezone(&Utc);
+        let resumed_at = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:20:00Z")
+            .expect("parse resumed_at")
+            .with_timezone(&Utc);
+
+        std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
+            .expect("create project dir");
+        std::fs::write(
+            base_dir.join(".ralph-burning/projects/bead-run/journal.ndjson"),
+            r#"{"sequence":1,"timestamp":"2026-04-01T09:59:00Z","event_type":"project_created","details":{"project_id":"bead-run","flow":"docs_change"}}
+{"sequence":2,"timestamp":"2026-04-01T10:00:00Z","event_type":"run_started","details":{"run_id":"run-1","first_stage":"planning","max_completion_rounds":20}}
+{"sequence":3,"timestamp":"2026-04-01T10:05:00Z","event_type":"run_failed","details":{"run_id":"run-1","stage_id":"review","failure_class":"stage_failure","message":"first attempt failed","completion_rounds":0,"max_completion_rounds":20}}
+{"sequence":4,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_resumed","details":{"run_id":"run-1","resume_stage":"implementation","cycle":2,"completion_round":1,"max_completion_rounds":20}}"#,
+        )
+        .expect("write journal");
+
+        let milestone = create_single_bead_milestone_with_plan(base_dir, original_started_at);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "bead-run",
+            "run-1",
+            "plan-v1",
+            original_started_at,
+        )
+        .expect("record initial bead start");
+        record_bead_completion(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "bead-run",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Failed,
+            Some("first attempt failed"),
+            original_started_at,
+            first_failed_at,
+        )
+        .expect("record initial failed completion");
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "bead-run",
+            "run-1",
+            "plan-v1",
+            resumed_at,
+        )
+        .expect("record resumed bead start");
+
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: original_started_at,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: milestone.id.to_string(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+        let final_snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-1".to_owned(),
+                stage_cursor: StageCursor::new(StageId::Implementation, 2, 1, 1)
+                    .expect("stage cursor"),
+                started_at: resumed_at,
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "resumed attempt failed without a new durable run_failed event"
+                .to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let error =
+            sync_terminal_milestone_task(base_dir, &project_id, &project_record, &final_snapshot)
+                .expect_err("sync should fail when only a stale prior run_failed exists");
+        match error {
+            AppError::CorruptRecord { file, details } => {
+                assert!(file.ends_with("projects/bead-run/journal.ndjson"));
+                assert!(details.contains("missing durable run_failed event for current attempt"));
+                assert!(details.contains(&resumed_at.to_rfc3339()));
+            }
+            other => panic!("expected CorruptRecord, got {other:?}"),
+        }
+
+        let task_runs = read_task_runs(&FsTaskRunLineageStore, base_dir, &milestone.id)
+            .expect("read task-runs after failed sync");
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-1"));
+        assert_eq!(task_runs[0].started_at, resumed_at);
+        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Running);
+        assert_eq!(task_runs[0].finished_at, None);
     }
 
     #[test]
