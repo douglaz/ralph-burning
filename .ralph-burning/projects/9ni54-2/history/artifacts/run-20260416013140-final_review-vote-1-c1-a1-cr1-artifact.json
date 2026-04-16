@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416013140-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416013140-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T01:49:34.086237225Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real issues. One is a correctness bug in missing-milestone error handling, and the other is a legitimate CLI output consistency defect.\n\n## Votes\n\n- `fr-1-be7e91d8`: Accept\n  `handle_bead_history()` and `handle_tasks()` bypass the normal `load_existing_milestone()` guard and call helpers that ultimately reach `read_milestone_record()` directly. For a nonexistent milestone, that path converts the missing `milestone.toml` into `CorruptRecord`, so these commands misclassify an absent milestone as repository corruption instead of returning the normal `MilestoneNotFound` error. That is a real correctness and UX defect, and mirroring the existing upfront existence check is a safe, maintainable fix.\n- `fr-1-bb3a8f42`: Accept\n  The text-mode `bead-history` output currently prints `started_at` with `DateTime<Utc>`'s `Display` format while `finished_at` on the same tab-separated row is RFC3339. Mixing timestamp encodings in one record is inconsistent and makes downstream parsing and manual inspection less reliable. Converting `started_at` to `.to_rfc3339()` is low risk, matches the adjacent `finished_at` field and other CLI output in the same file, and improves consistency without changing semantics.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

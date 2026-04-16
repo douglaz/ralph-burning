@@ -291,6 +291,10 @@ impl RunStatusJsonView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunHistoryView {
     pub project_id: String,
+    #[serde(default)]
+    pub milestone_id: Option<String>,
+    #[serde(default)]
+    pub bead_id: Option<String>,
     pub events: Vec<JournalEvent>,
     pub payloads: Vec<PayloadRecord>,
     pub artifacts: Vec<ArtifactRecord>,
@@ -324,16 +328,47 @@ pub fn build_status_view(project_id: &str, snapshot: &RunSnapshot) -> RunStatusV
 /// Build a history view from durable records only. No runtime logs.
 pub fn build_history_view(
     project_id: &str,
+    milestone_id: Option<String>,
+    bead_id: Option<String>,
     events: Vec<JournalEvent>,
     payloads: Vec<PayloadRecord>,
     artifacts: Vec<ArtifactRecord>,
 ) -> RunHistoryView {
     RunHistoryView {
         project_id: project_id.to_owned(),
+        milestone_id,
+        bead_id,
         events,
         payloads,
         artifacts,
     }
+}
+
+pub fn history_lineage(events: &[JournalEvent]) -> (Option<String>, Option<String>) {
+    let mut milestone_id = None;
+    let mut bead_id = None;
+
+    for event in events {
+        if milestone_id.is_none() {
+            milestone_id = event
+                .details
+                .get("milestone_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
+        }
+        if bead_id.is_none() {
+            bead_id = event
+                .details
+                .get("bead_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
+        }
+        if milestone_id.is_some() && bead_id.is_some() {
+            break;
+        }
+    }
+
+    (milestone_id, bead_id)
 }
 
 /// Build a tail view: durable history always, runtime logs only when requested.

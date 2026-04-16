@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415203322-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T22:05:52.243669092Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed all changes across 10 source files and 4 test files. The implementation adds 4 query types (run history lineage, task detail lineage, bead execution history, milestone task listing) with correct plan-hash staleness detection, graceful fallback on missing/corrupt plans, proper backward compatibility (all new fields are Option or #[serde(default)]), and comprehensive test coverage including stale-plan, missing-plan, corrupt-plan, and mixed-plan-hash edge cases. Duration computation correctly handles negative intervals via signed_duration_since().to_std().ok(). All tests pass, clippy is clean with -D warnings, and fmt --check passes. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}

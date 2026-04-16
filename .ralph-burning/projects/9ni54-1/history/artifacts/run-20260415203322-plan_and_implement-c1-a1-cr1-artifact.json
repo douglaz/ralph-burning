@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415203322-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T20:57:51.992769803Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded milestone/bead lineage to run-history views, enriched project/task detail queries with milestone and bead metadata from milestone plans, and introduced milestone-side lineage queries for bead execution history and milestone task listings. Updated CLI history/detail output and JSON formatting to surface the new fields, and added/updated tests covering serialization, task-detail enrichment, bead execution history, milestone task listing, and run-history lineage output.\n\n## Steps\n\n1. [Completed] Inspected existing project-run and milestone query/service code paths to identify where lineage metadata already existed and where plan-backed bead metadata needed to be joined in.\n2. [Completed] Implemented optional `milestone_id`/`bead_id` lineage on run history, added task-lineage enrichment for project/task detail queries, and added milestone query models/services for bead execution history and milestone task listing.\n3. [Completed] Updated CLI text/JSON rendering plus unit/CLI coverage, then validated with the required Rust checks and nix build.\n\n## Validation Evidence\n\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo fmt --check` passed.\n- `nix build` produced a `result` symlink resolving to `/nix/store/21psmvza60q5hly7k820aznbrf8np0mg-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 1
+}

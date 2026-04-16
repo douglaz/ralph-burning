@@ -743,12 +743,16 @@ pub(crate) fn load_project_detail(
     let run_store = FsRunSnapshotStore;
     let journal_store = FsJournalStore;
     let active_store = FsActiveProjectStore;
+    let milestone_store = FsMilestoneStore;
+    let plan_store = FsMilestonePlanStore;
 
     service::show_project(
         &store,
         &run_store,
         &journal_store,
         &active_store,
+        &milestone_store,
+        &plan_store,
         base_dir,
         project_id,
     )
@@ -765,6 +769,23 @@ fn print_project_detail(detail: &ProjectDetail) {
     println!("Run status: {}", detail.run_snapshot.status_summary);
     println!("Journal events: {}", detail.journal_event_count);
     println!("Rollback points: {}", detail.rollback_count);
+    if let Some(lineage) = &detail.task_lineage {
+        println!(
+            "Milestone: {} ({})",
+            lineage.milestone_name, lineage.milestone_id
+        );
+        println!(
+            "Bead: {} ({})",
+            lineage.bead_title.as_deref().unwrap_or("<unknown>"),
+            lineage.bead_id
+        );
+        if !lineage.acceptance_criteria.is_empty() {
+            println!("Acceptance criteria:");
+            for criterion in &lineage.acceptance_criteria {
+                println!("  - {criterion}");
+            }
+        }
+    }
 }
 
 fn ensure_milestone_exists(

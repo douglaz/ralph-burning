@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-vote-2-c1-a1-cr8-artifact",
+  "payload_id": "run-20260415203322-final_review-vote-2-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T00:33:49.735477863Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real defects. Amendment fr-8-e4025c8d catches a genuine logic bug where all-numeric foreign milestone refs get misclassified as local short aliases, since MilestoneId allows purely numeric IDs. Amendment fr-8-f2b6e0b1 catches a valid robustness issue where infrastructure errors (permissions, disk) are silently discarded alongside expected plan-not-found errors.\n\n## Votes\n\n- `fr-8-e4025c8d`: Accept\n  Verified the bug: `looks_like_short_dotted_bead_ref` returns true for any all-numeric dotted string (e.g., '123.4.5'). Since `MilestoneId::new` permits purely numeric IDs (only rejects empty, dot-prefixed, or slash-containing strings), a foreign qualified ref like '123.4.5' (milestone 123, bead 4.5) would be incorrectly rewritten to 'current_ms.123.4.5' when the current milestone is different. The existing test uses milestone '9ni' (non-numeric), so it cannot catch this. The `milestone_bead_refs_match` function is used in three critical paths: filtering active task runs (fs.rs:4371), detecting concurrent bead conflicts (fs.rs:4997), and filtering lineage entries (fs.rs:5182). A false match could suppress conflict detection or return wrong lineage data. The remediation hint is sound — the heuristic needs to be narrowed or validated against the bead graph.\n- `fr-8-f2b6e0b1`: Accept\n  The `load_plan_bundle` function chains `read_plan_json` (which can fail with `AppError::Io` from `fs::read_to_string`) and JSON parsing (which yields `AppError::CorruptRecord`). All three call sites use `.ok()` or `Err(_) => fallback`, treating 'plan file not found' identically to 'permission denied' or 'disk I/O error'. While the fallback behavior is safe (no data corruption), silently swallowing infrastructure errors masks genuinely broken state. A filesystem permission failure will produce subtly degraded lineage output with no diagnostic trail, making it hard to debug. The fix is straightforward: match on the error variant, fall back for NotFound/CorruptRecord, and propagate unexpected Io errors. Severity is low but the defect is real and the fix is low-risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 8
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260415203322-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T22:02:52.185833073Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the two pending lineage regressions. Run-history JSON now always includes `milestone_id` and `bead_id`, emitting explicit `null` values for standalone tasks instead of omitting the fields. Task-detail lineage loading now delegates directly to milestone lineage resolution so milestone-backed tasks retain fallback milestone/bead lineage even when `plan.json` is missing or corrupt. Added regression coverage for null lineage serialization plus missing-plan and corrupt-plan fallback behavior.\n\n## Steps\n\n1. [Completed] Removed `skip_serializing_if` from the JSON-facing run-history lineage fields so `milestone_id` and `bead_id` always serialize for `run history --json`, including explicit `null` values for non-milestone tasks.\n2. [Completed] Simplified task-detail lineage loading to call milestone `read_bead_lineage()` directly after parsing the milestone id, allowing the existing fallback path to preserve milestone/bead lineage when milestone plan artifacts are missing or unreadable.\n3. [Completed] Updated regression tests for standalone run-history JSON output and for missing/corrupt milestone plan fallback behavior, then ran the required validation suite.\n\n## Validation Evidence\n\n- `cargo test run_history_json_outputs_parseable_json --test cli` passed.\n- `cargo test show_project_preserves_fallback_lineage_when_plan --lib` passed.\n- `cargo fmt --check` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed and updated `result` to `/nix/store/dh5cgzysabn22yf0r2q2syxyaf611ivv-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`.\n\n## Outstanding Risks\n\n- Historical bead titles and acceptance criteria are still unavailable after a milestone replan because the system does not persist versioned plan snapshots; when the persisted plan hash no longer matches the live plan, lineage intentionally falls back to durable milestone/bead IDs without reconstructing old plan metadata.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 3
+}

@@ -657,7 +657,14 @@ async fn resume_after_rollback_preserves_abandoned_payload_artifacts_on_disk() {
         .iter()
         .any(|name| !name.contains("-rb1")));
 
-    let history = service::run_history(&FsJournalStore, &FsArtifactStore, base_dir, &pid).unwrap();
+    let history = service::run_history(
+        &FsProjectStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        base_dir,
+        &pid,
+    )
+    .unwrap();
     let visible_implementation_payloads: Vec<_> = history
         .payloads
         .iter()

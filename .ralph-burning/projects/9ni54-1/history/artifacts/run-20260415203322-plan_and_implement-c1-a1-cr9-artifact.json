@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-plan_and_implement-c1-a1-cr9-artifact",
+  "payload_id": "run-20260415203322-plan_and_implement-c1-a1-cr9",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-16T00:49:22.019938623Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the two pending lineage amendments. Bead-ref canonicalization no longer blindly rewrites all-numeric dotted refs when the current milestone ID is numeric, while bead matching still treats current-milestone short-vs-qualified aliases as equivalent for run grouping and latest-run collapse. Lineage plan loading now falls back only for expected stale-plan cases (missing or corrupt `plan.json`) and propagates unrelated plan-store failures such as permission errors through `read_bead_lineage`, `bead_execution_history`, and `list_tasks_for_milestone`. Added regression coverage for numeric milestone bead refs, numeric short/qualified latest-run collapse, and non-`NotFound` plan-store error propagation across the three lineage query entry points.\n\n## Steps\n\n1. [Completed] Inspected milestone bead-ref canonicalization and lineage plan-loading paths to confirm the numeric milestone alias ambiguity and the overly broad `load_plan_bundle` fallback behavior in lineage queries.\n2. [Completed] Patched bead-ref canonicalization/matching plus latest-run grouping so numeric milestone IDs preserve foreign qualified refs while still collapsing current-milestone short/qualified aliases, and introduced lineage-specific plan loading that only suppresses expected stale-plan failures.\n3. [Completed] Added regression tests for numeric milestone bead refs, numeric alias latest-run collapse, and permission-denied plan-store propagation in lineage queries, then reran the required validation gates on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed and `result` now resolves to `/nix/store/1afvwg6m97vaisqrgs74yzgdw5yl3lrx-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`.\n- Targeted regressions passed: `cargo test preserves_numeric_dotted_refs_for_numeric_milestone_ids --lib`, `cargo test latest_task_runs_per_bead_collapses_numeric_short_and_current_qualified_refs --lib`, `cargo test read_bead_lineage_propagates_non_not_found_plan_store_errors --lib`, `cargo test bead_execution_history_propagates_non_not_found_plan_store_errors --lib`, and `cargo test list_tasks_for_milestone_propagates_non_not_found_plan_store_errors --lib`.\n\n## Outstanding Risks\n\n- Historical bead titles and acceptance criteria are still unavailable after a milestone replan because the system does not persist versioned plan snapshots; when persisted provenance no longer matches the live plan, lineage intentionally falls back to durable milestone/bead IDs without reconstructing old plan metadata.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 9
+}

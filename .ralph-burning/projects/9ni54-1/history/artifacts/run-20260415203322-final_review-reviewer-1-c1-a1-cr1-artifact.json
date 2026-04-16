@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415203322-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T21:10:03.445003451Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nI found one medium-severity correctness issue: the new lineage/detail queries source bead metadata from the current `plan.json` instead of the persisted plan provenance on the task/run, so historical task and run lineage becomes inaccurate after replans. `cargo test`, `cargo clippy -- -D warnings`, and `cargo fmt --check` passed during review; `nix build` was started but had not completed before I finalized this pass.\n\n## Amendments\n\n1. finding_summary: Historical lineage is resolved from the live milestone plan instead of the plan hash/version captured on the task/run.\nseverity: medium\naffected_files: [\"src/contexts/project_run_record/service.rs\", \"src/contexts/milestone_record/service.rs\"]\nremediation_hint: Use the persisted `plan_hash`/`plan_version` (or persist a bead-title/acceptance snapshot) when filling lineage metadata, and fall back to durable IDs instead of projecting today's plan onto old runs/tasks.\n\nEvidence: `load_task_lineage_detail` always reparses the current `plan.json` (`src/contexts/project_run_record/service.rs:1364-1426`), and `read_bead_lineage` / `bead_execution_history` / `list_tasks_for_milestone` do the same (`src/contexts/milestone_record/service.rs:2065-2218`). Those lookups ignore provenance already stored on `TaskSource` and `TaskRunEntry` (`src/contexts/project_run_record/model.rs:25-41`, `src/contexts/milestone_record/model.rs:364-376`). After any milestone replan or bead rename/removal, these queries will silently relabel historical tasks/runs with the current bead title and acceptance criteria, or return empty lineage details for runs that were valid under the earlier plan version.\n   Rationale: The bead's goal is to expose milestone/bead lineage for tracing. Returning mutable current-plan metadata for historical runs breaks that provenance and can mislead both operators and controllers after routine plan updates.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

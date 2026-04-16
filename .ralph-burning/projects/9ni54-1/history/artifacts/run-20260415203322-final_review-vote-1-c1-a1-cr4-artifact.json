@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260415203322-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T22:42:47.090209317Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness issues. One leaves execution-history deduplication inconsistent with the new milestone-aware bead matching, and the other masks hard lineage lookup failures by turning broken milestone-backed tasks into tasks that appear to have no lineage at all.\n\n## Votes\n\n- `fr-4-63ec00b8`: Accept\n  Accept. `find_runs_for_bead` now filters with `milestone_bead_refs_match`, so short and fully qualified bead refs are treated as equivalent at query time, but the collapse/grouping logic still uses raw `bead_id` equality for named-attempt grouping and related matching. That means rows for the same `project_id`/`run_id` can survive as separate entries when one uses `bead-1` and the other uses `ms-alpha.bead-1`, and both are then returned by the post-collapse filter. The cited path slightly over-attributes this to `same_attempt`; the broader point is that collapse still keys on raw bead strings, so the duplicate-history bug is real.\n- `fr-4-e2a3f015`: Accept\n  Accept. `load_task_lineage_detail` converts every `read_bead_lineage` failure into `None`, but `read_bead_lineage` already degrades missing or invalid `plan.json` into fallback lineage internally. The remaining errors are milestone-record lookup/read failures and similar hard store problems. Swallowing those makes a corrupted or missing milestone backing record indistinguishable from a task that never had milestone lineage, which hides real corruption and defeats the feature. The code should either propagate those failures or represent them explicitly as degraded lineage, not silently erase them.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

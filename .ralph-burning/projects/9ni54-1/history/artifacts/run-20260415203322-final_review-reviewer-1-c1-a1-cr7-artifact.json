@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260415203322-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T23:59:24.443008881Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nOne fix-now correctness issue found: dot-separated short bead ids are not canonicalized to the current milestone, which breaks mixed short/qualified lineage matching and makes bead execution history unreliable for common bead ids.\n\n## Amendments\n\n1. finding_summary: The new bead-alias matching only adds the milestone prefix when the bead id contains no dot, so short-form ids like `8.5.3` are treated as already-qualified and no longer match `9ni.8.5.3` [src/contexts/milestone_record/bead_refs.rs:8-15]. That bad canonicalization now feeds `TaskRunEntry::same_attempt()` / `canonical_task_run_bead_ref()` and `FsTaskRunLineageStore::find_runs_for_bead()`, so mixed short/qualified task-run rows for the same bead will not collapse together and `bead_execution_history()` can return duplicate or missing attempts for the dot-separated bead ids this repo actually uses [src/contexts/milestone_record/model.rs:452-472, src/adapters/fs.rs:5173-5183]. severity: high. affected_files: [\"src/contexts/milestone_record/bead_refs.rs\", \"src/contexts/milestone_record/model.rs\", \"src/adapters/fs.rs\"]. remediation_hint: canonicalize short dotted aliases against the current milestone instead of treating every dotted id as foreign/fully-qualified, and add coverage for a real alias pair such as `9ni.8.5.3` versus `8.5.3`.\n   Rationale: The new query surface is supposed to stitch together task-run lineage across legacy and current representations, but this helper only works for `bead-*` ids. Real milestone beads here commonly use dot-separated suffixes, so the regression will surface in normal bead history lookups rather than a corner case.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

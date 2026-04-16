@@ -390,6 +390,8 @@ fn run_query_views_round_trip_through_json() {
     );
     let history_view = RunHistoryView {
         project_id: "alpha".to_owned(),
+        milestone_id: Some("ms-alpha".to_owned()),
+        bead_id: Some("ms-alpha.bead-1".to_owned()),
         events: stage_history_events(),
         payloads: vec![planning_payload()],
         artifacts: vec![planning_artifact()],

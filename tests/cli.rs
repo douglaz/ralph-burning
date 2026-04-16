@@ -376,6 +376,25 @@ fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str)
     .expect("write artifact a2");
 }
 
+fn write_run_query_history_lineage_fixture(
+    base_dir: &std::path::Path,
+    project_id: &str,
+    milestone_id: &str,
+    bead_id: &str,
+) {
+    write_run_query_history_fixture(base_dir, project_id);
+    let journal_path = project_root(base_dir, project_id).join("journal.ndjson");
+    let journal = fs::read_to_string(&journal_path).expect("read journal");
+    let patched = journal.replacen(
+        &format!(r#""project_id":"{project_id}","flow":"standard""#),
+        &format!(
+            r#""project_id":"{project_id}","flow":"standard","milestone_id":"{milestone_id}","bead_id":"{bead_id}""#
+        ),
+        1,
+    );
+    fs::write(journal_path, patched).expect("write lineage journal");
+}
+
 fn set_workspace_stream_output(base_dir: &std::path::Path, enabled: bool) {
     let workspace_toml = workspace_config_path(base_dir);
     let mut workspace: ralph_burning::shared::domain::WorkspaceConfig =
@@ -11053,6 +11072,16 @@ fn run_history_json_outputs_parseable_json() {
     let value: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("history json should parse");
     assert_eq!(value["project_id"], "alpha");
+    assert!(
+        value.get("milestone_id").is_some(),
+        "history json should always include milestone_id"
+    );
+    assert!(
+        value.get("bead_id").is_some(),
+        "history json should always include bead_id"
+    );
+    assert!(value["milestone_id"].is_null());
+    assert!(value["bead_id"].is_null());
     assert_eq!(value["events"].as_array().expect("events array").len(), 5);
     assert_eq!(
         value["payloads"].as_array().expect("payloads array").len(),
@@ -11066,6 +11095,31 @@ fn run_history_json_outputs_parseable_json() {
         value["artifacts"][0].get("content").is_none(),
         "compact history json should omit artifact content"
     );
+}
+
+#[test]
+fn run_history_json_includes_optional_lineage_fields() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_lineage_fixture(
+        temp_dir.path(),
+        "alpha",
+        "ms-alpha",
+        "ms-alpha.bead-1",
+    );
+
+    let output = Command::new(binary())
+        .args(["run", "history", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --json");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("history json should parse");
+    assert_eq!(value["milestone_id"], "ms-alpha");
+    assert_eq!(value["bead_id"], "ms-alpha.bead-1");
 }
 
 #[test]

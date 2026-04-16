@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-reviewer-2-c1-a1-cr6-artifact",
+  "payload_id": "run-20260415203322-final_review-reviewer-2-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T23:43:04.221923955Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed the full scope of changes (2,101 lines across 10 files) implementing milestone/bead lineage in run history and task detail queries. All 4 query types are implemented: (1) run history with milestone_id/bead_id from journal events, (2) task detail with milestone name, bead title, and acceptance criteria, (3) bead execution history with retries, outcomes, and computed durations, (4) milestone task listing filtering linked projects. Non-milestone tasks return null lineage for backward compatibility. All outputs are serializable for --json. Bead ref matching correctly handles short ('bead-1') and qualified ('ms-1.bead-1') refs throughout the codebase. Error handling in load_task_lineage_detail gracefully returns None for missing milestones instead of propagating errors. Plan hash validation prevents stale plan data from being served. Duration computation safely handles clock skew. All 873 tests pass, clippy is clean (-D warnings), formatting passes, and nix build succeeds. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 6
+}

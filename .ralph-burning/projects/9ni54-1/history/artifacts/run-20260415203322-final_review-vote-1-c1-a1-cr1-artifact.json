@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260415203322-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-15T21:12:49.321838977Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments are technically valid. fr-1-b7e02139 and fr-1-cb791f9b describe real correctness/robustness defects in the current lineage-loading path, and fr-1-e123f109 identifies genuine duplication that should be consolidated even if the exact refactor differs slightly from the proposed one-liner.\n\n## Votes\n\n- `fr-1-b7e02139`: Accept\n  The finding matches the code. `load_task_lineage_detail`, `read_bead_lineage`, `bead_execution_history`, and `list_tasks_for_milestone` all derive bead title/acceptance criteria from the current `plan.json` while ignoring the persisted `plan_hash`/`plan_version` on `TaskSource` and `TaskRunEntry`. That allows historical tasks/runs to be relabeled after renames, removals, or same-shape plan edits that do not trigger lineage truncation. The exact remediation may require storing historical plan/bead snapshots if old plan bodies are not retained, but the defect is real.\n- `fr-1-cb791f9b`: Accept\n  `show_project` treats `task_lineage` as optional display data, and the CLI only renders it when present, but `load_task_lineage_detail` currently propagates milestone/plan read and parse failures with `?`. As a result, a missing or corrupt milestone artifact can make `project show` and `task show` fail even though the core project record, run snapshot, and journal are still readable. That is a robustness bug. The implementation should degrade lineage-specific load failures to `Ok(None)` rather than aborting the whole detail query.\n- `fr-1-e123f109`: Accept\n  The maintainability concern is valid. `load_task_lineage_detail` duplicates the same bead-ID matching and acceptance-map expansion logic already centralized in `resolve_bead_plan_details`/`build_bead_lineage_view` behind `read_bead_lineage`. Keeping two copies invites drift if the matching rules change. The exact refactor may need a shared helper or small signature/error-handling adjustments rather than a literal direct call, but the duplicate-logic finding itself is sound.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

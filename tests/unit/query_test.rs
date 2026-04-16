@@ -110,12 +110,33 @@ fn history_view_contains_only_durable_records() {
         details: serde_json::json!({}),
     }];
 
-    let view = queries::build_history_view("alpha", events.clone(), vec![], vec![]);
+    let view = queries::build_history_view("alpha", None, None, events.clone(), vec![], vec![]);
 
     assert_eq!(view.project_id, "alpha");
     assert_eq!(view.events.len(), 1);
     assert!(view.payloads.is_empty());
     assert!(view.artifacts.is_empty());
+}
+
+#[test]
+fn history_view_preserves_optional_lineage_fields() {
+    let events = vec![JournalEvent {
+        sequence: 1,
+        timestamp: test_timestamp(),
+        event_type: JournalEventType::ProjectCreated,
+        details: serde_json::json!({
+            "project_id": "alpha",
+            "flow": "standard",
+            "milestone_id": "ms-alpha",
+            "bead_id": "ms-alpha.bead-1"
+        }),
+    }];
+
+    let (milestone_id, bead_id) = queries::history_lineage(&events);
+    let view = queries::build_history_view("alpha", milestone_id, bead_id, events, vec![], vec![]);
+
+    assert_eq!(view.milestone_id.as_deref(), Some("ms-alpha"));
+    assert_eq!(view.bead_id.as_deref(), Some("ms-alpha.bead-1"));
 }
 
 // ── RunTailView ──
@@ -454,7 +475,7 @@ fn run_snapshot_round_trips_through_json() {
 #[test]
 fn runtime_logs_never_appear_in_history_view() {
     // History view has no field for runtime logs - enforced by type system.
-    let view = queries::build_history_view("alpha", vec![], vec![], vec![]);
+    let view = queries::build_history_view("alpha", None, None, vec![], vec![], vec![]);
     // RunHistoryView has no runtime_logs field, so logs can never leak.
     assert_eq!(view.project_id, "alpha");
 }

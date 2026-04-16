@@ -25,6 +25,7 @@ use crate::contexts::automation_runtime::repo_registry::{
     parse_repo_slug, RepoRegistration, RepoRegistryPort,
 };
 use crate::contexts::automation_runtime::DaemonStorePort;
+use crate::contexts::milestone_record::bead_refs::milestone_bead_refs_match;
 use crate::contexts::milestone_record::controller::{
     MilestoneControllerPort, MilestoneControllerRecord, MilestoneControllerTransitionEvent,
 };
@@ -4361,11 +4362,15 @@ impl FsTaskRunLineageStore {
 
     fn running_task_runs_for_bead<'a>(
         entries: &'a [TaskRunEntry],
+        milestone_id: &MilestoneId,
         bead_id: &str,
     ) -> Vec<&'a TaskRunEntry> {
         entries
             .iter()
-            .filter(|entry| entry.bead_id == bead_id && !entry.outcome.is_terminal())
+            .filter(|entry| {
+                milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id)
+                    && !entry.outcome.is_terminal()
+            })
             .collect()
     }
 
@@ -4520,8 +4525,10 @@ impl FsTaskRunLineageStore {
         Ok(changed)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reopen_failed_exact_attempt(
         entries: &mut Vec<TaskRunEntry>,
+        milestone_id: &MilestoneId,
         canonical_entry: &TaskRunEntry,
         bead_id: &str,
         project_id: &str,
@@ -4537,7 +4544,7 @@ impl FsTaskRunLineageStore {
             .iter()
             .enumerate()
             .filter_map(|(index, entry)| {
-                (entry.bead_id == bead_id
+                (milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id)
                     && entry.project_id == project_id
                     && entry.run_id.as_deref() == Some(run_id))
                 .then_some(index)
@@ -4689,7 +4696,9 @@ impl FsTaskRunLineageStore {
             .iter()
             .enumerate()
             .filter_map(|(index, entry)| {
-                (entry.bead_id == bead_id && entry.project_id == project_id).then_some(index)
+                (milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id)
+                    && entry.project_id == project_id)
+                    .then_some(index)
             })
             .collect();
         if matching_indices.is_empty() {
@@ -4978,13 +4987,15 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         }
         let canonical_task_runs = collapse_task_run_attempts(entries.clone());
         let running_attempts_for_bead =
-            Self::running_task_runs_for_bead(&canonical_task_runs, bead_id);
+            Self::running_task_runs_for_bead(&canonical_task_runs, milestone_id, bead_id);
 
         if let Some(other_active_bead) = canonical_task_runs
             .iter()
             .filter(|entry| !entry.outcome.is_terminal())
             .map(|entry| entry.bead_id.as_str())
-            .find(|active_bead_id| *active_bead_id != bead_id)
+            .find(|active_bead_id| {
+                !milestone_bead_refs_match(milestone_id, active_bead_id, bead_id)
+            })
         {
             return Err(AppError::RunStartFailed {
                 reason: format!(
@@ -5000,6 +5011,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             [entry] => {
                 if let Some(reopened_entry) = Self::reopen_failed_exact_attempt(
                     &mut entries,
+                    milestone_id,
                     entry,
                     bead_id,
                     project_id,
@@ -5167,7 +5179,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let mut runs: Vec<TaskRunEntry> =
             collapse_task_run_attempts(self.read_task_runs(base_dir, milestone_id)?)
                 .into_iter()
-                .filter(|entry| entry.bead_id == bead_id)
+                .filter(|entry| milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id))
                 .collect();
         runs.sort_by(|left, right| {
             left.started_at

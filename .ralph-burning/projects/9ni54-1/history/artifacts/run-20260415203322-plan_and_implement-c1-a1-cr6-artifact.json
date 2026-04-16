@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260415203322-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260415203322-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-15T23:26:57.987404212Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the remaining lineage regressions by canonicalizing mixed short vs fully qualified bead IDs in the write-side task-run paths, so retries and finalization now target the same logical bead attempt. Snapshot reconciliation now collapses mixed bead refs through the latest-per-bead grouping instead of double-counting them, and `project show` / `task show` once again degrade gracefully to `task_lineage: null` when a referenced milestone record is missing. Added regression coverage for mixed-ref reopen/finalize behavior, canonical latest-run collapse, snapshot reconciliation, and missing-milestone detail fallback.\n\n## Steps\n\n1. [Completed] Inspected the filesystem lineage adapter, milestone snapshot reconciliation, and project detail lineage-loading paths to confirm the pending mixed-ref and missing-milestone regressions.\n2. [Completed] Patched write-side task-run matching to treat short and qualified bead refs as the same logical bead during reopen/finalize, updated latest-per-bead collapse behavior used by snapshot reconciliation, and restored graceful `None` fallback for missing milestone lineage in project/task detail queries.\n3. [Completed] Added regression tests for mixed-ref retry/finalize flows, canonical latest-run collapse, snapshot reconciliation, and missing milestone fallback, then reran the required Rust and Nix validation gates on the final tree.\n\n## Validation Evidence\n\n- `cargo test --lib record_bead_start_reopens_failed_attempt_across_short_and_qualified_bead_refs` passed.\n- `cargo test --lib update_task_run_accepts_short_and_qualified_bead_refs_for_same_attempt` passed.\n- `cargo test --lib latest_task_runs_per_bead_collapses_short_and_qualified_refs` passed.\n- `cargo test --lib reconcile_snapshot_from_lineage_collapses_mixed_bead_refs` passed.\n- `cargo test --lib show_project_ignores_missing_milestone_lineage` passed.\n- `cargo fmt --check` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed and updated `result` to `/nix/store/vma7jf9bf7h3kix5vfphfi1v97znrsg5-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`.\n\n## Outstanding Risks\n\n- Historical bead titles and acceptance criteria are still unavailable after a milestone replan because the system does not persist versioned plan snapshots; when persisted provenance no longer matches the live plan, lineage intentionally falls back to durable milestone/bead IDs without reconstructing old plan metadata.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 6
+}
