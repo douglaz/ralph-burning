@@ -182,11 +182,25 @@ where
         && !exact_attempt_exists(&existing_runs, project_id, run_id, started_at)
         && newer_same_run_attempt_exists(&existing_runs, project_id, run_id, started_at)
     {
+        let repaired_historical_failure = repair_historical_failure_event(
+            journal_store,
+            base_dir,
+            &milestone_id,
+            bead_id,
+            task_id,
+            project_id,
+            run_id,
+            plan_hash,
+            started_at,
+            failed_at,
+            &outcome_detail,
+        )?;
         tracing::info!(
             bead_id = bead_id,
             task_id = task_id,
             run_id = run_id,
             attempt_number = predicted_attempt_number,
+            repaired_historical_failure,
             "skipping stale failure replay because the active retry reused this run_id with a newer started_at"
         );
         return Ok(predicted_outcome);
@@ -367,6 +381,71 @@ fn format_failure_outcome_detail(
     error_summary: &str,
 ) -> String {
     format!("task_id={task_id}\nattempt={attempt_number}\nerror={error_summary}")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bead_failed_event(
+    bead_id: &str,
+    task_id: &str,
+    project_id: &str,
+    run_id: &str,
+    plan_hash: Option<&str>,
+    started_at: DateTime<Utc>,
+    failed_at: DateTime<Utc>,
+    outcome_detail: &str,
+) -> MilestoneJournalEvent {
+    let failed_run = TaskRunEntry {
+        milestone_id: String::new(),
+        bead_id: bead_id.to_owned(),
+        project_id: project_id.to_owned(),
+        run_id: Some(run_id.to_owned()),
+        plan_hash: plan_hash.map(str::to_owned),
+        outcome: TaskRunOutcome::Failed,
+        outcome_detail: Some(outcome_detail.to_owned()),
+        started_at,
+        finished_at: Some(failed_at),
+        task_id: Some(task_id.to_owned()),
+    };
+
+    MilestoneJournalEvent::new(MilestoneEventType::BeadFailed, failed_at)
+        .with_bead(bead_id)
+        .with_details(failed_run.completion_journal_details())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn repair_historical_failure_event<J: MilestoneJournalPort>(
+    journal_store: &J,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    task_id: &str,
+    project_id: &str,
+    run_id: &str,
+    plan_hash: Option<&str>,
+    started_at: DateTime<Utc>,
+    failed_at: DateTime<Utc>,
+    outcome_detail: &str,
+) -> Result<bool, FailureReconciliationError> {
+    let failure_event = bead_failed_event(
+        bead_id,
+        task_id,
+        project_id,
+        run_id,
+        plan_hash,
+        started_at,
+        failed_at,
+        outcome_detail,
+    );
+
+    journal_store
+        .append_event_if_missing(base_dir, milestone_id, &failure_event)
+        .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!(
+                "failed to repair historical BeadFailed journal event for stale replay: {error}"
+            ),
+        })
 }
 
 fn attempt_identity_matches(
@@ -1488,7 +1567,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_failure_skips_stale_same_run_id_replay_when_journal_repair_is_missing(
+    async fn reconcile_failure_repairs_missing_historical_event_for_stale_same_run_id_replay(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -1575,8 +1654,42 @@ mod tests {
         let failed_events = read_journal(&FsMilestoneJournalStore, base, &milestone_id)?
             .into_iter()
             .filter(|event| event.event_type == MilestoneEventType::BeadFailed)
-            .count();
-        assert_eq!(failed_events, 0);
+            .collect::<Vec<_>>();
+        assert_eq!(failed_events.len(), 1);
+        let repaired_details: crate::contexts::milestone_record::model::CompletionJournalDetails =
+            serde_json::from_str(
+                failed_events[0]
+                    .details
+                    .as_deref()
+                    .expect("bead_failed details"),
+            )?;
+        assert_eq!(repaired_details.run_id.as_deref(), Some("run-1"));
+        assert_eq!(repaired_details.started_at, first_started_at);
+
+        let second = reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            second_started_at,
+            second_started_at + Duration::seconds(5),
+            "second failure after repaired replay",
+        )
+        .await?;
+        assert_eq!(
+            second,
+            FailureReconciliationOutcome::Retryable {
+                attempt_number: 2,
+                max_retries: MAX_FAILURE_RETRIES,
+            }
+        );
 
         Ok(())
     }
