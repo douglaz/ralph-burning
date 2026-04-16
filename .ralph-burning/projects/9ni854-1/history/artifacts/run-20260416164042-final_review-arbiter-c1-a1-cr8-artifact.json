@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-arbiter-c1-a1-cr8-artifact",
+  "payload_id": "run-20260416164042-final_review-arbiter-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T20:53:12.118353880Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment. The CLI path does introduce a synthetic `cli-sync:*` marker, but the cited already-recorded repair flow preserves an existing stored `task_id` and rebuilds the journal from that preserved lineage entry, so the claimed overwrite of a real daemon task id is not established by the evidence.\n\n## Rulings\n\n- `fr-8-bf282c6b`: Reject\n  The code does fabricate a synthetic `cli-sync:{project_id}` marker on the CLI failure-sync path (`src/cli/run.rs:1312-1327`), and that marker is embedded into the failure `outcome_detail` (`src/contexts/automation_runtime/failure_reconciliation.rs:177-178`, `403-408`). But the specific claim that a later sync overwrites an already-recorded real daemon task id is not supported by the repair path shown. In the already-recorded branch, `repair_task_run_with_disposition()` first calls `lineage_store.repair_task_run_terminal(...)` and then rebuilds the journal event from `repaired_run.completion_journal_details()` (`src/contexts/milestone_record/service.rs:2776-2807`). In the filesystem lineage adapter, both `backfill_terminal_entry()` and `replace_terminal_entry()` only populate `entry.task_id` when it is currently `None`; they do not replace an existing task id (`src/adapters/fs.rs:4417-4425`, `4491-4499`). So when a real daemon task id is already present on the stored attempt, the repaired event is regenerated with that preserved id, not with `cli-sync:*`. There may be a narrower semantics issue about storing a synthetic id for CLI-originated failures, but the amendment's stated provenance-clobber behavior is not demonstrated by the cited code.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}
