@@ -149,6 +149,18 @@ impl PendingMutationSnapshot {
     fn is_dirty(&self) -> bool {
         self.legacy_marker_present || !self.records.is_empty()
     }
+
+    fn has_foreign_records_for(&self, adapter_id: &str) -> bool {
+        self.records
+            .iter()
+            .any(|record| record.adapter_id != adapter_id)
+    }
+
+    fn first_foreign_record_for(&self, adapter_id: &str) -> Option<&PendingMutationRecord> {
+        self.records
+            .iter()
+            .find(|record| record.adapter_id != adapter_id)
+    }
 }
 
 #[derive(Debug)]
@@ -1051,6 +1063,39 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         Ok(())
     }
 
+    fn ensure_current_adapter_owns_pending_snapshot(
+        &self,
+        snapshot: &PendingMutationSnapshot,
+        operation: &str,
+    ) -> Result<(), SyncIfDirtyHealthError> {
+        if !snapshot.has_foreign_records_for(&self.adapter_id) {
+            return Ok(());
+        }
+
+        let details = match snapshot.first_foreign_record_for(&self.adapter_id) {
+            Some(record) => {
+                let bead_detail = record
+                    .bead_id
+                    .as_deref()
+                    .map(|bead_id| format!(" on bead '{bead_id}'"))
+                    .unwrap_or_default();
+                format!(
+                    "another local bead workflow still has pending `{}`{} owned by adapter `{}`; \
+                     refusing to run `{operation}` because it could publish someone else's half-finished \
+                     bead changes. Let that workflow finish its own `br sync --flush-only` first",
+                    record.operation, bead_detail, record.adapter_id
+                )
+            }
+            None => format!(
+                "another local bead workflow still has pending mutations; refusing to run `{operation}` \
+                 because it could publish someone else's half-finished bead changes. Let that workflow \
+                 finish its own `br sync --flush-only` first"
+            ),
+        };
+
+        Err(SyncIfDirtyHealthError::UnsafeBeadsState { details })
+    }
+
     fn recovered_status_updates(snapshot: &PendingMutationSnapshot) -> Vec<RecoveredStatusUpdate> {
         snapshot
             .records
@@ -1364,6 +1409,58 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
             return Ok(SyncIfDirtyOutcome::Clean);
         }
 
+        self.ensure_healthy_beads_for_pending_sync(base_dir)?;
+        self.sync_flush_locked()
+            .await
+            .map(|output| Self::flushed_sync_if_dirty_outcome(&snapshot, output))
+            .map_err(Into::into)
+    }
+
+    /// Flush pending mutations only when the repo is dirty, `.beads/` is safe,
+    /// and every recovered journal record belongs to this adapter.
+    ///
+    /// This is the safe replay path for workflows like bead claims or success
+    /// reconciliation that must not accidentally publish another workflow's
+    /// half-finished multi-step mutation sequence from the same repo.
+    pub async fn sync_own_dirty_if_beads_healthy(
+        &self,
+        base_dir: &Path,
+    ) -> Result<SyncIfDirtyOutcome, SyncIfDirtyHealthError> {
+        let _operation_guard = self.operation_lock.lock().await;
+        let _repo_guard = self.acquire_repo_operation_lock()?;
+        if self.adapter.working_dir.is_none() {
+            if !self.has_pending_mutations() {
+                tracing::debug!(
+                    operation = "sync_own_dirty_if_beads_healthy",
+                    outcome = "skipped",
+                    "skipping guarded br sync because no local mutations are pending"
+                );
+                return Ok(SyncIfDirtyOutcome::Clean);
+            }
+
+            self.ensure_healthy_beads_for_pending_sync(base_dir)?;
+            return self
+                .sync_flush_locked()
+                .await
+                .map(|output| SyncIfDirtyOutcome::Flushed {
+                    output,
+                    flushed_mutations: 1,
+                    recovered_status_updates: Vec::new(),
+                })
+                .map_err(Into::into);
+        }
+
+        let snapshot = self.refresh_pending_mutation_state_locked()?;
+        if !snapshot.is_dirty() {
+            tracing::debug!(
+                operation = "sync_own_dirty_if_beads_healthy",
+                outcome = "skipped",
+                "skipping guarded br sync because no local mutations are pending"
+            );
+            return Ok(SyncIfDirtyOutcome::Clean);
+        }
+
+        self.ensure_current_adapter_owns_pending_snapshot(&snapshot, "br sync --flush-only")?;
         self.ensure_healthy_beads_for_pending_sync(base_dir)?;
         self.sync_flush_locked()
             .await
@@ -2056,6 +2153,50 @@ mod tests {
         assert_eq!(
             *observer_log.lock().expect("command log"),
             vec![vec!["sync".to_owned(), "--flush-only".to_owned()]],
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_own_dirty_if_beads_healthy_rejects_foreign_pending_records_without_flushing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues_file(tmp.path(), "{\"id\":\"bead-1\"}\n")?;
+        let foreign_record = tmp.path().join(PENDING_MUTATIONS_DIR).join("foreign.json");
+        std::fs::create_dir_all(
+            foreign_record
+                .parent()
+                .expect("pending mutation journal must have a parent dir"),
+        )?;
+        std::fs::write(
+            &foreign_record,
+            r#"{"adapter_id":"other-workflow","operation":"create_bead","bead_id":"bead-2","status":null}"#,
+        )?;
+
+        let (adapter, command_log) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("synced")]);
+
+        let error = adapter
+            .sync_own_dirty_if_beads_healthy(tmp.path())
+            .await
+            .expect_err("foreign pending records must block an owned-only replay sync");
+
+        match error {
+            SyncIfDirtyHealthError::UnsafeBeadsState { details } => {
+                assert!(
+                    details.contains("another local bead workflow still has pending `create_bead`"),
+                    "details should explain the foreign pending mutation: {details}"
+                );
+            }
+            other => panic!("expected unsafe-beads-state error, got {other:?}"),
+        }
+        assert!(
+            command_log.lock().expect("command log").is_empty(),
+            "owned-only replay sync must not invoke br when a foreign journal record is present"
+        );
+        assert!(
+            foreign_record.exists(),
+            "blocking the foreign replay must leave the journal record in place"
         );
         Ok(())
     }

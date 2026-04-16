@@ -460,7 +460,7 @@ async fn sync_after_close<R: ProcessRunner>(
     bead_id: &str,
     task_id: &str,
 ) -> Result<(), ReconciliationError> {
-    match br_mutation.sync_if_dirty_when_beads_healthy(base_dir).await {
+    match br_mutation.sync_own_dirty_if_beads_healthy(base_dir).await {
         Ok(crate::adapters::br_process::SyncIfDirtyOutcome::Clean) => {
             tracing::debug!(
                 bead_id = bead_id,
@@ -1698,6 +1698,47 @@ mod tests {
                 .join(".beads/.br-unsynced-mutations")
                 .exists(),
             "blocked replay must preserve the pending marker for a later clean retry"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_after_close_rejects_foreign_pending_mutation_replay(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
+        let journal_path = temp_dir
+            .path()
+            .join(".beads/.br-unsynced-mutations.d/foreign.json");
+        std::fs::create_dir_all(
+            journal_path
+                .parent()
+                .expect("journal path must have a parent dir"),
+        )?;
+        std::fs::write(
+            &journal_path,
+            r#"{"adapter_id":"other-workflow","operation":"create_bead","bead_id":"bead-foreign","status":null}"#,
+        )?;
+        let runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter_id(
+            BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+            "reconcile-success-owner",
+        );
+
+        let result = sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await;
+        let error = result.expect_err("foreign pending mutation should block replay sync");
+        match error {
+            ReconciliationError::BrSyncFailed { details, .. } => {
+                assert!(
+                    details.contains("another local bead workflow still has pending `create_bead`"),
+                    "error should explain the blocked foreign replay: {details}"
+                );
+            }
+            other => panic!("expected BrSyncFailed, got {other}"),
+        }
+        assert!(
+            journal_path.exists(),
+            "blocking the replay must leave the foreign journal record in place"
         );
         Ok(())
     }

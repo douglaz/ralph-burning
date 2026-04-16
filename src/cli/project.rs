@@ -964,8 +964,10 @@ enum BrListResponse {
 /// failed `br sync --flush-only` can publish the earlier local claim before
 /// attempting a new `br update`. The recovered-flush short-circuit is only
 /// taken when the replayed `update_bead_status(<bead>, "in_progress")` record
-/// carries the same stable claim-owner token, so another process's recovered
-/// claim cannot be mistaken for the current caller's success.
+/// carries the same stable claim-owner token and a post-flush `br show`
+/// confirms the bead is still `in_progress`, so another process's recovered
+/// claim or later local edits cannot be mistaken for the current caller's
+/// success.
 async fn claim_bead_in_br(base_dir: &Path, bead_id: &str, claim_owner: &str) -> AppResult<()> {
     ensure_beads_claim_health(base_dir, bead_id)?;
 
@@ -974,7 +976,7 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str, claim_owner: &str) -> 
         BrAdapter::new().with_working_dir(base_dir.to_path_buf()),
         claim_owner_token.clone(),
     );
-    let recovered_flush = match br.sync_if_dirty_when_beads_healthy(base_dir).await {
+    let recovered_flush = match br.sync_own_dirty_if_beads_healthy(base_dir).await {
         Ok(outcome) => outcome,
         Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
             return Err(AppError::Io(std::io::Error::other(format!(
@@ -997,13 +999,37 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str, claim_owner: &str) -> 
         );
     }
     if recovered_flush.includes_owned_update_status(&claim_owner_token, bead_id, "in_progress") {
-        ensure_beads_claim_post_flush_health(base_dir, bead_id)?;
-        tracing::info!(
-            bead_id = bead_id,
-            claim_owner = claim_owner,
-            "recovered flush already replayed this bead claim; skipping duplicate br update"
-        );
-        return Ok(());
+        match br
+            .inner()
+            .exec_json::<BeadDetail>(&BrCommand::show(bead_id.to_owned()))
+            .await
+        {
+            Ok(detail) if detail.status == BeadStatus::InProgress => {
+                ensure_beads_claim_post_flush_health(base_dir, bead_id)?;
+                tracing::info!(
+                    bead_id = bead_id,
+                    claim_owner = claim_owner,
+                    "recovered flush replayed this bead claim and br show confirmed the bead is still in_progress; skipping duplicate br update"
+                );
+                return Ok(());
+            }
+            Ok(detail) => {
+                tracing::warn!(
+                    bead_id = bead_id,
+                    claim_owner = claim_owner,
+                    current_status = %detail.status,
+                    "recovered claim flush completed but the bead is no longer in_progress; issuing an explicit br update"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    bead_id = bead_id,
+                    claim_owner = claim_owner,
+                    %error,
+                    "failed to verify recovered claim status after flush; issuing an explicit br update"
+                );
+            }
+        }
     }
 
     ensure_beads_claim_health(base_dir, bead_id)?;
@@ -1015,7 +1041,7 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str, claim_owner: &str) -> 
                  {update_error}"
             )))
         })?;
-    match br.sync_if_dirty_when_beads_healthy(base_dir).await {
+    match br.sync_own_dirty_if_beads_healthy(base_dir).await {
         Ok(_) => {}
         Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
             return Err(AppError::Io(std::io::Error::other(format!(
@@ -4160,6 +4186,16 @@ CONFLICT
     echo "Updated {bead_id}"
     exit 0
     ;;
+  show)
+    status="in_progress"
+    if [ -f .beads/{bead_id}.status ]; then
+      status=$(cat .beads/{bead_id}.status)
+    fi
+    cat <<BEAD_JSON
+{{"id":"{bead_id}","title":"Test bead","status":"$status","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+    exit 0
+    ;;
   *)
     echo "unexpected: $*" >&2
     exit 1
@@ -4342,7 +4378,10 @@ esac
             )?;
             std::fs::write(
                 &journal_path,
-                r#"{"adapter_id":"other","operation":"comment_bead","bead_id":"bead-2","status":null}"#,
+                format!(
+                    r#"{{"adapter_id":"{}","operation":"comment_bead","bead_id":"bead-2","status":null}}"#,
+                    super::super::claim_owner_token(claim_owner(), "bead-1")
+                ),
             )?;
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
@@ -4449,18 +4488,20 @@ esac
             let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
             assert!(
                 result.is_err(),
-                "another claim owner's recovered update must not be treated as our success"
+                "another claim owner's recovered update must block the retry before it can flush foreign work"
             );
             let error = result.expect_err("claim should fail").to_string();
             assert!(
-                error.contains("failed to claim bead 'bead-1' via br update --status=in_progress"),
-                "the explicit update should still run after flushing another owner's recovered claim: {error}"
+                error.contains("another local bead workflow still has pending `update_bead_status`"),
+                "the foreign recovered update should block the claim before any replay flush: {error}"
             );
-            let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
-            assert_eq!(
-                update_count.trim(),
-                "1",
-                "the duplicate-claim collision should come from the explicit update, not a short-circuit"
+            assert!(
+                !base_dir.join(".beads/sync-count").exists(),
+                "the claim must not flush another claim owner's recovered update"
+            );
+            assert!(
+                !base_dir.join(".beads/update-count").exists(),
+                "the claim must not issue its own update after the foreign replay is rejected"
             );
             Ok(())
         }
@@ -4492,6 +4533,84 @@ esac
                 sync_count.trim(),
                 "2",
                 "retry should only perform the original failed sync and the recovered flush"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_rechecks_actual_bead_status_after_owned_recovered_flush(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_retry_after_sync_failure(base_dir, "bead-1");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let first_attempt =
+                super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
+            assert!(first_attempt.is_err(), "first sync should fail");
+
+            std::fs::write(base_dir.join(".beads/bead-1.status"), "open\n")?;
+
+            super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await?;
+
+            let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
+            assert_eq!(
+                update_count.trim(),
+                "2",
+                "retry must re-issue br update when the post-flush bead state is no longer in_progress"
+            );
+            let sync_count = std::fs::read_to_string(base_dir.join(".beads/sync-count"))?;
+            assert_eq!(
+                sync_count.trim(),
+                "3",
+                "retry should perform the recovered flush and then the final publish sync"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_rejects_foreign_pending_mutation_replay(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_retry_after_sync_failure(base_dir, "bead-1");
+            let journal_path = base_dir.join(".beads/.br-unsynced-mutations.d/foreign.json");
+            std::fs::create_dir_all(
+                journal_path
+                    .parent()
+                    .expect("journal path must have parent"),
+            )?;
+            std::fs::write(
+                &journal_path,
+                r#"{"adapter_id":"other-workflow","operation":"create_bead","bead_id":"bead-2","status":null}"#,
+            )?;
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
+            assert!(
+                result.is_err(),
+                "claim should fail closed instead of flushing another workflow's pending mutation"
+            );
+            let error = result.expect_err("claim should fail").to_string();
+            assert!(
+                error.contains("another local bead workflow still has pending `create_bead`"),
+                "error should explain why the foreign pending mutation blocked the claim: {error}"
+            );
+            assert!(
+                !base_dir.join(".beads/sync-count").exists(),
+                "claim must not publish the foreign pending mutation"
+            );
+            assert!(
+                !base_dir.join(".beads/update-count").exists(),
+                "claim must not issue its own update after the foreign pending mutation blocks replay"
+            );
+            assert!(
+                journal_path.exists(),
+                "blocking the claim must leave the foreign pending journal in place"
             );
             Ok(())
         }
@@ -4586,24 +4705,20 @@ esac
             let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
             assert!(
                 result.is_err(),
-                "flushing unrelated recovered mutations must not be treated as proof that our claim already succeeded"
+                "foreign recovered mutations must block the retry instead of being flushed"
             );
             let error = result.expect_err("claim should fail").to_string();
             assert!(
-                error.contains("failed to claim bead 'bead-1' via br update --status=in_progress"),
-                "claim should still perform an explicit update after unrelated flushes: {error}"
+                error.contains("another local bead workflow still has pending `comment_bead`"),
+                "claim should fail closed before flushing unrelated work: {error}"
             );
-            let sync_count = std::fs::read_to_string(base_dir.join(".beads/sync-count"))?;
-            assert_eq!(
-                sync_count.trim(),
-                "1",
-                "recovered unrelated mutation should flush once"
+            assert!(
+                !base_dir.join(".beads/sync-count").exists(),
+                "the claim must not flush unrelated recovered work"
             );
-            let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
-            assert_eq!(
-                update_count.trim(),
-                "1",
-                "claim should still attempt its own update"
+            assert!(
+                !base_dir.join(".beads/update-count").exists(),
+                "the claim must not proceed to its own update after the foreign replay is rejected"
             );
             Ok(())
         }
@@ -4632,18 +4747,20 @@ esac
             let result = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await;
             assert!(
                 result.is_err(),
-                "another operator's in-progress status must not be treated as proof that our recovered claim succeeded"
+                "another operator's in-progress status plus foreign recovered work must block the retry"
             );
             let error = result.expect_err("claim should fail").to_string();
             assert!(
-                error.contains("failed to claim bead 'bead-1' via br update --status=in_progress"),
-                "claim should still issue an explicit update and surface the collision: {error}"
+                error.contains("another local bead workflow still has pending `comment_bead`"),
+                "claim should fail closed before flushing unrelated recovered work: {error}"
             );
-            let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
-            assert_eq!(
-                update_count.trim(),
-                "1",
-                "explicit claim should still be attempted after the unrelated flush"
+            assert!(
+                !base_dir.join(".beads/sync-count").exists(),
+                "the claim must not flush unrelated recovered work"
+            );
+            assert!(
+                !base_dir.join(".beads/update-count").exists(),
+                "the claim must not issue an explicit update after the foreign replay is rejected"
             );
             Ok(())
         }
