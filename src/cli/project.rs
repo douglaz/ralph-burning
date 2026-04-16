@@ -958,9 +958,11 @@ enum BrListResponse {
 ///
 /// Recovered local pending mutations are flushed first so a retry after a
 /// failed `br sync --flush-only` can publish the earlier local claim before
-/// attempting a new `br update`. If `br update` fails for any reason the error
-/// is returned immediately so the caller can transition the milestone
-/// controller to `needs_operator`.
+/// attempting a new `br update`. When that recovered flush already replayed
+/// `update_bead_status(<bead>, "in_progress")`, the claim is considered
+/// complete and the duplicate `br update` is skipped. If `br update` fails for
+/// any other reason the error is returned immediately so the caller can
+/// transition the milestone controller to `needs_operator`.
 async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
     ensure_beads_claim_health(base_dir, bead_id)?;
 
@@ -978,6 +980,13 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
             flushed_mutations = recovered_flush.flushed_mutations(),
             "flushed recovered local bead mutations before issuing an explicit claim update"
         );
+    }
+    if recovered_flush.includes_update_status(bead_id, "in_progress") {
+        tracing::info!(
+            bead_id = bead_id,
+            "recovered flush already replayed this bead claim; skipping duplicate br update"
+        );
+        return Ok(());
     }
 
     ensure_beads_claim_health(base_dir, bead_id)?;
@@ -3926,6 +3935,79 @@ esac
                 .expect("chmod fake br");
         }
 
+        /// Install a fake `br` that models a backend where replaying the same
+        /// claim twice is rejected. The retry only succeeds when
+        /// `claim_bead_in_br()` recognizes that the recovered flush already
+        /// replayed `update --status=in_progress` and skips the duplicate
+        /// update.
+        fn install_fake_br_claim_retry_requires_recovered_claim_short_circuit(
+            base_dir: &std::path::Path,
+            bead_id: &str,
+        ) {
+            write_beads_export(base_dir, "{\"id\":\"seed-bead\"}\n");
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+set -eu
+
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  update)
+    count=0
+    if [ -f .beads/update-count ]; then
+      count=$(cat .beads/update-count)
+    fi
+    count=$((count + 1))
+    echo "$count" > .beads/update-count
+    if [ "$count" -gt 1 ]; then
+      echo "{bead_id} already in progress" >&2
+      exit 1
+    fi
+    echo "in_progress" > .beads/{bead_id}.status
+    echo "Updated {bead_id}"
+    exit 0
+    ;;
+  sync)
+    count=0
+    if [ -f .beads/sync-count ]; then
+      count=$(cat .beads/sync-count)
+    fi
+    count=$((count + 1))
+    echo "$count" > .beads/sync-count
+    if [ "$count" -eq 1 ]; then
+      echo "transient sync failure" >&2
+      exit 1
+    fi
+    echo "Synced"
+    exit 0
+    ;;
+  show)
+    status="open"
+    if [ -f .beads/{bead_id}.status ]; then
+      status=$(cat .beads/{bead_id}.status)
+    fi
+    cat <<BEAD_JSON
+{{"id":"{bead_id}","title":"Test bead","status":"$status","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+    exit 0
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
         /// Install a fake `br` where a recovered dirty repo can be flushed, but
         /// a new explicit claim still fails because another operator already
         /// owns the bead.
@@ -4254,7 +4336,7 @@ esac
             let temp_dir = tempfile::tempdir()?;
             let base_dir = temp_dir.path();
 
-            install_fake_br_claim_retry_after_sync_failure(base_dir, "bead-1");
+            install_fake_br_claim_retry_requires_recovered_claim_short_circuit(base_dir, "bead-1");
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
             let first_attempt = super::super::claim_bead_in_br(base_dir, "bead-1").await;
@@ -4265,14 +4347,14 @@ esac
             let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
             assert_eq!(
                 update_count.trim(),
-                "2",
-                "retry should still issue an explicit claim update after flushing recovered state"
+                "1",
+                "retry should not re-issue br update once the recovered flush already replayed the claim"
             );
             let sync_count = std::fs::read_to_string(base_dir.join(".beads/sync-count"))?;
             assert_eq!(
                 sync_count.trim(),
-                "3",
-                "retry should flush the recovered claim and then sync the explicit retry"
+                "2",
+                "retry should only perform the original failed sync and the recovered flush"
             );
             Ok(())
         }

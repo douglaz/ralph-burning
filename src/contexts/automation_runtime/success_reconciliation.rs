@@ -130,6 +130,24 @@ fn ensure_beads_mutation_health(
     Ok(())
 }
 
+fn ensure_beads_sync_health(
+    base_dir: &Path,
+    bead_id: &str,
+    task_id: &str,
+) -> Result<(), ReconciliationError> {
+    if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
+        return Err(ReconciliationError::BrSyncFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!(
+                "bead '{bead_id}' was locally closed but bead state became unsafe before br sync --flush-only: {details}. The bead remains locally closed in br; resolve the bead-state issue and rerun `br sync --flush-only`."
+            ),
+        });
+    }
+
+    Ok(())
+}
+
 fn beads_mutation_health_warning(base_dir: &Path) -> Option<String> {
     beads_health_failure_details(&check_beads_health(base_dir))
         .map(|details| format!("refusing to mutate beads because bead state is unsafe: {details}"))
@@ -236,7 +254,7 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
     // A crash between close and sync produces was_already_closed=true with an
     // un-flushed local state. Sync failures must remain fatal regardless of
     // was_already_closed to prevent proceeding with an un-synced bead close.
-    sync_after_close(br_mutation, bead_id, task_id).await?;
+    sync_after_close(base_dir, br_mutation, bead_id, task_id).await?;
 
     // Step 3: Update milestone state.
     let milestone_status = update_milestone_state(
@@ -439,10 +457,12 @@ async fn close_bead_idempotent<R: ProcessRunner>(
 
 /// Run `br sync --flush-only` after a successful close.
 async fn sync_after_close<R: ProcessRunner>(
+    base_dir: &Path,
     br_mutation: &BrMutationAdapter<R>,
     bead_id: &str,
     task_id: &str,
 ) -> Result<(), ReconciliationError> {
+    ensure_beads_sync_health(base_dir, bead_id, task_id)?;
     br_mutation
         .sync_flush()
         .await
@@ -1549,24 +1569,58 @@ mod tests {
 
     #[tokio::test]
     async fn sync_after_close_success() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
         let runner = MockBrRunner::new(vec![MockBrRunner::success("")]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
 
-        sync_after_close(&br_mutation, "b1", "task-1").await?;
+        sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn sync_after_close_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        write_beads_export(temp_dir.path())?;
         let runner = MockBrRunner::new(vec![MockBrRunner::error(1, "sync failed")]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
 
-        let result = sync_after_close(&br_mutation, "b1", "task-1").await;
+        let result = sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await;
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
             ReconciliationError::BrSyncFailed { .. }
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_after_close_rechecks_beads_health_before_flush(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp_dir.path().join(".beads"))?;
+        std::fs::write(
+            temp_dir.path().join(".beads/issues.jsonl"),
+            "<<<<<<< HEAD\n{\"id\":\"b1\"}\n=======\n{\"id\":\"b2\"}\n>>>>>>> branch\n",
+        )?;
+        let runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
+
+        let result = sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await;
+        let error = result.expect_err("unsafe beads export should block sync flush");
+        match error {
+            ReconciliationError::BrSyncFailed { details, .. } => {
+                assert!(
+                    details.contains("bead state became unsafe before br sync --flush-only"),
+                    "error should explain the blocked sync: {details}"
+                );
+                assert!(
+                    details.contains("resolve the conflict"),
+                    "error should direct the operator to resolve the conflict: {details}"
+                );
+            }
+            other => panic!("expected BrSyncFailed, got {other}"),
+        }
         Ok(())
     }
 
