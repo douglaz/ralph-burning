@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260416021721",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
     "started_at": "2026-04-16T02:17:21.815687034Z",
     "prompt_hash_at_cycle_start": "f3f8e1c67feaa8fcb2f35e4bb5fe9c83ad8eb5aca643141d0b75594e799ddeb8",
     "prompt_hash_at_stage_start": "f3f8e1c67feaa8fcb2f35e4bb5fe9c83ad8eb5aca643141d0b75594e799ddeb8",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-984dd490",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "finding_summary: Propose-new-bead reconciliation is not replay-safe. `reconcile_proposed_beads_after_success` replays every accepted `ProposeNewBead` from the latest aggregate on every success-reconciliation rerun, but `handle_propose_new_bead` has no journal-based dedupe and reclassifies an already-created same-title bead as planned-elsewhere. After a post-create crash or any normal replay, the same finding can flip from `ProposedBeadCreated` into a spurious planned-elsewhere mapping instead of recognizing the prior creation.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/success_reconciliation.rs:979-1027\n- src/contexts/milestone_record/service.rs:2876-2901\n- src/contexts/milestone_record/service.rs:2957-2983\nremediation_hint: Make propose-new-bead handling idempotent by checking the milestone journal for an existing creation record keyed by run/completion_round/finding before replaying, or teach the handler to return the previously created bead instead of recording a planned-elsewhere mapping when the created bead already exists.",
+        "created_at": "2026-04-16T03:13:52.980929121Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "321082c7d739ce4e59c15a55943b766cc265c50552c780fdcce41ef2fcf6ef7d"
+      },
+      {
+        "amendment_id": "fr-2-cc4143e4",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "finding_summary: The new handler never injects any dependency edge for the bead it creates. It creates the bead, syncs, and journals it, but there is no call to `BrMutationAdapter::add_dependency` or any other graph-placement logic, so the follow-up work is left orphaned from the dependency graph even though this bead’s scope requires dependency placement and the journal is supposed to record where the bead was placed.\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/service.rs:2921-2983\nremediation_hint: After bead creation, add the appropriate dependency edge(s) before `sync_flush()`, and include the chosen placement in the `ProposedBeadCreated` journal metadata and tests.",
+        "created_at": "2026-04-16T03:13:52.980932136Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "745a20fb1a9b98e88b8e85b80837f9e868664aaaa45ae8a8f2438103f96f734f"
+      },
+      {
+        "amendment_id": "fr-2-cef2d3fb",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "finding_summary: `resolve_created_bead_id` falls back to a raw title lookup that ignores the duplicate filters used by the defensive re-check. If `br create` stdout ever stops yielding a parseable ID, the fallback can return a closed duplicate or the active bead itself, even though those cases are explicitly rejected during pre-check, and the wrong bead ID will then be written to the journal as the created follow-up.\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/service.rs:2756-2795\nremediation_hint: Reuse `eligible_existing_proposed_bead_match` (or a stricter predicate) in the fallback path, and prefer a structured create response or another unambiguous lookup over first-title-match resolution.",
+        "created_at": "2026-04-16T03:13:52.980934641Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "24b0be437fab3b4b8b88888d77b8744a986f6d4418c3c5fddc264a5112e69866"
+      }
+    ],
     "processed_count": 2
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T02:39:41.876948769Z",
+    "resolved_at": "2026-04-16T03:03:05.644997980Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
