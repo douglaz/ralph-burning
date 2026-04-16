@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 14
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-13-52c8902b",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 13,
-        "body": "finding_summary: `sync_terminal_milestone_task_with_options` breaks terminal milestone sync for paused-then-resumed runs that keep the same `run_id`.\naffected_files: `src/cli/run.rs`, `src/adapters/fs.rs`\nline_references: `src/cli/run.rs:1174-1185`, `src/cli/run.rs:1277-1304`, `src/adapters/fs.rs:5065-5090`\ndetails: On resume of a still-running attempt, `record_task_run_start` reuses the existing lineage row without moving `started_at`, so the lineage still points at the original start time. The new CLI sync path now prefers that stale lineage timestamp over the newer `run_resumed` boundary, then calls `terminal_event_for_attempt` against the pre-resume window. A normal pause -> resume -> complete/fail flow will therefore be rejected as \"missing durable run_completed/run_failed\", leaving milestone state unsynced even though the project journal is correct.\nremediation_hint: Derive the current attempt boundary from the newest durable/snapshot resume boundary instead of letting a reused nonterminal lineage row override it, and add a regression test for pause -> resume -> complete/fail with the same running lineage row surviving across resume.",
-        "created_at": "2026-04-16T22:47:16.770749634Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "364e640afede41d1f4a1b7b522f0360c3b3215b07dc484a13755f09046793f68"
-      }
-    ],
-    "processed_count": 28
+    "pending": [],
+    "processed_count": 29
   },
-  "status_summary": "running: final review restart round 14 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T22:30:29.803506456Z",
