@@ -1486,6 +1486,7 @@ fn state_preserves_active_context(state: MilestoneControllerState) -> bool {
     matches!(
         state,
         MilestoneControllerState::Claimed
+            | MilestoneControllerState::Blocked
             | MilestoneControllerState::Running
             | MilestoneControllerState::Reconciling
     )
@@ -1496,7 +1497,6 @@ fn state_clears_active_context(state: MilestoneControllerState) -> bool {
         state,
         MilestoneControllerState::Idle
             | MilestoneControllerState::Selecting
-            | MilestoneControllerState::Blocked
             | MilestoneControllerState::Completed
     )
 }
@@ -2546,6 +2546,113 @@ mod tests {
         assert!(error
             .to_string()
             .contains("line 4: transition from 'running' must preserve active bead identifier 'ms-alpha.bead-2'"));
+    }
+
+    #[test]
+    fn blocked_retry_transitions_preserve_active_context() {
+        let store = FakeControllerStore::default();
+        let base = Path::new(".");
+        let milestone_id = milestone_id();
+
+        transition_controller(
+            &store,
+            base,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Selecting,
+                "begin selecting the next bead",
+            ),
+            ts(10),
+        )
+        .expect("selecting transition");
+        transition_controller(
+            &store,
+            base,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Claimed,
+                "claimed the selected bead and started task creation",
+            )
+            .with_bead("ms-alpha.bead-2")
+            .with_task("task-42"),
+            ts(11),
+        )
+        .expect("claimed transition");
+        transition_controller(
+            &store,
+            base,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Running,
+                "task execution started",
+            )
+            .with_bead("ms-alpha.bead-2")
+            .with_task("task-42"),
+            ts(12),
+        )
+        .expect("running transition");
+
+        transition_controller(
+            &store,
+            base,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Reconciling,
+                "task completed; reconciling",
+            )
+            .with_bead("ms-alpha.bead-2")
+            .with_task("task-42"),
+            ts(13),
+        )
+        .expect("reconciling transition");
+
+        let blocked_error = transition_controller(
+            &store,
+            base,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Blocked,
+                "retry remains available after a failed attempt",
+            )
+            .with_bead("ms-alpha.bead-9")
+            .with_task("task-42"),
+            ts(14),
+        )
+        .expect_err("blocked retry must preserve the active bead identity");
+        assert!(blocked_error
+            .to_string()
+            .contains("must preserve active bead identifier 'ms-alpha.bead-2'"));
+
+        transition_controller(
+            &store,
+            base,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Blocked,
+                "retry remains available after a failed attempt",
+            )
+            .with_bead("ms-alpha.bead-2")
+            .with_task("task-42"),
+            ts(15),
+        )
+        .expect("blocked transition");
+
+        let running_error = transition_controller(
+            &store,
+            base,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Running,
+                "retry task restarted",
+            )
+            .with_bead("ms-alpha.bead-2")
+            .with_task("task-99"),
+            ts(16),
+        )
+        .expect_err("blocked retry must preserve the active task identity");
+        assert!(running_error
+            .to_string()
+            .contains("must preserve active task identifier 'task-42'"));
     }
 
     #[test]

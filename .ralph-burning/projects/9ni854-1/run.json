@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 11
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-10-a748fcc9",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 10,
-        "body": "finding_summary: `MilestoneControllerState::Blocked` now accepts an active bead/task pair, but the transition validator still treats `Blocked` as a context-clearing state. Because `state_preserves_active_context()` excludes `Blocked` and `state_clears_active_context()` still includes it, transitions into and out of retry-blocked state no longer enforce that the same bead/project is preserved. A mismatched `Blocked -> Running` or `Reconciling -> Blocked` transition can therefore slip through without being rejected. See `src/contexts/milestone_record/controller.rs:1414-1500`.\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/controller.rs\nremediation_hint: Update the active-context preservation helpers (and add a regression test) so blocked retry states preserve bead/task identity the same way `Claimed`/`Running`/`Reconciling` do.",
-        "created_at": "2026-04-16T21:36:50.776005292Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "33da7a84c563830d00bc719b9a1b5e0e4166040d7d363e15e515a29d64f081d1"
-      },
-      {
-        "amendment_id": "fr-10-61708381",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 10,
-        "body": "finding_summary: In the `workflow_run_id == None` path, failure reconciliation hard-requires `run.json` to still carry `active_run`/`interrupted_run` and immediately raises `reconciliation_no_run_binding` when that snapshot metadata is missing. That is too strict for crash-recovery cases where the durable project journal and milestone lineage already agree on the current failed attempt. The code even computes `durable_project_attempt_identity()` / `durable_lineage_attempt_identity()` just above, but does not use them here. See `src/contexts/automation_runtime/daemon_loop.rs:2044-2080` and `src/contexts/automation_runtime/daemon_loop.rs:2143-2180`.\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs\nremediation_hint: When `workflow_run_id` is absent, fall back to the durable journal/lineage attempt identity if those sources agree, instead of requiring snapshot attempt metadata unconditionally.",
-        "created_at": "2026-04-16T21:36:50.776010011Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "dfe267b00503a913272e699ea4a2666e58c4c738a99be70cac69c61be7973325"
-      }
-    ],
-    "processed_count": 22
+    "pending": [],
+    "processed_count": 24
   },
-  "status_summary": "running: final review restart round 11 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T21:23:01.980550726Z",
