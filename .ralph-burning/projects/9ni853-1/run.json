@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416021721",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-16T02:17:21.815687034Z",
     "prompt_hash_at_cycle_start": "f3f8e1c67feaa8fcb2f35e4bb5fe9c83ad8eb5aca643141d0b75594e799ddeb8",
     "prompt_hash_at_stage_start": "f3f8e1c67feaa8fcb2f35e4bb5fe9c83ad8eb5aca643141d0b75594e799ddeb8",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-179aeb40",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: Accepted propose-new-bead work can be silently dropped on transient br/journal errors. `reconcile_proposed_beads_after_success` only logs and continues when `handle_propose_new_bead` fails, so the active bead still closes even if the follow-up bead was never created or synced. Because this path does not persist a retry marker or escalate to needs-operator, an accepted final-review finding can disappear from the backlog after a single failed reconciliation pass.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/success_reconciliation.rs:247-255\n- src/contexts/automation_runtime/success_reconciliation.rs:979-1025\n- src/contexts/milestone_record/service.rs:2955-3147\nremediation_hint: Treat propose-new-bead reconciliation as durable work: either propagate the failure so success reconciliation does not finish cleanly, or persist an explicit retry/operator-needed record before returning.",
+        "created_at": "2026-04-16T03:37:07.420839436Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "9ac623493d7194cf91f8da086e8f05bfaffe0d6710c5b83b8d59a94381171e8e"
+      },
+      {
+        "amendment_id": "fr-3-67b73d09",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: The defensive duplicate check ignores existing deferred beads, so propose-new-bead can create a second copy of work that is already planned. `list_all()` explicitly searches deferred issues, but `eligible_existing_proposed_bead_match` rejects every status except open/in_progress; if the matching owner bead is deferred, the handler falls through to creation instead of reclassifying to planned-elsewhere.\nseverity: medium\naffected_files:\n- src/adapters/br_process.rs:173-179\n- src/contexts/milestone_record/service.rs:2768-2770\n- src/contexts/milestone_record/service.rs:2975-3053\nremediation_hint: Treat `Deferred` as an eligible existing owner for the defensive re-check, or explicitly reopen/defer-map that bead instead of creating a duplicate.",
+        "created_at": "2026-04-16T03:37:07.420842231Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "9ea167bb3e8e2bb39ad012e2175b34dd1c851aafbb862630c628bb98e0d9d40c"
+      }
+    ],
     "processed_count": 5
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T03:03:05.644997980Z",
+    "resolved_at": "2026-04-16T03:28:55.785707788Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

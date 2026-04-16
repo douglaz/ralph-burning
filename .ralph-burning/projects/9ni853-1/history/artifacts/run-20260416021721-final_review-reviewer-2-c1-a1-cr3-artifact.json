@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416021721-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260416021721-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T03:33:14.990472903Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed the ProposeNewBead handler implementation across three files: service.rs (handler, idempotency, recovery logic), success_reconciliation.rs (dispatch wiring, replay test), and engine.rs (three-way amendment routing). The implementation is correct and robust.\n\n**Correctness**: The handler has three well-ordered idempotency layers: (1) journal replay for exact matches, (2) bead recovery by description matching with dependency repair, (3) title-only matching that reclassifies as planned-elsewhere. The `partition_final_review_amendments_by_route` correctly drops ProposeNewBead from both the restart queue and PE handler — they are preserved in the stage aggregate and processed later by `reconcile_proposed_beads_after_success`. Only the latest round's aggregate is authoritative, which is semantically correct since later review rounds supersede earlier ones.\n\n**Safety**: `eligible_existing_proposed_bead_match` correctly excludes closed/deferred beads and the active bead itself, preventing false planned-elsewhere reclassification. The `created_in_pass` counter is only incremented for genuinely new creations, not replays or recoveries. The threshold warning at >2 logs at error level but does not block.\n\n**Tests**: Comprehensive coverage of all code paths: happy-path creation with dependency, planned-elsewhere reclassification, closed-bead ignoring, self-match ignoring, threshold warning, journal replay idempotency, recovery with dependency repair, resolve-bead-id fallback filtering, and the three-way routing partition. All tests pass, clippy clean, fmt clean.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}

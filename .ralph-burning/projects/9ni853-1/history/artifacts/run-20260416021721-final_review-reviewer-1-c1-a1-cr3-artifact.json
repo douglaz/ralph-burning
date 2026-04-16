@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416021721-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260416021721-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T03:34:53.043315067Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed `origin/master..HEAD` excluding `.ralph-burning`. I found two fix-now correctness issues in the propose-new-bead reconciliation flow: failures are swallowed after bead closure, and duplicate suppression skips deferred beads.\n\n## Amendments\n\n1. finding_summary: Accepted propose-new-bead work can be silently dropped on transient br/journal errors. `reconcile_proposed_beads_after_success` only logs and continues when `handle_propose_new_bead` fails, so the active bead still closes even if the follow-up bead was never created or synced. Because this path does not persist a retry marker or escalate to needs-operator, an accepted final-review finding can disappear from the backlog after a single failed reconciliation pass.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/success_reconciliation.rs:247-255\n- src/contexts/automation_runtime/success_reconciliation.rs:979-1025\n- src/contexts/milestone_record/service.rs:2955-3147\nremediation_hint: Treat propose-new-bead reconciliation as durable work: either propagate the failure so success reconciliation does not finish cleanly, or persist an explicit retry/operator-needed record before returning.\n   Rationale: The aggregate payload survives, but this code path records only a warning, so there is no guaranteed second attempt before the run is considered fully reconciled.\n2. finding_summary: The defensive duplicate check ignores existing deferred beads, so propose-new-bead can create a second copy of work that is already planned. `list_all()` explicitly searches deferred issues, but `eligible_existing_proposed_bead_match` rejects every status except open/in_progress; if the matching owner bead is deferred, the handler falls through to creation instead of reclassifying to planned-elsewhere.\nseverity: medium\naffected_files:\n- src/adapters/br_process.rs:173-179\n- src/contexts/milestone_record/service.rs:2768-2770\n- src/contexts/milestone_record/service.rs:2975-3053\nremediation_hint: Treat `Deferred` as an eligible existing owner for the defensive re-check, or explicitly reopen/defer-map that bead instead of creating a duplicate.\n   Rationale: A deferred bead is still existing planned work, so duplicating it defeats the duplicate-suppression requirement and fragments the backlog graph.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

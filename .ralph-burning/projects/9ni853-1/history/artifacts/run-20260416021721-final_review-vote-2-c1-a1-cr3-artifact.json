@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416021721-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260416021721-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T03:36:03.689897205Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real, verifiable bugs in the propose-new-bead reconciliation path. Amendment fr-3-179aeb40 correctly identifies that transient br/journal errors during proposed bead creation are silently swallowed (log-and-continue at lines 1022-1027), with no retry marker or operator escalation, after the active bead has already been irreversibly closed (line 205). This means accepted final-review findings can vanish from the backlog. Amendment fr-3-67b73d09 correctly identifies a filter contradiction: list_matching_beads_by_title uses BrCommand::list_all() which explicitly fetches deferred beads, but eligible_existing_proposed_bead_match at line 2770 only matches Open|InProgress, causing deferred beads to fall through to duplicate creation.\n\n## Votes\n\n- `fr-3-179aeb40`: Accept\n  Verified in code. The reconcile_proposed_beads_after_success function (line 918) returns () and is called fire-and-forget at line 247. Inside, handle_propose_new_bead failures at lines 1010-1027 are logged as warnings but not propagated, retried, or escalated. Because the active bead is already closed and synced at lines 205-216 before this function runs, there is no way to retroactively block success reconciliation. The result is that an accepted propose-new-bead amendment can be permanently lost on a single transient br or journal error — the only trace is a warn-level log line. The remediation hint (persist a retry marker or escalate to needs-operator) is the right approach since un-closing the bead is not viable at this point in the flow.\n- `fr-3-67b73d09`: Accept\n  Verified in code. BrCommand::list_all() at line 174 explicitly passes --deferred to fetch deferred beads, and list_matching_beads_by_title (line 2760) uses this command. However, eligible_existing_proposed_bead_match at lines 2768-2771 rejects everything except Open and InProgress via the matches! macro. BeadStatus::Deferred exists in the enum (br_models.rs:23). This filter is applied in both the recovery pass (line 2985) and the planned-elsewhere reclassification pass (line 3033), so a deferred bead with an identical title bypasses both checks and falls through to creation at line 3071, producing a duplicate. The fix is straightforward: include Deferred in the eligible status match, or add explicit handling to map the finding to the deferred bead instead of creating a new one.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 3
+}
