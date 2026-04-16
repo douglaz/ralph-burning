@@ -5737,7 +5737,9 @@ mod tests {
     fn sync_terminal_milestone_task_leaves_failed_runs_paused_for_resume() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
-        let now = Utc::now();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-04-01T10:00:00Z")
+            .expect("parse now")
+            .with_timezone(&Utc);
 
         std::fs::create_dir_all(base_dir.join(".ralph-burning/projects/bead-run"))
             .expect("create project dir");

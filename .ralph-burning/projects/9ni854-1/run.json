@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 13
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-12-6fbef96d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 12,
-        "body": "finding_summary: `terminal_event_for_attempt` regressed the attempt-boundary calculation for resumed runs. In `src/contexts/project_run_record/queries.rs:129-166` it prefers the last durable `run_started`/`run_resumed` boundary and only falls back to the inferred `started_at` boundary when no durable boundary exists. That loses the fail-closed behavior still preserved by `terminal_status_for_running_attempt` in `src/contexts/project_run_record/queries.rs:200-206`. `sync_terminal_milestone_task_with_options` can now feed a newer lineage `started_at` into this helper (`src/cli/run.rs:1174-1185`, `src/cli/run.rs:1275-1317`) and still match an older `run_failed` from the same `run_id` if the resumed attempt crashed before `run_resumed` was durably written. In that window, CLI sync will reconcile the stale failure against the new retry and consume a retry / move the controller for the wrong attempt.\naffected_files:\n- src/contexts/project_run_record/queries.rs:129-166\n- src/cli/run.rs:1174-1185\n- src/cli/run.rs:1275-1317\nremediation_hint: compute the lower boundary as `max(durable_boundary, inferred_boundary)` for `terminal_event_for_attempt`/`terminal_status_for_attempt`, and add a regression test for a resumed attempt with no durable `run_resumed` event.",
-        "created_at": "2026-04-16T22:21:04.379041238Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "b9110d73ad0c6a87571080e824e566330486fb1fb0248bf4ee8f4101a77eaaee"
-      },
-      {
-        "amendment_id": "fr-12-d014775e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 12,
-        "body": "finding_summary: retry escalation is driven by all known attempt starts, not by prior failed outcomes. `failure_attempt_number` assigns the current ordinal from `known_attempts(...)` (`src/contexts/automation_runtime/failure_reconciliation.rs:747-824`), and `known_attempts` includes every `BeadStarted` journal entry and every lineage row regardless of outcome (`src/contexts/automation_runtime/failure_reconciliation.rs:1058-1084`). That ordinal is then used directly by `failure_outcome` to decide retryable vs `NeedsOperator` (`src/contexts/automation_runtime/failure_reconciliation.rs:827-840`). A stray running/start-only attempt left behind by a crash or partial write therefore burns a retry even though no terminal `Failed` outcome was ever recorded, which contradicts the stated contract to count prior failed outcomes. A couple of orphaned starts can escalate the very first real failure directly to `NeedsOperator`.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:747-824\n- src/contexts/automation_runtime/failure_reconciliation.rs:827-840\n- src/contexts/automation_runtime/failure_reconciliation.rs:1058-1084\nremediation_hint: base the retry counter on terminal failed attempts only; use started/running artifacts only to identify the exact attempt being replayed or to repair missing failure records, not to increment the retry count by themselves.",
-        "created_at": "2026-04-16T22:21:04.379047841Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "d54151061cb2819ecb6d1bac370acf9641e32d6f3c4636a2880ed2b237f41028"
-      }
-    ],
-    "processed_count": 26
+    "pending": [],
+    "processed_count": 28
   },
-  "status_summary": "running: final review restart round 13 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T22:07:18.399023762Z",

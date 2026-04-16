@@ -796,8 +796,8 @@ fn failure_attempt_number(
         }
     }
 
-    let attempts = known_attempts(runs, &started_events, &failed_events);
-    if let Some(attempt_index) = attempts
+    let failed_attempts = known_failed_attempts(runs, &started_events, &failed_events);
+    if let Some(attempt_index) = failed_attempts
         .iter()
         .position(|attempt| attempt == &exact_attempt)
     {
@@ -817,7 +817,7 @@ fn failure_attempt_number(
         }
     }
 
-    let insertion_index = attempts
+    let insertion_index = failed_attempts
         .iter()
         .filter(|attempt| *attempt < &exact_attempt)
         .count();
@@ -1055,20 +1055,13 @@ fn attempt_start_events(
     events
 }
 
-fn known_attempts(
+fn known_failed_attempts(
     runs: &[TaskRunEntry],
     started_events: &[AttemptStartEvent],
     failed_events: &[FailureAttemptEvent],
 ) -> Vec<AttemptIdentity> {
     let mut attempts = Vec::new();
 
-    for event in started_events {
-        push_attempt_identity(
-            &mut attempts,
-            event.details.run_id.as_deref(),
-            event.started_at,
-        );
-    }
     for event in failed_events {
         push_attempt_identity(
             &mut attempts,
@@ -1077,11 +1070,34 @@ fn known_attempts(
         );
     }
     for entry in runs {
-        push_attempt_identity(&mut attempts, entry.run_id.as_deref(), entry.started_at);
+        if entry.outcome == TaskRunOutcome::Failed {
+            push_attempt_identity(&mut attempts, entry.run_id.as_deref(), entry.started_at);
+        }
+    }
+    for event in started_events {
+        let Some(run_id) = event.details.run_id.as_deref() else {
+            continue;
+        };
+        if same_run_attempt_has_newer_start(run_id, event.started_at, started_events, runs) {
+            push_attempt_identity(&mut attempts, Some(run_id), event.started_at);
+        }
     }
 
     attempts.sort();
     attempts
+}
+
+fn same_run_attempt_has_newer_start(
+    run_id: &str,
+    started_at: DateTime<Utc>,
+    started_events: &[AttemptStartEvent],
+    runs: &[TaskRunEntry],
+) -> bool {
+    started_events.iter().any(|event| {
+        event.details.run_id.as_deref() == Some(run_id) && event.started_at > started_at
+    }) || runs
+        .iter()
+        .any(|entry| entry.run_id.as_deref() == Some(run_id) && entry.started_at > started_at)
 }
 
 fn push_attempt_identity(
@@ -1100,7 +1116,10 @@ fn push_attempt_identity(
 
 #[cfg(test)]
 mod tests {
-    use super::{reconcile_failure, FailureReconciliationOutcome, MAX_FAILURE_RETRIES};
+    use super::{
+        failure_attempt_number, reconcile_failure, FailureReconciliationOutcome,
+        MAX_FAILURE_RETRIES,
+    };
     use crate::adapters::fs::{
         FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
         FsMilestoneSnapshotStore, FsMilestoneStore, FsTaskRunLineageStore,
@@ -1109,7 +1128,9 @@ mod tests {
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
     };
     use crate::contexts::milestone_record::controller as milestone_controller;
-    use crate::contexts::milestone_record::model::{MilestoneEventType, TaskRunOutcome};
+    use crate::contexts::milestone_record::model::{
+        MilestoneEventType, MilestoneId, MilestoneJournalEvent, TaskRunEntry, TaskRunOutcome,
+    };
     use crate::contexts::milestone_record::service::{
         self as milestone_service, create_milestone, persist_plan, read_journal,
         CreateMilestoneInput, TaskRunLineagePort,
@@ -1256,6 +1277,93 @@ mod tests {
             started_at,
         )?;
         Ok(())
+    }
+
+    #[test]
+    fn failure_attempt_number_ignores_start_only_attempts_when_counting_retries() {
+        let milestone_id = MilestoneId::new("ms-failure-reconcile").expect("milestone id");
+        let orphaned_started_at = Utc::now() + Duration::seconds(1);
+        let failed_started_at = orphaned_started_at + Duration::seconds(30);
+        let runs = vec![
+            TaskRunEntry {
+                milestone_id: milestone_id.to_string(),
+                bead_id: "bead-failure".to_owned(),
+                project_id: "proj-failure".to_owned(),
+                run_id: Some("run-orphan".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: orphaned_started_at,
+                finished_at: None,
+                task_id: Some("task-orphan".to_owned()),
+            },
+            TaskRunEntry {
+                milestone_id: milestone_id.to_string(),
+                bead_id: "bead-failure".to_owned(),
+                project_id: "proj-failure".to_owned(),
+                run_id: Some("run-actual".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: failed_started_at,
+                finished_at: None,
+                task_id: Some("task-actual".to_owned()),
+            },
+        ];
+        let journal = vec![
+            MilestoneJournalEvent::new(MilestoneEventType::BeadStarted, orphaned_started_at)
+                .with_bead("bead-failure")
+                .with_details(
+                    TaskRunEntry {
+                        milestone_id: milestone_id.to_string(),
+                        bead_id: "bead-failure".to_owned(),
+                        project_id: "proj-failure".to_owned(),
+                        run_id: Some("run-orphan".to_owned()),
+                        plan_hash: Some("plan-v1".to_owned()),
+                        outcome: TaskRunOutcome::Running,
+                        outcome_detail: None,
+                        started_at: orphaned_started_at,
+                        finished_at: None,
+                        task_id: Some("task-orphan".to_owned()),
+                    }
+                    .start_journal_details(),
+                ),
+            MilestoneJournalEvent::new(MilestoneEventType::BeadStarted, failed_started_at)
+                .with_bead("bead-failure")
+                .with_details(
+                    TaskRunEntry {
+                        milestone_id: milestone_id.to_string(),
+                        bead_id: "bead-failure".to_owned(),
+                        project_id: "proj-failure".to_owned(),
+                        run_id: Some("run-actual".to_owned()),
+                        plan_hash: Some("plan-v1".to_owned()),
+                        outcome: TaskRunOutcome::Running,
+                        outcome_detail: None,
+                        started_at: failed_started_at,
+                        finished_at: None,
+                        task_id: Some("task-actual".to_owned()),
+                    }
+                    .start_journal_details(),
+                ),
+        ];
+
+        let (already_recorded, attempt_number) = failure_attempt_number(
+            &runs,
+            &journal,
+            &milestone_id,
+            "bead-failure",
+            "task-actual",
+            "proj-failure",
+            "run-actual",
+            failed_started_at,
+        )
+        .expect("attempt number");
+
+        assert!(!already_recorded);
+        assert_eq!(
+            attempt_number, 1,
+            "start-only orphaned attempts must not consume retry budget"
+        );
     }
 
     #[tokio::test]
