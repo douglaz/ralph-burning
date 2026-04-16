@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T20:18:01.759309925Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real reconciliation defects around resumed/same-run attempts. The current code still has attempt-boundary gaps that can preserve incomplete milestone history and can associate a later retry with stale terminal data from an earlier attempt.\n\n## Votes\n\n- `fr-7-45b8523f`: Accept\n  `failure_attempt_number()` falls back from an exact `(run_id, started_at)` match to any row with the same `run_id`, so a later failed retry can make an older attempt look `already_recorded` even when that older attempt's `BeadFailed` journal entry is missing. In that state, `reconcile_failure_sync()` takes the `already_recorded && newer_attempt_exists` early return and skips both the normal repair path and the stale-replay historical repair branch. The missing historical failure event therefore remains missing, and future same-`run_id` retries can be counted from the shortened journal history rather than the true failure history, delaying escalation.\n- `fr-7-5004a2ab`: Accept\n  The bug is real. In `src/cli/run.rs`, `terminal_run_event_timestamp()` selects the most recent terminal event by `run_id` only, so after `run_resumed` an older `run_failed` for the same `run_id` can satisfy the lookup and suppress the existing `missing durable run_failed event` failure even though the current attempt never durably published its own terminal event. In `src/contexts/automation_runtime/daemon_loop.rs`, the reverse scan has the same problem and also reuses the stale failure message from that older `RunFailed`. Because the current attempt's `started_at` can come from the later `run_resumed` boundary, the code can reconcile a resumed attempt with stale terminal metadata and even a `failed_at` earlier than `started_at` instead of failing closed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

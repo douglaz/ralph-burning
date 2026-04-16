@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T20:14:21.602016818Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThorough review of the failure reconciliation implementation across 7 changed files (~4200 lines). The implementation is correct, well-tested (9 dedicated unit tests + 4 daemon integration tests + updated existing tests), idempotent, and follows established patterns from success_reconciliation. All acceptance criteria are met: BeadFailed journal events are recorded, beads are NOT closed on failure, attempt counting works, escalation to NeedsOperator after MAX_FAILURE_RETRIES=3, idempotent duplicate handling, structured tracing, clippy clean, nix build passes. The stale started_at guard in fs.rs prevents a subtle data corruption vector. The daemon wiring properly validates run identity from multiple durable sources before reconciling. No correctness bugs, safety problems, or significant maintainability risks found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 7
+}
