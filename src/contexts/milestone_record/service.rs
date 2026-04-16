@@ -2753,15 +2753,16 @@ fn candidate_bead_ids_from_create_stdout(stdout: &str) -> Vec<String> {
     candidates
 }
 
-async fn list_matching_bead_by_title<R: ProcessRunner>(
+async fn list_matching_beads_by_title<R: ProcessRunner>(
     br_read: &BrAdapter<R>,
     proposed_title: &str,
-) -> Result<Option<BeadSummary>, crate::adapters::br_process::BrError> {
+) -> Result<Vec<BeadSummary>, crate::adapters::br_process::BrError> {
     let summaries: Vec<BeadSummary> = br_read.exec_json(&BrCommand::list_all()).await?;
     let normalized_title = normalize_bead_match_text(proposed_title);
     Ok(summaries
         .into_iter()
-        .find(|summary| normalize_bead_match_text(&summary.title) == normalized_title))
+        .filter(|summary| normalize_bead_match_text(&summary.title) == normalized_title)
+        .collect())
 }
 
 fn eligible_existing_proposed_bead_match(summary: &BeadSummary, active_bead_id: &str) -> bool {
@@ -2769,8 +2770,84 @@ fn eligible_existing_proposed_bead_match(summary: &BeadSummary, active_bead_id: 
         && matches!(summary.status, BeadStatus::Open | BeadStatus::InProgress)
 }
 
+fn proposed_bead_depends_on_active_bead(detail: &BeadDetail, active_bead_id: &str) -> bool {
+    detail
+        .dependencies
+        .iter()
+        .any(|dependency| dependency.id == active_bead_id)
+}
+
+fn existing_bead_matches_replayed_proposed_creation(
+    detail: &BeadDetail,
+    input: &ProposeNewBeadInput,
+) -> bool {
+    detail.description.as_deref() == Some(render_proposed_bead_description(input).as_str())
+}
+
+fn matching_proposed_bead_created_event(
+    event: &MilestoneJournalEvent,
+    input: &ProposeNewBeadInput,
+) -> Option<String> {
+    if event.event_type != MilestoneEventType::ProposedBeadCreated {
+        return None;
+    }
+
+    let metadata = event.metadata.as_ref()?;
+    if metadata
+        .get("active_bead_id")
+        .and_then(|value| value.as_str())
+        != Some(input.active_bead_id.as_str())
+    {
+        return None;
+    }
+    if metadata
+        .get("proposed_title")
+        .and_then(|value| value.as_str())
+        != Some(input.proposed_title.as_str())
+    {
+        return None;
+    }
+    if event.details.as_deref() != Some(input.finding_summary.as_str()) {
+        return None;
+    }
+    if let Some(run_id) = input.run_id.as_deref() {
+        if metadata.get("run_id").and_then(|value| value.as_str()) != Some(run_id) {
+            return None;
+        }
+    }
+    if let Some(completion_round) = input.completion_round {
+        if metadata
+            .get("completion_round")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| u32::try_from(value).ok())
+            != Some(completion_round)
+        {
+            return None;
+        }
+    }
+
+    metadata
+        .get("created_bead_id")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+}
+
+fn load_existing_proposed_bead_creation(
+    journal_store: &impl MilestoneJournalPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    input: &ProposeNewBeadInput,
+) -> AppResult<Option<String>> {
+    let journal = journal_store.read_journal(base_dir, milestone_id)?;
+    Ok(journal
+        .iter()
+        .rev()
+        .find_map(|event| matching_proposed_bead_created_event(event, input)))
+}
+
 async fn resolve_created_bead_id<R: ProcessRunner>(
     br_read: &BrAdapter<R>,
+    active_bead_id: &str,
     proposed_title: &str,
     create_stdout: &str,
 ) -> AppResult<String> {
@@ -2784,13 +2861,15 @@ async fn resolve_created_bead_id<R: ProcessRunner>(
         }
     }
 
-    if let Some(existing) = list_matching_bead_by_title(br_read, proposed_title)
+    if let Some(existing) = list_matching_beads_by_title(br_read, proposed_title)
         .await
         .map_err(|error| AppError::MilestoneOperationFailed {
             milestone_id: "unknown".to_owned(),
             action: "query existing beads".to_owned(),
             details: error.to_string(),
         })?
+        .into_iter()
+        .find(|summary| eligible_existing_proposed_bead_match(summary, active_bead_id))
     {
         return Ok(existing.id);
     }
@@ -2843,6 +2922,18 @@ fn record_proposed_bead_created_event(
         "no_existing_match_reason".to_owned(),
         JsonValue::String(no_existing_match_reason.to_owned()),
     );
+    metadata.insert(
+        "placement".to_owned(),
+        JsonValue::String("created_bead_depends_on_active_bead".to_owned()),
+    );
+    metadata.insert(
+        "dependency_from_bead_id".to_owned(),
+        JsonValue::String(bead_id.to_owned()),
+    );
+    metadata.insert(
+        "dependency_depends_on_bead_id".to_owned(),
+        JsonValue::String(input.active_bead_id.clone()),
+    );
     if let Some(ref run_id) = input.run_id {
         metadata.insert("run_id".to_owned(), JsonValue::String(run_id.clone()));
     }
@@ -2873,14 +2964,73 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
 ) -> AppResult<ProposeNewBeadOutcome> {
     let br_read = br_mutation.inner();
 
-    if let Some(existing) = list_matching_bead_by_title(br_read, &input.proposed_title)
+    if let Some(existing_bead_id) =
+        load_existing_proposed_bead_creation(journal_store, base_dir, milestone_id, input)?
+    {
+        return Ok(ProposeNewBeadOutcome::Created {
+            bead_id: existing_bead_id,
+        });
+    }
+
+    let matching_beads = list_matching_beads_by_title(br_read, &input.proposed_title)
         .await
         .map_err(|error| AppError::MilestoneOperationFailed {
             milestone_id: milestone_id.to_string(),
             action: "query existing beads".to_owned(),
             details: error.to_string(),
-        })?
+        })?;
+
+    for existing in matching_beads
+        .iter()
         .filter(|existing| eligible_existing_proposed_bead_match(existing, &input.active_bead_id))
+    {
+        let detail = br_read
+            .exec_json::<BeadDetail>(&BrCommand::show(existing.id.clone()))
+            .await
+            .map_err(|error| AppError::MilestoneOperationFailed {
+                milestone_id: milestone_id.to_string(),
+                action: "inspect existing proposed bead".to_owned(),
+                details: error.to_string(),
+            })?;
+
+        if !existing_bead_matches_replayed_proposed_creation(&detail, input) {
+            continue;
+        }
+
+        if !proposed_bead_depends_on_active_bead(&detail, &input.active_bead_id) {
+            br_mutation
+                .add_dependency(&detail.id, &input.active_bead_id)
+                .await
+                .map_err(|error| AppError::MilestoneOperationFailed {
+                    milestone_id: milestone_id.to_string(),
+                    action: "place recovered proposed bead dependency".to_owned(),
+                    details: error.to_string(),
+                })?;
+            br_mutation
+                .sync_flush()
+                .await
+                .map_err(|error| AppError::MilestoneOperationFailed {
+                    milestone_id: milestone_id.to_string(),
+                    action: "sync recovered proposed bead placement".to_owned(),
+                    details: error.to_string(),
+                })?;
+        }
+
+        record_proposed_bead_created_event(
+            journal_store,
+            base_dir,
+            milestone_id,
+            input,
+            &detail.id,
+            "recovered previously created bead by matching title and rendered proposal payload",
+            now,
+        )?;
+        return Ok(ProposeNewBeadOutcome::Created { bead_id: detail.id });
+    }
+
+    if let Some(existing) = matching_beads
+        .into_iter()
+        .find(|existing| eligible_existing_proposed_bead_match(existing, &input.active_bead_id))
     {
         let mapping = PlannedElsewhereMapping {
             active_bead_id: input.active_bead_id.clone(),
@@ -2933,11 +3083,25 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
             details: error.to_string(),
         })?;
 
-    let bead_id = resolve_created_bead_id(br_read, &input.proposed_title, &create_output.stdout)
+    let bead_id = resolve_created_bead_id(
+        br_read,
+        &input.active_bead_id,
+        &input.proposed_title,
+        &create_output.stdout,
+    )
+    .await
+    .map_err(|error| AppError::MilestoneOperationFailed {
+        milestone_id: milestone_id.to_string(),
+        action: "resolve created bead".to_owned(),
+        details: error.to_string(),
+    })?;
+
+    br_mutation
+        .add_dependency(&bead_id, &input.active_bead_id)
         .await
         .map_err(|error| AppError::MilestoneOperationFailed {
             milestone_id: milestone_id.to_string(),
-            action: "resolve created bead".to_owned(),
+            action: "place proposed bead dependency".to_owned(),
             details: error.to_string(),
         })?;
 
@@ -10396,6 +10560,7 @@ mod tests {
 
         let runner = MockBrRunner::new(vec![
             MockBrRunner::success("synced"),
+            MockBrRunner::success("dependency added"),
             MockBrRunner::success(
                 r#"{"id":"bead-new","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","labels":["backend","observability"]}"#,
             ),
@@ -10450,6 +10615,9 @@ mod tests {
                     arg == "--description=## Finding Summary\nRetry paths lack telemetry\n\n## Proposed Scope\nInstrument retry loops with counters and histograms\n\n## Rationale\nNo existing bead covers retry observability"
                 })
         }));
+        assert!(commands
+            .iter()
+            .any(|args| args == &["dep", "add", "bead-new", "active-bead"]));
 
         let journal = FsMilestoneJournalStore.read_journal(base, &record.id)?;
         let created_event = journal
@@ -10467,6 +10635,9 @@ mod tests {
             metadata["no_existing_match_reason"],
             "no existing bead matched proposed title 'Add retry telemetry'"
         );
+        assert_eq!(metadata["placement"], "created_bead_depends_on_active_bead");
+        assert_eq!(metadata["dependency_from_bead_id"], "bead-new");
+        assert_eq!(metadata["dependency_depends_on_bead_id"], "active-bead");
 
         Ok(())
     }
@@ -10491,9 +10662,14 @@ mod tests {
             now,
         )?;
 
-        let runner = MockBrRunner::new(vec![MockBrRunner::success(
-            r#"[{"id":"existing-bead","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","labels":["backend"]}]"#,
-        )]);
+        let runner = MockBrRunner::new(vec![
+            MockBrRunner::success(
+                r#"{"id":"existing-bead","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","labels":["backend"],"description":"Existing work already covers this follow-up","dependencies":[],"dependents":[]}"#,
+            ),
+            MockBrRunner::success(
+                r#"[{"id":"existing-bead","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","labels":["backend"]}]"#,
+            ),
+        ]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
 
         let input = ProposeNewBeadInput {
@@ -10568,6 +10744,7 @@ mod tests {
 
         let runner = MockBrRunner::new(vec![
             MockBrRunner::success("synced"),
+            MockBrRunner::success("dependency added"),
             MockBrRunner::success(
                 r#"{"id":"bead-new","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","labels":["backend"]}"#,
             ),
@@ -10646,6 +10823,7 @@ mod tests {
 
         let runner = MockBrRunner::new(vec![
             MockBrRunner::success("synced"),
+            MockBrRunner::success("dependency added"),
             MockBrRunner::success(
                 r#"{"id":"bead-newer","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","labels":["backend"]}"#,
             ),
@@ -10725,6 +10903,7 @@ mod tests {
 
         let runner = MockBrRunner::new(vec![
             MockBrRunner::success("synced"),
+            MockBrRunner::success("dependency added"),
             MockBrRunner::success(
                 r#"{"id":"bead-third","title":"Add third follow-up","status":"open","priority":3,"bead_type":"task","labels":["backend"]}"#,
             ),
@@ -10765,6 +10944,203 @@ mod tests {
             .await?;
 
         capture.assert_event_has_fields(&[("level", "ERROR"), ("created_in_pass", "3")]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_propose_new_bead_reuses_existing_journaled_creation_without_br_calls(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pn-journal-replay".to_owned(),
+                name: "PN journal replay".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let input = ProposeNewBeadInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Retry paths lack telemetry".to_owned(),
+            proposed_title: "Add retry telemetry".to_owned(),
+            proposed_scope: "Instrument retry loops with counters and histograms".to_owned(),
+            severity: Severity::Medium,
+            rationale: "No existing bead covers retry observability".to_owned(),
+            run_id: Some("run-replay".to_owned()),
+            completion_round: Some(7),
+        };
+        record_proposed_bead_created_event(
+            &FsMilestoneJournalStore,
+            base,
+            &record.id,
+            &input,
+            "bead-replayed",
+            "replayed from prior success reconciliation",
+            now,
+        )?;
+
+        let runner = MockBrRunner::new(vec![]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
+
+        let mut created_in_pass = 0usize;
+        let outcome = handle_propose_new_bead(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            &br_mutation,
+            base,
+            &record.id,
+            &input,
+            &mut created_in_pass,
+            now,
+        )
+        .await?;
+
+        assert_eq!(
+            outcome,
+            ProposeNewBeadOutcome::Created {
+                bead_id: "bead-replayed".to_owned()
+            }
+        );
+        assert_eq!(created_in_pass, 0);
+        let journal = FsMilestoneJournalStore.read_journal(base, &record.id)?;
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|event| event.event_type == MilestoneEventType::ProposedBeadCreated)
+                .count(),
+            1
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_propose_new_bead_recovers_existing_created_bead_and_repairs_dependency(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pn-recover-existing".to_owned(),
+                name: "PN recover existing".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let input = ProposeNewBeadInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Retry paths lack telemetry".to_owned(),
+            proposed_title: "Add retry telemetry".to_owned(),
+            proposed_scope: "Instrument retry loops with counters and histograms".to_owned(),
+            severity: Severity::Medium,
+            rationale: "No existing bead covers retry observability".to_owned(),
+            run_id: Some("run-recover".to_owned()),
+            completion_round: Some(8),
+        };
+        let recovered_detail = serde_json::json!({
+            "id": "bead-recovered",
+            "title": "Add retry telemetry",
+            "status": "open",
+            "priority": 2,
+            "bead_type": "task",
+            "labels": ["backend"],
+            "description": render_proposed_bead_description(&input),
+            "dependencies": [],
+            "dependents": []
+        })
+        .to_string();
+        let runner = MockBrRunner::new(vec![
+            MockBrRunner::success("synced"),
+            MockBrRunner::success("dependency added"),
+            MockBrRunner::success(&recovered_detail),
+            MockBrRunner::success(
+                r#"[{"id":"bead-recovered","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","labels":["backend"]}]"#,
+            ),
+        ]);
+        let command_log = runner.command_log();
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
+
+        let mut created_in_pass = 0usize;
+        let outcome = handle_propose_new_bead(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            &br_mutation,
+            base,
+            &record.id,
+            &input,
+            &mut created_in_pass,
+            now,
+        )
+        .await?;
+
+        assert_eq!(
+            outcome,
+            ProposeNewBeadOutcome::Created {
+                bead_id: "bead-recovered".to_owned()
+            }
+        );
+        assert_eq!(created_in_pass, 0);
+        assert!(load_planned_elsewhere_mappings(
+            &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
+            base,
+            &record.id,
+        )?
+        .is_empty());
+        let commands = command_log.lock().expect("command log");
+        assert!(commands
+            .iter()
+            .any(|args| args == &["dep", "add", "bead-recovered", "active-bead"]));
+
+        let journal = FsMilestoneJournalStore.read_journal(base, &record.id)?;
+        let created_event = journal
+            .iter()
+            .find(|event| event.event_type == MilestoneEventType::ProposedBeadCreated)
+            .expect("created event");
+        let metadata = created_event.metadata.as_ref().expect("metadata");
+        assert_eq!(metadata["created_bead_id"], "bead-recovered");
+        assert_eq!(
+            metadata["no_existing_match_reason"],
+            "recovered previously created bead by matching title and rendered proposal payload"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resolve_created_bead_id_fallback_ignores_closed_and_active_matches(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let runner = MockBrRunner::new(vec![MockBrRunner::success(
+            r#"[{"id":"closed-bead","title":"Add retry telemetry","status":"closed","priority":2,"bead_type":"task","labels":["backend"]},{"id":"active-bead","title":"Add retry telemetry","status":"open","priority":1,"bead_type":"task","labels":["backend"]}]"#,
+        )]);
+        let br_read = BrAdapter::with_runner(runner);
+
+        let error = resolve_created_bead_id(&br_read, "active-bead", "Add retry telemetry", "")
+            .await
+            .expect_err("closed/self-only fallback should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("created bead id could not be determined"),
+            "unexpected error: {error}"
+        );
 
         Ok(())
     }

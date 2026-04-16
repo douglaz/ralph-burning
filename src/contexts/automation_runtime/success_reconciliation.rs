@@ -3382,6 +3382,7 @@ mod tests {
 
         let br_runner = MockBrRunner::new(vec![
             MockBrRunner::success("synced"),
+            MockBrRunner::success("dependency added"),
             MockBrRunner::success(
                 r#"{"id":"bead-proposed","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","labels":["backend"]}"#,
             ),
@@ -3403,6 +3404,18 @@ mod tests {
         )
         .await;
 
+        let replay_mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+        reconcile_proposed_beads_after_success(
+            &replay_mutation,
+            base,
+            "active-bead",
+            record.id.as_str(),
+            "proj-proposed",
+            "run-proposed",
+        )
+        .await;
+
         let journal = FsMilestoneJournalStore.read_journal(base, &record.id)?;
         let created_event = journal
             .iter()
@@ -3411,6 +3424,16 @@ mod tests {
         let metadata = created_event.metadata.as_ref().expect("metadata");
         assert_eq!(metadata["created_bead_id"], "bead-proposed");
         assert_eq!(metadata["proposed_title"], "Add retry telemetry");
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|event| event.event_type == MilestoneEventType::ProposedBeadCreated)
+                .count(),
+            1
+        );
+        assert!(journal
+            .iter()
+            .all(|event| event.event_type != MilestoneEventType::PlannedElsewhereMapped));
 
         Ok(())
     }
