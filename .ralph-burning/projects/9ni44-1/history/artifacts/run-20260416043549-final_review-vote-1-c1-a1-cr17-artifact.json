@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T11:19:23.063083993Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe amendment identifies a real remaining TOCTOU defect: several claim/propose paths still perform an unlocked health probe and then call raw sync helpers, so `.beads/issues.jsonl` can become unsafe after the probe but before the flush lock is acquired and the mutation still gets published.\n\n## Votes\n\n- `fr-17-5a240f7c`: Accept\n  `BrMutationAdapter::sync_if_dirty_when_beads_healthy()` exists specifically to acquire `.beads/.br-sync.lock`, re-read pending state, and check bead health before flushing. The cited paths bypass that protection. In [src/cli/project.rs](/home/master/p/ralphs/ralph-burning/src/cli/project.rs:975), recovered claim replay still uses `sync_if_dirty()`, which takes the repo lock but never re-checks `.beads/issues.jsonl` health under that lock. Likewise [src/cli/project.rs](/home/master/p/ralphs/ralph-burning/src/cli/project.rs:1007) and [src/contexts/milestone_record/service.rs](/home/master/p/ralphs/ralph-burning/src/contexts/milestone_record/service.rs:3081), [service.rs](/home/master/p/ralphs/ralph-burning/src/contexts/milestone_record/service.rs:3162), and [service.rs](/home/master/p/ralphs/ralph-burning/src/contexts/milestone_record/service.rs:3283) do `check_beads_health(...)` before calling raw `sync_flush()`. That leaves a real race: another process can make the export missing/conflicted/malformed after the precheck, and the subsequent flush still runs. The later post-flush checks only report the unsafe state after publication, so they do not prevent the bug. A lock-held health-gated flush helper and a regression test for the late-transition case are warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}
