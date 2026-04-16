@@ -2223,6 +2223,8 @@ mod tests {
                 Some("in_progress"),
             ))?,
         )?;
+        let lock_path = tmp.path().join(REPO_OPERATION_LOCK);
+        std::fs::write(&lock_path, "")?;
 
         let init = StdCommand::new("git")
             .args(["init", "-q"])
@@ -2243,7 +2245,7 @@ mod tests {
         assert!(staged.status.success(), "git diff --cached should succeed");
         assert!(
             String::from_utf8_lossy(&staged.stdout).trim().is_empty(),
-            "ignored pending marker must not be staged by git add .beads"
+            "ignored pending-mutation artifacts must not be staged by git add .beads"
         );
         Ok(())
     }

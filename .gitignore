@@ -24,6 +24,7 @@ result
 # Transient runtime artifacts — never part of durable project history
 .beads/.br-unsynced-mutations
 .beads/.br-unsynced-mutations.d/
+.beads/.br-sync.lock
 .ralph/tmp/
 .ralph-burning/active-project
 .ralph-burning/projects/*/sessions.json

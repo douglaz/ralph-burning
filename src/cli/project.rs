@@ -956,12 +956,11 @@ enum BrListResponse {
 
 /// Claim a bead in `br` by setting its status to `in_progress` and flushing.
 ///
-/// If `br update` fails for any reason the error is returned immediately so
-/// the caller can transition the milestone controller to `needs_operator`.
-/// No idempotent-retry fallback is attempted because the controller `Claimed`
-/// state is written during bead selection (before any `br update`), so
-/// matching `active_bead_id` alone cannot prove a prior successful claim —
-/// it could also be another operator that won the race after our selection.
+/// Recovered local pending mutations are flushed first so a retry after a
+/// failed `br sync --flush-only` can publish the earlier local claim before
+/// attempting a new `br update`. If `br update` fails for any reason the error
+/// is returned immediately so the caller can transition the milestone
+/// controller to `needs_operator`.
 async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
     if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
         return Err(AppError::Io(std::io::Error::other(format!(
@@ -977,7 +976,16 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
                  br sync --flush-only: {error}"
         )))
     })?;
-    if recovered_flush.includes_update_status(bead_id, "in_progress") {
+    if !recovered_flush.is_clean()
+        && bead_status_is_in_progress(base_dir, bead_id)
+            .await
+            .map_err(|error| {
+                AppError::Io(std::io::Error::other(format!(
+                    "failed to verify recovered bead claim for '{bead_id}' after \
+                 br sync --flush-only: {error}"
+                )))
+            })?
+    {
         return Ok(());
     }
 
@@ -997,6 +1005,55 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
         )))
     })?;
     Ok(())
+}
+
+async fn bead_status_is_in_progress(base_dir: &Path, bead_id: &str) -> AppResult<bool> {
+    let response: BrShowResponse = BrAdapter::new()
+        .with_working_dir(base_dir.to_path_buf())
+        .exec_json(&BrCommand::show(bead_id))
+        .await
+        .map_err(|error| match error {
+            BrError::BrExitError { stderr, stdout, .. }
+                if br_show_output_indicates_missing(&stderr, &stdout) =>
+            {
+                AppError::Io(std::io::Error::other(format!(
+                    "bead '{bead_id}' was not found"
+                )))
+            }
+            BrError::BrExitError { stderr, .. } => {
+                AppError::Io(std::io::Error::other(stderr.trim().to_owned()))
+            }
+            other => AppError::Io(std::io::Error::other(other.to_string())),
+        })?;
+
+    let bead = match response {
+        BrShowResponse::Single(bead) => {
+            if bead.id == bead_id {
+                bead
+            } else {
+                return Err(AppError::Io(std::io::Error::other(format!(
+                    "br show returned bead '{}' instead of '{bead_id}'",
+                    bead.id
+                ))));
+            }
+        }
+        BrShowResponse::Many(beads) => {
+            let mut matches = beads.into_iter().filter(|bead| bead.id == bead_id);
+            let bead = matches.next().ok_or_else(|| {
+                AppError::Io(std::io::Error::other(format!(
+                    "br show returned no matching bead for '{bead_id}'"
+                )))
+            })?;
+            if matches.next().is_some() {
+                return Err(AppError::Io(std::io::Error::other(format!(
+                    "br show returned multiple matching beads for '{bead_id}'"
+                ))));
+            }
+            bead
+        }
+    };
+
+    Ok(bead.status == BeadStatus::InProgress)
 }
 
 async fn load_bead_detail(
@@ -3936,6 +3993,16 @@ case "$1" in
     echo "Synced"
     exit 0
     ;;
+  show)
+    status="open"
+    if [ -f .beads/{bead_id}.status ]; then
+      status=$(cat .beads/{bead_id}.status)
+    fi
+    cat <<BEAD_JSON
+{{"id":"{bead_id}","title":"Test bead","status":"$status","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+    exit 0
+    ;;
   update)
     count=0
     if [ -f .beads/update-count ]; then
@@ -4079,6 +4146,34 @@ esac
                 sync_count.trim(),
                 "2",
                 "retry should perform a second sync flush to publish the recovered claim"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_confirms_legacy_recovered_claim_after_flush(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_retry_after_sync_failure(base_dir, "bead-1");
+            std::fs::write(base_dir.join(".beads/.br-unsynced-mutations"), "pending\n")?;
+            std::fs::write(base_dir.join(".beads/bead-1.status"), "in_progress\n")?;
+            std::fs::write(base_dir.join(".beads/sync-count"), "1\n")?;
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            super::super::claim_bead_in_br(base_dir, "bead-1").await?;
+
+            assert!(
+                !base_dir.join(".beads/update-count").exists(),
+                "legacy recovered claim should be confirmed via br show instead of replaying update"
+            );
+            let sync_count = std::fs::read_to_string(base_dir.join(".beads/sync-count"))?;
+            assert_eq!(
+                sync_count.trim(),
+                "2",
+                "legacy recovered claim should flush exactly once before verification"
             );
             Ok(())
         }
