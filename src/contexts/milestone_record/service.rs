@@ -3044,6 +3044,29 @@ async fn sync_recovered_proposed_bead_replay_if_dirty<R: ProcessRunner>(
     Ok(())
 }
 
+async fn sync_beads_mutation_if_dirty_when_healthy<R: ProcessRunner>(
+    br_mutation: &BrMutationAdapter<R>,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    action: &str,
+) -> AppResult<()> {
+    match br_mutation.sync_if_dirty_when_beads_healthy(base_dir).await {
+        Ok(_) => Ok(()),
+        Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
+            Err(AppError::MilestoneOperationFailed {
+                milestone_id: milestone_id.to_string(),
+                action: action.to_owned(),
+                details,
+            })
+        }
+        Err(SyncIfDirtyHealthError::Br(error)) => Err(AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: action.to_owned(),
+            details: error.to_string(),
+        }),
+    }
+}
+
 pub async fn handle_propose_new_bead<R: ProcessRunner>(
     journal_store: &impl MilestoneJournalPort,
     mapping_store: &impl PlannedElsewhereMappingPort,
@@ -3078,18 +3101,13 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
                             action: "repair journaled proposed bead dependency".to_owned(),
                             details: error.to_string(),
                         })?;
-                    ensure_beads_mutation_health(
+                    sync_beads_mutation_if_dirty_when_healthy(
+                        br_mutation,
                         base_dir,
                         milestone_id,
                         "sync journaled proposed bead dependency repair",
-                    )?;
-                    br_mutation.sync_flush().await.map_err(|error| {
-                        AppError::MilestoneOperationFailed {
-                            milestone_id: milestone_id.to_string(),
-                            action: "sync journaled proposed bead dependency repair".to_owned(),
-                            details: error.to_string(),
-                        }
-                    })?;
+                    )
+                    .await?;
                 }
 
                 sync_recovered_proposed_bead_replay_if_dirty(
@@ -3159,19 +3177,13 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
                     action: "place recovered proposed bead dependency".to_owned(),
                     details: error.to_string(),
                 })?;
-            ensure_beads_mutation_health(
+            sync_beads_mutation_if_dirty_when_healthy(
+                br_mutation,
                 base_dir,
                 milestone_id,
                 "sync recovered proposed bead placement",
-            )?;
-            br_mutation
-                .sync_flush()
-                .await
-                .map_err(|error| AppError::MilestoneOperationFailed {
-                    milestone_id: milestone_id.to_string(),
-                    action: "sync recovered proposed bead placement".to_owned(),
-                    details: error.to_string(),
-                })?;
+            )
+            .await?;
         }
 
         sync_recovered_proposed_bead_replay_if_dirty(
@@ -3280,15 +3292,13 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
             details: error.to_string(),
         })?;
 
-    ensure_beads_mutation_health(base_dir, milestone_id, "sync proposed bead creation")?;
-    br_mutation
-        .sync_flush()
-        .await
-        .map_err(|error| AppError::MilestoneOperationFailed {
-            milestone_id: milestone_id.to_string(),
-            action: "sync proposed bead creation".to_owned(),
-            details: error.to_string(),
-        })?;
+    sync_beads_mutation_if_dirty_when_healthy(
+        br_mutation,
+        base_dir,
+        milestone_id,
+        "sync proposed bead creation",
+    )
+    .await?;
 
     let no_existing_match_reason = format!(
         "no existing bead matched proposed title '{}'",
@@ -12483,6 +12493,252 @@ mod tests {
         assert_eq!(
             metadata["no_existing_match_reason"],
             "recovered previously created bead by matching title and rendered proposal payload"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_propose_new_bead_rechecks_health_before_sync_after_journaled_dependency_repair(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pn-journal-repair-conflict-before-sync".to_owned(),
+                name: "PN journal repair conflict before sync".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let input = ProposeNewBeadInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Retry paths lack telemetry".to_owned(),
+            proposed_title: "Add retry telemetry".to_owned(),
+            proposed_scope: "Instrument retry loops with counters and histograms".to_owned(),
+            severity: Severity::Medium,
+            rationale: "Journaled dependency repair should recheck bead health under the sync lock"
+                .to_owned(),
+            run_id: Some("run-journal-repair-conflict-before-sync".to_owned()),
+            completion_round: Some(16),
+        };
+        record_proposed_bead_created_event(
+            &FsMilestoneJournalStore,
+            base,
+            &record.id,
+            &input,
+            "bead-replayed",
+            "replayed from prior success reconciliation",
+            now,
+        )?;
+
+        let issues_path = base.join(".beads/issues.jsonl");
+        let runner = ScriptedBrRunner::new({
+            let issues_path = issues_path.clone();
+            let expected_detail = serde_json::json!({
+                "id": "bead-replayed",
+                "title": "Add retry telemetry",
+                "status": "open",
+                "priority": 2,
+                "bead_type": "task",
+                "labels": ["backend"],
+                "description": render_proposed_bead_description(&input),
+                "dependencies": [],
+                "dependents": []
+            })
+            .to_string();
+            move |args| match args {
+                [command, bead_id, ..] if command == "show" && bead_id == "bead-replayed" => {
+                    MockBrRunner::success(&expected_detail)
+                }
+                [command, subcommand, ..] if command == "dep" && subcommand == "add" => {
+                    std::fs::write(
+                        &issues_path,
+                        "<<<<<<< HEAD\n{\"id\":\"bead-a\"}\n=======\n{\"id\":\"bead-b\"}\n>>>>>>> branch\n",
+                    )?;
+                    MockBrRunner::success("dependency added")
+                }
+                other => panic!("unexpected args: {other:?}"),
+            }
+        });
+        let command_log = runner.command_log();
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(runner).with_working_dir(base.to_path_buf()),
+        );
+
+        let mut created_in_pass = 0usize;
+        let error = handle_propose_new_bead(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            &br_mutation,
+            base,
+            &record.id,
+            &input,
+            &mut created_in_pass,
+            now,
+        )
+        .await
+        .expect_err("conflicted export should block the repaired journaled dependency flush");
+
+        match error {
+            AppError::MilestoneOperationFailed {
+                action, details, ..
+            } => {
+                assert_eq!(action, "sync journaled proposed bead dependency repair");
+                assert!(
+                    details.contains("resolve the conflict"),
+                    "error should direct the operator to resolve the conflicted export: {details}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        let commands = command_log.lock().expect("command log");
+        assert_eq!(
+            commands.as_slice(),
+            &[
+                vec![
+                    "show".to_owned(),
+                    "bead-replayed".to_owned(),
+                    "--json".to_owned()
+                ],
+                vec![
+                    "dep".to_owned(),
+                    "add".to_owned(),
+                    "bead-replayed".to_owned(),
+                    "active-bead".to_owned()
+                ],
+            ],
+            "the guarded sync should stop before br sync --flush-only runs"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_propose_new_bead_rechecks_health_before_sync_after_recovered_dependency_repair(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pn-recover-existing-conflict-before-sync".to_owned(),
+                name: "PN recover existing conflict before sync".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let input = ProposeNewBeadInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Retry paths lack telemetry".to_owned(),
+            proposed_title: "Add retry telemetry".to_owned(),
+            proposed_scope: "Instrument retry loops with counters and histograms".to_owned(),
+            severity: Severity::Medium,
+            rationale: "Recovered dependency repair should recheck bead health under the sync lock"
+                .to_owned(),
+            run_id: Some("run-recover-existing-conflict-before-sync".to_owned()),
+            completion_round: Some(17),
+        };
+
+        let issues_path = base.join(".beads/issues.jsonl");
+        let runner = ScriptedBrRunner::new({
+            let issues_path = issues_path.clone();
+            let recovered_detail = serde_json::json!({
+                "id": "bead-recovered",
+                "title": "Add retry telemetry",
+                "status": "open",
+                "priority": 2,
+                "bead_type": "task",
+                "labels": ["backend"],
+                "description": render_proposed_bead_description(&input),
+                "dependencies": [],
+                "dependents": []
+            })
+            .to_string();
+            move |args| match args {
+                [command, ..] if command == "list" => MockBrRunner::success(
+                    r#"[{"id":"bead-recovered","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","labels":["backend"]}]"#,
+                ),
+                [command, bead_id, ..] if command == "show" && bead_id == "bead-recovered" => {
+                    MockBrRunner::success(&recovered_detail)
+                }
+                [command, subcommand, ..] if command == "dep" && subcommand == "add" => {
+                    std::fs::write(&issues_path, "{\"id\":\"bead-recovered\"}\n{\"id\": }\n")?;
+                    MockBrRunner::success("dependency added")
+                }
+                other => panic!("unexpected args: {other:?}"),
+            }
+        });
+        let command_log = runner.command_log();
+        let br_mutation = BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(runner).with_working_dir(base.to_path_buf()),
+        );
+
+        let mut created_in_pass = 0usize;
+        let error = handle_propose_new_bead(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            &br_mutation,
+            base,
+            &record.id,
+            &input,
+            &mut created_in_pass,
+            now,
+        )
+        .await
+        .expect_err("malformed export should block the recovered dependency repair flush");
+
+        match error {
+            AppError::MilestoneOperationFailed {
+                action, details, ..
+            } => {
+                assert_eq!(action, "sync recovered proposed bead placement");
+                assert!(
+                    details.contains("malformed .beads/issues.jsonl line 2"),
+                    "error should report the malformed export: {details}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        let commands = command_log.lock().expect("command log");
+        assert_eq!(
+            commands.as_slice(),
+            &[
+                vec![
+                    "list".to_owned(),
+                    "--all".to_owned(),
+                    "--deferred".to_owned(),
+                    "--limit=0".to_owned(),
+                    "--json".to_owned(),
+                ],
+                vec![
+                    "show".to_owned(),
+                    "bead-recovered".to_owned(),
+                    "--json".to_owned()
+                ],
+                vec![
+                    "dep".to_owned(),
+                    "add".to_owned(),
+                    "bead-recovered".to_owned(),
+                    "active-bead".to_owned()
+                ],
+            ],
+            "the guarded sync should stop before br sync --flush-only runs"
         );
 
         Ok(())

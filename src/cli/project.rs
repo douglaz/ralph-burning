@@ -9,7 +9,9 @@ use sha2::{Digest, Sha256};
 
 use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary, DependencyKind};
-use crate::adapters::br_process::{BrAdapter, BrCommand, BrError, BrMutationAdapter};
+use crate::adapters::br_process::{
+    BrAdapter, BrCommand, BrError, BrMutationAdapter, SyncIfDirtyHealthError,
+};
 use crate::adapters::fs::{
     FileSystem, FsActiveProjectStore, FsAmendmentQueueStore, FsDaemonStore, FsJournalStore,
     FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
@@ -972,12 +974,21 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str, claim_owner: &str) -> 
         BrAdapter::new().with_working_dir(base_dir.to_path_buf()),
         claim_owner_token.clone(),
     );
-    let recovered_flush = br.sync_if_dirty().await.map_err(|error| {
-        AppError::Io(std::io::Error::other(format!(
-            "failed to replay a previously successful local bead claim for '{bead_id}' via \
+    let recovered_flush = match br.sync_if_dirty_when_beads_healthy(base_dir).await {
+        Ok(outcome) => outcome,
+        Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "refusing to replay a previously successful local bead claim for '{bead_id}' \
+                 because bead state is unsafe: {details}"
+            ))));
+        }
+        Err(SyncIfDirtyHealthError::Br(error)) => {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "failed to replay a previously successful local bead claim for '{bead_id}' via \
                  br sync --flush-only: {error}"
-        )))
-    })?;
+            ))));
+        }
+    };
     if !recovered_flush.is_clean() {
         tracing::info!(
             bead_id = bead_id,
@@ -1004,14 +1015,24 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str, claim_owner: &str) -> 
                  {update_error}"
             )))
         })?;
-    ensure_beads_claim_sync_health(base_dir, bead_id)?;
-    br.sync_flush().await.map_err(|error| {
-        AppError::Io(std::io::Error::other(format!(
-            "bead '{bead_id}' was locally claimed (status set to in_progress) but sync \
-             to remote storage failed: {error}. The bead remains locally claimed in br; \
-             a subsequent `br sync --flush-only` will retry the remote push."
-        )))
-    })?;
+    match br.sync_if_dirty_when_beads_healthy(base_dir).await {
+        Ok(_) => {}
+        Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "bead '{bead_id}' was locally claimed (status set to in_progress) but bead \
+                 state became unsafe before br sync --flush-only: {details}. The bead remains \
+                 locally claimed in br; resolve the bead-state issue and rerun \
+                 `br sync --flush-only`."
+            ))));
+        }
+        Err(SyncIfDirtyHealthError::Br(error)) => {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "bead '{bead_id}' was locally claimed (status set to in_progress) but sync \
+                 to remote storage failed: {error}. The bead remains locally claimed in br; \
+                 a subsequent `br sync --flush-only` will retry the remote push."
+            ))));
+        }
+    }
     Ok(())
 }
 
@@ -1028,18 +1049,6 @@ fn ensure_beads_claim_health(base_dir: &Path, bead_id: &str) -> AppResult<()> {
     if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
         return Err(AppError::Io(std::io::Error::other(format!(
             "refusing to claim bead '{bead_id}' because bead state is unsafe: {details}"
-        ))));
-    }
-
-    Ok(())
-}
-
-fn ensure_beads_claim_sync_health(base_dir: &Path, bead_id: &str) -> AppResult<()> {
-    if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
-        return Err(AppError::Io(std::io::Error::other(format!(
-            "bead '{bead_id}' was locally claimed (status set to in_progress) but bead state \
-             became unsafe before br sync --flush-only: {details}. The bead remains locally \
-             claimed in br; resolve the bead-state issue and rerun `br sync --flush-only`."
         ))));
     }
 
