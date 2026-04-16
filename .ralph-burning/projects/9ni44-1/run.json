@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 16
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-15-7c6a4163",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 15,
-        "body": "finding_summary: `handle_propose_new_bead` can still run `br sync --flush-only` against an unsafe `.beads/issues.jsonl` during replay.\nseverity: high\naffected_files:\n- src/contexts/milestone_record/service.rs:3014\n- src/contexts/milestone_record/service.rs:3085\n- src/contexts/milestone_record/service.rs:3167\n- src/adapters/br_process.rs:1233\nremediation_hint: Move the beads-health gate ahead of `sync_if_dirty()` inside `sync_recovered_proposed_bead_replay_if_dirty`, or add an equivalent pre-flush guard there. Right now the helper calls `sync_if_dirty()` first, and `sync_if_dirty()` immediately flushes recovered mutations when the repo marker is dirty. That means the journal-replay and recovered-existing-bead branches can overwrite a conflicted or missing export before the new safety check runs, which is exactly the state this bead is supposed to block.",
-        "created_at": "2026-04-16T10:42:39.030290263Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "202f5176cf7b87cc176be38a4a488fa9b49cdc9ade64341616d920902a360024"
-      }
-    ],
-    "processed_count": 29
+    "pending": [],
+    "processed_count": 30
   },
-  "status_summary": "running: final review restart round 16 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T10:27:16.357931184Z",
