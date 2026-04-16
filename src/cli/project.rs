@@ -3879,6 +3879,28 @@ esac
         }
 
         #[tokio::test]
+        async fn claim_bead_in_br_rejects_malformed_beads_jsonl(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+            write_beads_export(base_dir, "{\"id\":\"bead-1\"}\n{\"id\": }\n");
+
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+
+            assert!(result.is_err());
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains("refusing to claim bead 'bead-1'"),
+                "error should mention the rejected claim: {error}"
+            );
+            assert!(
+                error.contains("malformed .beads/issues.jsonl line 2"),
+                "error should mention malformed JSONL: {error}"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
         async fn claim_bead_in_br_fails_when_update_exits_nonzero(
         ) -> Result<(), Box<dyn std::error::Error>> {
             let _path_lock = lock_path_mutex();

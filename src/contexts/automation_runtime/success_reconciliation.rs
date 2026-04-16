@@ -1567,6 +1567,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reconcile_success_rejects_malformed_beads_before_close(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp_dir.path().join(".beads"))?;
+        std::fs::write(
+            temp_dir.path().join(".beads/issues.jsonl"),
+            "{\"id\":\"b1\"}\n{\"id\": }\n",
+        )?;
+        std::fs::create_dir_all(temp_dir.path().join(".ralph-burning/milestones/ms-1"))?;
+
+        let br_read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let br_mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+
+        let now = chrono::Utc::now();
+        let result = reconcile_success(
+            &br_mutation,
+            &br_read,
+            None::<&BvAdapter<MockBvRunner>>,
+            temp_dir.path(),
+            "b1",
+            "task-1",
+            "proj-1",
+            "ms-1",
+            "run-1",
+            None,
+            now - chrono::Duration::seconds(10),
+            now,
+        )
+        .await;
+
+        let error = result.expect_err("malformed beads export should block reconciliation");
+        assert!(
+            matches!(error, ReconciliationError::MilestoneUpdateFailed { .. }),
+            "expected milestone update failure, got {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("malformed .beads/issues.jsonl line 2"),
+            "error should direct the operator to repair malformed JSONL: {error}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn reconcile_success_persists_reconciling_before_close_failure(
     ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::adapters::fs::{FsMilestonePlanStore, FsMilestoneStore};

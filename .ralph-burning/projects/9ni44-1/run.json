@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416043549",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 6
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-5-b34ccfd7",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "finding_summary: `check_beads_health()` never validates that `.beads/issues.jsonl` is parseable JSONL, so truncated or otherwise malformed exports are classified as `Healthy` and the new mutation guards still allow `br update/create/close` to run against corrupted bead state. severity: medium. affected_files: [\"src/adapters/br_health.rs\", \"src/cli/project.rs\", \"src/contexts/milestone_record/service.rs\", \"src/contexts/automation_runtime/success_reconciliation.rs\"]. evidence: `src/adapters/br_health.rs:44-70` only checks file readability, conflict markers, and `br` availability; the new guard sites in `src/cli/project.rs:965-974`, `src/contexts/milestone_record/service.rs:2998-3020`, and `src/contexts/automation_runtime/success_reconciliation.rs:117-123,221-223` trust that result before mutating beads. remediation_hint: treat malformed JSONL as unhealthy by parsing each line (or performing an equivalent bounded `br`-backed validation) before returning `Healthy`.",
-        "created_at": "2026-04-16T06:38:13.264718713Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "d892e9c90143c8b9de17b816caaac0badd18607bb27d7503f1237c35132c5247"
-      },
-      {
-        "amendment_id": "fr-5-f135cb6b",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "finding_summary: the new health-check path can hang bead mutations indefinitely because `check_beads_health()` calls `BrAdapter::check_available()`, and that probe uses blocking `std::process::Command::output()` with no timeout. severity: medium. affected_files: [\"src/adapters/br_health.rs\", \"src/adapters/br_process.rs\"]. evidence: `src/adapters/br_health.rs:18-20,91-95` invokes `BrAdapter::new().check_available()` on every health check, and `src/adapters/br_process.rs:386-389` runs `br --version` via `output()` instead of the timeout-governed process runner used elsewhere. remediation_hint: run the availability probe through the existing timed process path (or cache a startup check) so a wedged `br` binary cannot stall claim/close/create flows forever.",
-        "created_at": "2026-04-16T06:38:13.264721459Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "76a161b4b3057dedcffb8389e297434b98ff3a433b84b70c828fa8291181b75f"
-      }
-    ],
-    "processed_count": 10
+    "pending": [],
+    "processed_count": 12
   },
-  "status_summary": "running: final review restart round 6 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T06:31:30.788664347Z",

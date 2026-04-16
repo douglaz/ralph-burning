@@ -26,6 +26,9 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default timeout for mutation br commands (60 seconds).
 const DEFAULT_MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Poll interval for synchronous availability probes.
+const AVAILABILITY_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 /// Marker persisted inside `.beads/` whenever a mutation may still need
 /// `br sync --flush-only` before external imports are safe again.
 ///
@@ -384,9 +387,16 @@ impl BrAdapter<OsProcessRunner> {
     /// Verify that the `br` binary can be launched from the current
     /// environment without touching repository state.
     pub fn check_available(&self) -> Result<(), BrError> {
-        let output = std::process::Command::new(self.runner.br_path())
+        self.check_available_with_timeout(DEFAULT_READ_TIMEOUT)
+    }
+
+    fn check_available_with_timeout(&self, timeout: Duration) -> Result<(), BrError> {
+        let mut child = std::process::Command::new(self.runner.br_path())
             .arg("--version")
-            .output()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     BrError::BrNotFound {
@@ -396,6 +406,34 @@ impl BrAdapter<OsProcessRunner> {
                     BrError::Io(error)
                 }
             })?;
+
+        let start = Instant::now();
+        loop {
+            if child.try_wait()?.is_some() {
+                break;
+            }
+
+            if start.elapsed() >= timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(BrError::BrTimeout {
+                    command: format!("{} --version", self.runner.br_path()),
+                    timeout_ms: timeout.as_millis() as u64,
+                });
+            }
+
+            std::thread::sleep(AVAILABILITY_POLL_INTERVAL);
+        }
+
+        let output = child.wait_with_output().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                BrError::BrNotFound {
+                    details: format!("could not find '{}' in PATH", self.runner.br_path()),
+                }
+            } else {
+                BrError::Io(error)
+            }
+        })?;
 
         if output.status.success() {
             return Ok(());
@@ -1220,6 +1258,34 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn check_available_times_out_when_version_probe_hangs() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let fake_br = tmp.path().join("fake-br");
+        std::fs::write(
+            &fake_br,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  sleep 5\n  exit 0\nfi\nexit 0\n",
+        )?;
+        let mut permissions = std::fs::metadata(&fake_br)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_br, permissions)?;
+
+        let adapter = BrAdapter {
+            runner: OsProcessRunner::with_binary(fake_br),
+            read_timeout: DEFAULT_READ_TIMEOUT,
+            mutation_timeout: DEFAULT_MUTATION_TIMEOUT,
+            working_dir: None,
+        };
+
+        let error = adapter
+            .check_available_with_timeout(Duration::from_millis(50))
+            .expect_err("hung --version probe must time out");
+        assert!(matches!(error, BrError::BrTimeout { .. }));
+        Ok(())
+    }
+
     // ── BrCommand dep/create constructors ─────────────────────────────
 
     #[test]
@@ -1606,6 +1672,29 @@ mod tests {
         assert!(
             command_log.lock().expect("command log").is_empty(),
             "health-gated sync_import should not invoke br when beads export is conflicted"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sync_import_rejects_malformed_beads_export_without_invoking_br(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues_file(tmp.path(), "{\"id\":\"bead-1\"}\n{\"id\": }\n")?;
+        let (ma, command_log) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("imported")]);
+
+        let error = ma
+            .sync_import()
+            .await
+            .expect_err("malformed issues.jsonl must block import");
+
+        assert!(error
+            .to_string()
+            .contains("malformed .beads/issues.jsonl line 2"));
+        assert!(
+            command_log.lock().expect("command log").is_empty(),
+            "health-gated sync_import should not invoke br when beads export is malformed"
         );
         Ok(())
     }

@@ -10,6 +10,7 @@ pub enum BeadsHealthStatus {
     Healthy,
     ConflictMarkers,
     MissingFile,
+    MalformedJsonl(String),
     BrUnavailable,
     IoError(String),
 }
@@ -31,6 +32,9 @@ pub fn beads_health_failure_details(status: &BeadsHealthStatus) -> Option<String
             "missing .beads/issues.jsonl; restore the beads export before mutating beads"
                 .to_owned(),
         ),
+        BeadsHealthStatus::MalformedJsonl(details) => Some(format!(
+            "{details}; repair .beads/issues.jsonl before mutating beads"
+        )),
         BeadsHealthStatus::BrUnavailable => Some(
             "the `br` binary is unavailable; restore `br` in PATH before mutating beads"
                 .to_owned(),
@@ -63,6 +67,10 @@ where
         return BeadsHealthStatus::ConflictMarkers;
     }
 
+    if let Err(details) = validate_jsonl_records(&issues_text) {
+        return BeadsHealthStatus::MalformedJsonl(details);
+    }
+
     if !br_available() {
         return BeadsHealthStatus::BrUnavailable;
     }
@@ -81,6 +89,24 @@ fn is_git_conflict_marker_line(line: &str) -> bool {
         || trimmed.starts_with("<<<<<<< ")
         || trimmed == ">>>>>>>"
         || trimmed.starts_with(">>>>>>> ")
+}
+
+fn validate_jsonl_records(contents: &str) -> Result<(), String> {
+    for (index, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Err(error) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            return Err(format!(
+                "malformed .beads/issues.jsonl line {}: {error}",
+                index + 1
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -132,6 +158,22 @@ mod tests {
         let status = check_beads_health_with(tmp.path(), || true);
 
         assert_eq!(status, BeadsHealthStatus::Healthy);
+        Ok(())
+    }
+
+    #[test]
+    fn check_beads_health_reports_malformed_jsonl() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues(tmp.path(), "{\"id\":\"bead-1\"}\n{\"id\": }\n");
+
+        let status = check_beads_health_with(tmp.path(), || true);
+
+        match status {
+            BeadsHealthStatus::MalformedJsonl(details) => {
+                assert!(details.contains("line 2"), "details: {details}");
+            }
+            other => panic!("expected malformed jsonl status, got {other:?}"),
+        }
         Ok(())
     }
 
