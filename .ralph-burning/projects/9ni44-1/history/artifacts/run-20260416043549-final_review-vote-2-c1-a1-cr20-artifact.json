@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-2-c1-a1-cr20-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-2-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T12:25:59.210993605Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nRejected the legacy-marker amendment. The ownership gate on sync_own_dirty_if_beads_healthy() is deliberate and tested — it correctly refuses to auto-flush a legacy marker because ownership cannot be proven. Multiple alternative flush paths (sync_if_dirty, sync_if_dirty_when_beads_healthy, sync_flush) remain available and handle legacy markers without an ownership check. The error message provides clear operator instructions for recovery. This is safe-by-design, not a stranded recovery path.\n\n## Votes\n\n- `fr-20-283c27cb`: Reject\n  The behavior described is intentional and well-tested, not a bug. The dedicated test at line 2250 ('sync_own_dirty_if_beads_healthy_rejects_legacy_pending_marker_without_flushing') explicitly asserts that legacy markers must block the ownership-gated path because 'legacy marker ownership is unknown.' The key insight the amendment misses is that sync_own_dirty_if_beads_healthy is specifically the *ownership-proving* flush variant — it is not the only flush path. Other methods like sync_if_dirty() (line 1356) and sync_if_dirty_when_beads_healthy() (line 1402) do NOT have this ownership gate and will happily flush with a legacy marker present. The service.rs recovery path at line 3022 intentionally uses the ownership-gated variant because it needs to ensure it's not accidentally publishing another workflow's half-finished changes. If a legacy marker is encountered, the error message (line 1094) clearly instructs the operator to run a repo-wide 'br sync --flush-only' or remove the marker — this is the correct migration path. Automatically flushing an unowned legacy marker would defeat the purpose of the ownership-safety mechanism that was deliberately introduced.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 20
+}

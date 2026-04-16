@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-vote-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260416043549-final_review-vote-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T12:28:55.651726015Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the sole amendment. The reported regression is a deliberate fail-closed tradeoff: the legacy `.br-unsynced-mutations` marker carries no adapter ownership, so owned-only replay paths cannot safely auto-flush it without risking publication of another workflow's pending local mutation.\n\n## Votes\n\n- `fr-20-283c27cb`: Reject\n  `sync_own_dirty_if_beads_healthy()` is specifically the helper for replay paths that must prove the recovered pending state belongs to the current adapter before running `br sync --flush-only`. A legacy `.beads/.br-unsynced-mutations` file does not encode ownership, so treating it as flushable here would weaken the new isolation guarantee and could publish an unrelated workflow's half-finished mutation. The fact that callers in `src/contexts/milestone_record/service.rs` now fail closed on that ambiguous state is therefore intentional and technically defensible. Requiring an explicit repo-wide flush or operator cleanup for pre-journal leftovers is a migration/operational step, not evidence that the ownership gate itself is incorrect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 20
+}

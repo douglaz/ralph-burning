@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-2-c1-a1-cr20-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-2-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T12:18:57.810427597Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThorough review of sync/import safety rules. Changes are correct, well-tested, and improve safety. Key improvements: (1) health checks now respect configured custom br binary paths via ProcessRunner::check_available trait method, (2) legacy pending mutation markers are explicitly rejected in owned-only flows because ownership cannot be proven, (3) health checks run before ownership checks for clearer error messages, (4) all production callers switched from sync_if_dirty_when_beads_healthy to sync_own_dirty_if_beads_healthy. No bugs, safety problems, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 20
+}

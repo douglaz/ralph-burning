@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260416043549-final_review-reviewer-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T12:24:54.640530026Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the implementation delta between the last review checkpoint and HEAD, excluding `.ralph-burning/`. I found 1 fix-now regression in the new sync-ownership logic.\n\n## Amendments\n\n1. finding_summary: The new legacy-marker ownership gate strands pre-journal crash recovery. `sync_own_dirty_if_beads_healthy()` now hard-fails whenever `.beads/.br-unsynced-mutations` is present (src/adapters/br_process.rs:1091-1096), even though the same file is still documented as a dirty signal that should survive until the next successful flush clears it (src/adapters/br_process.rs:36-41). Because the current bead routes recovered proposed-bead replay through this helper (src/contexts/milestone_record/service.rs:3022-3054), any repo upgraded with an old pending marker can no longer auto-recover its interrupted mutation; retries will now fail until an operator manually runs a repo-wide flush or deletes the marker.\nseverity: medium\naffected_files:\n- src/adapters/br_process.rs\n- src/contexts/milestone_record/service.rs\nremediation_hint: Preserve a migration path for the legacy marker. For example, allow `sync_own_dirty_if_beads_healthy()` to flush legacy-only state when no per-adapter journal proves foreign ownership, or migrate the legacy marker into an owned journal record before enforcing the new ownership check.\n   Rationale: This is a user-visible recovery regression introduced by the new ownership enforcement: upgraded worktrees with an old `.br-unsynced-mutations` file can no longer complete the automatic replay path that the codebase previously relied on for crash-safe retries.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 20
+}
