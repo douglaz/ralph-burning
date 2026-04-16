@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260416164042-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-16T17:32:03.383819722Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nWired failed workflow runs into runtime reconciliation and hardened `failure_reconciliation` replays. The new flow now invokes failure-side milestone reconciliation before daemon tasks are marked failed, repairs partial failed-run writes via `repair_task_run_with_disposition`, and suppresses stale controller mutations when a newer bead attempt is already recorded. I also added regression coverage for partial-write replay repair, stale replay over a newer retry, and daemon-side failed milestone reconciliation.\n\n## Steps\n\n1. [Completed] Updated `src/contexts/automation_runtime/failure_reconciliation.rs` so already-recorded failed runs route through repair instead of becoming no-ops, preserving `BeadFailed` journal/snapshot state on replay.\n2. [Completed] Added replay guards in failure reconciliation to skip controller transitions when a newer bead attempt already exists, preventing stale failure callbacks from clobbering active retries.\n3. [Completed] Added daemon-side `try_reconcile_failure` logic in `src/contexts/automation_runtime/daemon_loop.rs` and invoked it from both single-repo and multi-repo run-failure paths before `mark_failed`.\n4. [Completed] Expanded tests for failure replay repair, stale replay over a newer retry, and daemon-triggered failed milestone reconciliation.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test failure_reconciliation -- --nocapture` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 2
+}

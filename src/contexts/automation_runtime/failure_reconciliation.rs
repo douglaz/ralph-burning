@@ -17,7 +17,8 @@ use crate::contexts::milestone_record::controller::{
 };
 use crate::contexts::milestone_record::model::{MilestoneId, TaskRunEntry, TaskRunOutcome};
 use crate::contexts::milestone_record::service::{
-    self as milestone_service, MilestoneJournalPort, MilestoneSnapshotPort, TaskRunLineagePort,
+    self as milestone_service, CompletionMilestoneDisposition, MilestoneJournalPort,
+    MilestoneSnapshotPort, TaskRunLineagePort,
 };
 
 pub const MAX_FAILURE_RETRIES: u32 = 3;
@@ -108,8 +109,30 @@ where
         let outcome_detail =
             format_failure_outcome_detail(task_id, predicted_attempt_number, &error_summary);
 
-        if !already_recorded {
-            milestone_service::record_bead_completion(
+        if already_recorded {
+            milestone_service::repair_task_run_with_disposition(
+                snapshot_store,
+                journal_store,
+                lineage_store,
+                base_dir,
+                &milestone_id,
+                bead_id,
+                project_id,
+                run_id,
+                plan_hash,
+                started_at,
+                TaskRunOutcome::Failed,
+                Some(outcome_detail.clone()),
+                failed_at,
+                CompletionMilestoneDisposition::ReconcileFromLineage,
+            )
+            .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: error.to_string(),
+            })?;
+        } else {
+            milestone_service::record_bead_completion_with_disposition(
                 snapshot_store,
                 journal_store,
                 lineage_store,
@@ -123,6 +146,7 @@ where
                 Some(&outcome_detail),
                 started_at,
                 failed_at,
+                CompletionMilestoneDisposition::ReconcileFromLineage,
             )
             .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
                 bead_id: bead_id.to_owned(),
@@ -174,8 +198,12 @@ where
             &milestone_id,
             bead_id,
             task_id,
+            project_id,
+            run_id,
+            started_at,
             failed_at,
-            predicted_attempt_number == attempt_number && already_recorded,
+            already_recorded,
+            &recorded_runs,
             &outcome,
         )?;
 
@@ -226,6 +254,54 @@ fn format_failure_outcome_detail(
     error_summary: &str,
 ) -> String {
     format!("task_id={task_id}\nattempt={attempt_number}\nerror={error_summary}")
+}
+
+fn attempt_identity_matches(
+    entry: &TaskRunEntry,
+    project_id: &str,
+    run_id: &str,
+    started_at: DateTime<Utc>,
+) -> bool {
+    entry.project_id == project_id
+        && entry.run_id.as_deref() == Some(run_id)
+        && entry.started_at == started_at
+}
+
+fn newer_attempt_exists(
+    runs: &[TaskRunEntry],
+    project_id: &str,
+    run_id: &str,
+    started_at: DateTime<Utc>,
+) -> bool {
+    runs.iter().any(|entry| {
+        !attempt_identity_matches(entry, project_id, run_id, started_at)
+            && entry.started_at > started_at
+    })
+}
+
+fn controller_requires_failure_sync(
+    controller: &milestone_controller::MilestoneControllerRecord,
+    bead_id: &str,
+    task_id: &str,
+) -> bool {
+    match controller.state {
+        MilestoneControllerState::Idle => true,
+        MilestoneControllerState::Selecting | MilestoneControllerState::Completed => false,
+        MilestoneControllerState::Claimed
+        | MilestoneControllerState::Running
+        | MilestoneControllerState::Reconciling
+        | MilestoneControllerState::Blocked
+        | MilestoneControllerState::NeedsOperator => {
+            controller
+                .active_bead_id
+                .as_deref()
+                .is_none_or(|active_bead_id| active_bead_id == bead_id)
+                && controller
+                    .active_task_id
+                    .as_deref()
+                    .is_none_or(|active_task_id| active_task_id == task_id)
+        }
+    }
 }
 
 fn failure_attempt_number(
@@ -295,8 +371,12 @@ fn transition_controller_after_failure<C: MilestoneControllerPort>(
     milestone_id: &MilestoneId,
     bead_id: &str,
     task_id: &str,
+    project_id: &str,
+    run_id: &str,
+    started_at: DateTime<Utc>,
     now: DateTime<Utc>,
     replay_already_settled: bool,
+    recorded_runs: &[TaskRunEntry],
     outcome: &FailureReconciliationOutcome,
 ) -> Result<(), FailureReconciliationError> {
     let (desired_state, desired_reason, request) = match outcome {
@@ -337,6 +417,24 @@ fn transition_controller_after_failure<C: MilestoneControllerPort>(
         task_id: task_id.to_owned(),
         details: format!("failed to load controller during failure reconciliation: {error}"),
     })?;
+
+    if newer_attempt_exists(recorded_runs, project_id, run_id, started_at) {
+        tracing::info!(
+            bead_id = bead_id,
+            task_id = task_id,
+            run_id = run_id,
+            "skipping failure controller transition because a newer bead attempt is already recorded"
+        );
+        return Ok(());
+    }
+
+    if replay_already_settled
+        && current.as_ref().is_some_and(|controller| {
+            !controller_requires_failure_sync(controller, bead_id, task_id)
+        })
+    {
+        return Ok(());
+    }
 
     if replay_already_settled
         && current.as_ref().is_some_and(|controller| {
@@ -413,7 +511,7 @@ mod tests {
     use crate::contexts::milestone_record::model::{MilestoneEventType, TaskRunOutcome};
     use crate::contexts::milestone_record::service::{
         self as milestone_service, create_milestone, persist_plan, read_journal,
-        CreateMilestoneInput,
+        CreateMilestoneInput, TaskRunLineagePort,
     };
     use chrono::{Duration, Utc};
     use std::path::Path;
@@ -840,6 +938,159 @@ mod tests {
             )?
             .len();
         assert_eq!(controller_journal_len, controller_journal_after);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_failure_replay_repairs_missing_snapshot_and_journal_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        write_beads_export(base)?;
+        let milestone_id = create_test_milestone(base)?;
+        let started_at = Utc::now() + Duration::seconds(1);
+        let failed_at = started_at + Duration::seconds(10);
+
+        start_attempt(base, &milestone_id, "task-1", "run-1", started_at)?;
+        FsTaskRunLineageStore.update_task_run(
+            base,
+            &milestone_id,
+            "bead-failure",
+            "proj-failure",
+            "run-1",
+            Some("plan-v1"),
+            started_at,
+            TaskRunOutcome::Failed,
+            Some("task_id=task-1\nattempt=1\nerror=partial write".to_owned()),
+            failed_at,
+        )?;
+
+        let snapshot_before =
+            milestone_service::load_snapshot(&FsMilestoneSnapshotStore, base, &milestone_id)?;
+        assert_eq!(snapshot_before.progress.failed_beads, 0);
+        let failed_events_before = read_journal(&FsMilestoneJournalStore, base, &milestone_id)?
+            .into_iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadFailed)
+            .count();
+        assert_eq!(failed_events_before, 0);
+
+        let outcome = reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            started_at,
+            failed_at,
+            "partial write",
+        )
+        .await?;
+
+        assert_eq!(
+            outcome,
+            FailureReconciliationOutcome::Retryable {
+                attempt_number: 1,
+                max_retries: MAX_FAILURE_RETRIES,
+            }
+        );
+
+        let snapshot_after =
+            milestone_service::load_snapshot(&FsMilestoneSnapshotStore, base, &milestone_id)?;
+        assert_eq!(snapshot_after.progress.failed_beads, 1);
+        let failed_event = read_journal(&FsMilestoneJournalStore, base, &milestone_id)?
+            .into_iter()
+            .find(|event| event.event_type == MilestoneEventType::BeadFailed)
+            .expect("failure replay should repair bead_failed journal state");
+        assert_eq!(failed_event.timestamp, failed_at);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_failure_replay_does_not_clobber_newer_running_retry(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        write_beads_export(base)?;
+        let milestone_id = create_test_milestone(base)?;
+        let base_time = Utc::now();
+
+        start_attempt(
+            base,
+            &milestone_id,
+            "task-1",
+            "run-1",
+            base_time + Duration::seconds(1),
+        )?;
+        let first = reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            base_time + Duration::seconds(1),
+            base_time + Duration::seconds(5),
+            "first failure",
+        )
+        .await?;
+        assert_eq!(
+            first,
+            FailureReconciliationOutcome::Retryable {
+                attempt_number: 1,
+                max_retries: MAX_FAILURE_RETRIES,
+            }
+        );
+
+        start_attempt(
+            base,
+            &milestone_id,
+            "task-1",
+            "run-2",
+            base_time + Duration::seconds(11),
+        )?;
+        let replay = reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            base_time + Duration::seconds(1),
+            base_time + Duration::seconds(5),
+            "first failure",
+        )
+        .await?;
+        assert_eq!(replay, first);
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base,
+            &milestone_id,
+        )?
+        .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Running
+        );
+        assert_eq!(controller.active_task_id.as_deref(), Some("task-1"));
 
         Ok(())
     }

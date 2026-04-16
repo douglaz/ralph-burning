@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-a8f722cc",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: Failure reconciliation is still dead code at runtime, so failed bead tasks never update milestone lineage/controller state.\naffected_files: src/contexts/automation_runtime/mod.rs, src/contexts/automation_runtime/daemon_loop.rs, src/contexts/automation_runtime/failure_reconciliation.rs\nfiles_and_lines: src/contexts/automation_runtime/mod.rs:8,25-28 only exports the new handler; src/contexts/automation_runtime/daemon_loop.rs:1103-1105 and 1732-1734 still invoke only `try_reconcile_success`, while actual run failures go straight to `DaemonTaskService::mark_failed` at src/contexts/automation_runtime/daemon_loop.rs:1177-1188 without any failure reconciliation.\nremediation_hint: add a failure-side reconciliation entry point in the daemon, parallel to `try_reconcile_success`, and invoke it before marking the daemon task failed so `BeadFailed`, retry counts, and `NeedsOperator` escalation are actually recorded.",
-        "created_at": "2026-04-16T17:10:42.072906521Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "d40f83799158abf721933e8c501edc6624fbf555de98581f843971fbef218d1b"
-      },
-      {
-        "amendment_id": "fr-1-9e0c9fe5",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: Replaying a failed run after a partial milestone-state write will not repair missing journal/snapshot state.\naffected_files: src/contexts/automation_runtime/failure_reconciliation.rs, src/contexts/milestone_record/service.rs, src/contexts/automation_runtime/success_reconciliation.rs\nfiles_and_lines: src/contexts/automation_runtime/failure_reconciliation.rs:96-132 treats any existing failed lineage row as `already_recorded` and skips `record_bead_completion`; src/contexts/milestone_record/service.rs:2633-2684 shows that lineage is updated before snapshot/journal commit, so a crash can leave the failed task-run row durable while the `BeadFailed` event / failed counter never land; src/contexts/automation_runtime/success_reconciliation.rs:545-603 already uses `repair_task_run_with_disposition` to recover this exact class of replay.\nremediation_hint: mirror the success path here: detect an already-terminal run and route through `repair_task_run_with_disposition` (or equivalent) so replay repairs missing `BeadFailed` journal/snapshot state instead of treating the run as a no-op.",
-        "created_at": "2026-04-16T17:10:42.072911501Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "2fdfea318b391e35df0abad6fd355bace100c129906ff87718789bc0ebb36773"
-      },
-      {
-        "amendment_id": "fr-1-28673225",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: Duplicate failure callbacks are not idempotent once a retry has started; they can clobber or reject the active retry's controller state.\naffected_files: src/contexts/automation_runtime/failure_reconciliation.rs, src/contexts/automation_runtime/task_service.rs, src/contexts/milestone_record/controller.rs\nfiles_and_lines: src/contexts/automation_runtime/failure_reconciliation.rs:341-398 only short-circuits replays when the controller is already in the desired failed state; otherwise it always re-enters `sync_controller_task_reconciling` and transitions again. `retry_task` reuses the same daemon task id at src/contexts/automation_runtime/task_service.rs:485-515, and `sync_controller_task_reconciling`/`validate_active_context_alignment` at src/contexts/milestone_record/controller.rs:545-590 and 1469-1498 will either push a currently running retry back to `Reconciling`/`Blocked` or reject the replay if a newer task owns the bead.\nremediation_hint: make the replay guard key off the reconciled run identity and/or detect a newer nonterminal attempt in lineage before mutating controller state.",
-        "created_at": "2026-04-16T17:10:42.072916440Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "befd5b8d6af2df697d54aaeef9fe76e7ccfd7896c32340a436b53e778f0d3d43"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 3
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T16:58:38.460699384Z",

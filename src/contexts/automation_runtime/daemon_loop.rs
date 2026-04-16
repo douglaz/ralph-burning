@@ -1179,12 +1179,25 @@ where
                     .failure_class()
                     .map(|class| class.as_str().to_owned())
                     .unwrap_or_else(|| "daemon_dispatch_failed".to_owned());
+                let failure_message = error.to_string();
+                let (task_failure_class, task_failure_message) = match self
+                    .try_reconcile_failure(repo_root, &active_task, &failure_message)
+                    .await
+                {
+                    Ok(_) => (failure_class, failure_message),
+                    Err((reconciliation_failure_class, reconciliation_failure_message)) => (
+                        reconciliation_failure_class,
+                        format!(
+                            "{failure_message}; failure reconciliation also failed: {reconciliation_failure_message}"
+                        ),
+                    ),
+                };
                 let failed_task = DaemonTaskService::mark_failed(
                     self.store,
                     store_dir,
                     &active_task.task_id,
-                    &failure_class,
-                    &error.to_string(),
+                    &task_failure_class,
+                    &task_failure_message,
                 )?;
                 // Sync label: Failed → rb:failed. On failure, mark label_dirty
                 // and quarantine — do NOT release the lease in this cycle so no
@@ -1764,12 +1777,25 @@ where
                     .failure_class()
                     .map(|class| class.as_str().to_owned())
                     .unwrap_or_else(|| "daemon_dispatch_failed".to_owned());
+                let failure_message = error.to_string();
+                let (task_failure_class, task_failure_message) = match self
+                    .try_reconcile_failure(base_dir, &active_task, &failure_message)
+                    .await
+                {
+                    Ok(_) => (failure_class, failure_message),
+                    Err((reconciliation_failure_class, reconciliation_failure_message)) => (
+                        reconciliation_failure_class,
+                        format!(
+                            "{failure_message}; failure reconciliation also failed: {reconciliation_failure_message}"
+                        ),
+                    ),
+                };
                 DaemonTaskService::mark_failed(
                     self.store,
                     base_dir,
                     &active_task.task_id,
-                    &failure_class,
-                    &error.to_string(),
+                    &task_failure_class,
+                    &task_failure_message,
                 )?;
                 self.try_push_failed_task_branch(repo_root, &lease);
                 self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease)?;
@@ -1821,6 +1847,176 @@ where
             self.persist_workflow_run_id(store_dir, task, run_id);
         }
         self.store.read_task(store_dir, &task.task_id)
+    }
+
+    async fn try_reconcile_failure(
+        &self,
+        project_dir: &Path,
+        task: &DaemonTask,
+        fallback_error_summary: &str,
+    ) -> Result<
+        Option<crate::contexts::automation_runtime::FailureReconciliationOutcome>,
+        (String, String),
+    > {
+        use crate::contexts::automation_runtime::failure_reconciliation::{
+            reconcile_failure, FailureReconciliationError,
+        };
+        use crate::contexts::project_run_record::model::JournalEventType;
+
+        let project_id = match ProjectId::new(&task.project_id) {
+            Ok(id) => id,
+            Err(_) => {
+                return Err((
+                    "reconciliation_metadata_error".to_owned(),
+                    "invalid project_id during failure reconciliation".to_owned(),
+                ));
+            }
+        };
+
+        let project_record = match self
+            .project_store
+            .read_project_record(project_dir, &project_id)
+        {
+            Ok(record) => record,
+            Err(error) => {
+                return Err((
+                    "reconciliation_metadata_error".to_owned(),
+                    format!("could not read project record during failure reconciliation: {error}"),
+                ));
+            }
+        };
+
+        let Some(task_source) = project_record.task_source.as_ref() else {
+            return Ok(None);
+        };
+
+        let journal_events = match self.journal_store.read_journal(project_dir, &project_id) {
+            Ok(events) => events,
+            Err(error) => {
+                return Err((
+                    "reconciliation_metadata_error".to_owned(),
+                    format!("could not read journal during failure reconciliation: {error}"),
+                ));
+            }
+        };
+
+        let Some(run_failed) = journal_events
+            .iter()
+            .rev()
+            .find(|event| event.event_type == JournalEventType::RunFailed)
+        else {
+            return Err((
+                "reconciliation_metadata_error".to_owned(),
+                "run snapshot is failed but missing durable run_failed event".to_owned(),
+            ));
+        };
+
+        let Some(run_id) = run_failed
+            .details
+            .get("run_id")
+            .and_then(serde_json::Value::as_str)
+        else {
+            return Err((
+                "reconciliation_metadata_error".to_owned(),
+                "run_failed event is missing string run_id details".to_owned(),
+            ));
+        };
+
+        let run_started = match journal_events.iter().rev().find(|event| {
+            event.event_type == JournalEventType::RunStarted
+                && event
+                    .details
+                    .get("run_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(run_id)
+        }) {
+            Some(event) => event,
+            None => {
+                return Err((
+                    "reconciliation_metadata_error".to_owned(),
+                    format!("run snapshot is failed but missing durable run_started event for run_id={run_id}"),
+                ));
+            }
+        };
+
+        let milestone_id = match crate::contexts::milestone_record::model::MilestoneId::new(
+            &task_source.milestone_id,
+        ) {
+            Ok(id) => id,
+            Err(error) => {
+                return Err((
+                    "reconciliation_metadata_error".to_owned(),
+                    format!(
+                        "invalid milestone_id '{}' during failure reconciliation: {error}",
+                        task_source.milestone_id
+                    ),
+                ));
+            }
+        };
+
+        let lineage_started_at = milestone_service::find_runs_for_bead(
+            &FsTaskRunLineageStore,
+            project_dir,
+            &milestone_id,
+            &task_source.bead_id,
+        )
+        .ok()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .rev()
+                .find(|entry| {
+                    entry.project_id == project_id.as_str()
+                        && entry.run_id.as_deref() == Some(run_id)
+                })
+                .map(|entry| entry.started_at)
+        });
+        let started_at = lineage_started_at.unwrap_or_else(|| {
+            journal_events
+                .iter()
+                .rev()
+                .find(|event| {
+                    event.event_type == JournalEventType::RunResumed
+                        && event
+                            .details
+                            .get("run_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(run_id)
+                        && event.timestamp <= run_failed.timestamp
+                })
+                .map(|event| event.timestamp)
+                .unwrap_or(run_started.timestamp)
+        });
+        let error_summary = run_failed
+            .details
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(fallback_error_summary);
+
+        reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            project_dir,
+            &task_source.bead_id,
+            &task.task_id,
+            project_id.as_str(),
+            &task_source.milestone_id,
+            run_id,
+            task_source.plan_hash.as_deref(),
+            started_at,
+            run_failed.timestamp,
+            error_summary,
+        )
+        .await
+        .map(Some)
+        .map_err(|error| match error {
+            FailureReconciliationError::MilestoneUpdateFailed { .. } => (
+                "reconciliation_milestone_update_failed".to_owned(),
+                error.to_string(),
+            ),
+        })
     }
 
     fn missing_workflow_run_id_failure(
@@ -4326,7 +4522,8 @@ mod tests {
         FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
         FsMilestoneSnapshotStore, FsMilestoneStore, FsPayloadArtifactWriteStore, FsProjectStore,
         FsRawOutputStore, FsRequirementsStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
-        FsRuntimeLogWriteStore, FsSessionStore, RunBackendProcessRecord, RunPidOwner, RunPidRecord,
+        FsRuntimeLogWriteStore, FsSessionStore, FsTaskRunLineageStore, RunBackendProcessRecord,
+        RunPidOwner, RunPidRecord,
     };
     use crate::adapters::github::InMemoryGithubClient;
     use crate::adapters::stub_backend::StubBackendAdapter;
@@ -4342,9 +4539,14 @@ mod tests {
         DaemonStorePort, LeaseRecord, ResourceCleanupOutcome, WorktreeCleanupOutcome,
         WorktreeLease, WorktreePort, WriterLockReleaseOutcome,
     };
+    use crate::contexts::milestone_record::bundle::{
+        AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+    };
     use crate::contexts::milestone_record::controller::{self as milestone_controller};
+    use crate::contexts::milestone_record::model::{MilestoneEventType, TaskRunOutcome};
     use crate::contexts::milestone_record::service::{
-        create_milestone, update_status, CreateMilestoneInput, MilestoneSnapshotPort,
+        self as milestone_service, create_milestone, persist_plan, read_journal, record_bead_start,
+        update_status, CreateMilestoneInput, MilestoneSnapshotPort,
     };
     use crate::contexts::project_run_record::journal;
     use crate::contexts::project_run_record::model::{
@@ -4507,6 +4709,68 @@ mod tests {
         )
         .expect("create project");
         project_id
+    }
+
+    fn create_failure_reconciliation_milestone(
+        base_dir: &std::path::Path,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::contexts::milestone_record::model::MilestoneId {
+        let record = create_milestone(
+            &FsMilestoneStore,
+            base_dir,
+            CreateMilestoneInput {
+                id: "ms-daemon-failure-reconcile".to_owned(),
+                name: "Daemon failure reconcile".to_owned(),
+                description: "Runtime failure reconciliation coverage".to_owned(),
+            },
+            now,
+        )
+        .expect("create milestone");
+        let bundle = MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: "ms-daemon-failure-reconcile".to_owned(),
+                name: "Daemon failure reconcile".to_owned(),
+            },
+            executive_summary: "One bead for daemon-side failure reconciliation".to_owned(),
+            goals: vec!["Record failed milestone attempts".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "The bead is present in the plan".to_owned(),
+                covered_by: vec!["ms-daemon-failure-reconcile.bead-1".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Core".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    bead_id: Some("ms-daemon-failure-reconcile.bead-1".to_owned()),
+                    explicit_id: Some(true),
+                    title: "Daemon failure bead".to_owned(),
+                    description: None,
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec![],
+                    depends_on: vec![],
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: None,
+                }],
+            }],
+            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            agents_guidance: None,
+        };
+        persist_plan(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base_dir,
+            &record.id,
+            &bundle,
+            now + chrono::Duration::milliseconds(1),
+        )
+        .expect("persist milestone plan");
+        record.id
     }
 
     struct FailOnceWaitingTaskWriteStore {
@@ -8326,6 +8590,172 @@ mod tests {
             milestone_controller::MilestoneControllerState::NeedsOperator,
             "missing durable workflow_run_id should escalate to needs_operator"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn try_reconcile_failure_records_failed_milestone_attempt() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        let now = Utc::now();
+        initialize_workspace(base, now).expect("init workspace");
+
+        let milestone_id = create_failure_reconciliation_milestone(base, now);
+        let task_source = TaskSource {
+            milestone_id: milestone_id.to_string(),
+            bead_id: "ms-daemon-failure-reconcile.bead-1".to_owned(),
+            parent_epic_id: None,
+            origin: TaskOrigin::Milestone,
+            plan_hash: Some("plan-v1".to_owned()),
+            plan_version: Some(1),
+        };
+        let project_id = ProjectId::new("daemon-failure-project").expect("project id");
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Daemon failure project".to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt"),
+                created_at: now,
+                task_source: Some(task_source.clone()),
+            },
+        )
+        .expect("create project");
+
+        let started_at = now + chrono::Duration::seconds(1);
+        let failed_at = now + chrono::Duration::seconds(5);
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+            project_id.as_str(),
+            "run-1",
+            "plan-v1",
+            started_at,
+        )
+        .expect("record bead start");
+        milestone_controller::sync_controller_task_running(
+            &FsMilestoneControllerStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+            "task-daemon-failure",
+            "workflow execution started",
+            started_at,
+        )
+        .expect("mark controller running");
+
+        let initial_events = FsJournalStore
+            .read_journal(base, &project_id)
+            .expect("read initial journal");
+        let run_id = RunId::new("run-1").expect("run id");
+        let run_started = journal::run_started_event(
+            journal::last_sequence(&initial_events) + 1,
+            started_at,
+            &run_id,
+            StageId::Implementation,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&run_started).expect("serialize run_started"),
+            )
+            .expect("append run_started");
+        let run_failed = journal::run_failed_event(
+            run_started.sequence + 1,
+            failed_at,
+            &run_id,
+            StageId::Implementation,
+            "stage_failure",
+            "daemon execution failed",
+            0,
+            20,
+            None,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&run_failed).expect("serialize run_failed"),
+            )
+            .expect("append run_failed");
+
+        let mut task = sample_pending_task("task-daemon-failure", &project_id);
+        task.status = TaskStatus::Active;
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let outcome = daemon
+            .try_reconcile_failure(base, &task, "fallback failure message")
+            .await
+            .expect("failure reconciliation should succeed")
+            .expect("milestone task should reconcile");
+        assert_eq!(
+            outcome,
+            crate::contexts::automation_runtime::FailureReconciliationOutcome::Retryable {
+                attempt_number: 1,
+                max_retries: crate::contexts::automation_runtime::MAX_FAILURE_RETRIES,
+            }
+        );
+
+        let controller =
+            milestone_controller::load_controller(&FsMilestoneControllerStore, base, &milestone_id)
+                .expect("load controller")
+                .expect("controller should exist");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Blocked
+        );
+
+        let task_runs = milestone_service::find_runs_for_bead(
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+        )
+        .expect("read task-runs");
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(task_runs[0].finished_at, Some(failed_at));
+
+        let milestone_journal = read_journal(&FsMilestoneJournalStore, base, &milestone_id)
+            .expect("read milestone journal");
+        let failed_event = milestone_journal
+            .iter()
+            .find(|event| event.event_type == MilestoneEventType::BeadFailed)
+            .expect("bead_failed should be recorded");
+        let details = failed_event
+            .details
+            .as_deref()
+            .expect("bead_failed should carry details");
+        assert!(details.contains("\"task_id\":\"task-daemon-failure\""));
+        assert!(details.contains("daemon execution failed"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
