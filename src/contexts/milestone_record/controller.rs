@@ -1208,7 +1208,52 @@ fn resume_transition_request(
             }
         }
         MilestoneControllerState::Blocked => {
-            if no_open_beads {
+            if let (Some(bead_id), Some(task_id)) = (
+                current.active_bead_id.as_deref(),
+                current.active_task_id.as_deref(),
+            ) {
+                let bead_closed = bead_closed_externally(bead_id)?;
+                match runtime.task_status(task_id)? {
+                    ControllerTaskStatus::Pending | ControllerTaskStatus::Failed => {
+                        if bead_closed {
+                            Ok(Some(needs_operator_for_bead(
+                                "resume divergence: blocked retry bead was already closed externally"
+                                    .to_owned(),
+                            )))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    ControllerTaskStatus::Running => {
+                        if bead_closed {
+                            Ok(Some(needs_operator_for_bead(
+                                "resume divergence: blocked retry bead was already closed externally"
+                                    .to_owned(),
+                            )))
+                        } else {
+                            Ok(Some(
+                                ControllerTransitionRequest::new(
+                                    MilestoneControllerState::Running,
+                                    "resume detected that the blocked retry task is running",
+                                )
+                                .with_bead(bead_id)
+                                .with_task(task_id),
+                            ))
+                        }
+                    }
+                    ControllerTaskStatus::Succeeded => Ok(Some(
+                        ControllerTransitionRequest::new(
+                            MilestoneControllerState::Reconciling,
+                            "resume detected that the blocked retry task already succeeded",
+                        )
+                        .with_bead(bead_id)
+                        .with_task(task_id),
+                    )),
+                    ControllerTaskStatus::Missing => Ok(Some(needs_operator_for_bead(
+                        "resume divergence: blocked retry task could not be found".to_owned(),
+                    ))),
+                }
+            } else if no_open_beads {
                 Ok(Some(ControllerTransitionRequest::new(
                     MilestoneControllerState::Completed,
                     "resume detected that all milestone beads are already closed",
@@ -1354,7 +1399,6 @@ fn state_context_error_details(
     match state {
         MilestoneControllerState::Idle
         | MilestoneControllerState::Selecting
-        | MilestoneControllerState::Blocked
         | MilestoneControllerState::Completed => {
             if bead_id.is_some() || task_id.is_some() {
                 Some(format!(
@@ -1365,6 +1409,13 @@ fn state_context_error_details(
                 None
             }
         }
+        MilestoneControllerState::Blocked => match (bead_id, task_id) {
+            (None, None) | (Some(_), Some(_)) => None,
+            _ => Some(
+                "state 'blocked' must carry both active bead and active task identifiers together"
+                    .to_owned(),
+            ),
+        },
         MilestoneControllerState::Claimed => {
             if bead_id.is_none() {
                 Some("state 'claimed' requires an active bead identifier".to_owned())

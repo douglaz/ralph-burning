@@ -645,12 +645,14 @@ async fn resolve_controller_for_next(
         now,
     )?;
 
+    let blocked_retry_context = controller.state == MilestoneControllerState::Blocked
+        && controller.active_bead_id.is_some()
+        && controller.active_task_id.is_some();
     if matches!(
         controller.state,
-        MilestoneControllerState::Idle
-            | MilestoneControllerState::Selecting
-            | MilestoneControllerState::Blocked
-    ) {
+        MilestoneControllerState::Idle | MilestoneControllerState::Selecting
+    ) || (controller.state == MilestoneControllerState::Blocked && !blocked_retry_context)
+    {
         let br = BrAdapter::new().with_working_dir(base_dir.to_path_buf());
         let bv = BvAdapter::new().with_working_dir(base_dir.to_path_buf());
         return run::select_next_milestone_bead(base_dir, milestone_id, &br, &bv, now).await;
@@ -665,6 +667,9 @@ async fn execute_milestone_run(
 ) -> AppResult<MilestoneRunView> {
     for _step in 0..MAX_MILESTONE_RUN_STEPS {
         let controller = resolve_controller_for_next(base_dir, milestone_id).await?;
+        let blocked_retry_context = controller.state == MilestoneControllerState::Blocked
+            && controller.active_bead_id.is_some()
+            && controller.active_task_id.is_some();
         match controller.state {
             MilestoneControllerState::Completed => {
                 return Ok(MilestoneRunView {
@@ -675,7 +680,7 @@ async fn execute_milestone_run(
                     project_id: None,
                 });
             }
-            MilestoneControllerState::Blocked => {
+            MilestoneControllerState::Blocked if !blocked_retry_context => {
                 return Ok(MilestoneRunView {
                     milestone_id: milestone_id.to_string(),
                     status: MilestoneCommandStatus::Blocked,
@@ -698,6 +703,7 @@ async fn execute_milestone_run(
                 });
             }
             MilestoneControllerState::Claimed
+            | MilestoneControllerState::Blocked
             | MilestoneControllerState::Running
             | MilestoneControllerState::Reconciling => {
                 let bead_id = controller.active_bead_id.as_deref().ok_or_else(|| {
