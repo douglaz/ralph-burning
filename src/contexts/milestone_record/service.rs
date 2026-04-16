@@ -2767,7 +2767,10 @@ async fn list_matching_beads_by_title<R: ProcessRunner>(
 
 fn eligible_existing_proposed_bead_match(summary: &BeadSummary, active_bead_id: &str) -> bool {
     summary.id != active_bead_id
-        && matches!(summary.status, BeadStatus::Open | BeadStatus::InProgress)
+        && matches!(
+            summary.status,
+            BeadStatus::Open | BeadStatus::InProgress | BeadStatus::Deferred
+        )
 }
 
 fn proposed_bead_depends_on_active_bead(detail: &BeadDetail, active_bead_id: &str) -> bool {
@@ -10718,6 +10721,81 @@ mod tests {
         assert!(journal
             .iter()
             .all(|event| event.event_type != MilestoneEventType::ProposedBeadCreated));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_propose_new_bead_reclassifies_deferred_title_as_planned_elsewhere(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pn-reclassify-deferred".to_owned(),
+                name: "PN reclassify deferred".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let runner = MockBrRunner::new(vec![
+            MockBrRunner::success(
+                r#"{"id":"existing-deferred","title":"Add retry telemetry","status":"deferred","priority":2,"bead_type":"task","labels":["backend"],"description":"Deferred work already covers this follow-up","dependencies":[],"dependents":[]}"#,
+            ),
+            MockBrRunner::success(
+                r#"[{"id":"existing-deferred","title":"Add retry telemetry","status":"deferred","priority":2,"bead_type":"task","labels":["backend"]}]"#,
+            ),
+        ]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
+
+        let input = ProposeNewBeadInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Retry paths lack telemetry".to_owned(),
+            proposed_title: "Add retry telemetry".to_owned(),
+            proposed_scope: "Instrument retry loops with counters and histograms".to_owned(),
+            severity: Severity::Medium,
+            rationale: "Deferred work should still suppress duplicate creation".to_owned(),
+            run_id: Some("run-deferred".to_owned()),
+            completion_round: Some(2),
+        };
+
+        let mut created_in_pass = 0usize;
+        let outcome = handle_propose_new_bead(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            &br_mutation,
+            base,
+            &record.id,
+            &input,
+            &mut created_in_pass,
+            now,
+        )
+        .await?;
+
+        assert_eq!(
+            outcome,
+            ProposeNewBeadOutcome::ReclassifiedAsPlannedElsewhere {
+                bead_id: "existing-deferred".to_owned()
+            }
+        );
+        assert_eq!(created_in_pass, 0);
+
+        let mappings = load_planned_elsewhere_mappings(
+            &FsPlannedElsewhereMappingStore,
+            &FsMilestoneJournalStore,
+            base,
+            &record.id,
+        )?;
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].mapped_to_bead_id, "existing-deferred");
+        assert!(mappings[0].mapped_bead_verified);
 
         Ok(())
     }

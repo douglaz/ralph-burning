@@ -248,11 +248,12 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         br_mutation,
         base_dir,
         bead_id,
+        task_id,
         milestone_id_str,
         project_id,
         run_id,
     )
-    .await;
+    .await?;
 
     // Step 4: Capture next-step hints (best-effort, never blocks reconciliation).
     let (next_step_hint, prefetched_selection) = if let Some(bv_adapter) = bv {
@@ -919,16 +920,17 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
     br_mutation: &BrMutationAdapter<R>,
     base_dir: &Path,
     bead_id: &str,
+    task_id: &str,
     milestone_id_str: &str,
     project_id: &str,
     run_id: &str,
-) {
+) -> Result<(), ReconciliationError> {
     let Ok(milestone_id) = MilestoneId::new(milestone_id_str) else {
-        return;
+        return Ok(());
     };
     let pid = match ProjectId::new(project_id) {
         Ok(pid) => pid,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     let payloads = match FsArtifactStore.list_payloads(base_dir, &pid) {
         Ok(payloads) => payloads,
@@ -937,7 +939,7 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
                 error = %error,
                 "failed to list payloads for propose-new-bead reconciliation (non-blocking)"
             );
-            return;
+            return Ok(());
         }
     };
 
@@ -958,10 +960,10 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
     }
 
     let Some(authoritative_round) = latest_by_round.keys().copied().max() else {
-        return;
+        return Ok(());
     };
     let Some(payload) = latest_by_round.get(&authoritative_round) else {
-        return;
+        return Ok(());
     };
     let aggregate: FinalReviewAggregatePayload =
         match serde_json::from_value(payload.payload.clone()) {
@@ -972,7 +974,7 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
                     completion_round = authoritative_round,
                     "failed to parse final-review aggregate for propose-new-bead reconciliation"
                 );
-                return;
+                return Ok(());
             }
         };
 
@@ -1019,13 +1021,23 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
         )
         .await
         {
-            tracing::warn!(
+            tracing::error!(
                 amendment_id = amendment.amendment_id.as_str(),
                 error = %error,
-                "failed to reconcile propose-new-bead amendment (non-blocking)"
+                "failed to reconcile propose-new-bead amendment; keeping success reconciliation open for retry"
             );
+            return Err(ReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: format!(
+                    "failed to reconcile propose-new-bead amendment {}: {}",
+                    amendment.amendment_id, error
+                ),
+            });
         }
     }
+
+    Ok(())
 }
 
 /// Reconstruct any planned-elsewhere mappings from persisted final-review
@@ -3398,11 +3410,12 @@ mod tests {
             &br_mutation,
             base,
             "active-bead",
+            "task-proposed",
             record.id.as_str(),
             "proj-proposed",
             "run-proposed",
         )
-        .await;
+        .await?;
 
         let replay_mutation =
             BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
@@ -3410,11 +3423,12 @@ mod tests {
             &replay_mutation,
             base,
             "active-bead",
+            "task-proposed",
             record.id.as_str(),
             "proj-proposed",
             "run-proposed",
         )
-        .await;
+        .await?;
 
         let journal = FsMilestoneJournalStore.read_journal(base, &record.id)?;
         let created_event = journal
@@ -3434,6 +3448,123 @@ mod tests {
         assert!(journal
             .iter()
             .all(|event| event.event_type != MilestoneEventType::PlannedElsewhereMapped));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_proposed_beads_after_success_returns_error_on_creation_failure(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+        let record = crate::contexts::milestone_record::service::create_milestone(
+            &store,
+            base,
+            crate::contexts::milestone_record::service::CreateMilestoneInput {
+                id: "ms-proposed-failure".to_owned(),
+                name: "Proposed bead failure".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let project_id = ProjectId::new("proj-proposed-failure")?;
+        let project_root = crate::adapters::fs::FileSystem::project_root(base, &project_id);
+        let payloads_dir = project_root.join("history/payloads");
+        std::fs::create_dir_all(&payloads_dir)?;
+
+        let aggregate = FinalReviewAggregatePayload {
+            restart_required: false,
+            force_completed: false,
+            total_reviewers: 1,
+            total_proposed_amendments: 1,
+            unique_amendment_count: 1,
+            accepted_amendment_ids: vec!["a1".to_owned()],
+            rejected_amendment_ids: vec![],
+            disputed_amendment_ids: vec![],
+            amendments: vec![],
+            final_accepted_amendments: vec![FinalReviewCanonicalAmendment {
+                amendment_id: "a1".to_owned(),
+                normalized_body: "Retry paths lack telemetry".to_owned(),
+                sources: vec![],
+                mapped_to_bead_id: None,
+                classification: AmendmentClassification::ProposeNewBead,
+                rationale: Some("No existing bead covers retry observability".to_owned()),
+                proposed_title: Some("Add retry telemetry".to_owned()),
+                proposed_scope: Some(
+                    "Instrument retry loops with counters and histograms".to_owned(),
+                ),
+                severity: Some(
+                    crate::contexts::workflow_composition::review_classification::Severity::Medium,
+                ),
+            }],
+            final_review_restart_count: 0,
+            max_restarts: 3,
+            summary: "test".to_owned(),
+            exhausted_count: 0,
+            probe_exhausted_count: 0,
+            effective_min_reviewers: 1,
+        };
+
+        let payload = PayloadRecord {
+            payload_id: "run-proposed-failure-final_review-aggregate-c1-a1-cr4-payload".to_owned(),
+            stage_id: StageId::FinalReview,
+            cycle: 1,
+            attempt: 1,
+            created_at: now,
+            payload: serde_json::to_value(&aggregate)?,
+            record_kind: RecordKind::StageAggregate,
+            producer: None,
+            completion_round: 4,
+        };
+        std::fs::write(
+            payloads_dir.join("aggregate.json"),
+            serde_json::to_string(&payload)?,
+        )?;
+
+        let br_runner = MockBrRunner::new(vec![
+            MockBrRunner::error(1, "create failed"),
+            MockBrRunner::success(
+                r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend"]}"#,
+            ),
+            MockBrRunner::success("[]"),
+        ]);
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(br_runner));
+
+        let error = reconcile_proposed_beads_after_success(
+            &br_mutation,
+            base,
+            "active-bead",
+            "task-proposed-failure",
+            record.id.as_str(),
+            "proj-proposed-failure",
+            "run-proposed-failure",
+        )
+        .await
+        .expect_err("creation failure should stop success reconciliation");
+
+        match error {
+            ReconciliationError::MilestoneUpdateFailed {
+                bead_id,
+                task_id,
+                details,
+            } => {
+                assert_eq!(bead_id, "active-bead");
+                assert_eq!(task_id, "task-proposed-failure");
+                assert!(details.contains("failed to reconcile propose-new-bead amendment a1"));
+                assert!(details.contains("create proposed bead"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        let journal = FsMilestoneJournalStore.read_journal(base, &record.id)?;
+        assert!(journal
+            .iter()
+            .all(|event| event.event_type != MilestoneEventType::ProposedBeadCreated));
 
         Ok(())
     }
