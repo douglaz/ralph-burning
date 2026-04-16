@@ -17,7 +17,7 @@ pub enum BeadsHealthStatus {
 
 /// Inspect the local beads export and the `br` binary before mutation flows.
 pub fn check_beads_health(base_dir: &Path) -> BeadsHealthStatus {
-    check_beads_health_with(base_dir, br_available_for_health_check)
+    check_beads_health_with_availability(base_dir, br_available_for_health_check)
 }
 
 /// Return an operator-facing explanation when bead mutations must be blocked.
@@ -45,7 +45,10 @@ pub fn beads_health_failure_details(status: &BeadsHealthStatus) -> Option<String
     }
 }
 
-fn check_beads_health_with<F>(base_dir: &Path, br_available: F) -> BeadsHealthStatus
+pub(crate) fn check_beads_health_with_availability<F>(
+    base_dir: &Path,
+    br_available: F,
+) -> BeadsHealthStatus
 where
     F: FnOnce() -> bool,
 {
@@ -154,7 +157,7 @@ mod tests {
 "#,
         );
 
-        let status = check_beads_health_with(tmp.path(), || true);
+        let status = check_beads_health_with_availability(tmp.path(), || true);
 
         assert_eq!(status, BeadsHealthStatus::ConflictMarkers);
         Ok(())
@@ -165,7 +168,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         write_issues(tmp.path(), "{\"id\":\"bead-1\"}\n");
 
-        let status = check_beads_health_with(tmp.path(), || true);
+        let status = check_beads_health_with_availability(tmp.path(), || true);
 
         assert_eq!(status, BeadsHealthStatus::Healthy);
         Ok(())
@@ -176,7 +179,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         write_issues(tmp.path(), "{\"id\":\"bead-1\"}\n{\"id\": }\n");
 
-        let status = check_beads_health_with(tmp.path(), || true);
+        let status = check_beads_health_with_availability(tmp.path(), || true);
 
         match status {
             BeadsHealthStatus::MalformedJsonl(details) => {
@@ -194,7 +197,7 @@ mod tests {
             let tmp = tempfile::tempdir()?;
             write_issues(tmp.path(), contents);
 
-            let status = check_beads_health_with(tmp.path(), || true);
+            let status = check_beads_health_with_availability(tmp.path(), || true);
 
             match status {
                 BeadsHealthStatus::MalformedJsonl(details) => {
@@ -215,7 +218,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         write_issues(tmp.path(), "{\"title\":\"missing id\"}\n");
 
-        let status = check_beads_health_with(tmp.path(), || true);
+        let status = check_beads_health_with_availability(tmp.path(), || true);
 
         match status {
             BeadsHealthStatus::MalformedJsonl(details) => {
@@ -234,7 +237,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         std::fs::create_dir_all(tmp.path().join(".beads"))?;
 
-        let status = check_beads_health_with(tmp.path(), || true);
+        let status = check_beads_health_with_availability(tmp.path(), || true);
 
         assert_eq!(status, BeadsHealthStatus::MissingFile);
         Ok(())
@@ -250,7 +253,7 @@ mod tests {
 "#,
         );
 
-        let status = check_beads_health_with(tmp.path(), || true);
+        let status = check_beads_health_with_availability(tmp.path(), || true);
 
         assert_eq!(status, BeadsHealthStatus::Healthy);
         Ok(())
@@ -263,7 +266,7 @@ mod tests {
         std::fs::create_dir_all(&beads_dir)?;
         std::fs::create_dir(beads_dir.join("issues.jsonl"))?;
 
-        let status = check_beads_health_with(tmp.path(), || true);
+        let status = check_beads_health_with_availability(tmp.path(), || true);
 
         assert!(
             matches!(status, BeadsHealthStatus::IoError(_)),

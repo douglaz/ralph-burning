@@ -3019,7 +3019,7 @@ async fn sync_recovered_proposed_bead_replay_if_dirty<R: ProcessRunner>(
     milestone_id: &MilestoneId,
     action: &str,
 ) -> AppResult<()> {
-    let outcome = match br_mutation.sync_if_dirty_when_beads_healthy(base_dir).await {
+    let outcome = match br_mutation.sync_own_dirty_if_beads_healthy(base_dir).await {
         Ok(outcome) => outcome,
         Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
             return Err(AppError::MilestoneOperationFailed {
@@ -3050,7 +3050,7 @@ async fn sync_beads_mutation_if_dirty_when_healthy<R: ProcessRunner>(
     milestone_id: &MilestoneId,
     action: &str,
 ) -> AppResult<()> {
-    match br_mutation.sync_if_dirty_when_beads_healthy(base_dir).await {
+    match br_mutation.sync_own_dirty_if_beads_healthy(base_dir).await {
         Ok(_) => Ok(()),
         Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
             Err(AppError::MilestoneOperationFailed {
@@ -11984,7 +11984,17 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         setup_workspace(base);
-        std::fs::write(base.join(".beads/.br-unsynced-mutations"), "pending\n")?;
+        let adapter_id = "proposal-replay-owner";
+        let own_record = base.join(format!(".beads/.br-unsynced-mutations.d/{adapter_id}.json"));
+        std::fs::create_dir_all(
+            own_record
+                .parent()
+                .expect("own pending record must have a parent dir"),
+        )?;
+        std::fs::write(
+            &own_record,
+            r#"{"adapter_id":"proposal-replay-owner","operation":"create_bead","bead_id":"bead-replayed","status":null}"#,
+        )?;
         let store = FsMilestoneStore;
         let now = Utc::now();
 
@@ -12042,8 +12052,9 @@ mod tests {
             ),
         ]);
         let command_log = runner.command_log();
-        let br_mutation = BrMutationAdapter::with_adapter(
+        let br_mutation = BrMutationAdapter::with_adapter_id(
             BrAdapter::with_runner(runner).with_working_dir(base.to_path_buf()),
+            adapter_id,
         );
 
         let mut created_in_pass = 0usize;
@@ -12079,8 +12090,8 @@ mod tests {
             "replay should flush recovered pending mutations before returning success"
         );
         assert!(
-            !base.join(".beads/.br-unsynced-mutations").exists(),
-            "successful recovered flush should clear the pending marker"
+            !own_record.exists(),
+            "successful recovered flush should clear the owned pending record"
         );
 
         Ok(())
@@ -12623,6 +12634,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_propose_new_bead_rejects_foreign_pending_dependency_repair_flush(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pn-journal-repair-foreign-pending".to_owned(),
+                name: "PN journal repair foreign pending".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let input = ProposeNewBeadInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Retry paths lack telemetry".to_owned(),
+            proposed_title: "Add retry telemetry".to_owned(),
+            proposed_scope: "Instrument retry loops with counters and histograms".to_owned(),
+            severity: Severity::Medium,
+            rationale: "Dependency repair must not flush another workflow's pending bead changes"
+                .to_owned(),
+            run_id: Some("run-journal-repair-foreign-pending".to_owned()),
+            completion_round: Some(18),
+        };
+        record_proposed_bead_created_event(
+            &FsMilestoneJournalStore,
+            base,
+            &record.id,
+            &input,
+            "bead-replayed",
+            "replayed from prior success reconciliation",
+            now,
+        )?;
+
+        let foreign_record = base.join(".beads/.br-unsynced-mutations.d/foreign.json");
+        let runner = ScriptedBrRunner::new({
+            let foreign_record = foreign_record.clone();
+            let expected_detail = serde_json::json!({
+                "id": "bead-replayed",
+                "title": "Add retry telemetry",
+                "status": "open",
+                "priority": 2,
+                "bead_type": "task",
+                "labels": ["backend"],
+                "description": render_proposed_bead_description(&input),
+                "dependencies": [],
+                "dependents": []
+            })
+            .to_string();
+            move |args| match args {
+                [command, bead_id, ..] if command == "show" && bead_id == "bead-replayed" => {
+                    MockBrRunner::success(&expected_detail)
+                }
+                [command, subcommand, ..] if command == "dep" && subcommand == "add" => {
+                    std::fs::create_dir_all(
+                        foreign_record
+                            .parent()
+                            .expect("foreign record path must have a parent dir"),
+                    )?;
+                    std::fs::write(
+                        &foreign_record,
+                        r#"{"adapter_id":"other-workflow","operation":"create_bead","bead_id":"bead-foreign","status":null}"#,
+                    )?;
+                    MockBrRunner::success("dependency added")
+                }
+                other => panic!("unexpected args: {other:?}"),
+            }
+        });
+        let command_log = runner.command_log();
+        let br_mutation = BrMutationAdapter::with_adapter_id(
+            BrAdapter::with_runner(runner).with_working_dir(base.to_path_buf()),
+            "proposal-owner",
+        );
+
+        let mut created_in_pass = 0usize;
+        let error = handle_propose_new_bead(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            &br_mutation,
+            base,
+            &record.id,
+            &input,
+            &mut created_in_pass,
+            now,
+        )
+        .await
+        .expect_err("foreign pending bead work must block the dependency repair flush");
+
+        match error {
+            AppError::MilestoneOperationFailed {
+                action, details, ..
+            } => {
+                assert_eq!(action, "sync journaled proposed bead dependency repair");
+                assert!(
+                    details.contains("another local bead workflow still has pending `create_bead`"),
+                    "error should explain the foreign pending mutation: {details}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        let commands = command_log.lock().expect("command log");
+        assert_eq!(
+            commands.as_slice(),
+            &[
+                vec![
+                    "show".to_owned(),
+                    "bead-replayed".to_owned(),
+                    "--json".to_owned()
+                ],
+                vec![
+                    "dep".to_owned(),
+                    "add".to_owned(),
+                    "bead-replayed".to_owned(),
+                    "active-bead".to_owned()
+                ],
+            ],
+            "owned-only sync should stop before br sync --flush-only runs"
+        );
+        assert!(
+            foreign_record.exists(),
+            "blocking the flush must preserve the foreign pending journal"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn handle_propose_new_bead_rechecks_health_before_sync_after_recovered_dependency_repair(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
@@ -12750,7 +12895,17 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         setup_workspace(base);
-        std::fs::write(base.join(".beads/.br-unsynced-mutations"), "pending\n")?;
+        let adapter_id = "proposal-replay-owner";
+        let own_record = base.join(format!(".beads/.br-unsynced-mutations.d/{adapter_id}.json"));
+        std::fs::create_dir_all(
+            own_record
+                .parent()
+                .expect("own pending record must have a parent dir"),
+        )?;
+        std::fs::write(
+            &own_record,
+            r#"{"adapter_id":"proposal-replay-owner","operation":"create_bead","bead_id":"bead-recovered","status":null}"#,
+        )?;
         let store = FsMilestoneStore;
         let now = Utc::now();
 
@@ -12800,8 +12955,9 @@ mod tests {
             ),
         ]);
         let command_log = runner.command_log();
-        let br_mutation = BrMutationAdapter::with_adapter(
+        let br_mutation = BrMutationAdapter::with_adapter_id(
             BrAdapter::with_runner(runner).with_working_dir(base.to_path_buf()),
+            adapter_id,
         );
 
         let mut created_in_pass = 0usize;
@@ -12844,8 +13000,8 @@ mod tests {
             "recovered created-bead replay should flush pending local mutations before success"
         );
         assert!(
-            !base.join(".beads/.br-unsynced-mutations").exists(),
-            "successful recovered flush should clear the pending marker"
+            !own_record.exists(),
+            "successful recovered flush should clear the owned pending record"
         );
 
         Ok(())

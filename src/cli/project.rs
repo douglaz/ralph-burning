@@ -4653,7 +4653,7 @@ esac
         }
 
         #[tokio::test]
-        async fn claim_bead_in_br_confirms_legacy_recovered_claim_after_flush(
+        async fn claim_bead_in_br_rejects_legacy_pending_marker_without_replay(
         ) -> Result<(), Box<dyn std::error::Error>> {
             let _path_lock = lock_path_mutex();
             let temp_dir = tempfile::tempdir()?;
@@ -4665,19 +4665,24 @@ esac
             std::fs::write(base_dir.join(".beads/sync-count"), "1\n")?;
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
-            super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await?;
+            let error = super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner())
+                .await
+                .expect_err("legacy pending markers must block owned-only claim replay");
 
-            let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
-            assert_eq!(
-                update_count.trim(),
-                "1",
-                "legacy markers without a journaled status update should fall through to an explicit claim"
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("legacy pending br mutation marker"),
+                "error should explain why the legacy marker blocked replay: {rendered}"
+            );
+            assert!(
+                !base_dir.join(".beads/update-count").exists(),
+                "claim must not issue a new update when the legacy marker blocks replay"
             );
             let sync_count = std::fs::read_to_string(base_dir.join(".beads/sync-count"))?;
             assert_eq!(
                 sync_count.trim(),
-                "3",
-                "legacy markers should still flush once before the explicit claim sync"
+                "1",
+                "claim must not issue any additional sync once the legacy marker blocks replay"
             );
             Ok(())
         }

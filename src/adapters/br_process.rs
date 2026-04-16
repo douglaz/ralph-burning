@@ -18,7 +18,9 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
+use crate::adapters::br_health::{
+    beads_health_failure_details, check_beads_health_with_availability,
+};
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
@@ -430,6 +432,15 @@ pub trait ProcessRunner: Send + Sync {
         timeout: Duration,
         working_dir: Option<&std::path::Path>,
     ) -> impl std::future::Future<Output = Result<BrOutput, BrError>> + Send;
+
+    /// Verify that the configured runner can launch `br` in this environment.
+    ///
+    /// Custom test runners can inherit the default success response so health
+    /// gates do not incorrectly fail closed before the runner is even asked to
+    /// execute the real command under test.
+    fn check_available(&self, _timeout: Duration) -> Result<(), BrError> {
+        Ok(())
+    }
 }
 
 /// Production process runner that spawns real subprocesses.
@@ -506,6 +517,63 @@ impl ProcessRunner for OsProcessRunner {
             }),
         }
     }
+
+    fn check_available(&self, timeout: Duration) -> Result<(), BrError> {
+        let mut child = std::process::Command::new(self.br_path())
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    BrError::BrNotFound {
+                        details: format!("could not find '{}' in PATH", self.br_path()),
+                    }
+                } else {
+                    BrError::Io(error)
+                }
+            })?;
+
+        let start = Instant::now();
+        loop {
+            if child.try_wait()?.is_some() {
+                break;
+            }
+
+            if start.elapsed() >= timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(BrError::BrTimeout {
+                    command: format!("{} --version", self.br_path()),
+                    timeout_ms: timeout.as_millis() as u64,
+                });
+            }
+
+            std::thread::sleep(AVAILABILITY_POLL_INTERVAL);
+        }
+
+        let output = child.wait_with_output().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                BrError::BrNotFound {
+                    details: format!("could not find '{}' in PATH", self.br_path()),
+                }
+            } else {
+                BrError::Io(error)
+            }
+        })?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        Err(BrError::BrExitError {
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            command: format!("{} --version", self.br_path()),
+        })
+    }
 }
 
 async fn wait_for_output(child: tokio::process::Child) -> Result<BrOutput, BrError> {
@@ -539,69 +607,6 @@ impl BrAdapter<OsProcessRunner> {
             working_dir: None,
         }
     }
-
-    /// Verify that the `br` binary can be launched from the current
-    /// environment without touching repository state.
-    pub fn check_available(&self) -> Result<(), BrError> {
-        self.check_available_with_timeout(DEFAULT_READ_TIMEOUT)
-    }
-
-    fn check_available_with_timeout(&self, timeout: Duration) -> Result<(), BrError> {
-        let mut child = std::process::Command::new(self.runner.br_path())
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    BrError::BrNotFound {
-                        details: format!("could not find '{}' in PATH", self.runner.br_path()),
-                    }
-                } else {
-                    BrError::Io(error)
-                }
-            })?;
-
-        let start = Instant::now();
-        loop {
-            if child.try_wait()?.is_some() {
-                break;
-            }
-
-            if start.elapsed() >= timeout {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(BrError::BrTimeout {
-                    command: format!("{} --version", self.runner.br_path()),
-                    timeout_ms: timeout.as_millis() as u64,
-                });
-            }
-
-            std::thread::sleep(AVAILABILITY_POLL_INTERVAL);
-        }
-
-        let output = child.wait_with_output().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                BrError::BrNotFound {
-                    details: format!("could not find '{}' in PATH", self.runner.br_path()),
-                }
-            } else {
-                BrError::Io(error)
-            }
-        })?;
-
-        if output.status.success() {
-            return Ok(());
-        }
-
-        Err(BrError::BrExitError {
-            exit_code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            command: format!("{} --version", self.runner.br_path()),
-        })
-    }
 }
 
 impl Default for BrAdapter<OsProcessRunner> {
@@ -618,6 +623,16 @@ impl<R: ProcessRunner> BrAdapter<R> {
             mutation_timeout: DEFAULT_MUTATION_TIMEOUT,
             working_dir: None,
         }
+    }
+
+    /// Verify that the configured `br` runner can be launched from the current
+    /// environment without touching repository state.
+    pub fn check_available(&self) -> Result<(), BrError> {
+        self.check_available_with_timeout(self.read_timeout)
+    }
+
+    fn check_available_with_timeout(&self, timeout: Duration) -> Result<(), BrError> {
+        self.runner.check_available(timeout)
     }
 
     pub fn with_read_timeout(mut self, timeout: Duration) -> Self {
@@ -1042,7 +1057,9 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
 
     fn ensure_healthy_beads_for_import(&self) -> Result<(), BrError> {
         let base_dir = self.working_dir_for_sync_import()?;
-        let status = check_beads_health(base_dir);
+        let status = check_beads_health_with_availability(base_dir, || {
+            self.adapter.check_available().is_ok()
+        });
         if let Some(details) = beads_health_failure_details(&status) {
             return Err(BrError::Io(std::io::Error::other(format!(
                 "cannot run `br sync --import-only`: {details}"
@@ -1056,7 +1073,10 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         &self,
         base_dir: &Path,
     ) -> Result<(), SyncIfDirtyHealthError> {
-        if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
+        let status = check_beads_health_with_availability(base_dir, || {
+            self.adapter.check_available().is_ok()
+        });
+        if let Some(details) = beads_health_failure_details(&status) {
             return Err(SyncIfDirtyHealthError::UnsafeBeadsState { details });
         }
 
@@ -1068,6 +1088,14 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         snapshot: &PendingMutationSnapshot,
         operation: &str,
     ) -> Result<(), SyncIfDirtyHealthError> {
+        if snapshot.legacy_marker_present {
+            return Err(SyncIfDirtyHealthError::UnsafeBeadsState {
+                details: format!(
+                    "legacy pending br mutation marker `{LEGACY_PENDING_MUTATIONS_MARKER}` is present; refusing to run `{operation}` because ownership of the unsynced mutation cannot be proven. Run an explicit repo-wide `br sync --flush-only` after confirming bead state, or remove the legacy marker once the previously published mutations are verified"
+                ),
+            });
+        }
+
         if !snapshot.has_foreign_records_for(&self.adapter_id) {
             return Ok(());
         }
@@ -1460,8 +1488,8 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
             return Ok(SyncIfDirtyOutcome::Clean);
         }
 
-        self.ensure_current_adapter_owns_pending_snapshot(&snapshot, "br sync --flush-only")?;
         self.ensure_healthy_beads_for_pending_sync(base_dir)?;
+        self.ensure_current_adapter_owns_pending_snapshot(&snapshot, "br sync --flush-only")?;
         self.sync_flush_locked()
             .await
             .map(|output| Self::flushed_sync_if_dirty_outcome(&snapshot, output))
@@ -1936,6 +1964,23 @@ mod tests {
         Ok(())
     }
 
+    fn write_pending_mutation_record(
+        base_dir: &std::path::Path,
+        adapter_id: &str,
+        operation: &str,
+        bead_id: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let records_dir = base_dir.join(PENDING_MUTATIONS_DIR);
+        std::fs::create_dir_all(&records_dir)?;
+        let record = PendingMutationRecord::new(adapter_id.to_owned(), operation, bead_id, status);
+        std::fs::write(
+            records_dir.join(format!("{adapter_id}.json")),
+            serde_json::to_vec(&record)?,
+        )?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn mutation_sets_dirty_flag() -> Result<(), Box<dyn std::error::Error>> {
         let ma = make_mutation_adapter(vec![MockRunner::success("created")]);
@@ -2201,6 +2246,47 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn sync_own_dirty_if_beads_healthy_rejects_legacy_pending_marker_without_flushing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues_file(tmp.path(), "{\"id\":\"bead-1\"}\n")?;
+        let legacy_marker = tmp.path().join(LEGACY_PENDING_MUTATIONS_MARKER);
+        std::fs::create_dir_all(
+            legacy_marker
+                .parent()
+                .expect("legacy marker path must have a parent dir"),
+        )?;
+        std::fs::write(&legacy_marker, "pending\n")?;
+
+        let (adapter, command_log) =
+            make_mutation_adapter_in(tmp.path(), vec![MockRunner::success("synced")]);
+
+        let error = adapter
+            .sync_own_dirty_if_beads_healthy(tmp.path())
+            .await
+            .expect_err("legacy marker ownership is unknown and must block owned-only replay");
+
+        match error {
+            SyncIfDirtyHealthError::UnsafeBeadsState { details } => {
+                assert!(
+                    details.contains("legacy pending br mutation marker"),
+                    "details should explain the legacy-marker ownership failure: {details}"
+                );
+            }
+            other => panic!("expected unsafe-beads-state error, got {other:?}"),
+        }
+        assert!(
+            command_log.lock().expect("command log").is_empty(),
+            "owned-only replay sync must not invoke br when only the legacy marker is present"
+        );
+        assert!(
+            legacy_marker.exists(),
+            "blocking the legacy replay must leave the marker in place"
+        );
+        Ok(())
+    }
+
     struct BlockingMutationRunner {
         command_log: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
         mutation_started: Arc<Notify>,
@@ -2444,6 +2530,84 @@ mod tests {
             *command_log.lock().expect("command log"),
             vec![vec!["sync".to_owned(), "--import-only".to_owned()]]
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sync_import_uses_configured_br_binary_for_health_check(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues_file(tmp.path(), "{\"id\":\"bead-1\"}\n")?;
+        let fake_br = tmp.path().join("custom-br");
+        std::fs::write(
+            &fake_br,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"sync\" ] && [ \"$2\" = \"--import-only\" ]; then\n  echo imported-via-custom-binary\n  exit 0\nfi\necho unexpected \"$@\" >&2\nexit 99\n",
+        )?;
+        let mut permissions = std::fs::metadata(&fake_br)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_br, permissions)?;
+
+        let adapter = BrAdapter {
+            runner: OsProcessRunner::with_binary(fake_br),
+            read_timeout: DEFAULT_READ_TIMEOUT,
+            mutation_timeout: DEFAULT_MUTATION_TIMEOUT,
+            working_dir: Some(tmp.path().to_path_buf()),
+        };
+        let mutation = BrMutationAdapter::with_adapter(adapter);
+
+        let output = mutation.sync_import().await?;
+
+        assert_eq!(output.stdout.trim(), "imported-via-custom-binary");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sync_if_dirty_when_beads_healthy_uses_configured_br_binary_for_health_check(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        write_issues_file(tmp.path(), "{\"id\":\"bead-1\"}\n")?;
+        let fake_br = tmp.path().join("custom-br");
+        std::fs::write(
+            &fake_br,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"sync\" ] && [ \"$2\" = \"--flush-only\" ]; then\n  echo synced-via-custom-binary\n  exit 0\nfi\necho unexpected \"$@\" >&2\nexit 99\n",
+        )?;
+        let mut permissions = std::fs::metadata(&fake_br)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_br, permissions)?;
+
+        let adapter_id = "configured-binary-owner";
+        write_pending_mutation_record(
+            tmp.path(),
+            adapter_id,
+            "update_bead_status",
+            Some("bead-1"),
+            Some("in_progress"),
+        )?;
+        let adapter = BrAdapter {
+            runner: OsProcessRunner::with_binary(fake_br),
+            read_timeout: DEFAULT_READ_TIMEOUT,
+            mutation_timeout: DEFAULT_MUTATION_TIMEOUT,
+            working_dir: Some(tmp.path().to_path_buf()),
+        };
+        let mutation = BrMutationAdapter::with_adapter_id(adapter, adapter_id);
+
+        let outcome = mutation
+            .sync_if_dirty_when_beads_healthy(tmp.path())
+            .await?;
+
+        match outcome {
+            SyncIfDirtyOutcome::Flushed {
+                output,
+                flushed_mutations,
+                ..
+            } => {
+                assert_eq!(output.stdout.trim(), "synced-via-custom-binary");
+                assert_eq!(flushed_mutations, 1);
+            }
+            SyncIfDirtyOutcome::Clean => panic!("expected configured binary to flush dirty state"),
+        }
         Ok(())
     }
 

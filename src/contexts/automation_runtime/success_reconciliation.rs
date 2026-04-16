@@ -1594,13 +1594,23 @@ mod tests {
     async fn sync_after_close_success() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         write_beads_export(temp_dir.path())?;
+        let adapter_id = "reconciliation-owner";
+        let own_record = temp_dir
+            .path()
+            .join(format!(".beads/.br-unsynced-mutations.d/{adapter_id}.json"));
+        std::fs::create_dir_all(
+            own_record
+                .parent()
+                .expect("own pending record must have a parent dir"),
+        )?;
         std::fs::write(
-            temp_dir.path().join(".beads/.br-unsynced-mutations"),
-            "pending\n",
+            &own_record,
+            r#"{"adapter_id":"reconciliation-owner","operation":"close_bead","bead_id":"b1","status":null}"#,
         )?;
         let runner = MockBrRunner::new(vec![MockBrRunner::success("")]);
-        let br_mutation = BrMutationAdapter::with_adapter(
+        let br_mutation = BrMutationAdapter::with_adapter_id(
             BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+            adapter_id,
         );
 
         sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await?;
@@ -1611,13 +1621,23 @@ mod tests {
     async fn sync_after_close_failure() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir()?;
         write_beads_export(temp_dir.path())?;
+        let adapter_id = "reconciliation-owner";
+        let own_record = temp_dir
+            .path()
+            .join(format!(".beads/.br-unsynced-mutations.d/{adapter_id}.json"));
+        std::fs::create_dir_all(
+            own_record
+                .parent()
+                .expect("own pending record must have a parent dir"),
+        )?;
         std::fs::write(
-            temp_dir.path().join(".beads/.br-unsynced-mutations"),
-            "pending\n",
+            &own_record,
+            r#"{"adapter_id":"reconciliation-owner","operation":"close_bead","bead_id":"b1","status":null}"#,
         )?;
         let runner = MockBrRunner::new(vec![MockBrRunner::error(1, "sync failed")]);
-        let br_mutation = BrMutationAdapter::with_adapter(
+        let br_mutation = BrMutationAdapter::with_adapter_id(
             BrAdapter::with_runner(runner).with_working_dir(temp_dir.path().to_path_buf()),
+            adapter_id,
         );
 
         let result = sync_after_close(temp_dir.path(), &br_mutation, "b1", "task-1").await;
