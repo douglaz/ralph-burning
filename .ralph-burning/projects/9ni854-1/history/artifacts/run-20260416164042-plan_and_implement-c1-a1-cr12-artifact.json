@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-plan_and_implement-c1-a1-cr12-artifact",
+  "payload_id": "run-20260416164042-plan_and_implement-c1-a1-cr12",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-16T22:07:18.256443873Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nPatched `src/contexts/automation_runtime/failure_reconciliation.rs` to close both pending failure-reconciliation gaps additively. Retry ordinals now come from durable attempt chronology across `BeadStarted`, `BeadFailed`, and lineage state, so same-`run_id` retries still count earlier partially-written failures toward `MAX_FAILURE_RETRIES` even after the failed lineage row was reopened in place. I also normalized replayed failure `outcome_detail` payloads before repair so legacy/plain-text failures are rewritten into structured `task_id=...`, `attempt=...`, `error=...` form and repaired `BeadFailed` journal events regain `task_id` audit linkage. Added focused regressions for both cases.\n\n## Steps\n\n1. [Completed] Updated failure reconciliation to canonicalize replayed failure details into structured `task_id`/`attempt`/`error` payloads before repair, preserving original recorded provenance when available while backfilling missing audit fields for legacy plain-text failures.\n2. [Completed] Reworked failure attempt numbering to derive ordinals from durable attempt chronology instead of only surviving failed lineage rows and `BeadFailed` events, so partially-written same-run retries still advance toward escalation even when an earlier failed row was reopened in place.\n3. [Completed] Added regression coverage for same-run partial-write retry escalation and for replay repair of plain-text historical failures so the repaired journal and lineage state both carry `task_id` again.\n4. [Completed] Ran focused and full Rust validation after the patch set and launched the required `nix build` gate.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test failure_reconciliation -- --nocapture` passed; all 15 failure-reconciliation tests succeeded, including the two new regressions.\n- `cargo test` passed on the full suite.\n- `cargo clippy -- -D warnings` passed.\n- `cargo clippy --features test-stub -- -D warnings` passed.\n- `nix build` was launched and advanced into `/nix/store/xfivm5lpwl47km567mrgqssxvxcqpg16-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0.drv`, but no final exit status was observed in-session.\n\n## Outstanding Risks\n\n- `nix build` was started on the updated tree and remained in the active derivation build stage with no final success/failure exit observed in-session, so the authoritative Nix gate is still unresolved.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 12
+}

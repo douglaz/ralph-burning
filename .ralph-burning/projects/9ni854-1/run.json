@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 12
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-11-163f95ac",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 11,
-        "body": "finding_summary: Same-run retries can lose an earlier failed attempt and undercount retries after a partial milestone write.\naffected_files:\n- src/adapters/fs.rs:4536-4571\n- src/contexts/automation_runtime/failure_reconciliation.rs:669-714\nremediation_hint: Preserve historical failed same-run attempts when reopening a retry, or fold durable project/journal history into attempt counting before deciding between `Retryable` and `NeedsOperator`.\n\n`reopen_failed_exact_attempt` rewrites the only failed lineage row in place when a retry resumes the same `run_id`. If the first failure crashed after updating lineage but before appending the milestone `BeadFailed` event, that failed row was the only durable evidence of attempt 1. On the next failure, `failure_attempt_number` counts only surviving `BeadFailed` events plus collapsed failed lineage rows, so the missing first attempt disappears and the reconciler can return `Retryable` instead of escalating at `MAX_FAILURE_RETRIES`. This breaks the safety gate in the exact partial-write recovery path this bead is supposed to harden.",
-        "created_at": "2026-04-16T21:59:35.082922628Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "7049d230aa9b169cb0a31bc4c3aba4cc963e5189c53d525fdc135fa14dfadbb5"
-      },
-      {
-        "amendment_id": "fr-11-51435a8c",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 11,
-        "body": "finding_summary: Replayed historical failures with unstructured `outcome_detail` still repair the journal without a `task_id`.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:199-208\n- src/contexts/automation_runtime/failure_reconciliation.rs:458-465\n- src/contexts/automation_runtime/failure_reconciliation.rs:623-634\n- src/adapters/fs.rs:4929-4937\nremediation_hint: When replaying an already-recorded failure, rebuild or augment any legacy/plain-text `outcome_detail` so it always carries `task_id=...`, `attempt=...`, and `error=...` before calling `repair_task_run_with_disposition`.\n\nFor already-recorded failures, the handler reuses any existing `outcome_detail` verbatim. If a legacy or partially-written row only has a plain summary like `stale failure`, `recorded_failure_provenance` never reconstructs the structured payload, and `update_task_run` can only backfill `task_id` from a `task_id=` prefix. The repaired `BeadFailed` event therefore still omits `task_id` even though the caller supplied one, which violates the new audit requirement for repaired failures.",
-        "created_at": "2026-04-16T21:59:35.082928058Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "dc71a5c000a729ffcb100b6f47326074cefb5468ecfbeef2ecec1a0d2c353def"
-      }
-    ],
-    "processed_count": 24
+    "pending": [],
+    "processed_count": 26
   },
-  "status_summary": "running: final review restart round 12 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-16T21:46:30.441399574Z",
