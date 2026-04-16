@@ -976,7 +976,7 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str) -> AppResult<()> {
                  br sync --flush-only: {error}"
         )))
     })?;
-    if !recovered_flush.is_clean()
+    if recovered_flush.includes_update_status(bead_id, "in_progress")
         && bead_status_is_in_progress(base_dir, bead_id)
             .await
             .map_err(|error| {
@@ -4165,15 +4165,17 @@ esac
 
             super::super::claim_bead_in_br(base_dir, "bead-1").await?;
 
-            assert!(
-                !base_dir.join(".beads/update-count").exists(),
-                "legacy recovered claim should be confirmed via br show instead of replaying update"
+            let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
+            assert_eq!(
+                update_count.trim(),
+                "1",
+                "legacy markers without a journaled status update should fall through to an explicit claim"
             );
             let sync_count = std::fs::read_to_string(base_dir.join(".beads/sync-count"))?;
             assert_eq!(
                 sync_count.trim(),
-                "2",
-                "legacy recovered claim should flush exactly once before verification"
+                "3",
+                "legacy markers should still flush once before the explicit claim sync"
             );
             Ok(())
         }
@@ -4219,6 +4221,46 @@ esac
                 update_count.trim(),
                 "1",
                 "claim should still attempt its own update"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_does_not_treat_other_operator_status_after_unrelated_flush_as_our_claim(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_after_unrelated_recovered_flush_failure(base_dir, "bead-1");
+            std::fs::write(base_dir.join(".beads/bead-1.status"), "in_progress\n")?;
+            let journal_path = base_dir.join(".beads/.br-unsynced-mutations.d/unrelated.json");
+            std::fs::create_dir_all(
+                journal_path
+                    .parent()
+                    .expect("journal path must have parent"),
+            )?;
+            std::fs::write(
+                &journal_path,
+                r#"{"adapter_id":"other","operation":"comment_bead","bead_id":"bead-2","status":null}"#,
+            )?;
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let result = super::super::claim_bead_in_br(base_dir, "bead-1").await;
+            assert!(
+                result.is_err(),
+                "another operator's in-progress status must not be treated as proof that our recovered claim succeeded"
+            );
+            let error = result.expect_err("claim should fail").to_string();
+            assert!(
+                error.contains("failed to claim bead 'bead-1' via br update --status=in_progress"),
+                "claim should still issue an explicit update and surface the collision: {error}"
+            );
+            let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
+            assert_eq!(
+                update_count.trim(),
+                "1",
+                "explicit claim should still be attempted after the unrelated flush"
             );
             Ok(())
         }

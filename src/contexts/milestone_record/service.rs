@@ -3017,7 +3017,6 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
     created_in_pass: &mut usize,
     now: DateTime<Utc>,
 ) -> AppResult<ProposeNewBeadOutcome> {
-    ensure_beads_mutation_health(base_dir, milestone_id)?;
     let br_read = br_mutation.inner();
 
     if let Some(existing_bead_id) =
@@ -3029,6 +3028,7 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
         {
             Ok(detail) => {
                 if !proposed_bead_depends_on_active_bead(&detail, &input.active_bead_id) {
+                    ensure_beads_mutation_health(base_dir, milestone_id)?;
                     br_mutation
                         .add_dependency(&detail.id, &input.active_bead_id)
                         .await
@@ -3092,6 +3092,7 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
         }
 
         if !proposed_bead_depends_on_active_bead(&detail, &input.active_bead_id) {
+            ensure_beads_mutation_health(base_dir, milestone_id)?;
             br_mutation
                 .add_dependency(&detail.id, &input.active_bead_id)
                 .await
@@ -3174,6 +3175,7 @@ pub async fn handle_propose_new_bead<R: ProcessRunner>(
         }
     };
 
+    ensure_beads_mutation_health(base_dir, milestone_id)?;
     let create_output = br_mutation
         .create_bead(
             &input.proposed_title,
@@ -10674,7 +10676,12 @@ mod tests {
             now,
         )?;
 
-        let runner = MockBrRunner::new(vec![MockBrRunner::success("[]")]);
+        let runner = MockBrRunner::new(vec![
+            MockBrRunner::success(
+                r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend"]}"#,
+            ),
+            MockBrRunner::success("[]"),
+        ]);
         let command_log = runner.command_log();
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
         let input = ProposeNewBeadInput {
@@ -10712,9 +10719,20 @@ mod tests {
             other => panic!("unexpected error: {other}"),
         }
 
-        assert!(
-            command_log.lock().expect("command log").is_empty(),
-            "health failure should stop before invoking br"
+        let commands = command_log.lock().expect("command log");
+        assert_eq!(
+            commands.as_slice(),
+            &[
+                vec![
+                    "list".to_owned(),
+                    "--all".to_owned(),
+                    "--deferred".to_owned(),
+                    "--limit=0".to_owned(),
+                    "--json".to_owned(),
+                ],
+                vec!["show".to_owned(), "active-bead".to_owned(), "--json".to_owned()],
+            ],
+            "health failure should still allow read-only idempotent checks before blocking mutation"
         );
         Ok(())
     }
@@ -10743,7 +10761,12 @@ mod tests {
             now,
         )?;
 
-        let runner = MockBrRunner::new(vec![MockBrRunner::success("[]")]);
+        let runner = MockBrRunner::new(vec![
+            MockBrRunner::success(
+                r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend"]}"#,
+            ),
+            MockBrRunner::success("[]"),
+        ]);
         let command_log = runner.command_log();
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
         let input = ProposeNewBeadInput {
@@ -10781,9 +10804,20 @@ mod tests {
             other => panic!("unexpected error: {other}"),
         }
 
-        assert!(
-            command_log.lock().expect("command log").is_empty(),
-            "health failure should stop before invoking br"
+        let commands = command_log.lock().expect("command log");
+        assert_eq!(
+            commands.as_slice(),
+            &[
+                vec![
+                    "list".to_owned(),
+                    "--all".to_owned(),
+                    "--deferred".to_owned(),
+                    "--limit=0".to_owned(),
+                    "--json".to_owned(),
+                ],
+                vec!["show".to_owned(), "active-bead".to_owned(), "--json".to_owned()],
+            ],
+            "health failure should still allow read-only idempotent checks before blocking mutation"
         );
         Ok(())
     }
@@ -11480,6 +11514,102 @@ mod tests {
                 .filter(|event| event.event_type == MilestoneEventType::ProposedBeadCreated)
                 .count(),
             1
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_propose_new_bead_reuses_existing_journaled_bead_without_mutation_health_gate(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        std::fs::write(
+            base.join(".beads/issues.jsonl"),
+            "<<<<<<< HEAD\n{\"id\":\"bead-a\"}\n=======\n{\"id\":\"bead-b\"}\n>>>>>>> branch\n",
+        )?;
+        let store = FsMilestoneStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "pn-journal-reuse-conflict".to_owned(),
+                name: "PN journal reuse conflict".to_owned(),
+                description: "test".to_owned(),
+            },
+            now,
+        )?;
+
+        let input = ProposeNewBeadInput {
+            active_bead_id: "active-bead".to_owned(),
+            finding_summary: "Retry paths lack telemetry".to_owned(),
+            proposed_title: "Add retry telemetry".to_owned(),
+            proposed_scope: "Instrument retry loops with counters and histograms".to_owned(),
+            severity: Severity::Medium,
+            rationale: "Replays should reuse the recorded bead without a new mutation".to_owned(),
+            run_id: Some("run-journal-reuse-conflict".to_owned()),
+            completion_round: Some(10),
+        };
+        record_proposed_bead_created_event(
+            &FsMilestoneJournalStore,
+            base,
+            &record.id,
+            &input,
+            "bead-replayed",
+            "replayed from prior success reconciliation",
+            now,
+        )?;
+
+        let runner = MockBrRunner::new(vec![MockBrRunner::success(
+            &serde_json::json!({
+                "id": "bead-replayed",
+                "title": "Add retry telemetry",
+                "status": "open",
+                "priority": 2,
+                "bead_type": "task",
+                "labels": ["backend"],
+                "description": render_proposed_bead_description(&input),
+                "dependencies": [{
+                    "id": "active-bead",
+                    "kind": "blocks",
+                    "title": "Active bead",
+                    "status": "open"
+                }],
+                "dependents": []
+            })
+            .to_string(),
+        )]);
+        let command_log = runner.command_log();
+        let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
+
+        let mut created_in_pass = 0usize;
+        let outcome = handle_propose_new_bead(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            &br_mutation,
+            base,
+            &record.id,
+            &input,
+            &mut created_in_pass,
+            now,
+        )
+        .await?;
+
+        assert_eq!(
+            outcome,
+            ProposeNewBeadOutcome::Created {
+                bead_id: "bead-replayed".to_owned()
+            }
+        );
+        assert_eq!(created_in_pass, 0);
+        let commands = command_log.lock().expect("command log");
+        assert_eq!(
+            commands.as_slice(),
+            &[vec!["show".to_owned(), "bead-replayed".to_owned(), "--json".to_owned()]],
+            "idempotent replay should not be blocked by mutation health or issue any new br mutation"
         );
 
         Ok(())
