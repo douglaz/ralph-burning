@@ -584,47 +584,98 @@ fn format_failure_outcome_detail(
     format!("task_id={task_id}\nattempt={attempt_number}\nerror={error_summary}")
 }
 
-fn parse_failure_outcome_detail(detail: &str) -> ParsedFailureOutcomeDetail {
+fn parse_failure_outcome_detail_structured(detail: &str) -> ParsedFailureOutcomeDetail {
     let mut parsed = ParsedFailureOutcomeDetail::default();
-    let mut saw_structured_field = false;
+    let mut lines = detail.lines();
 
-    for token in detail
-        .lines()
-        .flat_map(|line| line.split(';'))
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-    {
-        if let Some(task_id) = token.strip_prefix("task_id=") {
+    while let Some(line) = lines.next() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(task_id) = line.strip_prefix("task_id=") {
             let task_id = task_id.trim();
             if !task_id.is_empty() {
                 parsed.task_id = Some(task_id.to_owned());
-                saw_structured_field = true;
             }
             continue;
         }
-        if let Some(attempt_number) = token.strip_prefix("attempt=") {
+        if let Some(attempt_number) = line.strip_prefix("attempt=") {
             if let Ok(attempt_number) = attempt_number.trim().parse::<u32>() {
                 parsed.attempt_number = Some(attempt_number);
-                saw_structured_field = true;
             }
             continue;
         }
-        if let Some(error_summary) = token.strip_prefix("error=") {
-            let error_summary = normalize_error_summary(error_summary);
+        if let Some(error_summary) = line.strip_prefix("error=") {
+            let mut error_lines = vec![error_summary];
+            error_lines.extend(lines);
+            let error_summary = normalize_error_summary(&error_lines.join("\n"));
             if !error_summary.is_empty() {
                 parsed.error_summary = Some(error_summary);
-                saw_structured_field = true;
             }
+            break;
         }
     }
 
-    if !saw_structured_field {
-        let error_summary = normalize_error_summary(detail);
+    parsed
+}
+
+fn consume_legacy_failure_field<'a>(detail: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
+    let detail = detail.trim_start();
+    let value = detail.strip_prefix(prefix)?;
+    match value.split_once(';') {
+        Some((field, remainder)) => Some((field.trim(), remainder)),
+        None => Some((value.trim(), "")),
+    }
+}
+
+fn parse_failure_outcome_detail_legacy(detail: &str) -> ParsedFailureOutcomeDetail {
+    let mut parsed = ParsedFailureOutcomeDetail::default();
+    let mut remainder = detail.trim();
+
+    if let Some((task_id, next)) = consume_legacy_failure_field(remainder, "task_id=") {
+        if !task_id.is_empty() {
+            parsed.task_id = Some(task_id.to_owned());
+        }
+        remainder = next;
+    }
+
+    if let Some((attempt_number, next)) = consume_legacy_failure_field(remainder, "attempt=") {
+        if let Ok(attempt_number) = attempt_number.parse::<u32>() {
+            parsed.attempt_number = Some(attempt_number);
+        }
+        remainder = next;
+    }
+
+    let remainder = remainder.trim_start_matches(';').trim_start();
+    if let Some(error_summary) = remainder.strip_prefix("error=") {
+        let error_summary = normalize_error_summary(error_summary);
         if !error_summary.is_empty() {
             parsed.error_summary = Some(error_summary);
         }
     }
 
+    parsed
+}
+
+fn parse_failure_outcome_detail(detail: &str) -> ParsedFailureOutcomeDetail {
+    let parsed = parse_failure_outcome_detail_structured(detail);
+    if parsed.task_id.is_some() || parsed.attempt_number.is_some() || parsed.error_summary.is_some()
+    {
+        return parsed;
+    }
+
+    let parsed = parse_failure_outcome_detail_legacy(detail);
+    if parsed.task_id.is_some() || parsed.attempt_number.is_some() || parsed.error_summary.is_some()
+    {
+        return parsed;
+    }
+
+    let mut parsed = ParsedFailureOutcomeDetail::default();
+    let error_summary = normalize_error_summary(detail);
+    if !error_summary.is_empty() {
+        parsed.error_summary = Some(error_summary);
+    }
     parsed
 }
 
@@ -676,12 +727,8 @@ fn canonical_failure_error_summary(detail: Option<&str>) -> String {
 }
 
 fn extract_task_id_from_outcome_detail(detail: &str) -> Option<&str> {
-    let task_id = detail.strip_prefix("task_id=")?;
-    let task_id = task_id
-        .split(['\n', ';'])
-        .next()
-        .map(str::trim)
-        .unwrap_or(task_id);
+    let task_id = detail.lines().next()?.trim().strip_prefix("task_id=")?;
+    let task_id = task_id.split(';').next().map(str::trim).unwrap_or(task_id);
     (!task_id.is_empty()).then_some(task_id)
 }
 
@@ -1524,8 +1571,8 @@ fn push_attempt_identity(
 #[cfg(test)]
 mod tests {
     use super::{
-        failure_attempt_number, reconcile_failure, FailureReconciliationOutcome,
-        MAX_FAILURE_RETRIES,
+        failure_attempt_number, format_failure_outcome_detail, parse_failure_outcome_detail,
+        reconcile_failure, FailureReconciliationOutcome, MAX_FAILURE_RETRIES,
     };
     use crate::adapters::fs::{
         FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
@@ -1895,6 +1942,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_failure_outcome_detail_preserves_semicolons_inside_error_payload() {
+        let detail = format_failure_outcome_detail(
+            "task-1",
+            2,
+            "first clause; attempt=99; task_id=shadow; final clause",
+        );
+
+        let parsed = parse_failure_outcome_detail(&detail);
+
+        assert_eq!(parsed.task_id.as_deref(), Some("task-1"));
+        assert_eq!(parsed.attempt_number, Some(2));
+        assert_eq!(
+            parsed.error_summary.as_deref(),
+            Some("first clause; attempt=99; task_id=shadow; final clause")
+        );
+    }
+
     #[tokio::test]
     async fn reconcile_failure_first_failure_records_retryable_state(
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2220,6 +2285,83 @@ mod tests {
             )?
             .len();
         assert_eq!(controller_journal_len, controller_journal_after);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_failure_replay_with_semicolons_in_error_remains_idempotent(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        write_beads_export(base)?;
+        let milestone_id = create_test_milestone(base)?;
+        let started_at = Utc::now() + Duration::seconds(1);
+        let failed_at = started_at + Duration::seconds(10);
+        let error_summary =
+            "compile failed; attempt=99; task_id=shadow-task; still the same root cause";
+
+        start_attempt(base, &milestone_id, "task-1", "run-1", started_at)?;
+        reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            started_at,
+            failed_at,
+            error_summary,
+        )
+        .await?;
+
+        let recorded_before = milestone_service::find_runs_for_bead(
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            "bead-failure",
+        )?
+        .into_iter()
+        .find(|entry| entry.outcome == TaskRunOutcome::Failed)
+        .and_then(|entry| entry.outcome_detail)
+        .expect("failed run should record outcome detail");
+
+        reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            started_at,
+            failed_at,
+            error_summary,
+        )
+        .await?;
+
+        let recorded_after = milestone_service::find_runs_for_bead(
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            "bead-failure",
+        )?
+        .into_iter()
+        .find(|entry| entry.outcome == TaskRunOutcome::Failed)
+        .and_then(|entry| entry.outcome_detail)
+        .expect("failed run should still record outcome detail");
+
+        assert_eq!(recorded_after, recorded_before);
+        assert!(recorded_after.contains(error_summary));
 
         Ok(())
     }

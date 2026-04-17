@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 21
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-20-e5031cbe",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 20,
-        "body": "finding_summary: `parse_failure_outcome_detail()` is not round-trippable for stored failure metadata. `format_failure_outcome_detail()` writes the raw `error_summary` verbatim, but the parser then splits every line on `;`. If the real error text contains a semicolon, substrings like `attempt=99` or `task_id=...` inside the message are reinterpreted as structured fields, and the message itself is truncated on replay. A second `reconcile_failure()` call for the same run can therefore rewrite the previously recorded `outcome_detail` instead of leaving state unchanged, which breaks the handler's idempotency guarantee.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:579-618\n- src/contexts/automation_runtime/failure_reconciliation.rs:646-667\nremediation_hint: Parse only the fixed header lines (`task_id=`, `attempt=`, `error=`) or store the payload in a non-ambiguous encoding/JSON shape; do not treat semicolons inside the `error=` value as field delimiters.",
-        "created_at": "2026-04-17T01:49:32.131330325Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "5ff1e7139d9367c3a83dba5386cfa89a652952fc20f1ab207261f773937edfaf"
-      }
-    ],
-    "processed_count": 40
+    "pending": [],
+    "processed_count": 41
   },
-  "status_summary": "running: final review restart round 21 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T01:37:24.176908899Z",
