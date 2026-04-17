@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260417123935-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T16:20:51.892822294Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThree amendments identify real correctness issues in bead export and matching. The remaining amendment conflicts with explicit, tested behavior: materialization intentionally reuses a single historical closed/deferred bead to keep exports idempotent and avoid duplicate bead creation.\n\n## Votes\n\n- `fr-9-ca996f96`: Accept\n  `find_explicit_materialized_bead()` currently treats every `BrExitError` from `br show` as a miss and continues searching. `BrExitError` covers arbitrary non-zero `br` failures, not just not-found, so repository-health failures can be silently masked and the export path can incorrectly fall back to title matching or fresh creation. Only swallowing true not-found cases is the correct behavior.\n- `fr-9-a14b02db`: Accept\n  The code preserves planner-authored labels verbatim, but later matching logic treats `proposal:*`, `workstream:*`, and `milestone-root` as trusted exporter metadata. There is no validation preventing a bundle from supplying those reserved labels, so external input can spoof identity/role labels and alter rerun matching, including incorrect reuse or ambiguity. That is a real correctness and robustness issue.\n- `fr-9-de1942a4`: Accept\n  `BrMutationAdapter::create_bead` serializes labels as a single comma-separated `--labels` argument, while bundle validation only rejects empty labels. Because the CLI interprets `--labels` as comma-separated values, any label containing a literal comma will be split into multiple labels instead of being passed through opaquely. That is silent data corruption and should be prevented either by validation or by changing the adapter encoding.\n- `fr-9-1a47a5fa`: Reject\n  This behavior is intentional, not an accidental inconsistency. The codebase has an explicit test for reusing closed and deferred history during materialization to preserve idempotent export and avoid duplicate bead creation, so reusing a single historical match is part of the current contract. Without evidence of a concrete downstream failure, changing this would be a semantic change rather than a clearly justified bug fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}
