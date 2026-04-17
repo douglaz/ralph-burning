@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-2-c1-a1-cr9-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-2-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T22:59:53.145638454Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments are valid. fr-9-50eab653 identifies a real isolation defect — the mock adapters use in-memory ScenarioState as source of truth and never reread .beads/issues.jsonl, so any code under test that rewrites the export directly will silently diverge from mock responses, breaking the fixture's consistency contract. fr-9-1294f773 correctly notes that the 10-second smoke-test bound fails to enforce the bead's explicit <1 second acceptance criteria, allowing up to a 9× regression without test failure.\n\n## Votes\n\n- `fr-9-50eab653`: Accept\n  Confirmed by reading src/test_support/e2e_fixtures.rs:451-563, 591-610, 671-677: scenario_br_response and scenario_bv_response pull from ScenarioState.current_issues()/next_ready_issue() only; there is no path that re-reads .beads/issues.jsonl. The persist() path is one-way (memory→disk). This is a legitimate isolation/consistency defect regardless of whether current callers happen not to trigger it — per the review guidelines, shared-state divergence is not dismissible as theoretical. Making the filesystem authoritative, or refreshing ScenarioState before list/show/robot-next responses, correctly enforces the fixture's stated contract that mocked responses stay consistent with workspace mutations.\n- `fr-9-1294f773`: Accept\n  The bead's prompt (section 3 and Acceptance Criteria) explicitly mandates <1 second fixture creation, but the smoke test at line 921-924 only asserts elapsed < Duration::from_secs(10). That leaves a 9× gap where a real regression (e.g., 5s) would violate the bead contract yet still pass CI. Tightening to a sub-second bound with reasonable headroom (e.g., 2-3 seconds) closes the gap and makes the smoke test actually protect the stated performance requirement. Some headroom above the 1s target is reasonable for CI variability, but 10s is excessive.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 9
+}

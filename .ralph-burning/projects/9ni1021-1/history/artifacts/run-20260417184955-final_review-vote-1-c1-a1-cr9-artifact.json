@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T22:59:43.456400060Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the state-sync amendment and rejected the sub-second timing amendment: the first identifies a real fixture-fidelity defect, while the second conflicts with the bead’s explicit guidance to avoid brittle hard real-time assertions in CI.\n\n## Votes\n\n- `fr-9-50eab653`: Accept\n  `scenario_br_response` answers `br list/show` from `ScenarioState::current_issues()`, and `scenario_bv_response` answers `bv --robot-next` from `ScenarioState::next_ready_issue()`. `ScenarioState` persists its own mutations to `.beads/issues.jsonl`, but it never reloads that file, so the in-memory vector is the true source of truth. If code under test mutates the workspace export directly, the filesystem and mocked command surfaces diverge, which is a real fidelity defect for a fixture whose stated goal is to keep mocked responses aligned with filesystem mutations. Even if some cited examples are test scaffolding rather than production runtime, the underlying stale-state bug is still real.\n- `fr-9-1294f773`: Reject\n  The amendment misstates the requirement. The authoritative bead text in `.beads/issues.jsonl` explicitly says fixture creation should stay cheap for normal iteration but should not rely on brittle sub-second wall-clock assertions in CI, and its acceptance criteria call for a smoke test that avoids a flaky hard real-time budget. The current `< 10s` assertion is a coarse guard against pathological slowdowns and is consistent with that guidance. Tightening it to a sub-second threshold would encode the exact kind of CI flakiness the bead says to avoid, so this is not a valid defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}
