@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417173555-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417173555-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T18:01:11.373322370Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the lineage display changes across src/cli/task.rs, src/cli/project.rs, src/cli/run.rs, src/contexts/project_run_record/queries.rs, and tests/cli.rs. The implementation is correct: `--json` flag added to task show / project show (both emit ProjectDetail via serde); `RunStatusJsonView` gained nullable `milestone_id`/`bead_id` populated via `apply_run_status_lineage` (covering both the stale and non-stale paths); `run status` text emits `Milestone: X | Bead: Y` only when both labels are present so non-milestone tasks are unaffected; `run history` JSON adds `bead_id` to every event/payload/artifact, and text output appends `(bead=...)` only when a bead_id exists (empty suffix otherwise preserves legacy formatting). Lineage resolution gracefully falls back to IDs when milestone metadata is unavailable via `<milestone metadata unavailable>` detection. `cargo build`, `cargo fmt --check`, and the targeted test set (run_status, project_show, task_show, run_history plus the 1063 lib tests) all pass on the working tree. Pre-existing clippy errors on this repo are present on master and unrelated to this bead. No correctness, safety, or robustness issues found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

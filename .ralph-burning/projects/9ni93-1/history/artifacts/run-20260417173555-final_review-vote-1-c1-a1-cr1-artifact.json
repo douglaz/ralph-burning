@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417173555-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417173555-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T18:02:34.150296415Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment. The cited code introduces a real regression in `run status`: optional lineage display now depends on `project::load_project_detail`, which hard-requires a readable/parsible `journal.ndjson` and can abort the command before the existing snapshot-based status path runs.\n\n## Votes\n\n- `fr-1-24a0ee6b`: Accept\n  `handle_status()` now calls `load_run_lineage_summary()` before reading the snapshot, and that helper unconditionally goes through `project::load_project_detail()`. `load_project_detail()` delegates to `show_project()`, which always reads and parses `journal.ndjson` and propagates failures. That means a missing/corrupt journal, or a transient partial write, now causes `run status` to fail even when the lineage fields are absent or only additive display metadata. The previous status path explicitly treated journal reconciliation as best-effort (`if let Ok(events) = ...`) and could still report the canonical `run.json` snapshot. This is a correctness and robustness regression in a core monitoring command, so the amendment should be accepted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417173555-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417173555-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T18:02:26.177642934Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified the finding against the code: handle_status now routes lineage loading through project::load_project_detail → show_project, which hard-requires journal_port.read_journal(...)? and returns CorruptRecord for missing or malformed journals. This regresses run status from its previous best-effort journal handling (if let Ok(events) = ...) into a command that aborts before printing the canonical run.json snapshot. During active runs, partial writes or trailing-line corruption (strict in parse_journal) can block a core monitoring command. Severity and remediation hint are sound.\n\n## Votes\n\n- `fr-1-24a0ee6b`: Accept\n  Confirmed by reading the referenced code: src/cli/run.rs:2453 calls load_project_detail, which at src/contexts/project_run_record/service.rs:1466 does journal_port.read_journal(...)? with strict parsing (src/contexts/project_run_record/journal.rs:41 validates integrity + sequence; FsJournalStore at src/adapters/fs.rs:1777 returns CorruptRecord for missing file). handle_status at src/cli/run.rs:10768 now calls load_run_lineage_summary with ? before the tolerant if let Ok(events) = ... path on line 10770, so any journal read/parse failure short-circuits run status and prevents the snapshot output. This is a real regression of a core monitoring command and the proposed remediation (derive lineage IDs from project.toml task_source and hydrate labels best-effort) preserves pre-patch behavior without requiring journal parsing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}
