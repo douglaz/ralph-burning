@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-arbiter-c1-a1-cr19-artifact",
+  "payload_id": "run-20260416164042-final_review-arbiter-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T01:30:04.777280358Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment about `repair_historical_failure_state` because the code shows its `bool` result is not meaningful and is used as if it were. Rejected the redundant-I/O amendment because its factual basis is materially inaccurate: one cited closure is in-memory-only, and the actual repeated lineage reads occur in different helpers than the amendment identifies.\n\n## Rulings\n\n- `fr-19-f6b2068c`: Reject\n  The cited performance issue is described inaccurately. In `try_reconcile_failure`, `lineage_started_at` and `lineage_attempt_for_run` each call `find_runs_for_bead`, but `journal_attempt_for_run` only scans the already-loaded `journal_events` vector and does not touch `task-runs.ndjson`. The amendment also points to `completion_lineage_attempt` and `validate_failure_attempt` as if they repeatedly exercise those three closures, but the repeated lineage reads in that area come from other helpers (`lineage_completion_attempt_identity`, the explicit `find_runs_for_bead` inside `completion_lineage_attempt`, and `durable_lineage_attempt_identity`). There may be an optimization opportunity here, but this amendment does not identify it precisely enough to stand as an accepted review finding.\n- `fr-19-c49389f2`: Accept\n  `repair_historical_failure_state` calls `repair_task_run_with_disposition(...)` and then unconditionally returns `Ok(true)`. Both callers immediately use that boolean in `if repaired_historical_failure { repair_recorded_failure_attempt_ordinals(...) }` and also log `repaired_historical_failure`, so on every successful call the branch is effectively unconditional and the field name implies a change-sensitive signal that the function does not provide. That is concrete evidence of a misleading API and dead conditional. The accepted issue is the meaningless boolean, not the stronger claim that ordinal repair is always safe to skip on a no-op; the safe remediation is either to expose real change information from the lower layer or to remove the conditional and document the helper as unconditional.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 19
+}
