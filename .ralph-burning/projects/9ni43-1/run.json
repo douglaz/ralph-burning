@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260417123935",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 10
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-9-ca996f96",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "finding_summary: `find_explicit_materialized_bead()` treats every `BrExitError` from `br show` as if the explicit bead were simply missing. In [src/contexts/milestone_record/service.rs](/home/master/p/ralphs/ralph-burning/src/contexts/milestone_record/service.rs:2269) through [service.rs:2280](/home/master/p/ralphs/ralph-burning/src/contexts/milestone_record/service.rs:2280), a locked/corrupt `.beads` state or any other non-not-found `br show` failure is silently ignored, and export can then fall through to title matching or fresh creation. That can duplicate an explicitly anchored bead or bind the proposal to the wrong existing bead instead of surfacing the repository error.\naffected_files: [\"src/contexts/milestone_record/service.rs:2269-2280\"]\nremediation_hint: Only continue when the `BrExitError` is a real not-found response (for example by reusing `is_missing_bead_error`); propagate all other `br show` failures.",
-        "created_at": "2026-04-17T16:23:55.979635938Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "26c073c215b19c1c8920c193849977323450fddcf827e786fb6d6ea083838b1c"
-      },
-      {
-        "amendment_id": "fr-9-a14b02db",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "finding_summary: Export trusts planner-supplied labels even when they collide with reserved export metadata. `materialized_bead_labels()` in [src/contexts/milestone_record/service.rs](/home/master/p/ralphs/ralph-burning/src/contexts/milestone_record/service.rs:1952) blindly preserves user labels, while later matching logic in [service.rs:1932-1950](/home/master/p/ralphs/ralph-burning/src/contexts/milestone_record/service.rs:1932) and [service.rs:2065-2076](/home/master/p/ralphs/ralph-burning/src/contexts/milestone_record/service.rs:2065) treats `proposal:*`, `workstream:*`, and `milestone-root` as trusted system labels. A bundle that emits one of those labels on a normal task/workstream can make reruns misclassify the bead as the root or as another proposal, leading to incorrect reuse or spurious ambiguity failures.\naffected_files: [\"src/contexts/milestone_record/service.rs:1932-1967\", \"src/contexts/milestone_record/service.rs:2065-2076\"]\nremediation_hint: Reject or strip reserved export-label namespaces during bundle validation/export so planner-authored labels cannot spoof exporter identity metadata.",
-        "created_at": "2026-04-17T16:23:55.979641098Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "1294376002efb395796f037e2128626f5bfd738dce3662108597417c7b13429d"
-      },
-      {
-        "amendment_id": "fr-9-de1942a4",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "In `src/adapters/br_process.rs:1341-1344`, `BrMutationAdapter::create_bead` joins labels with `,` and passes them as a single `--labels=a,b,c` argument. Bundle validation (`src/contexts/milestone_record/bundle.rs:205-207`) and the materialization label builder only reject empty labels — a label value containing a literal `,` would be silently split into two labels by the `br` CLI. Since bead label strings flow from the (often LLM-authored) plan bundle through `materialized_bead_labels()` into this adapter unchanged, a stray comma in a plan label would silently corrupt the labels applied to the created bead without any error path catching it. Either reject labels containing `,` in bundle validation, reject them in `create_bead`, or revert to the previous repeated `--label=...` form so label values are passed opaquely.",
-        "created_at": "2026-04-17T16:23:55.979646107Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "285a0e9fcd11a3a32bd66232306ff8c0bdbfdd539382a4b9dd9150d111bd276a"
-      }
-    ],
-    "processed_count": 24
+    "pending": [],
+    "processed_count": 27
   },
-  "status_summary": "running: final review restart round 10 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T16:08:09.695045727Z",

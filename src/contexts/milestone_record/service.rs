@@ -2277,7 +2277,7 @@ async fn find_explicit_materialized_bead<R: ProcessRunner>(
                     return Ok(Some(materialized_state_from_detail(detail)));
                 }
             }
-            Err(crate::adapters::br_process::BrError::BrExitError { .. }) => continue,
+            Err(error) if is_missing_bead_error(&error) => continue,
             Err(error) => {
                 return Err(milestone_bead_export_error(
                     bundle,
@@ -16618,6 +16618,79 @@ mod tests {
                     workstream_comment.clone(),
                 ]
         }));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn materialize_beads_propagates_non_missing_explicit_lookup_failures(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        setup_workspace(tmp.path());
+        let mut bundle = sample_bundle("ms-alpha", "Alpha");
+        bundle.acceptance_map[0].covered_by = vec!["authored-42".to_owned()];
+        bundle.workstreams[0].beads[0].bead_id = Some("authored-42".to_owned());
+        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+        bundle.workstreams[0].beads[0].title = "Renamed explicit bead".to_owned();
+
+        let mock = MockBrAdapter::from_responses([
+            MockBrResponse::success(list_all_stdout(vec![])),
+            MockBrResponse::success("Created bead root-epic"),
+            MockBrResponse::success(bead_detail_stdout(
+                "root-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha", "milestone-root"],
+                &[],
+            )),
+            MockBrResponse::success("Created bead ws-core"),
+            MockBrResponse::success(bead_detail_stdout(
+                "ws-core",
+                "Core",
+                "epic",
+                "open",
+                &["milestone:ms-alpha"],
+                &[],
+            )),
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "workspace is locked"),
+        ]);
+
+        let error = materialize_beads(&bundle, tmp.path(), &mock.as_mutation_adapter())
+            .await
+            .expect_err("non-missing explicit lookup failures should propagate");
+        let calls = mock.calls();
+
+        match error {
+            AppError::MilestoneOperationFailed {
+                milestone_id,
+                action,
+                details,
+            } => {
+                assert_eq!(milestone_id, "ms-alpha");
+                assert_eq!(action, "inspect explicit bead 'authored-42'");
+                assert!(details.contains("workspace is locked"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| {
+                    call.args.first().map(String::as_str) == Some("create")
+                        && call
+                            .args
+                            .iter()
+                            .any(|arg| arg == "--title=Renamed explicit bead")
+                })
+                .count(),
+            0
+        );
+        assert!(!calls
+            .iter()
+            .any(|call| call.args == vec!["sync".to_owned(), "--flush-only".to_owned()]));
 
         Ok(())
     }

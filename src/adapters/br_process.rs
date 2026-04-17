@@ -1329,6 +1329,9 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
     /// Create a new bead.
     ///
     /// Optional `labels` are passed as a single `--labels=<a,b,c>` argument.
+    ///
+    /// Because `br` treats that value as comma-delimited, literal commas inside
+    /// a label are rejected before spawning the subprocess.
     /// Optional `description` is passed as `--description=<d>`.
     pub async fn create_bead(
         &self,
@@ -1338,6 +1341,15 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         labels: &[String],
         description: Option<&str>,
     ) -> Result<BrOutput, BrError> {
+        if let Some(label) = labels.iter().find(|label| label.contains(',')) {
+            return Err(BrError::BrParseError {
+                details: format!(
+                    "label '{label}' contains ',' which would be split by br --labels"
+                ),
+                raw_output: String::new(),
+                command: "br create".to_owned(),
+            });
+        }
         let mut cmd = BrCommand::create(title, bead_type, priority);
         if !labels.is_empty() {
             cmd = cmd.kv("labels", labels.join(","));
@@ -2276,6 +2288,29 @@ mod tests {
                 "--description=Add OAuth2".to_owned(),
             ])
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_bead_rejects_labels_with_commas() -> Result<(), Box<dyn std::error::Error>> {
+        let ma = make_mutation_adapter(Vec::new());
+
+        let error = ma
+            .create_bead(
+                "Auth middleware",
+                "feature",
+                "1",
+                &["backend,security".to_owned()],
+                None,
+            )
+            .await
+            .expect_err("comma-delimited labels should be rejected before spawn");
+
+        assert!(matches!(error, BrError::BrParseError { .. }));
+        assert!(error.to_string().contains("would be split by br --labels"));
+        let command_log = ma.adapter.runner.command_log();
+        let commands = command_log.lock().expect("mock command log poisoned");
+        assert!(commands.is_empty());
         Ok(())
     }
 
