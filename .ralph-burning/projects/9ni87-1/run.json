@@ -2,29 +2,63 @@
   "active_run": {
     "run_id": "run-20260417041435",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-17T04:14:35.534358140Z",
     "prompt_hash_at_cycle_start": "9cb68b05c77dc985e4d497a0f6ccfd3b1a5131d1b72bb0bd332f6e87c16fff02",
     "prompt_hash_at_stage_start": "9cb68b05c77dc985e4d497a0f6ccfd3b1a5131d1b72bb0bd332f6e87c16fff02",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-dab560eb",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: The tool-failure scenario is currently self-fulfilling and does not verify the required journaled error handling. `tests/unit/controller_runtime_test.rs:277-310` defines `escalate_br_failure_to_needs_operator`, which catches a mocked `br close` error and then unconditionally writes a `NeedsOperator` transition; the test at `tests/unit/controller_runtime_test.rs:655-701` only asserts that synthetic transition. The real close-failure path in `src/contexts/automation_runtime/success_reconciliation.rs:257-270` and `src/contexts/automation_runtime/success_reconciliation.rs:455-494` returns `BrCloseFailed` before any `NeedsOperator` update, so this test can stay green even if the runtime never records operator intervention. It also never inspects the milestone journal via `read_journal`, leaving the prompt's \"error context is recorded in journal\" requirement uncovered. affected_files: [\"tests/unit/controller_runtime_test.rs\", \"src/contexts/automation_runtime/success_reconciliation.rs\"]. remediation_hint: Exercise the production reconciliation failure path with mocks and assert both the persisted controller state and the milestone journal contents after the failure.",
+        "created_at": "2026-04-17T04:43:28.501624012Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "e5cb3469f86ad8ce4e2e2d062ecab24349d51a2563ed34214c7be26b6eaf8ad7"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-17T04:32:45.560963864Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
 }
