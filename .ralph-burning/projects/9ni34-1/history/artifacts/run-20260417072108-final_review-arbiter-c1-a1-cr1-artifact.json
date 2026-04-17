@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-arbiter-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417072108-final_review-arbiter-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T07:53:26.306605923Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment. The deciding evidence is that the bundle schema and validation logic already provide deterministic implicit bead identifiers and validate exact cross-references against them, so explicit authored `bead_id`s are optional by design rather than missing required data.\n\n## Rulings\n\n- `fr-1-36e3f366`: Reject\n  The contract already supports exact cross-references without requiring authored `bead_id`s. In `MilestoneBundle::validate()` (`src/contexts/milestone_record/bundle.rs:145-190` and `246-314`), beads without `bead_id` are assigned deterministic implicit slot IDs (`bead-1`, `bead-2`, ...), and `depends_on` / `acceptance_map.covered_by` are validated against those IDs. `canonicalize_bundle()` then upgrades them to milestone-qualified IDs (`src/contexts/milestone_record/bundle.rs:1022-1078`). The sample bundle and round-trip tests also exercise this path with `bead_id: None` plus `covered_by: [\"bead-1\", ...]` and succeed (`src/contexts/milestone_record/bundle.rs:1450-1459`, `1512-1520`). The prompt could be clearer about using implicit `bead-N` references, but the absence of an explicit requirement to author unique `bead_id`s is not itself a correctness defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

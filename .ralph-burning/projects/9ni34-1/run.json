@@ -2,29 +2,74 @@
   "active_run": {
     "run_id": "run-20260417072108",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-17T07:21:08.915370991Z",
     "prompt_hash_at_cycle_start": "6ab80a0ddd131c898e4dda9d9061818dc561a9dd69b8aa0c734f0bfc2f1892d5",
     "prompt_hash_at_stage_start": "6ab80a0ddd131c898e4dda9d9061818dc561a9dd69b8aa0c734f0bfc2f1892d5",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-81165722",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: The new prompt tells the model to \"assign priority using P1 ... P2 ... P3\" at `src/contexts/workspace_governance/template_catalog.rs:341`, but the MilestoneBundle contract expects `priority` to be a numeric field (`1=P1, 2=P2, ...`) at `src/contexts/milestone_record/bundle.rs:1144-1146`. That is conflicting guidance for the same field and can drive schema-invalid milestone bundles on backends that do not hard-coerce structured output.\naffected_files: [\"src/contexts/workspace_governance/template_catalog.rs\", \"src/contexts/milestone_record/bundle.rs\"]\nremediation_hint: Reword the prompt to request numeric priority values (`1`, `2`, `3`) while explaining their P1/P2/P3 meaning.",
+        "created_at": "2026-04-17T07:53:26.319996397Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "1e37529890f07626714e24494e2b7aacc671fc21307089b1f35ebe4291313349"
+      },
+      {
+        "amendment_id": "fr-1-fbafd881",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: The new `validate_dependency_graph()` helper is not actually safe on malformed bundles. It calls `dependency_graph_analysis()` (`src/contexts/milestone_record/bundle.rs:838-949`), which canonicalizes IDs without running full validation (`src/contexts/milestone_record/bundle.rs:1022-1046`), and `dependency_graph_analysis_from_canonical()` then inserts bead IDs into a `BTreeMap` with silent overwrite semantics (`src/contexts/milestone_record/bundle.rs:714-717`). If two beads normalize to the same ID, the later one wins and the helper can return `Ok(())` or compute the graph against the wrong node instead of reporting the malformed input.\naffected_files: [\"src/contexts/milestone_record/bundle.rs\"]\nremediation_hint: Base `validate_dependency_graph()` on `validated_canonical_bundle()` or explicitly reject duplicate normalized bead IDs before building `bead_index`.",
+        "created_at": "2026-04-17T07:53:26.320001136Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "ccc55999d0f306e05fee3eba0df7358b9da0b93c60fe0224907d134dc0fe0138"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-17T07:41:07.326093905Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-7-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
 }

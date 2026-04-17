@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417072108-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T07:52:12.728569575Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the findings about the priority field mismatch and the unsafe dependency-graph helper. Rejected the bead_id prompt finding because the bundle contract already supports exact cross-references through deterministic implicit bead IDs, so requiring authored bead IDs is not necessary for correctness.\n\n## Votes\n\n- `fr-1-36e3f366`: Reject\n  `bead_id` is optional by design, and the bundle contract already supports exact cross-references through deterministic implicit slot IDs like `bead-1`, which are canonicalized to milestone-qualified IDs later. `validate()` explicitly validates `depends_on` and `acceptance_map.covered_by` against those implicit IDs, and the sample bundle exercises that path. The prompt could be clearer about using implicit `bead-N` references, but the absence of a requirement to author an explicit unique `bead_id` for every bead is not itself a correctness defect.\n- `fr-1-81165722`: Accept\n  The prompt text says to assign priority using `P1`/`P2`/`P3`, while the `MilestoneBundle` contract defines `priority` as `Option<u32>` with `1=P1, 2=P2, ...`. There is no custom deserializer here that accepts symbolic strings, so a model that follows the prompt literally can emit schema-invalid JSON or fail deserialization. Even with structured output enabled, this is a real prompt/schema contradiction that reduces robustness and should be fixed.\n- `fr-1-fbafd881`: Accept\n  `validate_dependency_graph()` currently calls `dependency_graph_analysis()`, which only canonicalizes and does not run the full duplicate-ID validation performed by `validated_canonical_bundle()`. Then `dependency_graph_analysis_from_canonical()` builds `bead_index` with `BTreeMap::insert`, so duplicate normalized bead IDs silently overwrite earlier entries. That means malformed bundles can be analyzed against the wrong node set or even return `Ok(())` instead of surfacing the invalid duplicate identifiers. This helper should validate first or explicitly reject duplicate canonical IDs before indexing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
