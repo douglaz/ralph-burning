@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde_json::json;
@@ -98,6 +99,13 @@ pub fn build_e2e_milestone_scenario_fixture() -> E2eScenarioFixture {
         mock_br,
         mock_bv,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FollowUpBeadState {
+    Absent,
+    Open,
+    Closed,
 }
 
 fn scenario_bundle() -> MilestoneBundle {
@@ -316,47 +324,8 @@ fn load_materialized_fixture(base_dir: &Path, bundle: &MilestoneBundle) -> Miles
 }
 
 fn build_mock_br_adapter(issues: &[BeadGraphIssue]) -> MockBrAdapter {
-    let root_issue = issues
-        .iter()
-        .find(|issue| issue.id == ROOT_EPIC_ID)
-        .expect("root epic issue");
-    let prepare_issue = issues
-        .iter()
-        .find(|issue| issue.id == PREPARE_TASK_ID)
-        .expect("prepare task issue");
-    let validate_issue = issues
-        .iter()
-        .find(|issue| issue.id == VALIDATE_TASK_ID)
-        .expect("validate task issue");
-    let follow_up_issue = follow_up_validation_issue(BeadStatus::Open);
-    let follow_up_closed_issue = follow_up_validation_issue(BeadStatus::Closed);
-    let issues_with_follow_up = issues
-        .iter()
-        .cloned()
-        .chain([follow_up_issue.clone()])
-        .collect::<Vec<_>>();
-    let issues_with_closed_follow_up = issues
-        .iter()
-        .cloned()
-        .chain([follow_up_closed_issue.clone()])
-        .collect::<Vec<_>>();
-
-    MockBrAdapter::from_responses([
-        MockBrResponse::success(br_list_json(issues)),
-        MockBrResponse::success(br_show_json(root_issue, issues)),
-        MockBrResponse::success(br_show_json(prepare_issue, issues)),
-        MockBrResponse::success(br_show_json(validate_issue, issues)),
-        MockBrResponse::success(format!("Created bead {}", follow_up_issue.id)),
-        MockBrResponse::success(br_show_json(&follow_up_issue, &issues_with_follow_up)),
-        MockBrResponse::success(br_list_json(&issues_with_follow_up)),
-        MockBrResponse::success(format!("Closed {}", follow_up_issue.id)),
-        MockBrResponse::success(br_show_json(
-            &follow_up_closed_issue,
-            &issues_with_closed_follow_up,
-        )),
-        MockBrResponse::success(br_list_json(&issues_with_closed_follow_up)),
-        MockBrResponse::success("synced"),
-    ])
+    let scenario = ScenarioBrMock::new(issues);
+    MockBrAdapter::from_dispatch(move |call| scenario.response_for_call(&call.args))
 }
 
 fn build_mock_bv_adapter(issues: &[BeadGraphIssue]) -> MockBvAdapter {
@@ -449,7 +418,23 @@ fn br_show_json(issue: &BeadGraphIssue, issues: &[BeadGraphIssue]) -> String {
                 "status": linked_issue.status.to_string(),
             })
         }).collect::<Vec<_>>(),
-        "dependents": Vec::<serde_json::Value>::new(),
+        "dependents": issues
+            .iter()
+            .filter_map(|candidate| {
+                candidate
+                    .dependencies
+                    .iter()
+                    .find(|dependency| dependency.depends_on_id == issue.id)
+                    .map(|dependency| {
+                        json!({
+                            "id": candidate.id,
+                            "dependency_type": dependency_kind_json(&dependency.kind),
+                            "title": candidate.title,
+                            "status": candidate.status.to_string(),
+                        })
+                    })
+            })
+            .collect::<Vec<_>>(),
         "comments": Vec::<serde_json::Value>::new(),
         "owner": "fixture",
         "created_at": issue.created_at.to_rfc3339(),
@@ -473,6 +458,97 @@ fn dependency_kind_json(kind: &DependencyKind) -> &'static str {
     match kind {
         DependencyKind::Blocks => "blocks",
         DependencyKind::ParentChild => "parent_child",
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScenarioBrMock {
+    issues: Vec<BeadGraphIssue>,
+    follow_up_open_issue: BeadGraphIssue,
+    follow_up_closed_issue: BeadGraphIssue,
+    follow_up_state: Arc<Mutex<FollowUpBeadState>>,
+}
+
+impl ScenarioBrMock {
+    fn new(issues: &[BeadGraphIssue]) -> Self {
+        Self {
+            issues: issues.to_vec(),
+            follow_up_open_issue: follow_up_validation_issue(BeadStatus::Open),
+            follow_up_closed_issue: follow_up_validation_issue(BeadStatus::Closed),
+            follow_up_state: Arc::new(Mutex::new(FollowUpBeadState::Absent)),
+        }
+    }
+
+    fn response_for_call(&self, args: &[String]) -> Option<MockBrResponse> {
+        match args {
+            [command, flag] if command == "list" && flag == "--json" => Some(
+                MockBrResponse::success(br_list_json(&self.current_issues())),
+            ),
+            [command, bead_id, flag] if command == "show" && flag == "--json" => {
+                Some(self.show_response(bead_id))
+            }
+            [command, title, bead_type, priority]
+                if command == "create"
+                    && title == "--title=Follow-up validation bead"
+                    && bead_type == "--type=task"
+                    && priority == "--priority=2" =>
+            {
+                *self
+                    .follow_up_state
+                    .lock()
+                    .expect("scenario follow-up state lock poisoned") = FollowUpBeadState::Open;
+                Some(MockBrResponse::success(format!(
+                    "Created bead {}",
+                    self.follow_up_open_issue.id
+                )))
+            }
+            [command, bead_id, reason]
+                if command == "close"
+                    && bead_id == FOLLOW_UP_TASK_ID
+                    && reason == "--reason=Fixture cleanup" =>
+            {
+                Some(self.close_response())
+            }
+            [command, flag] if command == "sync" && flag == "--flush-only" => {
+                Some(MockBrResponse::success("synced"))
+            }
+            _ => None,
+        }
+    }
+
+    fn show_response(&self, bead_id: &str) -> MockBrResponse {
+        let issues = self.current_issues();
+        let Some(issue) = issues.iter().find(|issue| issue.id == bead_id).cloned() else {
+            return MockBrResponse::exit_failure(1, format!("bead not found: {bead_id}"));
+        };
+
+        MockBrResponse::success(br_show_json(&issue, &issues))
+    }
+
+    fn close_response(&self) -> MockBrResponse {
+        let mut state = self
+            .follow_up_state
+            .lock()
+            .expect("scenario follow-up state lock poisoned");
+        if *state == FollowUpBeadState::Absent {
+            return MockBrResponse::exit_failure(1, format!("bead not found: {FOLLOW_UP_TASK_ID}"));
+        }
+        *state = FollowUpBeadState::Closed;
+        MockBrResponse::success(format!("Closed {}", self.follow_up_closed_issue.id))
+    }
+
+    fn current_issues(&self) -> Vec<BeadGraphIssue> {
+        let state = *self
+            .follow_up_state
+            .lock()
+            .expect("scenario follow-up state lock poisoned");
+        let mut issues = self.issues.clone();
+        match state {
+            FollowUpBeadState::Absent => {}
+            FollowUpBeadState::Open => issues.push(self.follow_up_open_issue.clone()),
+            FollowUpBeadState::Closed => issues.push(self.follow_up_closed_issue.clone()),
+        }
+        issues
     }
 }
 
@@ -625,41 +701,72 @@ mod tests {
             .as_bv_adapter()
             .with_working_dir(working_dir);
 
+        let prepare_detail: BeadDetail = br
+            .exec_json(&BrCommand::show(PREPARE_TASK_ID))
+            .await
+            .expect("br show");
+        assert_eq!(prepare_detail.id, PREPARE_TASK_ID);
+        assert_eq!(prepare_detail.dependencies.len(), 1);
+        assert_eq!(prepare_detail.dependencies[0].id, ROOT_EPIC_ID);
+        assert_eq!(prepare_detail.dependents.len(), 1);
+        assert_eq!(prepare_detail.dependents[0].id, VALIDATE_TASK_ID);
+        assert_eq!(prepare_detail.dependents[0].kind, DependencyKind::Blocks);
+
         let listed: Vec<BeadSummary> = br.exec_json(&BrCommand::list()).await.expect("br list");
         assert_eq!(listed.len(), 3);
         assert_eq!(listed[0].id, ROOT_EPIC_ID);
         assert_eq!(listed[1].id, PREPARE_TASK_ID);
         assert_eq!(listed[2].id, VALIDATE_TASK_ID);
 
-        let detail: BeadDetail = br
+        let root_detail: BeadDetail = br
             .exec_json(&BrCommand::show(ROOT_EPIC_ID))
             .await
             .expect("br show root");
-        assert_eq!(detail.id, ROOT_EPIC_ID);
-        assert_eq!(detail.dependencies.len(), 0);
+        assert_eq!(root_detail.id, ROOT_EPIC_ID);
+        assert_eq!(root_detail.dependencies.len(), 0);
+        assert_eq!(
+            root_detail
+                .dependents
+                .iter()
+                .map(|dependency| (dependency.id.clone(), dependency.kind.to_string()))
+                .collect::<BTreeSet<_>>(),
+            [
+                (PREPARE_TASK_ID.to_owned(), "parent_child".to_owned()),
+                (VALIDATE_TASK_ID.to_owned(), "parent_child".to_owned()),
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        );
 
-        let detail: BeadDetail = br
-            .exec_json(&BrCommand::show(PREPARE_TASK_ID))
-            .await
-            .expect("br show");
-        assert_eq!(detail.id, PREPARE_TASK_ID);
-        assert_eq!(detail.dependencies.len(), 1);
-        assert_eq!(detail.dependencies[0].id, ROOT_EPIC_ID);
-
-        let detail: BeadDetail = br
+        let validate_detail: BeadDetail = br
             .exec_json(&BrCommand::show(VALIDATE_TASK_ID))
             .await
             .expect("br show validate");
-        assert_eq!(detail.id, VALIDATE_TASK_ID);
-        assert_eq!(detail.dependencies.len(), 2);
-        assert_eq!(detail.dependencies[0].id, ROOT_EPIC_ID);
-        assert_eq!(detail.dependencies[1].id, PREPARE_TASK_ID);
+        assert_eq!(validate_detail.id, VALIDATE_TASK_ID);
+        assert_eq!(validate_detail.dependencies.len(), 2);
+        assert_eq!(validate_detail.dependencies[0].id, ROOT_EPIC_ID);
+        assert_eq!(validate_detail.dependencies[1].id, PREPARE_TASK_ID);
+        assert!(validate_detail.dependents.is_empty());
+
+        let repeated_prepare_detail: BeadDetail = br
+            .exec_json(&BrCommand::show(PREPARE_TASK_ID))
+            .await
+            .expect("repeated br show");
+        assert_eq!(repeated_prepare_detail, prepare_detail);
 
         let create_output = br
             .exec_read(&BrCommand::create("Follow-up validation bead", "task", "2"))
             .await
             .expect("br create");
         assert!(create_output.stdout.contains(FOLLOW_UP_TASK_ID));
+
+        let listed_with_follow_up: Vec<BeadSummary> = br
+            .exec_json(&BrCommand::list())
+            .await
+            .expect("br list after create");
+        assert_eq!(listed_with_follow_up.len(), 4);
+        assert_eq!(listed_with_follow_up[3].id, FOLLOW_UP_TASK_ID);
+        assert_eq!(listed_with_follow_up[3].status, BeadStatus::Open);
 
         let created_detail: BeadDetail = br
             .exec_json(&BrCommand::show(FOLLOW_UP_TASK_ID))
@@ -671,13 +778,20 @@ mod tests {
         assert_eq!(created_detail.dependencies[0].id, VALIDATE_TASK_ID);
         assert_eq!(created_detail.status, BeadStatus::Open);
 
-        let listed_with_follow_up: Vec<BeadSummary> = br
-            .exec_json(&BrCommand::list())
+        let validate_after_create: BeadDetail = br
+            .exec_json(&BrCommand::show(VALIDATE_TASK_ID))
             .await
-            .expect("br list after create");
-        assert_eq!(listed_with_follow_up.len(), 4);
-        assert_eq!(listed_with_follow_up[3].id, FOLLOW_UP_TASK_ID);
-        assert_eq!(listed_with_follow_up[3].status, BeadStatus::Open);
+            .expect("br show validate after create");
+        assert_eq!(validate_after_create.dependents.len(), 1);
+        assert_eq!(validate_after_create.dependents[0].id, FOLLOW_UP_TASK_ID);
+        assert_eq!(
+            validate_after_create.dependents[0].kind,
+            DependencyKind::Blocks
+        );
+        assert_eq!(
+            validate_after_create.dependents[0].status,
+            Some(BeadStatus::Open)
+        );
 
         let close_output = br
             .exec_read(&BrCommand::close(FOLLOW_UP_TASK_ID, "Fixture cleanup"))
@@ -691,6 +805,17 @@ mod tests {
             .expect("br show closed bead");
         assert_eq!(closed_detail.id, FOLLOW_UP_TASK_ID);
         assert_eq!(closed_detail.status, BeadStatus::Closed);
+
+        let validate_after_close: BeadDetail = br
+            .exec_json(&BrCommand::show(VALIDATE_TASK_ID))
+            .await
+            .expect("br show validate after close");
+        assert_eq!(validate_after_close.dependents.len(), 1);
+        assert_eq!(validate_after_close.dependents[0].id, FOLLOW_UP_TASK_ID);
+        assert_eq!(
+            validate_after_close.dependents[0].status,
+            Some(BeadStatus::Closed)
+        );
 
         let listed_after_close: Vec<BeadSummary> = br
             .exec_json(&BrCommand::list())
@@ -721,6 +846,11 @@ mod tests {
                 .map(|call| call.args.clone())
                 .collect::<Vec<_>>(),
             vec![
+                vec![
+                    "show".to_owned(),
+                    PREPARE_TASK_ID.to_owned(),
+                    "--json".to_owned()
+                ],
                 vec!["list".to_owned(), "--json".to_owned()],
                 vec![
                     "show".to_owned(),
@@ -729,12 +859,12 @@ mod tests {
                 ],
                 vec![
                     "show".to_owned(),
-                    PREPARE_TASK_ID.to_owned(),
+                    VALIDATE_TASK_ID.to_owned(),
                     "--json".to_owned()
                 ],
                 vec![
                     "show".to_owned(),
-                    VALIDATE_TASK_ID.to_owned(),
+                    PREPARE_TASK_ID.to_owned(),
                     "--json".to_owned()
                 ],
                 vec![
@@ -743,12 +873,17 @@ mod tests {
                     "--type=task".to_owned(),
                     "--priority=2".to_owned(),
                 ],
+                vec!["list".to_owned(), "--json".to_owned()],
                 vec![
                     "show".to_owned(),
                     FOLLOW_UP_TASK_ID.to_owned(),
                     "--json".to_owned()
                 ],
-                vec!["list".to_owned(), "--json".to_owned()],
+                vec![
+                    "show".to_owned(),
+                    VALIDATE_TASK_ID.to_owned(),
+                    "--json".to_owned()
+                ],
                 vec![
                     "close".to_owned(),
                     FOLLOW_UP_TASK_ID.to_owned(),
@@ -757,6 +892,11 @@ mod tests {
                 vec![
                     "show".to_owned(),
                     FOLLOW_UP_TASK_ID.to_owned(),
+                    "--json".to_owned()
+                ],
+                vec![
+                    "show".to_owned(),
+                    VALIDATE_TASK_ID.to_owned(),
                     "--json".to_owned()
                 ],
                 vec!["list".to_owned(), "--json".to_owned()],

@@ -24,6 +24,8 @@ use std::time::Duration;
 
 use crate::adapters::br_process::{BrAdapter, BrError, BrMutationAdapter, BrOutput, ProcessRunner};
 
+type MockBrDispatch = dyn Fn(&MockBrCall) -> Option<MockBrResponse> + Send + Sync;
+
 /// Recorded `br` invocation metadata for assertions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MockBrCall {
@@ -92,10 +94,17 @@ impl MockBrResponse {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct MockBrState {
     calls: Mutex<Vec<MockBrCall>>,
     responses: Mutex<VecDeque<MockBrResponse>>,
+    dispatch: Mutex<Option<Arc<MockBrDispatch>>>,
+}
+
+impl std::fmt::Debug for MockBrState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MockBrState").finish_non_exhaustive()
+    }
 }
 
 /// Cloneable mock runner for `br` operations with full call tracking.
@@ -122,6 +131,16 @@ impl MockBrAdapter {
         mock
     }
 
+    /// Create a mock that derives responses from each recorded call.
+    pub fn from_dispatch<F>(dispatch: F) -> Self
+    where
+        F: Fn(&MockBrCall) -> Option<MockBrResponse> + Send + Sync + 'static,
+    {
+        let mock = Self::new();
+        mock.set_dispatch(dispatch);
+        mock
+    }
+
     /// Queue another response.
     pub fn push_response(&self, response: MockBrResponse) {
         self.state
@@ -129,6 +148,19 @@ impl MockBrAdapter {
             .lock()
             .expect("mock br response lock poisoned")
             .push_back(response);
+    }
+
+    /// Install a dispatch function that can synthesize responses from command
+    /// arguments instead of consuming the FIFO queue.
+    pub fn set_dispatch<F>(&self, dispatch: F)
+    where
+        F: Fn(&MockBrCall) -> Option<MockBrResponse> + Send + Sync + 'static,
+    {
+        *self
+            .state
+            .dispatch
+            .lock()
+            .expect("mock br dispatch lock poisoned") = Some(Arc::new(dispatch));
     }
 
     /// Return the full call history.
@@ -158,22 +190,32 @@ impl ProcessRunner for MockBrAdapter {
         timeout: Duration,
         working_dir: Option<&std::path::Path>,
     ) -> Result<BrOutput, BrError> {
+        let call = MockBrCall {
+            args,
+            timeout,
+            working_dir: working_dir.map(std::path::Path::to_path_buf),
+        };
         self.state
             .calls
             .lock()
             .expect("mock br call lock poisoned")
-            .push(MockBrCall {
-                args,
-                timeout,
-                working_dir: working_dir.map(std::path::Path::to_path_buf),
-            });
+            .push(call.clone());
 
-        let response = self
+        let dispatch = self
             .state
-            .responses
+            .dispatch
             .lock()
-            .expect("mock br response lock poisoned")
-            .pop_front()
+            .expect("mock br dispatch lock poisoned")
+            .clone();
+        let response = dispatch
+            .and_then(|dispatch| dispatch(&call))
+            .or_else(|| {
+                self.state
+                    .responses
+                    .lock()
+                    .expect("mock br response lock poisoned")
+                    .pop_front()
+            })
             .expect("mock br runner exhausted");
 
         if !response.latency.is_zero() {
@@ -217,5 +259,49 @@ mod tests {
             .expect_err("runner error should surface");
 
         assert!(matches!(error, BrError::BrNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn mock_br_adapter_can_dispatch_by_command() {
+        let mock = MockBrAdapter::from_dispatch(|call| match call.args.as_slice() {
+            [command, bead_id, flag] if command == "show" && flag == "--json" => {
+                Some(MockBrResponse::success(format!(r#"{{"id":"{bead_id}"}}"#)))
+            }
+            [command, flag] if command == "list" && flag == "--json" => {
+                Some(MockBrResponse::success("[]"))
+            }
+            _ => None,
+        });
+        let adapter = mock.as_br_adapter();
+
+        let bead = adapter
+            .exec_json::<serde_json::Value>(&BrCommand::show("bead-7"))
+            .await
+            .expect("show succeeds");
+        assert_eq!(bead["id"], "bead-7");
+
+        let listed = adapter
+            .exec_json::<Vec<serde_json::Value>>(&BrCommand::list())
+            .await
+            .expect("list succeeds");
+        assert!(listed.is_empty());
+
+        let repeated = adapter
+            .exec_json::<serde_json::Value>(&BrCommand::show("bead-7"))
+            .await
+            .expect("repeated show succeeds");
+        assert_eq!(repeated["id"], "bead-7");
+
+        assert_eq!(
+            mock.calls()
+                .into_iter()
+                .map(|call| call.args)
+                .collect::<Vec<_>>(),
+            vec![
+                vec!["show".to_owned(), "bead-7".to_owned(), "--json".to_owned()],
+                vec!["list".to_owned(), "--json".to_owned()],
+                vec!["show".to_owned(), "bead-7".to_owned(), "--json".to_owned()],
+            ]
+        );
     }
 }
