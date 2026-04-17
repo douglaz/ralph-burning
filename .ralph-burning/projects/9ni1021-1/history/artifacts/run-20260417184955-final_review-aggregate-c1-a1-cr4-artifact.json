@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417184955-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260417184955-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T21:19:42.547225292Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-073ce007`\n- `fr-4-303bd4b6`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-4-65f5a738`\n\n## Final Accepted Amendments\n\n### `fr-4-073ce007`\n\nfinding_summary: The returned `mock_br` fixture is only usable for one hard-coded command sequence. `build_mock_br_adapter()` preloads a single FIFO queue of responses, and `MockBrAdapter::run()` blindly pops the next entry, so any integration test that calls `show` before `list`, repeats a query, or skips one of the smoke-test steps will receive the wrong payload or exhaust the mock. That makes the advertised reusable scenario fixture unreliable outside the one embedded smoke test. References: `src/test_support/e2e_fixtures.rs:344-359`, `src/test_support/br.rs:154-184`. remediation_hint: Make the scenario mock dispatch by command/arguments (or maintain command-aware mutable state) so `list`/`show`/`create`/`close`/`sync` work in any reasonable order.\n\n### `fr-4-303bd4b6`\n\nfinding_summary: The mocked `br show` payloads do not actually match the bead graph because `br_show_json()` hard-codes `dependents` to an empty array. In this scenario, the root epic should report downstream dependents and the prepare task should report the validate task as a dependent, but any code that consumes `BeadDetail.dependents` will see an empty graph. That can hide regressions in downstream-context and planned-elsewhere logic that rely on reverse edges. References: `src/test_support/e2e_fixtures.rs:427-453`, `src/cli/project.rs:377-390`, `src/cli/project.rs:1778-1835`. remediation_hint: Derive `dependents` by scanning the scenario issues for reverse dependencies when constructing each `show` response.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}
