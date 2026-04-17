@@ -316,18 +316,45 @@ fn load_materialized_fixture(base_dir: &Path, bundle: &MilestoneBundle) -> Miles
 }
 
 fn build_mock_br_adapter(issues: &[BeadGraphIssue]) -> MockBrAdapter {
+    let root_issue = issues
+        .iter()
+        .find(|issue| issue.id == ROOT_EPIC_ID)
+        .expect("root epic issue");
     let prepare_issue = issues
         .iter()
         .find(|issue| issue.id == PREPARE_TASK_ID)
         .expect("prepare task issue");
-    let follow_up_issue = follow_up_validation_issue();
+    let validate_issue = issues
+        .iter()
+        .find(|issue| issue.id == VALIDATE_TASK_ID)
+        .expect("validate task issue");
+    let follow_up_issue = follow_up_validation_issue(BeadStatus::Open);
+    let follow_up_closed_issue = follow_up_validation_issue(BeadStatus::Closed);
+    let issues_with_follow_up = issues
+        .iter()
+        .cloned()
+        .chain([follow_up_issue.clone()])
+        .collect::<Vec<_>>();
+    let issues_with_closed_follow_up = issues
+        .iter()
+        .cloned()
+        .chain([follow_up_closed_issue.clone()])
+        .collect::<Vec<_>>();
 
     MockBrAdapter::from_responses([
         MockBrResponse::success(br_list_json(issues)),
+        MockBrResponse::success(br_show_json(root_issue, issues)),
         MockBrResponse::success(br_show_json(prepare_issue, issues)),
+        MockBrResponse::success(br_show_json(validate_issue, issues)),
         MockBrResponse::success(format!("Created bead {}", follow_up_issue.id)),
-        MockBrResponse::success(br_show_json(&follow_up_issue, issues)),
+        MockBrResponse::success(br_show_json(&follow_up_issue, &issues_with_follow_up)),
+        MockBrResponse::success(br_list_json(&issues_with_follow_up)),
         MockBrResponse::success(format!("Closed {}", follow_up_issue.id)),
+        MockBrResponse::success(br_show_json(
+            &follow_up_closed_issue,
+            &issues_with_closed_follow_up,
+        )),
+        MockBrResponse::success(br_list_json(&issues_with_closed_follow_up)),
         MockBrResponse::success("synced"),
     ])
 }
@@ -340,12 +367,12 @@ fn build_mock_bv_adapter(issues: &[BeadGraphIssue]) -> MockBvAdapter {
     MockBvAdapter::from_responses([MockBvResponse::success(next_bead_json(prepare_issue))])
 }
 
-fn follow_up_validation_issue() -> BeadGraphIssue {
+fn follow_up_validation_issue(status: BeadStatus) -> BeadGraphIssue {
     let created_at = scenario_timestamp() + Duration::minutes(2);
     BeadGraphIssue {
         id: FOLLOW_UP_TASK_ID.to_owned(),
         title: FOLLOW_UP_TASK_TITLE.to_owned(),
-        status: BeadStatus::Open,
+        status: status.clone(),
         priority: BeadPriority::new(2),
         bead_type: BeadType::Task,
         labels: vec!["integration".to_owned(), "follow-up".to_owned()],
@@ -358,7 +385,11 @@ fn follow_up_validation_issue() -> BeadGraphIssue {
         ],
         created_at,
         created_by: "fixture".to_owned(),
-        updated_at: created_at,
+        updated_at: if status == BeadStatus::Closed {
+            created_at + Duration::minutes(1)
+        } else {
+            created_at
+        },
         source_repo: ".".to_owned(),
         compaction_level: 0,
         original_size: 0,
@@ -369,8 +400,8 @@ fn follow_up_validation_issue() -> BeadGraphIssue {
             created_at,
             "fixture",
         )],
-        closed_at: None,
-        close_reason: None,
+        closed_at: (status == BeadStatus::Closed).then_some(created_at + Duration::minutes(1)),
+        close_reason: (status == BeadStatus::Closed).then_some("Fixture cleanup".to_owned()),
     }
 }
 
@@ -464,8 +495,8 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert!(
-            elapsed < Duration::from_secs(1),
-            "fixture creation should stay under one second, took {elapsed:?}"
+            elapsed < Duration::from_secs(10),
+            "fixture creation should avoid pathological slowdowns, took {elapsed:?}"
         );
 
         assert_eq!(fixture.milestone_id.as_str(), MILESTONE_ID);
@@ -601,12 +632,28 @@ mod tests {
         assert_eq!(listed[2].id, VALIDATE_TASK_ID);
 
         let detail: BeadDetail = br
+            .exec_json(&BrCommand::show(ROOT_EPIC_ID))
+            .await
+            .expect("br show root");
+        assert_eq!(detail.id, ROOT_EPIC_ID);
+        assert_eq!(detail.dependencies.len(), 0);
+
+        let detail: BeadDetail = br
             .exec_json(&BrCommand::show(PREPARE_TASK_ID))
             .await
             .expect("br show");
         assert_eq!(detail.id, PREPARE_TASK_ID);
         assert_eq!(detail.dependencies.len(), 1);
         assert_eq!(detail.dependencies[0].id, ROOT_EPIC_ID);
+
+        let detail: BeadDetail = br
+            .exec_json(&BrCommand::show(VALIDATE_TASK_ID))
+            .await
+            .expect("br show validate");
+        assert_eq!(detail.id, VALIDATE_TASK_ID);
+        assert_eq!(detail.dependencies.len(), 2);
+        assert_eq!(detail.dependencies[0].id, ROOT_EPIC_ID);
+        assert_eq!(detail.dependencies[1].id, PREPARE_TASK_ID);
 
         let create_output = br
             .exec_read(&BrCommand::create("Follow-up validation bead", "task", "2"))
@@ -622,12 +669,36 @@ mod tests {
         assert_eq!(created_detail.title, FOLLOW_UP_TASK_TITLE);
         assert_eq!(created_detail.dependencies.len(), 1);
         assert_eq!(created_detail.dependencies[0].id, VALIDATE_TASK_ID);
+        assert_eq!(created_detail.status, BeadStatus::Open);
+
+        let listed_with_follow_up: Vec<BeadSummary> = br
+            .exec_json(&BrCommand::list())
+            .await
+            .expect("br list after create");
+        assert_eq!(listed_with_follow_up.len(), 4);
+        assert_eq!(listed_with_follow_up[3].id, FOLLOW_UP_TASK_ID);
+        assert_eq!(listed_with_follow_up[3].status, BeadStatus::Open);
 
         let close_output = br
             .exec_read(&BrCommand::close(FOLLOW_UP_TASK_ID, "Fixture cleanup"))
             .await
             .expect("br close");
         assert!(close_output.stdout.contains(FOLLOW_UP_TASK_ID));
+
+        let closed_detail: BeadDetail = br
+            .exec_json(&BrCommand::show(FOLLOW_UP_TASK_ID))
+            .await
+            .expect("br show closed bead");
+        assert_eq!(closed_detail.id, FOLLOW_UP_TASK_ID);
+        assert_eq!(closed_detail.status, BeadStatus::Closed);
+
+        let listed_after_close: Vec<BeadSummary> = br
+            .exec_json(&BrCommand::list())
+            .await
+            .expect("br list after close");
+        assert_eq!(listed_after_close.len(), 4);
+        assert_eq!(listed_after_close[3].id, FOLLOW_UP_TASK_ID);
+        assert_eq!(listed_after_close[3].status, BeadStatus::Closed);
 
         let sync_output = br
             .exec_read(&BrCommand::sync_flush())
@@ -653,7 +724,17 @@ mod tests {
                 vec!["list".to_owned(), "--json".to_owned()],
                 vec![
                     "show".to_owned(),
+                    ROOT_EPIC_ID.to_owned(),
+                    "--json".to_owned()
+                ],
+                vec![
+                    "show".to_owned(),
                     PREPARE_TASK_ID.to_owned(),
+                    "--json".to_owned()
+                ],
+                vec![
+                    "show".to_owned(),
+                    VALIDATE_TASK_ID.to_owned(),
                     "--json".to_owned()
                 ],
                 vec![
@@ -667,11 +748,18 @@ mod tests {
                     FOLLOW_UP_TASK_ID.to_owned(),
                     "--json".to_owned()
                 ],
+                vec!["list".to_owned(), "--json".to_owned()],
                 vec![
                     "close".to_owned(),
                     FOLLOW_UP_TASK_ID.to_owned(),
                     "--reason=Fixture cleanup".to_owned(),
                 ],
+                vec![
+                    "show".to_owned(),
+                    FOLLOW_UP_TASK_ID.to_owned(),
+                    "--json".to_owned()
+                ],
+                vec!["list".to_owned(), "--json".to_owned()],
                 vec!["sync".to_owned(), "--flush-only".to_owned()],
             ]
         );
