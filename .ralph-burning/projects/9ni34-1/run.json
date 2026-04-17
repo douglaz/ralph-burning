@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260417072108",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 9
+      "completion_round": 10
     },
     "started_at": "2026-04-17T07:21:08.915370991Z",
     "prompt_hash_at_cycle_start": "6ab80a0ddd131c898e4dda9d9061818dc561a9dd69b8aa0c734f0bfc2f1892d5",
     "prompt_hash_at_stage_start": "6ab80a0ddd131c898e4dda9d9061818dc561a9dd69b8aa0c734f0bfc2f1892d5",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 8
+    "final_review_restart_count": 9
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 9,
+  "completion_rounds": 10,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-9-48f28b23",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "finding_summary: The milestone-bundle stage now hard-rejects missing workstream/bead metadata in `validate_generated()`, but the JSON schema handed to the planner still comes from `schemars::schema_for!(MilestoneBundle)` where `Workstream.description`, `BeadProposal.description`, `bead_type`, `priority`, `labels`, `acceptance_criteria`, and `AcceptanceCriterion.covered_by` remain optional/defaulted (`src/contexts/requirements_drafting/contracts.rs:129-140,372-377`; `src/contexts/milestone_record/bundle.rs:1451-1504`). That means the model is still being asked for a schema-valid sparse bundle shape that the contract rejects after generation, so milestone planning can fail nondeterministically even on the default path. affected_files: [\"src/contexts/requirements_drafting/contracts.rs\", \"src/contexts/milestone_record/bundle.rs\"] remediation_hint: make the emitted schema match the stricter generation contract, or introduce a generation-only schema/type whose required fields line up with `validate_generated()`.",
+        "created_at": "2026-04-17T11:37:43.917235037Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "860ccc110640741d4dff7354df2f1f3840cf2e071fa46eecbccc72993dccf326"
+      },
+      {
+        "amendment_id": "fr-9-1aa0d0a1",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "finding_summary: The new prompt requires every bead to carry a stable `bead_id`, but generated bundles still treat any slot-shaped `bead_id` (`bead-1`, `ms-id.bead-1`, etc.) as implicit unless `explicit_id` is also set (`src/contexts/workspace_governance/template_catalog.rs:337-345`; `src/contexts/milestone_record/bundle.rs:182-190,221-223,532-537`). The new test at `src/contexts/milestone_record/bundle.rs:3041-3080` codifies this by asserting that a planner-authored `ms-qualified.bead-1` is serialized with `explicit_id = Some(false)`. Downstream identity tracking uses `has_explicit_id` in `progress_shape_signature()` (`src/contexts/milestone_record/bundle.rs:453-529`), so reordering workstreams or inserting beads can still churn/reset supposedly stable planner IDs. affected_files: [\"src/contexts/milestone_record/bundle.rs\", \"src/contexts/workspace_governance/template_catalog.rs\"] remediation_hint: in generated mode, treat any authored `bead_id` as explicit, or require/auto-populate `explicit_id: true` for planner-supplied IDs so the new stable-ID contract actually holds.",
+        "created_at": "2026-04-17T11:37:43.917240207Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "37c1d49b2fd5adfa460fa804f2c90f6d28a87790622b8f80b86c6b377eaff793"
+      }
+    ],
     "processed_count": 16
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 10 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T10:47:42.739219329Z",
+    "resolved_at": "2026-04-17T11:25:44.910848090Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

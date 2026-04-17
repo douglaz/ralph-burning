@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260417072108-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T11:37:43.903579354Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real defects in the milestone-bundle contract. One is a planner-facing schema/validator mismatch that can produce schema-valid but generation-invalid bundles; the other is an identity-semantics mismatch where planner-authored slot-shaped bead IDs are still treated as implicit, weakening the new stable-ID contract.\n\n## Votes\n\n- `fr-9-48f28b23`: Accept\n  `RequirementsContract::json_schema()` still emits `schemars::schema_for!(MilestoneBundle)`, while `RequirementsPayload::MilestoneBundle` is validated with `validate_generated()`. In `MilestoneBundle`, `Workstream.description`, `BeadProposal.description`, `bead_type`, and `priority` are `Option` fields, and `covered_by`, `labels`, and `acceptance_criteria` are `#[serde(default)]` collections, so the planner-facing schema remains looser than the generation-time contract. `validate_generated()` then hard-requires exactly those fields to be present/non-empty. That is a real contract inconsistency that can reject planner output even when it satisfied the emitted schema.\n- `fr-9-1aa0d0a1`: Accept\n  The code does treat slot-shaped authored IDs as implicit when `explicit_id` is absent. `infer_bead_explicit_id()` returns `false` whenever `bead_id` matches the current implicit slot (`bead-1`, qualified or unqualified), and `render_plan_json()` persists that inference. The added test explicitly locks in `ms-qualified.bead-1 -> explicit_id: false`. Downstream, `progress_shape_signature()` uses `has_explicit_id` to decide whether bead identity is keyed only by `bead_id` or still includes workstream/title/metadata, so planner-supplied slot-shaped IDs do not consistently get stable-ID semantics. Even if some comparison paths mitigate the fallout with hints, the amendment’s core bug is correct.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}
