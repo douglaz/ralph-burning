@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr23-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T03:04:56.702861795Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real issues in the current implementation. `fr-23-3267d69f` is a correctness bug in milestone-controller resume classification that can skip failure reconciliation and distort retry/escalation behavior. `fr-23-f22cfd57` is a real operator/tooling defect: `milestone next` preserves blocked-retry controller context internally but then drops the actionable bead from its output, making the command misleading after retryable failures.\n\n## Votes\n\n- `fr-23-3267d69f`: Accept\n  `ControllerTaskStatus::Failed` is part of the controller contract, and `resume_transition_request()` explicitly branches on it in the `Claimed`, `Running`, and `Reconciling` states. Both CLI resume-port adapters still map `RunStatus::Failed` to `Pending`, so a controller in `Running` will be rewritten to `Claimed` instead of entering reconciliation when the underlying project snapshot is already failed. Because `execute_resume()` allows failed snapshots to resume, that can restart work before the failed attempt is durably reconciled into milestone state, which can undercount retries and bypass operator escalation. This is a concrete state-machine mismatch and the proposed fix is technically sound.\n- `fr-23-f22cfd57`: Accept\n  `resolve_controller_for_next()` now intentionally keeps `Blocked` controllers that still carry `active_bead_id` and `active_task_id`, which means blocked-retry context is considered meaningful state for `next`. But `inspect_next_milestone_action()` treats every `Blocked` state as a generic 'no ready beads' outcome and omits the bead payload entirely. After a retryable failure, that makes `milestone next` hide the only actionable bead instead of surfacing the retry target that `milestone run` will resume. The result is misleading for operators and brittle for automation consuming `next`, so mirroring the blocked-retry handling there is a valid maintainability and usability fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 23
+}

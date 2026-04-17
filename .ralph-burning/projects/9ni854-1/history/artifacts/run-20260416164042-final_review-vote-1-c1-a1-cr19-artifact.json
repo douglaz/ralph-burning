@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr19-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T01:27:38.303613425Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nOne amendment identifies a real bead-lineage bug in failure reconciliation across replacement projects. The other two do not establish actionable defects: one describes an intentional stale-replay repair path with a misleading helper return type, and the other overstates and partly misstates a performance concern.\n\n## Votes\n\n- `fr-19-2491a633`: Accept\n  `find_runs_for_bead` is bead-scoped, and the lineage layer already permits the same bead to continue under a different `project_id`. But `failure_attempt_number`, `newer_attempt_exists`, `failure_attempt_events`, `attempt_start_events`, and `known_failed_attempts` all narrow back down to the current `project_id`. That means a replacement project for the same bead does not inherit prior failures, and an old project's late failure replay is not recognized as stale relative to the newer replacement-project attempt. In that case reconciliation can assign the wrong attempt ordinal and run the normal controller-transition path instead of the stale-replay guard. This is a reachable correctness/safety bug, not just a theoretical inconsistency.\n- `fr-19-c49389f2`: Reject\n  The helper’s `bool` return is awkward, but the observed behavior is not a correctness defect. On stale-replay handling, `repair_recorded_failure_attempt_ordinals` may need to run even when the exact historical attempt was already correct, because later recorded failure rows/events can still need ordinal renumbering. Making the return value change-sensitive would risk skipping necessary backfill. This is better characterized as API-shape debt or a cleanup opportunity, not a bug that warrants acceptance as a review finding.\n- `fr-19-f6b2068c`: Reject\n  The amendment is materially inaccurate. `journal_attempt_for_run` does not call `find_runs_for_bead` or hit the filesystem; it scans the already-loaded `journal_events` in memory. The cited closures are also not the main repeated-read path described in the rationale, and in the normal control flow they are only invoked once each. There may be room to cache lineage reads more aggressively in this method, but this amendment does not identify a concrete correctness, robustness, or maintainability defect precisely enough to accept.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 19
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T18:24:30.927459576Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll four amendments identify real correctness issues in the milestone controller/retry flow. Two amendments overlap on the blocked-resume state-machine defect, but each describes a valid failing path.\n\n## Votes\n\n- `fr-3-41474432`: Accept\n  `daemon_loop` passes the daemon task ID into `reconcile_failure`, and `failure_reconciliation` uses that value when building controller transition requests. The controller resume/runtime code then interprets `active_task_id` as a `ProjectId` and requires the corresponding project to exist. That identifier-domain mismatch is a real bug: it either records the wrong ID into controller state or causes controller reconciliation to fail when the controller already tracks the project-backed ID.\n- `fr-3-9275f7e6`: Accept\n  `resume_transition_request` can emit a `Blocked -> Running` transition when the retry task is already in flight, but `allows_transition_to` still rejects that edge. `resume_controller` goes through `transition_from_current_locked`, so a restart in that state will fail with an illegal-transition corruption error instead of adopting the running retry.\n- `fr-3-5e153857`: Accept\n  The manual milestone path still routes failed terminal sync through `sync_terminal_milestone_task`, which uses the older generic failure bookkeeping (`sync_controller_task_claimed` plus `record_bead_completion_with_disposition`) rather than `reconcile_failure`. `execute_milestone_run` then maps a failed snapshot directly to `NeedsOperator`, so manual retry failures do not use the new attempt-counting policy and bypass the blocked-vs-needs-operator decision tied to `MAX_FAILURE_RETRIES`.\n- `fr-3-6c768527`: Accept\n  This is a valid broader state-machine finding. The blocked-retry resume path can request both `Blocked -> Running` and `Blocked -> Reconciling` depending on whether the retried project is already running or already succeeded, and both are currently illegal under `allows_transition_to`. That means restart/resume can fail in either case with the same corruption error.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

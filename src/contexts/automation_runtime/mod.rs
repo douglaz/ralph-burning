@@ -5,6 +5,7 @@ use crate::shared::error::{AppError, AppResult};
 
 pub mod cli_writer_lease;
 pub mod daemon_loop;
+pub mod failure_reconciliation;
 pub mod github_intake;
 pub mod lease_service;
 pub mod model;
@@ -21,6 +22,10 @@ pub const CONTEXT_NAME: &str = "automation_runtime";
 
 pub use cli_writer_lease::CliWriterLeaseGuard;
 pub use daemon_loop::{DaemonLoop, DaemonLoopConfig};
+pub use failure_reconciliation::{
+    reconcile_failure, FailureReconciliationError, FailureReconciliationOutcome,
+    MAX_FAILURE_RETRIES,
+};
 pub use lease_service::{
     LeaseCleanupFailure, LeaseService, ReconcileReport, ReleaseMode, ReleaseResult,
 };

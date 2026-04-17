@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260416164042-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-16T19:37:52.821093072Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nHardened failed-run replay handling so an older failure callback can no longer overwrite a newer retry that reused the same `run_id`. Failure reconciliation now skips stale same-`run_id` replays when the active retry has a newer `started_at`, controller transitions use monotonic timestamps, lineage finalization rejects stale started-at mismatches, and CLI terminal sync now prefers active lineage start times while persisting a descriptive synthetic `task_id` (`cli-sync:<project_id>`) in failure details. I also updated regression coverage for the stale replay case, the lineage guard, and the CLI failure-sync expectations.\n\n## Steps\n\n1. [Completed] Updated `src/contexts/automation_runtime/failure_reconciliation.rs` to detect and skip stale same-`run_id` failure replays before they can clobber a newer retry, and made controller transition timestamps monotonic during failure reconciliation.\n2. [Completed] Hardened lineage finalization in `src/adapters/fs.rs` and documented the contract in `src/contexts/milestone_record/service.rs` so stale same-`run_id` completions with mismatched `started_at` are rejected instead of rewriting the active attempt.\n3. [Completed] Adjusted `src/cli/run.rs` so failed terminal milestone sync derives the attempt start from the active lineage row when available and persists a descriptive CLI-only failure `task_id`, then aligned the affected CLI expectations.\n4. [Completed] Added regression tests covering missing-journal stale replay protection, stale same-`run_id` lineage updates after retry reopen, and the CLI failure-sync/task-id behavior while preserving the resumed-at repair path.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test failure_reconciliation -- --nocapture` passed.\n- `cargo test update_task_run_rejects_stale_same_run_id_completion_after_retry_reopen -- --nocapture` passed.\n- `cargo test sync_terminal_milestone_task_leaves_failed_runs_paused_for_resume -- --nocapture` passed.\n- `cargo test sync_terminal_milestone_task_repairs_missing_resumed_start_when_stale_failed_lineage_exists -- --nocapture` passed.\n- `cargo test` passed on the full suite.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` was launched and progressed into the active derivation build stage, but no final exit status was observed in-session.\n\n## Outstanding Risks\n\n- `nix build` was started on the updated tree and remained in the active derivation build stage with no final success/failure exit observed in-session, so the authoritative Nix gate is still unresolved.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 6
+}

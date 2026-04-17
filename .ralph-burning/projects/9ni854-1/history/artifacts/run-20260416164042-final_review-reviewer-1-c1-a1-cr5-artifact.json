@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T19:18:36.359260164Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the failure reconciliation implementation, related lineage/controller code, and daemon-loop wiring. The focused failure-reconciliation tests passed, but I found one high-severity stale-replay bug when a retried bead reuses the same run_id after the original BeadFailed journal write was lost.\n\n## Amendments\n\n1. finding_summary: Stale replay of an older failure can corrupt a newer retry that reuses the same `run_id`.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:167-249\n- src/adapters/fs.rs:4536-4583\n- src/adapters/fs.rs:4720-4929\n- src/contexts/milestone_record/service.rs:2633-2674\nremediation_hint: Treat a row with the same `run_id` but a newer `started_at` as a stale replay and refuse to finalize it, or require an exact `(project_id, run_id, started_at)` match before updating a non-terminal row during failure reconciliation.\n   Rationale: `failure_attempt_number()` falls back from an exact `(run_id, started_at)` match to any row with the same `run_id` (`failure_reconciliation.rs:424-435`). If attempt A was finalized in lineage but its `BeadFailed` journal write was lost, starting a retry with the same `run_id` reopens that failed row in place and updates its `started_at` (`adapters/fs.rs:4536-4583`). A later replay of attempt A then sees `already_recorded = false` and calls `record_bead_completion_with_disposition()` (`failure_reconciliation.rs:206-249`). `update_task_run()` selects the open row by `run_id` alone and finalizes it without validating `started_at` for non-terminal entries (`adapters/fs.rs:4720-4726,4897-4929`), so the active retry is incorrectly marked `Failed` by the stale replay. `transition_controller_after_failure()` subsequently skips the controller transition because it notices a newer attempt (`failure_reconciliation.rs:546-553`), leaving controller state and lineage/snapshot state out of sync.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

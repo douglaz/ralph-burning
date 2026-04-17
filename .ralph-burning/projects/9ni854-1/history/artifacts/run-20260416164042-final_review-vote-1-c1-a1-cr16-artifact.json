@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T23:52:48.967087839Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real failure-reconciliation defects. The first shows that synthetic CLI provenance can become durable and block later repair to the real task id. The second shows that stale-replay repair currently restores journal evidence without restoring the corresponding historical task-run lineage, leaving retry history incomplete.\n\n## Votes\n\n- `fr-16-b88d3ad8`: Accept\n  `run sync-milestone` injects a synthetic `cli-sync:<project_id>` task id on failed replays, and `reconcile_failure_sync` then treats the stored failure provenance as authoritative for later replays. When the exact attempt is already recorded, `recorded_failure_provenance` and `normalized_failure_outcome_detail` preserve the previously stored placeholder task id and outcome detail, so the later `repair_task_run_with_disposition` call is asked to repair the row with the same synthetic data instead of the real daemon task id. The repair path therefore only backfills missing fields and never upgrades the placeholder provenance, so both lineage and repaired journal details can remain permanently wrong.\n- `fr-16-2176c8ff`: Accept\n  In the stale-replay branches, the code only calls `repair_historical_failure_event` and returns without repairing task-run lineage. That means a replay arriving after a newer retry can restore a missing `BeadFailed` journal event while still leaving the historical failed attempt absent from `task-runs.ndjson`. Since milestone history views read retry lineage from task runs via `find_runs_for_bead`/`bead_execution_history`, the missing historical `TaskRunEntry` is observable and remains permanent unless explicitly repaired. Preserving counts in the journal but not the actual historical run record is an integrity gap in the lineage model.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}

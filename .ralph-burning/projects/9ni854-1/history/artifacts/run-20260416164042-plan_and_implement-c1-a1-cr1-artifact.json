@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416164042-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-16T16:58:38.356120075Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded a new `failure_reconciliation` module that records failed bead attempts without closing beads, counts failed retries, keeps the controller retryable until `MAX_FAILURE_RETRIES`, escalates to `NeedsOperator` on the terminal retry, and covers the flow with unit tests. Also exported the new API from `automation_runtime::mod` and broadened `task_id` extraction so failure outcome details can carry retry metadata while still populating journal linkage fields.\n\n## Steps\n\n1. [Completed] Implemented `src/contexts/automation_runtime/failure_reconciliation.rs` with idempotent failed-run recording, retry counting, controller transitions, and structured tracing.\n2. [Completed] Registered and re-exported the failure reconciliation API from `src/contexts/automation_runtime/mod.rs`.\n3. [Completed] Extended failure outcome-detail parsing in `src/adapters/fs.rs` so `task_id` is still extracted when retry metadata is appended to failed outcome details.\n4. [Completed] Added unit coverage for first failure, repeated failures through escalation, idempotent replay, journal contents, and the no-`br close` invariant.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test failure_reconciliation -- --nocapture` passed; the 4 new failure-reconciliation tests all succeeded.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed after staging the new module file so Nix's source filtering could include it.\n\n## Outstanding Risks\n\n- The new reconciliation path is exported from `automation_runtime`, but no daemon/runtime call site was added in this change; a separate integration step is still needed for failed tasks to invoke it automatically.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 1
+}

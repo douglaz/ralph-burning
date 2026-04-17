@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T18:59:02.169478680Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real reconciliation safety gaps. The failure path still allows unsafe run-attempt inference that the success path already treats as invalid, and hard failure-reconciliation metadata errors can leave milestone controller state inconsistent with the task’s terminal status.\n\n## Votes\n\n- `fr-4-9658f485`: Accept\n  Accept. In `try_reconcile_failure`, `run_id` falls back from the durable task binding and snapshot attempt to `latest_run_id_from_journal` (`src/contexts/automation_runtime/daemon_loop.rs:1913-1925`). The success path already documents that journal-based inference is unsafe once retries or manual reruns exist, because the latest journal entry may belong to a different attempt. Using that guessed `run_id` to derive `started_at` and drive `reconcile_failure` can record failure state against the wrong attempt, corrupting retry accounting and milestone history. That is a real correctness issue, not just a logging problem.\n- `fr-4-63eb15de`: Accept\n  Accept. When `try_reconcile_failure` returns a hard metadata error, the callers at `src/contexts/automation_runtime/daemon_loop.rs:1183-1201` and `1775-1801` still mark the daemon task failed, but there is no corresponding milestone-controller transition. For milestone-backed work, that leaves the controller in its prior active state even though the task is terminal and reconciliation could not safely complete. The result is stale orchestration state and no operator-visible signal that manual intervention is required. Whenever enough milestone identity is available, these metadata failures should be surfaced as `NeedsOperator` rather than silently leaving the controller active.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T19:27:17.754548582Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 5/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-5-b95d1be3`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-5-0d9f7bd2`\n\n## Final Accepted Amendments\n\n### `fr-5-b95d1be3`\n\nfinding_summary: Stale replay of an older failure can corrupt a newer retry that reuses the same `run_id`.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:167-249\n- src/adapters/fs.rs:4536-4583\n- src/adapters/fs.rs:4720-4929\n- src/contexts/milestone_record/service.rs:2633-2674\nremediation_hint: Treat a row with the same `run_id` but a newer `started_at` as a stale replay and refuse to finalize it, or require an exact `(project_id, run_id, started_at)` match before updating a non-terminal row during failure reconciliation.\n\n### `fr-5-0d9f7bd2`\n\nIn `src/cli/run.rs` line 1304, `project_id.as_str()` is passed as the `task_id` parameter to `reconcile_failure_sync`. The daemon_loop call site correctly passes `task.task_id` for this parameter. While `task_id` is only used for diagnostics (error messages, tracing spans, and the `task_id=` field in `format_failure_outcome_detail`), this means CLI-path failure outcome details will contain `task_id=<project_id>` rather than a meaningful daemon task identifier. This is cosmetic since the CLI sync path has no daemon task concept, but the outcome_detail string is persisted in journal state and could confuse debugging. Consider passing a more descriptive value or documenting that task_id is project_id in CLI context.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

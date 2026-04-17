@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr20-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T01:40:35.624693658Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe failure reconciliation implementation is thorough and well-integrated. The new `failure_reconciliation.rs` module correctly handles: recording failures in journal/lineage state, counting attempts across retries, escalating to NeedsOperator after MAX_FAILURE_RETRIES (3), idempotent replay handling, stale replay protection, and CLI sync placeholder repair. Controller state machine changes (Blocked now preserves active context) are consistent with existing patterns. The fs.rs changes properly reject stale same-run-id completions and improve task_id backfill. All 23 dedicated tests pass, full test suite (1001/1002) passes with one pre-existing flaky timeout test. Clippy and fmt checks are clean. No real bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 20
+}

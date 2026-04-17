@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr9-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T21:12:10.603625922Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real bugs in the failure reconciliation logic. The ordinal-derivation bug can misclassify retry outcomes after historical repair appends events out of chronological order. The CLI synthetic task-id bug destroys original daemon provenance on replay, violating idempotency.\n\n## Votes\n\n- `fr-9-8cf7ea9c`: Accept\n  Confirmed by reading the code: `failure_attempt_events` (line 805-822) returns BeadFailed journal rows in on-disk insertion order, and `failure_attempt_number` (line 610-613) converts `position()` directly to `attempt_number`. When `repair_historical_failure_event` appends an older failure after newer failures already exist in the journal, subsequent reconciliation calls will see the wrong positional index. For example, if attempts at T1, T2, T3 are journaled in order [T2, T3, T1] (because T1 was repaired late), a lookup for T3 finds it at position 1 (attempt=2) instead of the correct position 2 (attempt=3). This feeds into `failure_outcome` which compares `attempt_number < MAX_FAILURE_RETRIES` to decide Retryable vs terminal — a third attempt could be incorrectly downgraded to Retryable. The remediation hint to sort by `started_at` is the right fix.\n- `fr-9-d41dec72`: Accept\n  Confirmed by tracing the code: the CLI constructs `cli-sync:{project_id}` at run.rs:1313 and passes it as task_id. In `reconcile_failure_sync`, `format_failure_outcome_detail` at line 177-178 embeds this synthetic task_id into the outcome_detail string (format: `task_id=cli-sync:...\nattempt=...\nerror=...`). When the `already_recorded` branch is taken (line 275-291), `repair_task_run_with_disposition` is called with this synthetic outcome_detail, which flows through `repair_task_run_terminal` to overwrite the lineage entry and through `JournalWriteOp::repair_completion` to replace the journal event. This overwrites the original daemon's task_id provenance with the CLI helper id. A replay that should be idempotent instead mutates recorded data, violating the core purpose of failure reconciliation which is to preserve task provenance. The fix should either skip the repair path when already recorded, or preserve the existing task_id from the original entry.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 9
+}

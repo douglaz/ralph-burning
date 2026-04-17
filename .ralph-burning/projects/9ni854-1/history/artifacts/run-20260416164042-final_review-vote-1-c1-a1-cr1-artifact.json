@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T17:10:42.059397769Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real defects in the failure-reconciliation implementation or its daemon integration. The first is a current runtime gap; the second and third are correctness/idempotency bugs in the reconciliation path itself.\n\n## Votes\n\n- `fr-1-a8f722cc`: Accept\n  `reconcile_failure` is exported but has no runtime caller outside its own tests, while `daemon_loop` only invokes `try_reconcile_success` and otherwise sends failed executions straight to `DaemonTaskService::mark_failed`. That means bead-linked task failures do not record failed lineage/journal state or move the milestone controller through the failure policy. The finding is technically correct.\n- `fr-1-9e0c9fe5`: Accept\n  In `reconcile_failure`, an existing failed lineage row sets `already_recorded=true` and skips `record_bead_completion`, so replay becomes effectively a no-op for snapshot/journal repair. But `record_bead_completion` updates lineage before committing snapshot/journal state, so a crash can persist the failed run while losing the `BeadFailed` event and progress counters. The success reconciliation path already uses `repair_task_run_with_disposition` for this exact lineage-first partial-write case, so the failure path is missing equivalent recovery.\n- `fr-1-28673225`: Accept\n  The replay guard in `transition_controller_after_failure` only short-circuits when the controller is already in the final failed state with the same reason; it does not key idempotency to the reconciled run identity or check for a newer nonterminal attempt. If an older failed run is replayed after a retry has started, the code can drive the controller from `Running` back through `Reconciling` to `Blocked`, and if ownership changed it can fail validation instead. That is a real idempotency bug around duplicate failure callbacks.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

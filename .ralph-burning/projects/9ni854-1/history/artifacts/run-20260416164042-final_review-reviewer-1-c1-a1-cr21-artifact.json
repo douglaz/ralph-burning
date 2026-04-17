@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-1-c1-a1-cr21-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-1-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T02:11:59.722302734Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the failure-reconciliation branch diff and the key implementation paths. I found one medium-severity idempotency bug in the replay path; the rest of the failure recording, attempt counting, and controller transition logic looked consistent with the intended behavior.\n\n## Amendments\n\n1. finding_summary: `reconcile_failure()` is not actually idempotent for already-recorded failures if the replay arrives with a different `failed_at` or error message. In the `already_recorded` branch it still calls `repair_task_run_with_disposition` with the new `failed_at` ([src/contexts/automation_runtime/failure_reconciliation.rs:376-392]), and the final outcome/reason is recomputed from the new `error_summary` ([src/contexts/automation_runtime/failure_reconciliation.rs:469], [src/contexts/automation_runtime/failure_reconciliation.rs:1233-1247]). `repair_task_run_with_disposition` then feeds that timestamp into `repair_completion`, which can replace the existing `BeadFailed` journal event instead of treating the replay as a no-op ([src/contexts/milestone_record/service.rs:2747-2807], [src/contexts/milestone_record/service.rs:1260-1278]). On an escalated third failure, replaying the same run with richer fallback text or a slightly different reconstructed timestamp will rewrite the operator-facing `NeedsOperator` reason and the durable failure timestamp, violating the bead's explicit idempotency requirement.\nremediation_hint: For `already_recorded` replays, derive the canonical `failed_at` and canonical error summary from the recorded lineage/journal provenance before calling `repair_task_run_with_disposition` / `failure_outcome`, and add a regression test that replays the third failure with different message/timestamp inputs and asserts that both the milestone journal and controller transition journal stay unchanged.\n   Rationale: This is a direct correctness issue in the new handler's replay path. The public API promises idempotency, but a second call for the same run can still mutate durable audit state and operator-visible controller state when the caller reconstructs slightly different metadata on replay.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 21
+}

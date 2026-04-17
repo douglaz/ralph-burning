@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr22-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T02:37:15.464458441Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 22/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-22-3520c327`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-22-cff88df5`\n\n## Final Accepted Amendments\n\n### `fr-22-cff88df5`\n\nfinding_summary: `src/adapters/fs.rs:4579-4627` and `src/adapters/fs.rs:5113-5164` reopen a failed same-run retry by overwriting the historical failed `TaskRunEntry` in place. Because `src/contexts/milestone_record/service.rs:2409-2476` builds `bead_execution_history` directly from `find_runs_for_bead`, the normal fail -> resume with the same `run_id` -> succeed path now leaves only the final attempt in lineage/history and permanently drops the earlier failed attempt unless a later stale-replay backfill happens. That is a real correctness regression for audit/history consumers, not just a storage-detail change.\n\n### `fr-22-3520c327`\n\nfinding_summary: `src/contexts/automation_runtime/failure_reconciliation.rs:879-929` walks every recorded failed attempt when repairing attempt ordinals, but it keeps passing the outer `project_id` into `recorded_failure_provenance`, `failure_state_matches_expected`, and `repair_task_run_with_disposition` instead of `attempt.project_id`. If a stale old-project replay is repaired after the bead has already moved to a replacement project, the replacement-project attempts are skipped or checked against the wrong project, so their `attempt=` markers remain stale (for example, the second failure can stay `attempt=1`).\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 22
+}

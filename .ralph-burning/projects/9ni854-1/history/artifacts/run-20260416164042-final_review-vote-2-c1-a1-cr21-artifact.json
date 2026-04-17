@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr21-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T02:14:57.373274567Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nVerified the amendment's claims by tracing the full code path through reconcile_failure → repair_task_run_with_disposition → repair_task_run_terminal → finalize_task_run_internal. The finding is accurate: the already_recorded branch passes caller-supplied failed_at and error_summary without canonicalizing them from recorded provenance, which can mutate durable state on replay.\n\n## Votes\n\n- `fr-21-a06d8629`: Accept\n  Verified by code inspection. Two concrete non-idempotency vectors exist in the already_recorded branch: (1) failed_at is passed directly from the caller at line 390 to repair_task_run_with_disposition, which feeds into finalize_task_run_internal where backfill_terminal_entry with overwrite_finished_at=true (line 4445-4448) replaces the existing finished_at timestamp, and apply_repair_completion (line 1260-1278) overwrites the journal event's timestamp; (2) failure_outcome at line 469 uses the caller-supplied error_summary (not canonical from provenance) to construct the EscalatedToOperator reason, which transition_controller_after_failure then writes as the NeedsOperator reason in the controller journal. The outcome_detail computation (line 234) partially mitigates by preferring recorded provenance when available, but the parallel failure_outcome computation at line 469 bypasses this entirely. For a third failure replay with different error text or reconstructed timestamp, both the milestone journal's BeadFailed event and the controller's NeedsOperator transition would be rewritten — violating the stated idempotency guarantee. The remediation approach (derive canonical values from provenance before calling downstream functions) is the correct fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 21
+}

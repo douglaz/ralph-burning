@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr16-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T23:53:35.792381069Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 16/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-16-b88d3ad8`\n- `fr-16-2176c8ff`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-16-b88d3ad8`\n\nfinding_summary: A `run sync-milestone` replay can permanently stamp a failed attempt with the synthetic `cli-sync:<project_id>` task id, and later daemon replays never repair it back to the real failed task id.\nseverity: medium\naffected_files:\n- src/cli/run.rs:1321-1339\n- src/contexts/automation_runtime/failure_reconciliation.rs:211-226\n- src/contexts/automation_runtime/failure_reconciliation.rs:571-588\n- src/contexts/automation_runtime/failure_reconciliation.rs:728-780\nremediation_hint: Treat `cli-sync:` task ids as weak provenance. If a later replay for the same `(bead_id, project_id, run_id, started_at)` arrives with a non-synthetic task id, repair the stored `task_id` and structured `outcome_detail`/journal details instead of preserving the placeholder forever.\n\n### `fr-16-2176c8ff`\n\nfinding_summary: Stale failure replays that discover a newer retry only backfill the `BeadFailed` journal event and never repair the missing historical `TaskRunEntry`, so retry history remains permanently incomplete in task-run lineage.\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:229-245\n- src/contexts/automation_runtime/failure_reconciliation.rs:283-306\n- src/contexts/milestone_record/service.rs:2418-2476\nremediation_hint: In the stale-replay branches, repair or append the exact historical failed attempt in task-run lineage as well as the journal event, while still skipping controller mutation when a newer retry exists.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 16
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr15-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T23:34:05.370827050Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 15/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-15-7fabe6a3`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-15-7fabe6a3`\n\nfinding_summary: The stale-replay fast paths in `reconcile_failure_sync` return before the shared `tracing::warn!`/`tracing::error!` block, so replayed failures and replay-driven operator escalations are only emitted as `tracing::info!` and never carry the structured `error_summary` field. That misses the feature's explicit observability contract and makes exactly the partial-write recovery cases harder to spot in production logs.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:246\n- src/contexts/automation_runtime/failure_reconciliation.rs:298\n- src/contexts/automation_runtime/failure_reconciliation.rs:409\n- src/contexts/automation_runtime/failure_reconciliation.rs:440\nremediation_hint: Emit the same warning/error telemetry before both early returns, or refactor those branches to flow through the common post-reconciliation logging block so every failed attempt and escalation is logged consistently.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 15
+}

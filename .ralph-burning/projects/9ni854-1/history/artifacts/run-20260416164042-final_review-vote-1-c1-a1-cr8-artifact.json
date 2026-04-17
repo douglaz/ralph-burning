@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T20:49:30.780348922Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo amendments identify real stale-attempt reconciliation defects that can misattribute failure state across retries. The provenance-clobber amendment overstates the current behavior: the code does fabricate a CLI marker, but the cited repair path preserves an existing recorded task_id rather than overwriting it.\n\n## Votes\n\n- `fr-8-29764722`: Accept\n  `persist_workflow_run_id()` is intentionally write-once, so a task can remain durably bound to an older `run_id` after a later rerun/resume. In `try_reconcile_failure()`, the `Some(bound_run_id)` branch trusts that binding, derives `started_at` from any matching lineage/snapshot/journal data for that run, and never cross-checks it against the newest durable project or lineage attempt the way the `None` branch does. That means an old `run_failed` can still satisfy reconciliation even when a newer attempt is the live owner of the bead, which can miscount retries and drive the controller to `NeedsOperator` incorrectly.\n- `fr-8-4afd5f48`: Accept\n  The stale-replay suppression for `!already_recorded` only handles newer retries that reused the same `run_id`. If the stale replay is for `run-1` and the current open attempt is `run-2`, the code falls through into `record_bead_completion_with_disposition()`. In that state the lineage update path rejects the write because the only open row is the newer attempt, turning a stale historical replay into a hard reconciliation error. The CLI path already treats the same situation as stale and returns without mutating lineage, so this inconsistency is a real robustness bug.\n- `fr-8-bf282c6b`: Reject\n  The CLI path does fabricate a `cli-sync:*` marker, but the specific claim that a later sync overwrites an already-recorded real daemon task id is not supported by the current repair logic. In the lineage adapter, `replace_terminal_entry()` and `backfill_terminal_entry()` only populate `task_id` when the stored entry has `task_id == None`; they do not replace an existing real task id. `repair_task_run_with_disposition()` then regenerates journal details from that preserved lineage entry, so an existing recorded `task_id` is retained. There may be a separate semantics/data-model issue about using a synthetic identifier for CLI-originated failures, but the amendment's stated provenance-clobber failure mode is not demonstrated by the code shown.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

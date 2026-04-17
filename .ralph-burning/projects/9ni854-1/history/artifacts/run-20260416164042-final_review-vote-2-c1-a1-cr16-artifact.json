@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr16-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T23:53:35.777318933Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real code defects. Amendment fr-16-b88d3ad8 correctly identifies that when CLI sync records a synthetic cli-sync: task ID first, a later daemon replay with the real task ID cannot repair it — the normalized_failure_outcome_detail function (line 580) prioritizes the already-recorded parsed task_id over the incoming fallback. The existing test only covers daemon-first ordering. Amendment fr-16-2176c8ff correctly identifies that stale replay code paths (lines 229-250 and 283-310) only call repair_historical_failure_event (journal-only) and return without creating a TaskRunEntry in the lineage store, leaving execution history permanently incomplete.\n\n## Votes\n\n- `fr-16-b88d3ad8`: Accept\n  Valid defect. The normalized_failure_outcome_detail function (line 580) prioritizes any previously-recorded task_id from outcome_detail over the incoming fallback. If CLI sync runs first and records cli-sync:<project_id>, that synthetic ID gets embedded in outcome_detail. When a daemon replay later arrives with the real task ID, it's passed only as a fallback on line 222 (recorded_provenance.task_id.unwrap_or(task_id)), but the already-parsed synthetic ID from line 580 takes precedence. The existing test reconcile_failure_replay_preserves_original_task_provenance only validates daemon-first, CLI-second ordering — it doesn't cover the CLI-first scenario where the synthetic ID becomes permanent. The remediation hint is sound: treating cli-sync: prefixed IDs as weak provenance that can be replaced by non-synthetic IDs would fix this without disrupting the normal priority chain.\n- `fr-16-2176c8ff`: Accept\n  Valid defect confirmed by code inspection. The two stale-replay branches (lines 229-250 and 283-310) both call repair_historical_failure_event and return immediately. repair_historical_failure_event (lines 630-663) exclusively calls journal_store.append_event_if_missing() — it never touches the lineage store. In contrast, the normal failure paths (lines 343-387) call repair_task_run_with_disposition or record_bead_completion_with_disposition, which do write TaskRunEntry records. Since bead_execution_history queries the lineage store via find_runs_for_bead, the historical failed attempt is permanently missing from task-run lineage even though the journal event exists. The remediation hint is correct: the stale-replay branches should also create or append the historical TaskRunEntry in the lineage store while still skipping controller mutation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 16
+}

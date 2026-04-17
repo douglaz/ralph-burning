@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr18-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T00:59:02.031106356Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo amendments identify real correctness bugs in same-run retry failure reconciliation. The third is not a correctness issue, and the suggested gating could skip intentional stale-replay backfill work for later attempt ordinals.\n\n## Votes\n\n- `fr-18-592f1688`: Accept\n  `lineage_completion_attempt_identity()` can fall through to the newest row with the same `run_id` even when that row is an older terminal failure. `try_reconcile_failure()` then uses that stale lineage `started_at` for `reconcile_failure()`. In the missing-retry-lineage case, the new failure is therefore treated as the old attempt: retry numbering is undercounted and the prior failed row/event gets repaired in place instead of recording the later failed retry. That is a real high-severity correctness bug.\n- `fr-18-127da90a`: Accept\n  `sync_terminal_milestone_task_with_options()` skips missing-lineage repair whenever any terminal lineage row already exists for the same `run_id`. For a failed retry that reused `run_id`, that leaves no exact lineage row for the current attempt, yet the failure path still calls `reconcile_failure_sync()` with the retry's newer `started_at`. Downstream `record_bead_completion_with_disposition()`/`update_task_run()` require an exact attempt match and reject this as a stale same-run-id completion, so sync cannot reconcile the retry failure. This is a valid medium-severity bug.\n- `fr-18-9158e98a`: Reject\n  This is not a correctness or safety bug, and the proposed change is not clearly sound. The stale-replay path intentionally follows `repair_historical_failure_state()` with `repair_recorded_failure_attempt_ordinals()` to normalize later recorded failures as well, not just the one historical attempt that was replayed. Tests such as the later-attempt marker backfill flow rely on that broader repair behavior. Returning `false` when the immediate historical repair is a no-op could suppress needed ordinal backfills elsewhere, so this should not be treated as a defect as written.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 18
+}

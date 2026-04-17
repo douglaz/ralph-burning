@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr17-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T00:15:12.243169739Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed ~8500 lines of changes across 8 Rust files. The failure reconciliation handler is correctly implemented: records BeadFailed journal events, counts attempts via lineage + journal cross-referencing, escalates to NeedsOperator after MAX_FAILURE_RETRIES=3, is idempotent for replayed runs, and never mutates bead state (br close). Controller state machine changes (Blocked now preserves active context, allows Blocked→Running/Reconciling transitions) are sound and tested. The fs.rs adapter correctly rejects stale same-run-id completions and supports retry reopening of failed entries. CLI sync path properly delegates to reconcile_failure_sync with cli-sync: task_id prefix. All 996 tests pass, clippy clean, fmt clean. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 17
+}

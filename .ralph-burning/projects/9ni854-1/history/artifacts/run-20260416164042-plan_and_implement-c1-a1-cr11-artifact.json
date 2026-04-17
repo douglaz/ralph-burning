@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-plan_and_implement-c1-a1-cr11-artifact",
+  "payload_id": "run-20260416164042-plan_and_implement-c1-a1-cr11",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-16T21:46:30.313233802Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated milestone retry handling in two additive spots. `src/contexts/milestone_record/controller.rs` now treats `MilestoneControllerState::Blocked` as an active-context-preserving retry state, so `Reconciling -> Blocked` and `Blocked -> Running` transitions must keep the same bead/project identity. `src/contexts/automation_runtime/daemon_loop.rs` now allows failed-task reconciliation without `workflow_run_id` or snapshot attempt metadata when the durable project journal attempt and durable milestone lineage attempt exactly agree, instead of failing immediately on missing `run.json` attempt state. I added focused regressions for both behaviors.\n\n## Steps\n\n1. [Completed] Patched controller active-context validation so retry-blocked states preserve bead/task identity like the other in-flight controller states, and added a regression covering both `Reconciling -> Blocked` and `Blocked -> Running` mismatch rejection.\n2. [Completed] Patched daemon failure reconciliation so the `workflow_run_id == None` path can bind to a failed attempt from durable journal plus milestone-lineage agreement when snapshot attempt metadata is missing, while still failing closed when durable sources disagree.\n3. [Completed] Added a daemon regression that exercises the durable-attempt fallback path with missing snapshot attempt metadata and verifies the failed attempt is reconciled into milestone lineage and journal state.\n4. [Completed] Ran focused regression tests, the full Rust validation suite, and launched the required `nix build` gate.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test blocked_retry_transitions_preserve_active_context -- --nocapture` passed.\n- `cargo test --features test-stub contexts::automation_runtime::daemon_loop::tests::try_reconcile_failure -- --nocapture` passed; all 7 daemon failure-reconciliation tests succeeded, including the new durable-fallback regression.\n- `cargo test` passed on the full suite.\n- `cargo clippy -- -D warnings` passed.\n- `cargo clippy --features test-stub -- -D warnings` passed.\n- `nix build` was launched and progressed into `/nix/store/5g4n43lf6yp6aci0cna5g5w7xchpj9hy-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0.drv`, then into the musl `cargo test` / `ralph-burning-stable-conformance run` stage, but no final exit status was observed in-session.\n\n## Outstanding Risks\n\n- `nix build` was launched on the updated tree and reached the musl `cargo test` / `ralph-burning-stable-conformance run` stage, but no final success/failure exit was observed in-session, so the authoritative Nix gate remains unresolved.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 11
+}

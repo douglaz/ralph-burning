@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-arbiter-c1-a1-cr13-artifact",
+  "payload_id": "run-20260416164042-final_review-arbiter-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T22:47:16.756864779Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment. The implementation does use project-scoped journal helpers, but the actual retry budget is still computed bead-wide from failed lineage entries returned by `find_runs_for_bead()`, so the specific claim that a new project/task bypasses the retry ceiling is not established.\n\n## Rulings\n\n- `fr-13-bf9a4563`: Reject\n  The cited `project_id` filters in `failure_attempt_events` and `attempt_start_events` are real (`src/contexts/automation_runtime/failure_reconciliation.rs:757-758`, `1005`, `1042`), but they are not the whole retry counter. `failure_attempt_number` immediately feeds the full bead run list into `known_failed_attempts` (`src/contexts/automation_runtime/failure_reconciliation.rs:799`), and `known_failed_attempts` adds every failed `TaskRunEntry` from `runs` without any `project_id` check (`src/contexts/automation_runtime/failure_reconciliation.rs:1072-1075`). Those `runs` come from `find_runs_for_bead`, which filters by bead only, not by project (`src/adapters/fs.rs:5196-5200`). `AttemptIdentity` also excludes `project_id` (`src/contexts/automation_runtime/failure_reconciliation.rs:44-48`). So prior failed lineage rows for the same bead under other projects still contribute to the attempt index, and the amendment's core claim that switching to a new project resets the counter to 1 and bypasses `MAX_FAILURE_RETRIES` is not supported by the implementation as written.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

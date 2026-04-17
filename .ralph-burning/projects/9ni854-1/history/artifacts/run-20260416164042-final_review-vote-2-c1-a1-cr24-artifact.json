@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr24-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T03:27:43.879868205Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real issues in the CLI milestone sync path. Amendment fr-24-5ef87cac correctly identifies that the durable journal message is discarded in favor of the snapshot's status_summary — the code already calls terminal_event_for_attempt but only extracts the timestamp, throwing away details[\"message\"]. Amendment fr-24-762198cf identifies a real but lower-impact issue where a synthetic cli-sync: task_id is persisted, though downstream code already treats it as a placeholder via preferred_failure_task_id.\n\n## Votes\n\n- `fr-24-5ef87cac`: Accept\n  Verified in source: terminal_run_event_timestamp (line 1529) calls terminal_event_for_attempt which returns a full JournalEvent carrying details[\"message\"] (confirmed by test fixtures showing messages like \"failed after review\"), but immediately discards everything except .timestamp. The outcome_detail at line 1143-1148 is then sourced from final_snapshot.status_summary — the volatile in-memory snapshot — rather than the durable journal event. This means reconcile_failure_sync at line 1325 receives a potentially stale or generic summary instead of the authoritative durable message. The fix is straightforward: keep the JournalEvent reference and prefer its details[\"message\"] when present. Real bug, correct analysis, safe remediation.\n- `fr-24-762198cf`: Accept\n  Verified: line 1321 creates a synthetic task_id 'cli-sync:{project_id}' that gets persisted into BeadFailed events and task-run lineage. The downstream code at failure_reconciliation.rs:569-587 explicitly checks for this prefix via task_id_is_cli_sync_placeholder and preferred_failure_task_id, confirming the codebase already recognizes this as problematic. Persisting a fake identifier that looks authoritative is a data integrity concern — it pollutes lineage records and requires defensive guards everywhere it's consumed. The remediation (plumbing the real task id or leaving it unset) is sound. Low severity is appropriate since downstream code compensates, but the underlying issue is real and worth fixing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 24
+}

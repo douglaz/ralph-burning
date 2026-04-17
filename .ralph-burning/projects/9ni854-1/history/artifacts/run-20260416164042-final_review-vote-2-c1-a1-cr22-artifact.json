@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr22-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T02:34:05.796479561Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed both amendments against source code. Amendment fr-22-cff88df5 describes intentional reopen-in-place design, not a regression — the journal preserves failure events and reconciliation backfill recovers history. Amendment fr-22-3520c327 identifies a real bug: the loop at line 879 uses the outer project_id instead of attempt.project_id, causing provenance lookups, state matching, and repairs to target the wrong project when attempts span multiple projects.\n\n## Votes\n\n- `fr-22-cff88df5`: Reject\n  The reopen_failed_exact_attempt function is explicitly designed to overwrite the failed entry in place — the name itself signals 'reopen', meaning the same attempt is being retried, not a new attempt created. The journal separately records failure events via failure_attempt_events (used by recorded_failed_attempts at line 1008-1036), so historical failure data is preserved outside of task_runs. The reconciliation system's repair_recorded_failure_attempt_ordinals backfills these into the lineage. The amendment acknowledges the backfill path ('unless a later stale-replay backfill happens') but calls this a 'regression' despite the reopen mechanism being new code with intentional same-run-retry semantics. The temporal gap in bead_execution_history is a known design tradeoff, not a correctness defect.\n- `fr-22-3520c327`: Accept\n  This is a genuine bug. AttemptIdentity (line 48-52) carries project_id from the original failure event or task run entry, which may differ from the outer project_id passed to repair_recorded_failure_attempt_ordinals (line 848). The loop at line 879 correctly extracts attempt.run_id (line 880) but passes the outer project_id to recorded_failure_provenance (line 888), failure_state_matches_expected (line 908), and repair_task_run_with_disposition (line 924). Inside those functions, attempt_identity_matches (line 1044) compares entry.project_id == project_id, so when an attempt belongs to a prior project (before bead migration), the lookup fails to find the correct run entry. This means: (1) provenance lookups return empty/wrong data, (2) state matching incorrectly skips or processes attempts, and (3) repairs target the wrong project. The fix is to use attempt.project_id instead of the outer project_id in each of those three calls.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 22
+}

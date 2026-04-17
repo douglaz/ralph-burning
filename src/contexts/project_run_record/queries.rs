@@ -126,20 +126,56 @@ fn terminal_status_between_boundaries(
     })
 }
 
-pub fn terminal_status_for_attempt(
+fn attempt_boundary_sequences(
     run_id: &str,
     started_at: DateTime<Utc>,
     events: &[JournalEvent],
-) -> Option<RunStatus> {
+) -> (u64, Option<u64>) {
     let durable_boundary =
         durable_attempt_boundary_sequence_at_or_before(run_id, started_at, events);
+    let inferred_boundary = inferred_attempt_boundary_sequence(run_id, started_at, events);
     let lower_boundary_sequence = durable_boundary
-        .unwrap_or_else(|| inferred_attempt_boundary_sequence(run_id, started_at, events));
+        .into_iter()
+        .chain(Some(inferred_boundary))
+        .max()
+        .unwrap_or(inferred_boundary);
     let upper_boundary_sequence = durable_boundary
         .and_then(|sequence| next_durable_attempt_boundary_sequence(run_id, sequence, events))
         .or_else(|| {
             next_durable_attempt_boundary_sequence_after_timestamp(run_id, started_at, events)
         });
+    (lower_boundary_sequence, upper_boundary_sequence)
+}
+
+pub fn terminal_event_for_attempt<'a>(
+    run_id: &str,
+    started_at: DateTime<Utc>,
+    status: RunStatus,
+    events: &'a [JournalEvent],
+) -> Option<&'a JournalEvent> {
+    let terminal_event_type = match status {
+        RunStatus::Completed => JournalEventType::RunCompleted,
+        RunStatus::Failed => JournalEventType::RunFailed,
+        RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => return None,
+    };
+    let (lower_boundary_sequence, upper_boundary_sequence) =
+        attempt_boundary_sequences(run_id, started_at, events);
+
+    events.iter().rev().find(|event| {
+        event.sequence > lower_boundary_sequence
+            && upper_boundary_sequence.is_none_or(|upper| event.sequence < upper)
+            && event_run_id(event) == Some(run_id)
+            && event.event_type == terminal_event_type
+    })
+}
+
+pub fn terminal_status_for_attempt(
+    run_id: &str,
+    started_at: DateTime<Utc>,
+    events: &[JournalEvent],
+) -> Option<RunStatus> {
+    let (lower_boundary_sequence, upper_boundary_sequence) =
+        attempt_boundary_sequences(run_id, started_at, events);
 
     terminal_status_between_boundaries(
         run_id,
@@ -207,6 +243,65 @@ pub fn reconcile_snapshot_status(snapshot: &mut RunSnapshot, events: &[JournalEv
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{terminal_event_for_attempt, terminal_status_for_attempt};
+    use crate::contexts::project_run_record::model::{JournalEvent, JournalEventType, RunStatus};
+    use chrono::{DateTime, Utc};
+    use serde_json::json;
+
+    fn timestamp(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value)
+            .expect("timestamp")
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn terminal_attempt_queries_ignore_stale_terminal_events_before_inferred_resume_boundary() {
+        let original_started_at = timestamp("2026-04-01T10:00:00Z");
+        let resumed_started_at = timestamp("2026-04-01T10:20:00Z");
+        let first_failed_at = timestamp("2026-04-01T10:05:00Z");
+        let events = vec![
+            JournalEvent {
+                sequence: 1,
+                timestamp: timestamp("2026-04-01T09:59:00Z"),
+                event_type: JournalEventType::ProjectCreated,
+                details: json!({"project_id":"bead-run","flow":"docs_change"}),
+            },
+            JournalEvent {
+                sequence: 2,
+                timestamp: original_started_at,
+                event_type: JournalEventType::RunStarted,
+                details: json!({"run_id":"run-1","first_stage":"planning","max_completion_rounds":20}),
+            },
+            JournalEvent {
+                sequence: 3,
+                timestamp: first_failed_at,
+                event_type: JournalEventType::RunFailed,
+                details: json!({"run_id":"run-1","message":"first attempt failed"}),
+            },
+            JournalEvent {
+                sequence: 4,
+                timestamp: resumed_started_at,
+                event_type: JournalEventType::StageEntered,
+                details: json!({"run_id":"run-1","stage_id":"implementation"}),
+            },
+        ];
+
+        assert_eq!(
+            terminal_status_for_attempt("run-1", resumed_started_at, &events),
+            None
+        );
+        assert!(terminal_event_for_attempt(
+            "run-1",
+            resumed_started_at,
+            RunStatus::Failed,
+            &events
+        )
+        .is_none());
     }
 }
 

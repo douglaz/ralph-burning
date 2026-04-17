@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-arbiter-c1-a1-cr5-artifact",
+  "payload_id": "run-20260416164042-final_review-arbiter-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T19:27:17.740029969Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the disputed amendment. The issue is not a functional reconciliation bug, but it is a genuine metadata-correctness problem: the CLI failure path stores a project id in a field and detail string labeled as `task_id`, even though those persisted fields are defined and displayed as daemon task linkage.\n\n## Rulings\n\n- `fr-5-0d9f7bd2`: Accept\n  The finding is valid, though low severity. In `src/cli/run.rs`, the CLI failure-sync path passes `project_id.as_str()` as both the `task_id` and `project_id` arguments to `reconcile_failure_sync`. Inside `reconcile_failure_sync`, `format_failure_outcome_detail` serializes that first argument under the literal `task_id=` label. The filesystem lineage store then parses that label back into the structured `task_id` field on task-run entries, and both `TaskRunEntry.task_id` and `CompletionJournalDetails.task_id` are documented as daemon task linkage fields. That value is also surfaced in milestone-history output. So the CLI path does durably persist and display `task_id=<project_id>`, which is semantically misleading even if it does not currently affect control flow.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

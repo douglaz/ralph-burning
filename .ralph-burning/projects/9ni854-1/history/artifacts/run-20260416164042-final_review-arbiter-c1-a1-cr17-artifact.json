@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-arbiter-c1-a1-cr17-artifact",
+  "payload_id": "run-20260416164042-final_review-arbiter-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T00:30:18.621274804Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted fr-17-17b43ea1 because the current stale-replay reconciliation only repairs the historical attempt being backfilled, and the outcome-detail normalization logic preserves already-recorded attempt numbers on later failures. The defect is therefore real persisted-state inconsistency, not just harmless eventual consistency.\n\n## Rulings\n\n- `fr-17-17b43ea1`: Accept\n  The accept vote is stronger. In both stale-replay branches, `reconcile_failure_sync` calls `repair_historical_failure_state(...)` and immediately returns, so that reconciliation pass repairs only the backfilled historical attempt and never revisits later failed attempts on the same bead. `repair_historical_failure_state(...)` itself only delegates to `repair_task_run_with_disposition(...)` for the single `(project_id, run_id, started_at)` being replayed. More importantly, the reject vote's eventual-consistency theory is undercut by `normalized_failure_outcome_detail(...)`, which preserves any previously stored `attempt=` value with `parsed.attempt_number.unwrap_or(attempt_number)`, while `recorded_failure_provenance(...)` prefers existing stored `outcome_detail`. That means a later failure recorded while the older attempt was missing can keep its stale ordinal even after the historical attempt is backfilled, leaving duplicate or inconsistent persisted `attempt=` markers until some separate explicit repair rewrites those later records.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

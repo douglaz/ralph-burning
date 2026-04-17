@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T17:47:30.532702742Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted all three amendments. They each describe a concrete defect in the current failure/retry path: same-run resumes collapse retry counting, retryable failure state drops the bead/task identity needed for targeted resume, and missing durable journal failure metadata can leave milestone reconciliation incomplete even though the daemon task is marked failed.\n\n## Votes\n\n- `fr-2-5b8082c9`: Accept\n  `resume_run_with_retry_and_capture_run_id` keeps the existing workflow `run_id`, and `record_task_run_start()` reopens the prior failed lineage row for that exact `(project_id, run_id)` instead of creating a new failed attempt record. `failure_attempt_number()` then counts failed lineage rows, not durable resume/failure cycles, so repeated retries of the same run collapse back onto attempt 1 and never reach the `MAX_FAILURE_RETRIES` escalation path to `NeedsOperator`.\n- `fr-2-b9368433`: Accept\n  The retryable branch of `reconcile_failure()` transitions the controller to `Blocked` without `bead_id` or `task_id`. Controller semantics explicitly require `Blocked` to clear active context, and both `resume_controller()` and `milestone next/run` treat `Blocked` as generic bead-selection state. That means the system no longer retains the specific failed bead/project that should be resumed, so the advertised retryable state is not actionable for that bead and can either stall or advance to some other ready bead.\n- `fr-2-3d9cfff2`: Accept\n  `try_reconcile_failure()` hard-fails if it cannot find a durable `RunFailed` event and matching `RunStarted` event in the project journal, but `engine::fail_run` treats persistence of the `run_failed` journal append as best-effort and ignores append errors. In that partial-write case the daemon still marks the task failed, yet milestone-side failure reconciliation never records `BeadFailed`, retry counting, or escalation state. Existing repair helpers are scoped to interrupted-handoff gaps and do not cover this ordinary stage-failure append miss.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

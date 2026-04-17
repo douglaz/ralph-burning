@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T19:17:59.767036513Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe failure reconciliation implementation is well-structured, correct, and robust. All 794 tests pass, clippy is clean, and formatting is correct. The core logic correctly records failures in journal state, counts attempts accurately, escalates after MAX_RETRIES (3), is idempotent, never closes beads on failure, and properly transitions the controller between Blocked (retryable) and NeedsOperator (exhausted). The controller state machine changes (Blocked→Running, Blocked→Reconciling transitions, Blocked state validation allowing bead/task context) are consistent and tested. The daemon_loop integration handles edge cases like missing run_failed events and missing workflow_run_id gracefully, with appropriate fallback to snapshot metadata and escalation to NeedsOperator when binding is ambiguous. One low-severity finding noted below.\n\n## Amendments\n\n1. In `src/cli/run.rs` line 1304, `project_id.as_str()` is passed as the `task_id` parameter to `reconcile_failure_sync`. The daemon_loop call site correctly passes `task.task_id` for this parameter. While `task_id` is only used for diagnostics (error messages, tracing spans, and the `task_id=` field in `format_failure_outcome_detail`), this means CLI-path failure outcome details will contain `task_id=<project_id>` rather than a meaningful daemon task identifier. This is cosmetic since the CLI sync path has no daemon task concept, but the outcome_detail string is persisted in journal state and could confuse debugging. Consider passing a more descriptive value or documenting that task_id is project_id in CLI context.\n   Rationale: The task_id value is embedded in persisted outcome_detail strings via format_failure_outcome_detail (line 355: `task_id={task_id}`). When debugging failures, seeing `task_id=bead-run` (a project_id) instead of a meaningful task identifier is misleading. The fix is trivial — either pass a descriptive string like the project_id with a 'cli-sync:' prefix, or document the convention.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 5
+}

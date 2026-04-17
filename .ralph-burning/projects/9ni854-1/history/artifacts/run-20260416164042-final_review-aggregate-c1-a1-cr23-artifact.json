@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr23-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T03:04:56.717932362Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 23/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-23-3267d69f`\n- `fr-23-f22cfd57`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-23-3267d69f`\n\nfinding_summary: `MilestoneControllerResumePort::task_status()` in both CLI runtime adapters still collapses `RunStatus::Failed` into `ControllerTaskStatus::Pending` (`src/cli/milestone.rs:1265-1282`, `src/cli/run.rs:992-1007`), but the new resume state machine now depends on a distinct `Failed` status to enter failure reconciliation from `running`/`reconciling`/`blocked` (`src/contexts/milestone_record/controller.rs:1172-1227`). Because `execute_resume()` accepts failed snapshots as resumable work (`src/cli/run.rs:3618-3633`), a crash between project failure and milestone sync can be resumed as a fresh retry without ever recording the failed attempt, which undercounts retries and can bypass `NeedsOperator` escalation. affected_files: src/cli/milestone.rs, src/cli/run.rs, src/contexts/milestone_record/controller.rs. remediation_hint: Return `ControllerTaskStatus::Failed` for failed run snapshots in both runtime adapters and add a regression test that a failed running project resumes into the failure-reconciliation path instead of `claimed`.\n\n### `fr-23-f22cfd57`\n\nfinding_summary: `resolve_controller_for_next()` now preserves `Blocked` controllers that carry retry context (`src/cli/milestone.rs:648-659`), but `inspect_next_milestone_action()` still treats every `Blocked` state as \"no ready beads\" and drops the bead payload (`src/cli/milestone.rs:563-609`). After a retryable failure, `milestone next` reports a generic blocked milestone instead of surfacing the failed bead that should be resumed, so operators and any tooling that relies on `next` lose visibility into the actionable retry work. affected_files: src/cli/milestone.rs. remediation_hint: Mirror the `blocked_retry_context` handling from `execute_milestone_run()` in `inspect_next_milestone_action()` and return the active bead as the next actionable item when `Blocked` includes bead/task ids.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 23
+}

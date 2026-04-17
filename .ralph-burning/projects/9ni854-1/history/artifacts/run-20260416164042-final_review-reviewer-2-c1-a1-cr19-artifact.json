@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr19-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T01:17:20.994805821Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe failure reconciliation implementation is well-engineered, thoroughly tested, and correctly follows the established patterns from success reconciliation. Core handler (3580 lines) properly records failures, counts attempts, decides retry vs NeedsOperator escalation, leaves beads open, and is idempotent. The daemon_loop integration carefully resolves attempt identity with multiple fallback strategies. Controller state machine extensions (Blocked preserving active context, new resume transitions) are correct. Model grouping fix for same-run-id retries with different started_at is necessary and sound. All 21 new unit tests pass, covering: first/second/third failure, idempotency, stale replay, bead-not-closed, provenance preservation, historical repair, and escalation. No critical or high-severity issues found.\n\n## Amendments\n\n1. repair_historical_failure_state (failure_reconciliation.rs:674-718) unconditionally returns Ok(true) regardless of whether the repair changed anything. This forces repair_recorded_failure_attempt_ordinals to always run when a stale replay is detected, even when the state was already correct. The function signature promises a meaningful bool but always returns true. Consider returning whether repair_task_run_with_disposition actually changed state (if the underlying API supports it), or document that the return value is always true and the caller should not condition on it.\n   Rationale: Misleading return value causes unnecessary work on every stale replay. The ordinal repair pass re-reads and potentially re-writes all failure entries for the bead even when nothing changed. Not a correctness bug since the repair is idempotent, but the API contract is violated.\n2. The try_reconcile_failure method in daemon_loop.rs (lines ~2061-2101) defines three closures (lineage_started_at, lineage_attempt_for_run, journal_attempt_for_run) that each independently call find_runs_for_bead, reading the same task-runs.ndjson file from disk. These closures can be called multiple times during a single reconcile_failure invocation (e.g., in completion_lineage_attempt and validate_failure_attempt). Consider loading the lineage data once and passing it to the closures to avoid redundant filesystem reads.\n   Rationale: Each closure independently reads task-runs.ndjson from disk. In the worst case (no workflow_run_id, snapshot fallback with validation), find_runs_for_bead may be called 5+ times for the same milestone+bead combination in a single reconciliation. While not a correctness issue, this is avoidable I/O overhead that accumulates under repeated failure reconciliation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 19
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T20:16:19.439494943Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify genuine correctness gaps in the failure reconciliation logic. Amendment fr-7-45b8523f correctly identifies that the `already_recorded && newer_attempt_exists` branch (lines 209-231) returns early without repairing a missing BeadFailed journal event, unlike the parallel `!already_recorded` branch (lines 181-207) which does call `repair_historical_failure_event`. Amendment fr-7-5004a2ab correctly identifies that `run_id`-only lookups for RunFailed events in both daemon_loop.rs and run.rs can match stale events from a previous attempt when a resumed run reuses the same `run_id`.\n\n## Votes\n\n- `fr-7-45b8523f`: Accept\n  The gap is real and verifiable in the code. At line 559-567, `failure_attempt_number()` sets `already_recorded = true` when a lineage row with `Failed` outcome exists, regardless of whether the corresponding `BeadFailed` journal event exists (the journal check at lines 553-557 runs first and didn't match). The `already_recorded && newer_attempt_exists` branch at lines 209-231 then returns without calling `repair_historical_failure_event`, unlike the `!already_recorded` branch at lines 181-207 which does repair the journal. If resumed retries later collapse the lineage row, the missing journal event means `failed_events.len()` in future `failure_attempt_number()` calls undercounts, since the `max()` at line 565-566 only helps while the lineage row still exists. The fix is straightforward: call `repair_historical_failure_event` in the already_recorded+newer branch before returning.\n- `fr-7-5004a2ab`: Accept\n  The issue is genuine. In daemon_loop.rs:2119-2126, `journal_events.iter().rev().find()` matches the last `RunFailed` by `run_id` only, without checking whether it postdates the latest `RunResumed` event. When a run is resumed (RunStarted→RunFailed→RunResumed→crash-without-RunFailed), the stale RunFailed from before the resume is matched, yielding a `failed_at` timestamp that precedes the current attempt's `started_at` and an error message from the wrong attempt. The same pattern in run.rs:1493-1508 (`terminal_run_event_timestamp`) matches by `run_id` alone. The existing `run_failed.is_none()` check at daemon_loop.rs:2154 doesn't help since the stale event is a false positive, not a missing event. Filtering out RunFailed events that predate the latest RunResumed for the same run_id is the correct fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 7
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr21-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T02:14:04.118174528Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment. The code path for already-recorded failure replays is not fully idempotent: it can rewrite both the durable failed timestamp and the controller's operator-facing reason when replay inputs differ from the originally recorded failure.\n\n## Votes\n\n- `fr-21-a06d8629`: Accept\n  `reconcile_failure_sync` computes canonical provenance up front, but the `already_recorded` branch still passes the replay's `failed_at` into `repair_task_run_with_disposition` instead of the recorded timestamp. In the repair path, terminal entries are allowed to overwrite `finished_at`, and the repaired completion event is rebuilt from the requested event, so an existing `BeadFailed` journal row can be replaced with the replay timestamp rather than treated as a no-op. Separately, the post-repair controller outcome is recomputed from the replay's normalized `error_summary`, not from recorded provenance, so an escalated replay can change the `NeedsOperator` reason even when the original failed attempt was already settled. That violates the stated idempotency requirement for replays, and the proposed remediation to derive canonical `failed_at` and error summary from recorded lineage/journal state is technically sound.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 21
+}

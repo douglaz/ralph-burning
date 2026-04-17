@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-plan_and_implement-c1-a1-cr20-artifact",
+  "payload_id": "run-20260416164042-plan_and_implement-c1-a1-cr20",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T01:37:24.036731760Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nPatched `src/contexts/automation_runtime/failure_reconciliation.rs` additively to fix both pending amendments. Failure reconciliation now derives retry history and stale-replay suppression from bead-scoped lineage+journal attempt identity instead of narrowing back to the current `project_id`, so replacement-project retries inherit prior failures and stale callbacks from older projects no longer retarget the controller. I also made `repair_historical_failure_state` return a meaningful changed/not-changed result by checking the current lineage+journal state before invoking repair, which prevents stale-replay no-ops from unnecessarily triggering later attempt-ordinal rewrites. The regression suite now covers cross-project retry inheritance, stale old-project replay suppression, and the no-op historical-repair case.\n\n## Steps\n\n1. [Completed] Inspected the failure-reconciliation retry-counting, stale-replay, and historical-repair helpers to confirm every remaining project-scoped path that needed bead-scoped attempt identity instead.\n2. [Completed] Patched `failure_reconciliation.rs` so bead-scoped started/failed lineage+journal attempts drive retry counting and newer-attempt detection, while exact-attempt provenance remains project-aware for repair and idempotency.\n3. [Completed] Changed `repair_historical_failure_state` to short-circuit when the historical failure state already matches the expected lineage+journal payload, eliminating unnecessary downstream ordinal-repair sweeps on replay no-ops.\n4. [Completed] Updated the regression suite with replacement-project retry/stale-replay coverage and a no-op stale-replay repair regression, then reran the Rust validation gates.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed after formatting the updated failure-reconciliation module.\n- `cargo test failure_reconciliation -- --nocapture` passed; all 23 failure-reconciliation tests succeeded, including the new cross-project and no-op repair regressions.\n- `cargo test` passed on the full suite.\n- `cargo clippy -- -D warnings` passed.\n- `cargo clippy --features test-stub -- -D warnings` passed.\n- `nix build` was launched and progressed into `/nix/store/ahdnkd9vrvhg130y5bs3il534vds6pr8-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0.drv`, but no final exit status was observed in-session.\n\n## Outstanding Risks\n\n- `nix build` was launched on the updated tree and reached the active musl derivation build stage, but it did not produce a terminal success/failure exit within this session, so the authoritative Nix gate remains unresolved.\n- Pre-existing live orchestration-state edits under `.ralph-burning/projects/9ni854-1/` were left untouched and remain out of scope.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 20
+}

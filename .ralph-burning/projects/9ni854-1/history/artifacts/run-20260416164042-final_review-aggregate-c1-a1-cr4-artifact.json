@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T18:59:02.185581034Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-9658f485`\n- `fr-4-63eb15de`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-9658f485`\n\nfinding_summary: Failure reconciliation guesses the current run from the latest journal metadata when `workflow_run_id` is missing, so a retry/manual rerun can be reconciled against the wrong historical attempt.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs:1913-1926\n- src/contexts/automation_runtime/daemon_loop.rs:1997-2006\nremediation_hint: Mirror the success path and require a durable task-to-run binding, or at minimum an exact active/interrupted snapshot attempt, before reconciling. Do not infer `run_id`/`started_at` from the latest journal entry.\n\n### `fr-4-63eb15de`\n\nfinding_summary: When daemon-side failure reconciliation cannot determine milestone metadata, the task is marked failed but the milestone controller is left in its prior active state instead of being pushed to `NeedsOperator`.\nseverity: medium\naffected_files:\n- src/contexts/automation_runtime/daemon_loop.rs:1183-1201\n- src/contexts/automation_runtime/daemon_loop.rs:1781-1799\n- src/contexts/automation_runtime/daemon_loop.rs:1866-1931\n- src/contexts/automation_runtime/daemon_loop.rs:2001-2008\nremediation_hint: For milestone-backed tasks, convert hard reconciliation metadata failures into a controller `NeedsOperator` transition before returning the task failure, matching the existing success-reconciliation behavior.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

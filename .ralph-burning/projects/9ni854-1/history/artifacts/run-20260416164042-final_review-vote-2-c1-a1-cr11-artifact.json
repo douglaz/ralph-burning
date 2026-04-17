@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr11-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T21:59:09.415947425Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real defects in the failure reconciliation paths. The first (fr-11-163f95ac) is a safety-gate issue where reopen_failed_exact_attempt overwrites the only durable evidence of a failed attempt, causing undercounting that can bypass MAX_FAILURE_RETRIES. The second (fr-11-51435a8c) is an audit-trail gap where repair_task_run_with_disposition lacks a task_id parameter and relies solely on outcome_detail backfill, which fails for legacy unstructured strings.\n\n## Votes\n\n- `fr-11-163f95ac`: Accept\n  Verified by tracing the code: reopen_failed_exact_attempt (fs.rs:4571) overwrites entries[target_index] in place, destroying the only durable evidence of a failed attempt when the crash happened between lineage write and journal event write. failure_attempt_number (failure_reconciliation.rs:679-714) then counts only surviving BeadFailed events and failed lineage rows — both of which are zero for the lost attempt. This means a crash in the narrow window (lineage updated, journal not) causes the reconciler to undercount by exactly 1, potentially returning Retryable instead of NeedsOperator at the MAX_FAILURE_RETRIES boundary. This is precisely the partial-write scenario the failure reconciliation feature is designed to handle, making it a genuine safety defect. The remediation (preserve historical rows or cross-reference journal history before counting) is straightforward.\n- `fr-11-51435a8c`: Accept\n  Confirmed by tracing the already_recorded path (failure_reconciliation.rs:306-327): repair_task_run_with_disposition (service.rs:2747) has no task_id parameter — task_id can only enter the lineage entry via extract_task_id_from_outcome_detail at fs.rs:4931-4937, which requires a 'task_id=' prefix in outcome_detail. When recorded_failure_provenance returns a legacy outcome_detail like 'stale failure', the backfill fails and repaired_run.task_id stays None. The journal event created at service.rs:2807 via repaired_run.completion_journal_details() then omits task_id entirely, despite recorded_task_id being correctly computed at failure_reconciliation.rs:199. This is a real audit-trail gap — the caller has the task_id but there's no channel to propagate it through repair_task_run_with_disposition to the lineage entry and journal event. Either augmenting the outcome_detail or adding a task_id parameter to repair_task_run_with_disposition would close the gap.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 11
+}

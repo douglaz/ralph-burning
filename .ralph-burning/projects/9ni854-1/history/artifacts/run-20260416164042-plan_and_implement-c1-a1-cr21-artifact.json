@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-plan_and_implement-c1-a1-cr21-artifact",
+  "payload_id": "run-20260416164042-plan_and_implement-c1-a1-cr21",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T01:55:03.832770305Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nPatched `src/contexts/automation_runtime/failure_reconciliation.rs` so failure outcome-detail parsing is round-trippable even when the real error text contains semicolons or substrings like `attempt=`/`task_id=`. The parser now reads only the fixed structured headers from the newline-based format, falls back to a legacy header parser that preserves the entire `error=` tail verbatim, and no longer reinterprets semicolon-delimited error text as new fields on replay. I also tightened `task_id` extraction to use the fixed header line and added regressions for direct parser round-tripping plus end-to-end replay idempotency with semicolon-heavy error payloads.\n\n## Steps\n\n1. [Completed] Inspected the failure outcome-detail formatter/parser path in `failure_reconciliation.rs` and confirmed the idempotency bug came from splitting every stored line on `;`, which let semicolons inside `error=` be misparsed as structured fields on replay.\n2. [Completed] Implemented additive parsing changes in `failure_reconciliation.rs`: a structured line parser for the canonical newline format, a narrow legacy parser that preserves the full `error=` remainder, and header-based `task_id` extraction so replayed failures keep their original stored metadata.\n3. [Completed] Added regressions in `failure_reconciliation.rs` covering direct parser round-tripping for semicolon-heavy error text and end-to-end `reconcile_failure()` replay idempotency for the same failed run when the error summary contains `attempt=`/`task_id=` substrings.\n4. [Completed] Ran the Rust validation gates plus the required nix gate to verify the patch against both local and sandboxed environments.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed after formatting the updated file.\n- `cargo test failure_reconciliation -- --nocapture` passed; all 25 failure-reconciliation tests succeeded, including the 2 new semicolon/idempotency regressions.\n- `cargo test` passed on the full local suite.\n- `cargo clippy -- -D warnings` passed.\n- `cargo clippy --features test-stub -- -D warnings` passed.\n- `nix build` failed in the sandboxed test stage with `adapters::br_process::tests::check_available_times_out_when_version_probe_hangs` (`assertion failed: matches!(error, BrError::BrTimeout { .. })`).\n\n## Outstanding Risks\n\n- `nix build` failed in the nix sandbox, so the authoritative repository gate is still red. The failure was `adapters::br_process::tests::check_available_times_out_when_version_probe_hangs`, which did not reproduce in the local `cargo test` run from this session.\n- Pre-existing live orchestration-state edits under `.ralph-burning/projects/9ni854-1/` were left untouched and remain out of scope.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 21
+}

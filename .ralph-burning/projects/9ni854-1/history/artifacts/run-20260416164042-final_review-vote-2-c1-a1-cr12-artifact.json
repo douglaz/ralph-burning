@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr12-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-16T22:18:44.858660687Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify real defects in failure reconciliation logic. Amendment 1 correctly identifies an inconsistency between attempt_boundary_sequences (unwrap_or_else favors durable, ignoring a potentially higher inferred boundary) and terminal_status_for_running_attempt (which takes max of both). Amendment 2 correctly identifies that known_attempts includes orphaned starts that never terminally failed, inflating the retry counter and prematurely escalating to NeedsOperator.\n\n## Votes\n\n- `fr-12-6fbef96d`: Accept\n  Verified in code: attempt_boundary_sequences at line 136 uses unwrap_or_else, meaning a durable boundary (e.g., an old run_started from a prior attempt) wins over a potentially higher inferred boundary. Meanwhile terminal_status_for_running_attempt at lines 200-206 correctly uses .max() to take the strictest of both. When a resumed attempt crashes before run_resumed is durably written, durable_attempt_boundary_sequence_at_or_before finds the OLD run_started, setting the lower boundary before the old run_failed — making the stale terminal event visible in the search window. The inferred boundary (max sequence of any event before started_at) would correctly exclude the stale failure. Using max(durable, inferred) is the correct fix and aligns with the fail-closed pattern already used in the running-attempt variant.\n- `fr-12-d014775e`: Accept\n  Verified in code: known_attempts (lines 1058-1084) collects ALL attempt identities from started_events, failed_events, and lineage runs regardless of outcome. failure_attempt_number (line 800-804) uses the position in this list as attempt_number, which failure_outcome (line 832) compares against MAX_FAILURE_RETRIES=3. Concrete scenario: two orphaned starts from crashes (BeadStarted written, no terminal outcome) followed by the first real failure gives attempt_number=3, which equals MAX_FAILURE_RETRIES and immediately escalates to NeedsOperator — even though this is the first actual failure. The retry budget should count terminal failures, not mere starts. This is not theoretical; crash-recovery scenarios producing orphaned starts are exactly the conditions failure reconciliation is designed to handle.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 12
+}

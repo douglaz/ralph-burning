@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr23-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr23-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T03:02:32.182378676Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nBoth amendments identify genuine bugs in the failure reconciliation path. Amendment fr-23-3267d69f correctly identifies that both runtime adapters collapse RunStatus::Failed into ControllerTaskStatus::Pending, which causes the controller state machine to misroute failed tasks (e.g., demoting to Claimed instead of advancing to Reconciling, or escalating to NeedsOperator instead of staying in Reconciling). Amendment fr-23-f22cfd57 correctly identifies that inspect_next_milestone_action() discards bead information for all Blocked states, even though resolve_controller_for_next() preserves retry context and execute_milestone_run() properly handles it.\n\n## Votes\n\n- `fr-23-3267d69f`: Accept\n  Verified: both task_status() implementations at milestone.rs:1280 and run.rs:1005 map RunStatus::Failed to ControllerTaskStatus::Pending, but the controller state machine at controller.rs:1172 explicitly branches on Failed. In the Running state, a failed task reported as Pending gets demoted to Claimed (line 1152-1159) instead of transitioning to Reconciling (line 1172-1185), bypassing failure reconciliation entirely. In the Reconciling state, it triggers NeedsOperator (line 1199-1205) instead of staying put (line 1198). This means crashed tasks can be silently retried without recording the failed attempt, undercounting retries and potentially bypassing NeedsOperator escalation. The fix is straightforward: return ControllerTaskStatus::Failed for RunStatus::Failed in both adapters.\n- `fr-23-f22cfd57`: Accept\n  Verified: resolve_controller_for_next() at line 648-654 correctly detects blocked-with-retry-context and preserves the controller record. execute_milestone_run() at line 683 distinguishes Blocked-without-retry (returns generic blocked) from Blocked-with-retry (falls through to line 705-707 where the bead is loaded and execution proceeds). However, inspect_next_milestone_action() at lines 602-609 unconditionally returns bead: None for all Blocked states, discarding the active bead and task IDs that represent actionable retry work. This means 'milestone next' gives operators a generic 'no ready beads' message when there is actually a specific failed bead that should be retried. The inconsistency between the run and next code paths is a real operational visibility bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 23
+}

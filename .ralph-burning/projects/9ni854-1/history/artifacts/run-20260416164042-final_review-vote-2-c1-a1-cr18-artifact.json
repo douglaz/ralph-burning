@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr18-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T00:55:49.910954869Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nAll three amendments identify real issues confirmed by code inspection. The first two are correctness bugs in failure reconciliation's lineage lookup fallback logic (daemon and CLI paths respectively), where a retry attempt can be incorrectly bound to a stale terminal lineage row. The third is a valid but lower-priority performance issue where unnecessary I/O is triggered by an unconditional Ok(true) return.\n\n## Votes\n\n- `fr-18-592f1688`: Accept\n  Confirmed by code inspection. lineage_completion_attempt_identity() has a 3-tier fallback cascade (lines 192-207): tier 1 filters non-terminal rows, tier 2 matches exact started_at, but tier 3 matches ANY row with the same run_id regardless of terminal status. When a retry's BeadStarted write is missing, tier 3 returns the old terminal failure row's started_at, which reconcile_failure() then uses to overwrite the original failure instead of recording a distinct new attempt. This undercounts retries and corrupts failure history. The remediation—requiring non-terminal match or synthesizing the missing start row, else failing to NeedsOperator—is sound.\n- `fr-18-127da90a`: Accept\n  Confirmed by code inspection. sync_terminal_milestone_task_with_options (run.rs:1207) gates its lineage repair block on !same_named_terminal_attempt_exists, so when a prior failure already created a terminal lineage row for the same run_id, the repair is skipped entirely. The failure branch then calls reconcile_failure_sync() → record_bead_completion_with_disposition(), which invokes finalize_task_run_internal() with allow_terminal_repair=false, causing a CorruptRecord error when no exact non-terminal lineage row exists. The success path already handles this scenario with its own repair logic; the failure path needs the same treatment. The proposed fix—synthesizing or repairing the retry start row before reconciling—mirrors the existing success-path pattern.\n- `fr-18-9158e98a`: Accept\n  Confirmed: repair_historical_failure_state() (failure_reconciliation.rs:718) unconditionally returns Ok(true) after repair_task_run_with_disposition succeeds, regardless of whether any state was actually mutated. The caller then always invokes repair_recorded_failure_attempt_ordinals, which re-reads runs and journal files. While the ordinal repair has its own skip-if-unchanged guard (failure_state_matches_expected), the unnecessary I/O on every stale replay is wasteful. This is not a correctness bug, but it is a straightforward improvement: propagate whether repair_task_run_with_disposition actually wrote changes. Low risk, clear benefit.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 18
+}
