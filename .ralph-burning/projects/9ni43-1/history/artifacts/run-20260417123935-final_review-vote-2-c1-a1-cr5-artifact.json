@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-vote-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260417123935-final_review-vote-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T14:54:03.529316467Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified both findings against the installed br CLI (v0.1.35). `br list --all --json` returns an object wrapper `{\"issues\": [...], \"total\": ...}` — not a bare array — so the `Vec<BeadSummary>` deserialization at service.rs:1526 and :3675 will fail before any export work happens. `br create` rejects `--label` with 'unexpected argument' and directs users to `--labels`, so br_process.rs:1341-1346's `cmd.kv(\"label\", ...)` loop produces invalid flags that exit non-zero for every labeled create. Both are load-bearing defects that block the materialize_beads path entirely.\n\n## Votes\n\n- `fr-5-b0b36c77`: Accept\n  Confirmed empirically: `br list --all --json` on br 0.1.35 returns `{\"issues\": [], \"total\": 0, \"limit\": 50, \"offset\": 0, \"has_more\": false}`, not a bare array. The code at src/contexts/milestone_record/service.rs:1526-1530 and :3675 deserializes into `Vec<BeadSummary>` via `exec_json`, which will fail with a serde type mismatch before the existing-beads check or any create. This breaks materialize_beads completely. Remediation must normalize the envelope (dedicated wrapper struct or adapter-level unwrap) and update fixtures to the real payload shape.\n- `fr-5-2923c4b8`: Accept\n  Confirmed empirically: running `br create ... --label=foo` on br 0.1.35 returns exit code 2 with 'error: unexpected argument \\'--label\\' found' and the tip to use `--labels`. The code at src/adapters/br_process.rs:1341-1346 iterates labels and emits `--label=<value>` via `cmd.kv(\"label\", ...)`. Because materialized_bead_labels always prepends `milestone:<id>`, every export create path carries at least one label, so the first create will exit non-zero and no beads materialize. Fix must switch to the CLI's `--labels` comma-separated contract and add a command-line-level test to prevent regressions.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 5
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T14:26:59.439308821Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed materialize_beads end-to-end: `materialize_beads()` in src/contexts/milestone_record/service.rs plus the BrMutationAdapter::add_dependency_with_kind / BrCommand::dep_add_with_kind extensions, the new BeadDetail comments field with manual untagged single-or-array Deserialize, and the `milestone export-beads` CLI wiring. Change is additive, idempotent, and well covered by 9 new tests; build/clippy/fmt clean; no `fix-now` issues found. One design-level gap worth a follow-up bead: reuse path never re-applies plan-side content (description/priority/labels) when a pre-existing match is found.\n\n## Amendments\n\n1. When `materialize_beads` finds an existing bead via `find_existing_materialized_bead`, it keeps the bead's current title/description/priority/labels untouched and only fills in missing parent-child/blocks deps and missing planning-rationale comments. If a MilestoneBundle's plan is edited (e.g. rewritten scope, shifted priority, added acceptance criterion) and `milestone export-beads` is re-run, the `br` beads silently stay stale. Consider a follow-up that either (a) re-applies bead body/priority/labels on reuse when they diverge from `MaterializeBeadInput`, or (b) at minimum emits a warning/journal entry when a reused bead's content drifts from the plan. Relevant code: service.rs `materialize_bead_entry` (~1743) early-returns the existing state without calling any update mutation; contrast with `ensure_dependency`/`ensure_bead_comment` which do repair missing structure.\n   Rationale: Today the only way a re-run of export-beads touches a reused bead is to add missing deps/comments. This is a silent footgun once teams start iterating on milestone bundles: edits to a workstream rationale or task description never reach `br`, so the beads drift from the authoritative plan. Either direction (reconcile or warn) preserves the additive idempotency constraint while closing the content-drift gap.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 4
+}

@@ -1,15 +1,19 @@
+use std::fs::OpenOptions;
 use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand};
+use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::adapters::br_models::{BeadDetail, BeadStatus, ReadyBead};
-use crate::adapters::br_process::BrAdapter;
+use crate::adapters::br_process::{BrAdapter, BrMutationAdapter};
 use crate::adapters::bv_process::BvAdapter;
 use crate::adapters::fs::{
-    FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+    FileSystem, FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
     FsMilestoneSnapshotStore, FsMilestoneStore, FsProjectStore, FsRequirementsStore,
     FsRunSnapshotStore, FsTaskRunLineageStore,
 };
@@ -45,6 +49,8 @@ use crate::shared::error::{AppError, AppResult};
 const PENDING_REQUIREMENTS_START_PREFIX: &str = "__starting__:";
 const PENDING_REQUIREMENTS_START_STALE_AFTER_SECONDS: i64 = 30;
 const PENDING_REQUIREMENTS_DRAFTING_STALE_AFTER_SECONDS: i64 = 300;
+const PENDING_BEAD_EXPORT_ATTEMPT_FILE: &str = "bead-export-attempt.json";
+const PENDING_BEAD_EXPORT_LOCK_FILE: &str = "bead-export-attempt.lock";
 const MAX_MILESTONE_RUN_STEPS: usize = 256;
 
 #[derive(Debug, Args)]
@@ -57,6 +63,9 @@ pub struct MilestoneCommand {
 pub enum MilestoneSubcommand {
     Create(MilestoneCreateArgs),
     Plan {
+        milestone_id: String,
+    },
+    ExportBeads {
         milestone_id: String,
     },
     Next {
@@ -112,6 +121,22 @@ struct MilestoneSummaryView {
     pending_requirements: Option<PendingRequirementsView>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PendingBeadExportAttempt {
+    plan_hash: String,
+    owner_token: String,
+    pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proc_start_ticks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proc_start_marker: Option<String>,
+}
+
+#[derive(Debug)]
+struct BeadExportAttemptGuard {
+    attempt: PendingBeadExportAttempt,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -195,6 +220,9 @@ pub async fn handle(command: MilestoneCommand) -> AppResult<()> {
     match command.command {
         MilestoneSubcommand::Create(args) => handle_create(args).await,
         MilestoneSubcommand::Plan { milestone_id } => handle_plan(milestone_id).await,
+        MilestoneSubcommand::ExportBeads { milestone_id } => {
+            handle_export_beads(milestone_id).await
+        }
         MilestoneSubcommand::Next { milestone_id, json } => handle_next(milestone_id, json).await,
         MilestoneSubcommand::Run { milestone_id, json } => handle_run(milestone_id, json).await,
         MilestoneSubcommand::Show { milestone_id, json } => handle_show(milestone_id, json).await,
@@ -349,6 +377,237 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
         detail.id, run_id, detail.bead_count, detail.status
     );
     Ok(())
+}
+
+async fn handle_export_beads(milestone_id: String) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    validate_workspace(&current_dir)?;
+
+    let store = FsMilestoneStore;
+    let journal_store = FsMilestoneJournalStore;
+    let plan_store = FsMilestonePlanStore;
+    let milestone_id = MilestoneId::new(milestone_id)?;
+    load_existing_milestone(&store, &current_dir, &milestone_id)?;
+    let (bundle, plan_hash) =
+        milestone_service::load_plan_bundle(&plan_store, &current_dir, &milestone_id)?;
+    let export_attempt = reserve_bead_export_attempt(&current_dir, &milestone_id, &plan_hash)?;
+    let br_mutation = BrMutationAdapter::with_adapter_id(
+        BrAdapter::new().with_working_dir(current_dir.clone()),
+        bead_export_adapter_id(
+            &milestone_id,
+            &plan_hash,
+            &export_attempt.attempt.owner_token,
+        ),
+    );
+
+    let report = milestone_service::materialize_beads(&bundle, &current_dir, &br_mutation).await?;
+    milestone_service::record_beads_exported_event(
+        &journal_store,
+        &current_dir,
+        &milestone_id,
+        &plan_hash,
+        &report,
+        Utc::now(),
+    )?;
+    clear_bead_export_attempt(
+        &current_dir,
+        &milestone_id,
+        &export_attempt.attempt.owner_token,
+    )?;
+    workspace_governance::set_active_milestone(&current_dir, &milestone_id)?;
+    println!(
+        "Exported beads for milestone '{}' (root: {}, created: {}, reused: {})",
+        milestone_id, report.root_epic_id, report.created_beads, report.reused_beads
+    );
+    Ok(())
+}
+
+fn bead_export_adapter_id(
+    milestone_id: &MilestoneId,
+    plan_hash: &str,
+    owner_token: &str,
+) -> String {
+    format!("milestone-export-beads-{milestone_id}-{plan_hash}-{owner_token}")
+}
+
+fn reserve_bead_export_attempt(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    plan_hash: &str,
+) -> AppResult<BeadExportAttemptGuard> {
+    with_bead_export_attempt_lock(base_dir, milestone_id, || {
+        let current_pid = std::process::id();
+        let current_ticks = FileSystem::proc_start_ticks_for_pid(current_pid);
+        let current_marker = FileSystem::proc_start_marker_for_pid(current_pid);
+        let current_attempt = PendingBeadExportAttempt {
+            plan_hash: plan_hash.to_owned(),
+            owner_token: Uuid::new_v4().to_string(),
+            pid: current_pid,
+            proc_start_ticks: current_ticks,
+            proc_start_marker: current_marker,
+        };
+        let path = bead_export_attempt_path(base_dir, milestone_id);
+
+        match read_bead_export_attempt(base_dir, milestone_id)? {
+            Some(existing) if existing.plan_hash == plan_hash && existing.pid == current_pid => {
+                write_bead_export_attempt(
+                    base_dir,
+                    milestone_id,
+                    &PendingBeadExportAttempt {
+                        proc_start_ticks: current_attempt.proc_start_ticks,
+                        proc_start_marker: current_attempt.proc_start_marker.clone(),
+                        ..existing.clone()
+                    },
+                )?;
+                Ok(BeadExportAttemptGuard {
+                    attempt: PendingBeadExportAttempt {
+                        proc_start_ticks: current_attempt.proc_start_ticks,
+                        proc_start_marker: current_attempt.proc_start_marker,
+                        ..existing
+                    },
+                })
+            }
+            Some(existing) if bead_export_attempt_is_live(&existing) => {
+                let details = if existing.plan_hash == plan_hash {
+                    format!(
+                        "bead export is already running in another process (pid {}) for plan hash '{}'; rerun after that export finishes",
+                        existing.pid, existing.plan_hash
+                    )
+                } else {
+                    format!(
+                        "bead export is already running in another process (pid {}) for plan hash '{}'; refusing to start a new export for '{}'",
+                        existing.pid, existing.plan_hash, plan_hash
+                    )
+                };
+                Err(AppError::MilestoneOperationFailed {
+                    milestone_id: milestone_id.to_string(),
+                    action: "export beads".to_owned(),
+                    details,
+                })
+            }
+            Some(existing) if existing.plan_hash == plan_hash => {
+                let recovered = PendingBeadExportAttempt {
+                    plan_hash: plan_hash.to_owned(),
+                    owner_token: existing.owner_token,
+                    pid: current_pid,
+                    proc_start_ticks: current_attempt.proc_start_ticks,
+                    proc_start_marker: current_attempt.proc_start_marker,
+                };
+                write_bead_export_attempt(base_dir, milestone_id, &recovered)?;
+                Ok(BeadExportAttemptGuard { attempt: recovered })
+            }
+            Some(_) | None => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                write_bead_export_attempt(base_dir, milestone_id, &current_attempt)?;
+                Ok(BeadExportAttemptGuard {
+                    attempt: current_attempt,
+                })
+            }
+        }
+    })
+}
+
+fn clear_bead_export_attempt(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    expected_owner_token: &str,
+) -> AppResult<()> {
+    with_bead_export_attempt_lock(base_dir, milestone_id, || {
+        let path = bead_export_attempt_path(base_dir, milestone_id);
+        let Some(existing) = read_bead_export_attempt(base_dir, milestone_id)? else {
+            return Ok(());
+        };
+        if existing.owner_token == expected_owner_token {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(AppError::Io(error)),
+            }
+        }
+        Ok(())
+    })
+}
+
+fn bead_export_attempt_is_live(attempt: &PendingBeadExportAttempt) -> bool {
+    FileSystem::process_identity_matches_live_process(
+        attempt.pid,
+        attempt.proc_start_ticks,
+        attempt.proc_start_marker.as_deref(),
+    )
+}
+
+fn bead_export_attempt_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+    base_dir
+        .join(".ralph-burning/milestones")
+        .join(milestone_id.as_str())
+        .join(PENDING_BEAD_EXPORT_ATTEMPT_FILE)
+}
+
+fn bead_export_attempt_lock_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+    base_dir
+        .join(".ralph-burning/milestones")
+        .join(milestone_id.as_str())
+        .join(PENDING_BEAD_EXPORT_LOCK_FILE)
+}
+
+fn read_bead_export_attempt(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<Option<PendingBeadExportAttempt>> {
+    let path = bead_export_attempt_path(base_dir, milestone_id);
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .map(Some)
+            .map_err(|error| AppError::CorruptRecord {
+                file: format!(
+                    "milestones/{}/{}",
+                    milestone_id, PENDING_BEAD_EXPORT_ATTEMPT_FILE
+                ),
+                details: error.to_string(),
+            }),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AppError::Io(error)),
+    }
+}
+
+fn write_bead_export_attempt(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    attempt: &PendingBeadExportAttempt,
+) -> AppResult<()> {
+    let path = bead_export_attempt_path(base_dir, milestone_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let payload = serde_json::to_vec_pretty(attempt)
+        .map_err(|error| AppError::Io(std::io::Error::other(error.to_string())))?;
+    std::fs::write(path, payload)?;
+    Ok(())
+}
+
+fn with_bead_export_attempt_lock<T, F>(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    operation: F,
+) -> AppResult<T>
+where
+    F: FnOnce() -> AppResult<T>,
+{
+    let lock_path = bead_export_attempt_lock_path(base_dir, milestone_id);
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)?;
+    let _lock = Flock::lock(file, FlockArg::LockExclusive)
+        .map_err(|(_, error)| AppError::Io(std::io::Error::from(error)))?;
+    operation()
 }
 
 async fn handle_next(milestone_id: Option<String>, json: bool) -> AppResult<()> {
@@ -1269,19 +1528,12 @@ impl MilestoneCommandControllerRuntime<'_> {
     }
 
     fn planned_bead_membership_refs(&self) -> AppResult<std::collections::HashSet<String>> {
-        let plan_json = FsMilestonePlanStore.read_plan_json(self.base_dir, self.milestone_id)?;
-        let bundle: MilestoneBundle =
-            serde_json::from_str(&plan_json).map_err(|error| AppError::CorruptRecord {
-                file: format!("milestones/{}/plan.json", self.milestone_id),
-                details: error.to_string(),
-            })?;
-
-        crate::contexts::milestone_record::bundle::planned_bead_membership_refs(&bundle)
-            .map(|refs| refs.into_iter().collect())
-            .map_err(|errors| AppError::CorruptRecord {
-                file: format!("milestones/{}/plan.json", self.milestone_id),
-                details: errors.join("; "),
-            })
+        milestone_service::load_runtime_bead_membership_refs(
+            &FsMilestonePlanStore,
+            &FsMilestoneJournalStore,
+            self.base_dir,
+            self.milestone_id,
+        )
     }
 }
 
@@ -2176,9 +2428,10 @@ fn map_create_error(milestone_id: &str, error: AppError) -> AppError {
 mod tests {
     use super::{
         default_planning_idea, derive_milestone_id, inspect_next_milestone_action,
-        load_bead_execution_history, load_milestone_task_list, reserve_pending_requirements_run,
-        retarget_bundle, MilestoneCommandControllerRuntime, PendingRequirementsRunReservation,
-        PENDING_REQUIREMENTS_START_PREFIX,
+        load_bead_execution_history, load_milestone_task_list, read_bead_export_attempt,
+        reserve_bead_export_attempt, reserve_pending_requirements_run, retarget_bundle,
+        write_bead_export_attempt, MilestoneCommandControllerRuntime, PendingBeadExportAttempt,
+        PendingRequirementsRunReservation, PENDING_REQUIREMENTS_START_PREFIX,
     };
     use chrono::{TimeZone, Utc};
     use clap::Parser;
@@ -2187,8 +2440,8 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::adapters::fs::{
-        FsJournalStore, FsMilestoneControllerStore, FsMilestoneSnapshotStore, FsMilestoneStore,
-        FsProjectStore, FsRunSnapshotWriteStore, FsTaskRunLineageStore,
+        FileSystem, FsJournalStore, FsMilestoneControllerStore, FsMilestoneSnapshotStore,
+        FsMilestoneStore, FsProjectStore, FsRunSnapshotWriteStore, FsTaskRunLineageStore,
     };
     use crate::cli::{Cli, Commands};
     use crate::contexts::milestone_record::bundle::{
@@ -2209,6 +2462,7 @@ mod tests {
         self as project_service, CreateProjectInput, RunSnapshotWritePort,
     };
     use crate::shared::domain::FlowPreset;
+    use crate::shared::error::AppError;
     #[cfg(unix)]
     use crate::test_support::env::{lock_path_mutex, PathGuard};
 
@@ -2536,6 +2790,93 @@ mod tests {
         assert_eq!(milestone_id, "ms-alpha");
         assert_eq!(bead_id, "bead-1");
         assert!(json);
+    }
+
+    #[test]
+    fn milestone_export_beads_parses_correctly() {
+        let cli = Cli::parse_from(["ralph-burning", "milestone", "export-beads", "ms-alpha"]);
+        let Commands::Milestone(command) = cli.command else {
+            panic!("expected milestone command");
+        };
+        let super::MilestoneSubcommand::ExportBeads { milestone_id } = command.command else {
+            panic!("expected export-beads subcommand");
+        };
+        assert_eq!(milestone_id, "ms-alpha");
+    }
+
+    #[test]
+    fn reserve_bead_export_attempt_reuses_stale_same_plan_owner() {
+        let temp_dir = tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let milestone_dir = temp_dir
+            .path()
+            .join(".ralph-burning/milestones")
+            .join(milestone_id.as_str());
+        std::fs::create_dir_all(&milestone_dir).expect("milestone dir");
+        let stale_attempt = PendingBeadExportAttempt {
+            plan_hash: "plan-hash".to_owned(),
+            owner_token: "stale-owner".to_owned(),
+            pid: u32::MAX,
+            proc_start_ticks: None,
+            proc_start_marker: None,
+        };
+        write_bead_export_attempt(temp_dir.path(), &milestone_id, &stale_attempt)
+            .expect("write stale attempt");
+
+        let guard = reserve_bead_export_attempt(temp_dir.path(), &milestone_id, "plan-hash")
+            .expect("reserve stale attempt");
+        let persisted = read_bead_export_attempt(temp_dir.path(), &milestone_id)
+            .expect("read persisted attempt")
+            .expect("persisted attempt");
+
+        assert_eq!(guard.attempt.owner_token, "stale-owner");
+        assert_eq!(persisted.owner_token, "stale-owner");
+        assert_eq!(persisted.pid, std::process::id());
+        assert_eq!(persisted.plan_hash, "plan-hash");
+    }
+
+    #[test]
+    fn reserve_bead_export_attempt_rejects_live_other_process() {
+        let temp_dir = tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let milestone_dir = temp_dir
+            .path()
+            .join(".ralph-burning/milestones")
+            .join(milestone_id.as_str());
+        std::fs::create_dir_all(&milestone_dir).expect("milestone dir");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleeper");
+        let child_pid = child.id();
+        let live_attempt = PendingBeadExportAttempt {
+            plan_hash: "plan-hash".to_owned(),
+            owner_token: "live-owner".to_owned(),
+            pid: child_pid,
+            proc_start_ticks: FileSystem::proc_start_ticks_for_pid(child_pid),
+            proc_start_marker: FileSystem::proc_start_marker_for_pid(child_pid),
+        };
+        write_bead_export_attempt(temp_dir.path(), &milestone_id, &live_attempt)
+            .expect("write live attempt");
+
+        let error = reserve_bead_export_attempt(temp_dir.path(), &milestone_id, "plan-hash")
+            .expect_err("live foreign attempt should block reuse");
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        match error {
+            AppError::MilestoneOperationFailed {
+                milestone_id: error_milestone_id,
+                action,
+                details,
+            } => {
+                assert_eq!(error_milestone_id, "ms-alpha");
+                assert_eq!(action, "export beads");
+                assert!(details.contains("already running in another process"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260417123935-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T14:24:47.742360269Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the master...HEAD bead-export changes and found 2 fix-now issues: pending export replay is keyed too broadly and can flush stale/foreign mutations, and title-only reuse breaks idempotency for valid explicit-ID bundles that reuse a title.\n\n## Amendments\n\n1. finding_summary: `milestone export-beads` replays any pending mutation journal for the same milestone as if it belonged to the current invocation, so a stale or concurrent export can be flushed into `.beads` before the new bundle is processed.\nseverity: high\naffected_files:\n- src/cli/milestone.rs:369-373\n- src/contexts/milestone_record/service.rs:1836-1845\n- src/adapters/br_process.rs:113-119\n- src/adapters/br_process.rs:1181-1217\nremediation_hint: Include the current bundle/plan hash and a per-attempt ownership token in the pending-mutation identity, and only replay a recovered export when that metadata matches the current invocation.\n   Rationale: `handle_export_beads()` already has the current `plan_hash`, but the adapter is keyed only as `milestone-export-beads-<milestone_id>`. `ensure_bead_export_preflight()` then calls `sync_own_dirty_if_beads_healthy()`, and the ownership check in `BrMutationAdapter` trusts any pending record whose `adapter_id` matches. That lets a retry after the plan changed, or a second exporter for the same milestone, publish another export's half-finished mutations as though they were the current run.\n2. finding_summary: Export idempotency is keyed only by normalized title/role, so valid bundles that use explicit bead IDs but reuse a title cannot be re-exported; the second run hits the multiple-active-matches error even though the proposals are distinct.\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/bundle.rs:221-233\n- src/contexts/milestone_record/service.rs:1530-1541\n- src/contexts/milestone_record/service.rs:1551-1553\n- src/contexts/milestone_record/service.rs:1666-1670\n- src/contexts/milestone_record/service.rs:1942-2009\nremediation_hint: Use canonical proposal IDs as the durable idempotency key, for example by persisting and consulting a proposal `bead_id` -> actual bead-id mapping instead of matching only on title.\n   Rationale: `MilestoneBundle::validate()` explicitly allows duplicate titles when the planner authored explicit IDs, but the export path builds its reuse index by title and role only. The proposal-id map exists only in-memory for dependency resolution, so after a first successful export there is no durable way to tell which existing bead corresponds to which explicit proposal. On rerun, two active same-title beads are treated as an ambiguity instead of a valid idempotent reuse case.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

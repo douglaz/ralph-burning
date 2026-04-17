@@ -235,6 +235,17 @@ pub struct DependencyRef {
     pub status: Option<BeadStatus>,
 }
 
+/// A comment attached to a bead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BeadComment {
+    pub id: u64,
+    pub issue_id: String,
+    pub author: String,
+    pub text: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
 // ── BeadSummary ─────────────────────────────────────────────────────────────
 
 /// Summary view of a bead, as returned by `br list --json`.
@@ -253,7 +264,7 @@ pub struct BeadSummary {
 // ── BeadDetail ──────────────────────────────────────────────────────────────
 
 /// Full detail view of a bead, as returned by `br show <id> --json`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BeadDetail {
     pub id: String,
     pub title: String,
@@ -272,11 +283,89 @@ pub struct BeadDetail {
     #[serde(default)]
     pub dependents: Vec<DependencyRef>,
     #[serde(default)]
+    pub comments: Vec<BeadComment>,
+    #[serde(default)]
     pub owner: Option<String>,
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct RawBeadDetail {
+    id: String,
+    title: String,
+    status: BeadStatus,
+    priority: BeadPriority,
+    #[serde(alias = "issue_type")]
+    bead_type: BeadType,
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_acceptance_criteria")]
+    acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    dependencies: Vec<DependencyRef>,
+    #[serde(default)]
+    dependents: Vec<DependencyRef>,
+    #[serde(default)]
+    comments: Vec<BeadComment>,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawBeadShowResponse {
+    Single(Box<RawBeadDetail>),
+    Many(Vec<RawBeadDetail>),
+}
+
+impl From<RawBeadDetail> for BeadDetail {
+    fn from(value: RawBeadDetail) -> Self {
+        Self {
+            id: value.id,
+            title: value.title,
+            status: value.status,
+            priority: value.priority,
+            bead_type: value.bead_type,
+            labels: value.labels,
+            description: value.description,
+            acceptance_criteria: value.acceptance_criteria,
+            dependencies: value.dependencies,
+            dependents: value.dependents,
+            comments: value.comments,
+            owner: value.owner,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BeadDetail {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match RawBeadShowResponse::deserialize(deserializer)? {
+            RawBeadShowResponse::Single(detail) => Ok((*detail).into()),
+            RawBeadShowResponse::Many(mut details) => match details.len() {
+                1 => Ok(details
+                    .pop()
+                    .expect("len=1 guarantees a detail is present")
+                    .into()),
+                count => Err(de::Error::custom(format!(
+                    "expected one bead detail, got {count}"
+                ))),
+            },
+        }
+    }
 }
 
 // ── ReadyBead ───────────────────────────────────────────────────────────────
@@ -444,6 +533,27 @@ mod tests {
         let p: BeadPriority = serde_json::from_str(r#""3""#)?;
         assert_eq!(p.value(), 3);
         assert_eq!(p.to_string(), "P3");
+        Ok(())
+    }
+
+    #[test]
+    fn bead_detail_deserializes_from_show_array() -> Result<(), Box<dyn std::error::Error>> {
+        let detail: BeadDetail = serde_json::from_str(
+            r#"[{
+                "id":"bead-1",
+                "title":"Test",
+                "status":"open",
+                "priority":1,
+                "bead_type":"task",
+                "labels":["milestone:ms-alpha"]
+            }]"#,
+        )?;
+
+        assert_eq!(detail.id, "bead-1");
+        assert_eq!(detail.title, "Test");
+        assert_eq!(detail.status, BeadStatus::Open);
+        assert_eq!(detail.priority.value(), 1);
+        assert_eq!(detail.bead_type, BeadType::Task);
         Ok(())
     }
 
@@ -664,6 +774,15 @@ mod tests {
                     "kind": "blocks"
                 }
             ],
+            "comments": [
+                {
+                    "id": 7,
+                    "issue_id": "ralph-burning-9ni.4.1.2",
+                    "author": "planner",
+                    "text": "Ship it",
+                    "created_at": "2026-03-27T14:31:00Z"
+                }
+            ],
             "owner": "claude",
             "created_at": "2026-03-25T10:00:00Z",
             "updated_at": "2026-03-27T14:30:00Z"
@@ -688,6 +807,8 @@ mod tests {
         );
         assert_eq!(detail.dependents.len(), 1);
         assert!(detail.dependents[0].title.is_none());
+        assert_eq!(detail.comments.len(), 1);
+        assert_eq!(detail.comments[0].text, "Ship it");
         assert_eq!(detail.owner.as_deref(), Some("claude"));
         assert!(detail.created_at.is_some());
         assert!(detail.updated_at.is_some());
@@ -711,6 +832,7 @@ mod tests {
         assert!(detail.acceptance_criteria.is_empty());
         assert!(detail.dependencies.is_empty());
         assert!(detail.dependents.is_empty());
+        assert!(detail.comments.is_empty());
         assert!(detail.owner.is_none());
         assert!(detail.created_at.is_none());
         assert!(detail.updated_at.is_none());

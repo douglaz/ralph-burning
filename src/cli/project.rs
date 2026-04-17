@@ -2856,6 +2856,7 @@ mod tests {
                 status: None,
             }],
             dependents: Vec::new(),
+            comments: Vec::new(),
             owner: None,
             created_at: None,
             updated_at: None,

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-reviewer-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260417123935-final_review-reviewer-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T17:16:34.838711577Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the working tree diff. The only modified files are under `.ralph-burning/`, which the prompt explicitly excludes from review scope, and `git diff -- . ':(exclude).ralph-burning'` is empty. No reviewable implementation changes were present, so there are no findings.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

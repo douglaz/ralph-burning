@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr10-artifact",
+  "payload_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T16:41:01.738007704Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed materialize_beads export logic, BrMutationAdapter additions (dep_add_with_kind, label comma validation), BeadDetail deserialize for both object/single-array br output, PendingBeadExportAttempt locking, and idempotency paths. Verified cargo check / fmt / clippy (lib) / the 16 materialize_beads_* tests pass. The one failing lib test (resume_running_failed_project_reenters_failure_reconciliation) pre-exists on master and is unrelated. cargo clippy --all-targets has 27 errors but all pre-exist on master in test code. Verified the real br CLI supports --labels=a,b,c (even with colons) and dep add --type=parent-child. Idempotency is well-covered by tests including closed/deferred history, duplicate workstream names, explicit-id label matching, and multi-milestone separation. Concurrent export is guarded by flock + pid liveness; failure mid-export is recoverable via title/label reuse. Bundle validation correctly rejects reserved labels and labels containing ','. No correctness, safety, or robustness bugs found that warrant amendments.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 10
+}

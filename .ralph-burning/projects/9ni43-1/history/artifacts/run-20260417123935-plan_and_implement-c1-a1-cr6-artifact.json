@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260417123935-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T15:01:13.634281437Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the two remaining milestone bead export blockers. In `src/contexts/milestone_record/service.rs`, bead export and title-matching fallback now accept the live `br list --all --json` envelope shape (`{\"issues\": [...]}`) while still tolerating the legacy bare-array form, and the related regression fixtures now emit the wrapped payload. In `src/adapters/br_process.rs`, `create_bead()` now serializes labels using the real `br create --labels=<comma-separated>` contract instead of unsupported repeated `--label=` flags, with command-shape tests updated accordingly.\n\n## Steps\n\n1. [Completed] Add a `br list` response wrapper in milestone bead export so `materialize_beads()` and fallback title matching parse both wrapped and legacy list JSON shapes.\n2. [Completed] Switch `BrMutationAdapter::create_bead()` to emit the supported `--labels` CLI argument and update the adapter command-shape regressions.\n3. [Completed] Update milestone export and proposed-bead tests to use the wrapped list payload shape and the new label argument expectations.\n4. [Completed] Run focused exporter and adapter regressions plus broader verification to confirm the fixes and capture remaining unrelated repository failures.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed successfully.\n- `cargo test materialize_beads_ -- --nocapture` passed.\n- `cargo test handle_propose_new_bead_creates_bead_with_expected_fields -- --nocapture` passed.\n- `cargo test create_bead_builds_correct_args -- --nocapture` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo fmt --check` passed.\n- `cargo test` failed only on the existing unrelated test `cli::run::tests::resume_running_failed_project_reenters_failure_reconciliation` with `CorruptRecord { file: \"milestones/ms-alpha/controller-journal.ndjson\", details: \"line 2: timestamp regressed from '2026-04-17T14:58:35.862624343+00:00' to '2026-04-17T13:00:01+00:00'\" }`.\n- `nix build` failed for the same existing unrelated test in the sandbox, reporting the controller-journal timestamp regression from `2026-04-17T15:00:49.433658172+00:00` to `2026-04-17T13:00:01+00:00`.\n\n## Outstanding Risks\n\n- Repository-wide green status is still blocked by the pre-existing unrelated failure `cli::run::tests::resume_running_failed_project_reenters_failure_reconciliation`, which fails in both `cargo test` and `nix build` with the same controller-journal timestamp regression in `milestones/ms-alpha/controller-journal.ndjson`.\n- `create_bead()` now joins labels into a single comma-separated `--labels=` value, so any future label containing a literal comma would need escaping or a different adapter strategy; current repository labels appear comma-free.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 6
+}

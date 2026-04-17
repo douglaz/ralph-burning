@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-vote-2-c1-a1-cr8-artifact",
+  "payload_id": "run-20260417123935-final_review-vote-2-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T16:02:27.810594258Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments identify real correctness defects in the bead export path. fr-8-355e24d2 correctly notes that probing the raw short ID before the milestone-qualified form lets `br show` resolve to an unrelated bead in another milestone. fr-8-9993cde1 correctly identifies that explicit-id matches don't evict the bead from `existing_by_title`, so a same-title proposal can collapse onto the same bead via the permissive `identity_label_matches` fallback for legacy/unlabeled beads.\n\n## Votes\n\n- `fr-8-355e24d2`: Accept\n  Verified at src/contexts/milestone_record/service.rs:2276-2291: `explicit_bead_lookup_candidates` returns the raw `explicit_bead_id` first, then the normalized form (often identical for short ids), and only finally the milestone-qualified `canonicalize_bead_reference`. `find_explicit_materialized_bead` accepts the first successful `br show` without confirming the result belongs to the current milestone. Since `BeadProposal.bead_id` is meant to resolve within its own milestone, a value like `bead-2` could fuzzy-match a bead in an unrelated milestone, and the exporter would then wire parent-child links and planning comments onto the wrong issue. The proposed fix (qualify first, or validate the returned detail belongs to this milestone) is correct and low risk.\n- `fr-8-9993cde1`: Accept\n  Confirmed: `find_existing_materialized_bead` (service.rs:2117-2125) returns immediately on explicit-id success without touching `existing_by_title`, so the matched summary remains cached. `identity_label_matches` (service.rs:1936-1950) treats any candidate without a `proposal:*`/`workstream:*` label as matching any identity label — a deliberate fallback for legacy/manually labeled beads carrying only `milestone:*`. Combined, two distinct proposals with the same normalized title (one explicit, one not, or two explicit with different ids) can both bind to the same legacy bead, collapsing `planned_bead_id_map` and corrupting dependency wiring. Either evicting after explicit match or tightening the unlabeled-legacy fallback resolves it; both options are reasonable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 8
+}

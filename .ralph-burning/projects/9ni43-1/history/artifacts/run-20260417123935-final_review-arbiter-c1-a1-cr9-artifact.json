@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-arbiter-c1-a1-cr9-artifact",
+  "payload_id": "run-20260417123935-final_review-arbiter-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T16:23:55.966779957Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment. The decisive evidence is that single historical-match reuse is explicitly tested and forms part of the current idempotent export contract, while the asserted downstream readiness failure is not supported by the controller logic in this tree.\n\n## Rulings\n\n- `fr-9-1a47a5fa`: Reject\n  `find_existing_materialized_bead` does intentionally prefer one active match, then fall back to exactly one eligible historical match (`src/contexts/milestone_record/service.rs:2144-2174`). That is not just accidental implementation drift: the test `materialize_beads_reuses_closed_and_deferred_history_without_duplication` (`src/contexts/milestone_record/service.rs:17140-17350`) explicitly sets up closed and deferred milestone-scoped beads, asserts `created_beads == 0` and `reused_beads == 9`, and checks those historical bead IDs are `show`n instead of replaced. The amendment’s claimed downstream breakage is also not demonstrated here: controller readiness is driven by `br ready --json` plus planned-ref membership (`src/cli/run.rs:993-996`), so a closed historical bead being present in the exported mapping does not by itself make it runnable. A clarifying comment could be reasonable, but this amendment overstates an intentional, tested idempotency contract as a correctness bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

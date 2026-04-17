@@ -205,6 +205,15 @@ impl MilestoneBundle {
                 for (k, label) in bead.labels.iter().enumerate() {
                     if label.trim().is_empty() {
                         errors.push(format!("{location}.labels[{k}] must not be empty"));
+                    } else if label.contains(',') {
+                        errors.push(format!(
+                            "{location}.labels[{k}] must not contain ',' because br serializes labels as comma-separated values"
+                        ));
+                    } else if is_reserved_export_label(label) {
+                        errors.push(format!(
+                            "{location}.labels[{k}] uses reserved exporter label '{}'",
+                            label.trim()
+                        ));
                     }
                 }
 
@@ -537,6 +546,14 @@ fn infer_bead_explicit_id(milestone_id: &str, bead: &BeadProposal, implicit_bead
     })
 }
 
+fn is_reserved_export_label(label: &str) -> bool {
+    let trimmed = label.trim();
+    trimmed == "milestone-root"
+        || trimmed.starts_with("milestone:")
+        || trimmed.starts_with("proposal:")
+        || trimmed.starts_with("workstream:")
+}
+
 fn validate_bead_identity_metadata(
     location: &str,
     milestone_id: &str,
@@ -658,7 +675,7 @@ fn apply_explicit_id_hints(
     Ok(with_hints)
 }
 
-fn normalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if raw != trimmed {
         return Err("must not contain leading or trailing whitespace".to_owned());
@@ -688,7 +705,7 @@ fn normalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, Str
     Ok(trimmed.to_owned())
 }
 
-fn canonicalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, String> {
+pub(crate) fn canonicalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, String> {
     normalize_bead_reference(milestone_id, raw)
         .map(|normalized| format!("{milestone_id}.{normalized}"))
 }
@@ -2110,6 +2127,48 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| e.contains(".labels must contain at least one label")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_reserved_export_labels() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].labels = vec![
+            "proposal:spoofed".to_owned(),
+            "workstream:core-1".to_owned(),
+            "milestone:ms-alpha".to_owned(),
+            "milestone-root".to_owned(),
+        ];
+
+        let errors = bundle.validate().unwrap_err();
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("uses reserved exporter label 'proposal:spoofed'")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("uses reserved exporter label 'workstream:core-1'")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("uses reserved exporter label 'milestone:ms-alpha'")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("uses reserved exporter label 'milestone-root'")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_labels_with_commas() -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].labels = vec!["backend,api".to_owned()];
+
+        let errors = bundle.validate().unwrap_err();
+
+        assert!(errors.iter().any(|error| {
+            error.contains(".labels[0] must not contain ','")
+                && error.contains("comma-separated values")
+        }));
         Ok(())
     }
 

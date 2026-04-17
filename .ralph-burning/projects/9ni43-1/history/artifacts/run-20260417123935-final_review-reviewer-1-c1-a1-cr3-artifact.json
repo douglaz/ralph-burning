@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260417123935-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T14:02:48.809693441Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nI found 2 fix-now issues in the new export flow: it cannot parse real `br show --json` output, and its reuse logic fails once previously exported beads are closed or deferred.\n\n## Amendments\n\n1. finding_summary: The new bead-export path deserializes `br show --json` into `BeadDetail`, but the real `br` CLI returns a one-element array. `materialize_beads()` does this on every create/reuse path (`src/contexts/milestone_record/service.rs:1784-1802`, `2014-2023`), while `BrCommand::show()` always emits `br show <id> --json` (`src/adapters/br_process.rs:352-355`) and `exec_json()` blindly parses into the requested type (`src/adapters/br_process.rs:769-779`). I verified locally in this repo that `br show ralph-burning-9ni.4.6 --json | jq -r 'type'` returns `array`. As written, `milestone export-beads` will raise `BrParseError` the first time it tries to resolve a created bead or inspect an existing one. The new tests miss this because the helpers at `src/contexts/milestone_record/service.rs:5235-5300` mock `show` as an object rather than the real array payload.\n   Rationale: This breaks the core happy path of the new feature against the real `br` binary, so the command cannot reliably export or reuse beads outside the mock test environment.\n2. finding_summary: The idempotency/reuse logic only treats `open` and `in_progress` beads as reusable, and converts any closed/deferred milestone-scoped title match into a hard failure. `summary_matches_materialized_bead_except_role()` filters matches to `Open | InProgress` (`src/contexts/milestone_record/service.rs:1904-1908`), then `find_existing_materialized_bead()` returns an error when no eligible match remains (`1968-1981`) or when a valid match coexists with a non-active historical duplicate (`1984-2007`). In practice, rerunning `milestone export-beads` after some previously exported beads have been completed or deferred will fail instead of skipping those existing beads and exporting newly added work, which breaks the command's expected idempotent/incremental behavior.\n   Rationale: A milestone export command needs to remain usable after work has started. With the current status filter, a normal follow-up export against a partially completed milestone can no longer run.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

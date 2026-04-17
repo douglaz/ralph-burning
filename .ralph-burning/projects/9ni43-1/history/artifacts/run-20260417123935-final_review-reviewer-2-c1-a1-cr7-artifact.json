@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T15:33:01.510409883Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed materialize_beads() implementation end-to-end: CLI subcommand with fcntl flock + pid-liveness attempt tracking; materialize_beads() creates root/workstream/task beads with parent-child hierarchy and resolved blocks dependencies; idempotency via milestone-scope label + identity label + role matching; journal beads_exported event records planned_bead_id_map; load_runtime_bead_membership_refs extends planned refs with actual bead IDs so ready-bead matching works post-export; failures surface without calling sync. Error paths (UnsafeBeadsState, foreign-adapter pending mutations, multi-match ambiguity) are all handled. Tests cover 11 scenarios including idempotency, recovery, cross-milestone isolation, and partial-failure-without-sync. Build is clean. No material correctness or safety bugs found within this bead's scope. The --labels=a,b,c refactor relies on br's comma-separated label format (an inherent br CLI limitation, not a bug in this code).\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 7
+}

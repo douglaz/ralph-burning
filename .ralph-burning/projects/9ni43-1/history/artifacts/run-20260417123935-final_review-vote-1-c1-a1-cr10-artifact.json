@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-vote-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260417123935-final_review-vote-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T16:44:46.030332104Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth findings identify real reuse-matching flaws in bead materialization. The first conflates legacy unlabeled non-root epics during title-based reuse, and the second trusts explicit bead IDs too aggressively before performing any structural sanity check.\n\n## Votes\n\n- `fr-10-9602adf0`: Accept\n  `identity_label_matches()` explicitly fails open when exporter identity labels are missing, and `materialized_role_matches()` only distinguishes root vs. non-root. For a proposal with `bead_type: \"epic\"`, that makes an unlabeled workstream epic and an unlabeled task epic with the same title/labels indistinguishable to `find_existing_materialized_bead()`. The exact bad outcome may be swapped reuse or ambiguity rather than only the literal self-link described, but the underlying defect is real: reruns can reuse the wrong non-root epic because role information has been collapsed away.\n- `fr-10-3edcd35c`: Accept\n  `find_explicit_materialized_bead()` returns the first `br show` hit whose ID/label checks pass, and `explicit_materialized_bead_matches()` does not verify that the resolved bead still has a compatible structural role for the proposal. A stale or mistyped explicit ID can therefore silently retarget export-side mutations onto the wrong existing bead, after which the code adds parent/child edges and comments to that bead. Title drift for genuine explicit reuse is a valid requirement, but it does not justify skipping all compatibility or provenance checks.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}

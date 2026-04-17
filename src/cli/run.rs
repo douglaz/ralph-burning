@@ -51,16 +51,13 @@ use crate::contexts::automation_runtime::{DaemonStorePort, LeaseRecord};
 use crate::contexts::milestone_record::bead_refs::{
     br_show_output_indicates_missing, canonicalize_milestone_bead_ref, milestone_bead_refs_match,
 };
-use crate::contexts::milestone_record::bundle::{planned_bead_membership_refs, MilestoneBundle};
 use crate::contexts::milestone_record::controller::{
     self as milestone_controller, ControllerBeadStatus, ControllerTaskStatus,
     MilestoneControllerResumePort, MilestoneControllerState,
 };
 use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus, TaskRunOutcome};
 use crate::contexts::milestone_record::service as milestone_service;
-use crate::contexts::milestone_record::service::{
-    CompletionMilestoneDisposition, MilestonePlanPort,
-};
+use crate::contexts::milestone_record::service::CompletionMilestoneDisposition;
 use crate::contexts::project_run_record::model::{
     JournalEvent, JournalEventType, ProjectRecord, RunSnapshot, RunStatus,
 };
@@ -295,29 +292,12 @@ fn load_planned_bead_membership_refs(
     base_dir: &std::path::Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<HashSet<String>> {
-    let plan_json = FsMilestonePlanStore.read_plan_json(base_dir, milestone_id)?;
-    let bundle: MilestoneBundle =
-        serde_json::from_str(&plan_json).map_err(|error| AppError::CorruptRecord {
-            file: format!("milestones/{}/plan.json", milestone_id),
-            details: error.to_string(),
-        })?;
-
-    if bundle.identity.id != milestone_id.as_str() {
-        return Err(AppError::CorruptRecord {
-            file: format!("milestones/{}/plan.json", milestone_id),
-            details: format!(
-                "bundle identity '{}' does not match milestone '{}'",
-                bundle.identity.id, milestone_id
-            ),
-        });
-    }
-
-    planned_bead_membership_refs(&bundle)
-        .map(|refs| refs.into_iter().collect())
-        .map_err(|errors| AppError::CorruptRecord {
-            file: format!("milestones/{}/plan.json", milestone_id),
-            details: errors.join("; "),
-        })
+    milestone_service::load_runtime_bead_membership_refs(
+        &FsMilestonePlanStore,
+        &FsMilestoneJournalStore,
+        base_dir,
+        milestone_id,
+    )
 }
 
 fn milestone_planned_refs_contain(
@@ -4339,6 +4319,7 @@ mod tests {
         ProjectMilestoneControllerRuntime, RunSignalCleanupContext, RunSignalCleanupOrigin,
     };
     use chrono::{TimeZone, Utc};
+    use std::collections::BTreeMap;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -4365,8 +4346,9 @@ mod tests {
         MilestoneEventType, MilestoneStatus, TaskRunOutcome,
     };
     use crate::contexts::milestone_record::service::{
-        create_milestone, load_snapshot, persist_plan, read_journal, read_task_runs,
-        record_bead_completion, record_bead_start, CreateMilestoneInput,
+        create_milestone, load_plan_bundle, load_snapshot, persist_plan, read_journal,
+        read_task_runs, record_bead_completion, record_bead_start, record_beads_exported_event,
+        BeadMaterializationReport, CreateMilestoneInput,
     };
     use crate::contexts::project_run_record::model::{
         ActiveRun, JournalEventType, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus,
@@ -4764,6 +4746,54 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn milestone_controller_ready_check_matches_exported_live_bead_ids() {
+        let _path_lock = lock_path_mutex();
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_single_bead_milestone_with_plan(base_dir, now);
+        let (_, plan_hash) =
+            load_plan_bundle(&FsMilestonePlanStore, base_dir, &milestone.id).expect("plan hash");
+        record_beads_exported_event(
+            &FsMilestoneJournalStore,
+            base_dir,
+            &milestone.id,
+            &plan_hash,
+            &BeadMaterializationReport {
+                root_epic_id: "root-epic".to_owned(),
+                workstream_epic_ids: vec!["ws-core".to_owned()],
+                task_bead_ids: vec!["task-live-1".to_owned()],
+                planned_bead_id_map: BTreeMap::from([(
+                    "ms-alpha.bead-1".to_owned(),
+                    "task-live-1".to_owned(),
+                )]),
+                created_beads: 1,
+                reused_beads: 0,
+            },
+            now + chrono::Duration::seconds(1),
+        )
+        .expect("record export event");
+
+        install_fake_br_ready_script(
+            base_dir,
+            r#"[{"id":"task-live-1","title":"Exported bead","priority":2,"bead_type":"task","labels":["milestone:ms-alpha"]}]"#,
+        );
+        let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+        let runtime = ProjectMilestoneControllerRuntime {
+            base_dir,
+            milestone_id: &milestone.id,
+        };
+
+        assert!(runtime.has_ready_beads().expect("query ready beads"));
+        let planned_refs = super::load_planned_bead_membership_refs(base_dir, &milestone.id)
+            .expect("planned refs");
+        assert!(planned_refs.contains("task-live-1"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn milestone_controller_bead_status_filters_multi_match_show_results_to_current_milestone() {
         let _path_lock = lock_path_mutex();
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -4932,10 +4962,7 @@ mod tests {
         let _path_lock = lock_path_mutex();
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
-        let now = Utc
-            .with_ymd_and_hms(2026, 4, 17, 13, 0, 0)
-            .single()
-            .expect("valid timestamp");
+        let now = Utc::now() + chrono::Duration::seconds(60);
         let milestone = create_milestone_with_plan(base_dir, now);
         let project_id = ProjectId::new("bead-run").expect("project id");
         install_fake_br_show_script(

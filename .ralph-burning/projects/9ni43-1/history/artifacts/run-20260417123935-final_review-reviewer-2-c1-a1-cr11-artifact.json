@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr11-artifact",
+  "payload_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T17:03:14.977533411Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the materialize_beads implementation in src/contexts/milestone_record/service.rs plus supporting changes to br_models.rs, br_process.rs, bundle.rs, cli/milestone.rs, and cli/run.rs. All acceptance criteria met: root epic, workstream epics, and task beads are materialized with parent-child and blocks dependencies wired; planning rationale is attached as comments; idempotency is enforced via title+scope-label matching with ~20 dedicated tests. Bundle validation rejects user labels containing commas and reserved export-label prefixes, and br_process defensively rejects commas in labels at the adapter layer. Flock-based reservation (bead-export-attempt.lock) ensures cross-process mutual exclusion, pending-mutation recovery via adapter_id token is wired into the service, and sync_own_dirty_if_beads_healthy gates each mutation. Partial-state preservation on failure is correct (no sync on mid-export failure). cargo check, cargo clippy -- -D warnings, and cargo fmt --check all pass; materialize_* tests (38) and cli::milestone::tests (14) all pass. No fix-now bugs or safety issues identified; two latent edge cases (commas in milestone/explicit-bead IDs, workstream positional label drift if plan.json ordering changes out-of-band) are already mitigated by defensive layers and canonical serialization, and do not warrant a restart.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 11
+}

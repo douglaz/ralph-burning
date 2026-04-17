@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-arbiter-c1-a1-cr6-artifact",
+  "payload_id": "run-20260417123935-final_review-arbiter-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T15:16:42.821243740Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nfr-6-684da846 is rejected. The code leaves the attempt record behind on error, but ordinary CLI retries are still recoverable on the next invocation because the prior process has exited, liveness is checked with process-start identity rather than PID alone, and the persistent `.lock` file is only the flock backing file, not an active lock.\n\n## Rulings\n\n- `fr-6-684da846`: Reject\n  `handle_export_beads` only calls `clear_bead_export_attempt` on success, but the amendment does not demonstrate the claimed retry-blocking defect. This path is a one-shot CLI command (`MilestoneSubcommand::ExportBeads -> handle_export_beads`), and `main` exits immediately on any returned `Err`, so an ordinary failed export ends the owning process. On the next invocation, `reserve_bead_export_attempt` blocks only when `bead_export_attempt_is_live(existing)` is true. After the failed process exits, that check becomes false, and recovery proceeds: same-process same-plan retries are explicitly allowed by the `existing.plan_hash == plan_hash && existing.pid == current_pid` branch, stale same-plan retries are reclaimed by the later `existing.plan_hash == plan_hash` branch, and stale different-plan retries fall through to the final overwrite branch. The reviewer concern about PID reuse is also not supported here, because liveness is checked with `FileSystem::process_identity_matches_live_process`, which uses recorded process-start identity (`proc_start_ticks` on Linux, `proc_start_marker` elsewhere), not PID alone. Finally, the `.lock` path remaining on disk is expected flock behavior, not evidence of a held lock. Cleanup-on-drop would be reasonable hygiene, but this amendment overstates the consequence and does not establish a concrete correctness or user-visible retry failure.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}
