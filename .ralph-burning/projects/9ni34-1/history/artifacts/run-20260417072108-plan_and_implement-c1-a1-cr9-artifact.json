@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-plan_and_implement-c1-a1-cr9-artifact",
+  "payload_id": "run-20260417072108-plan_and_implement-c1-a1-cr9",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T11:25:44.791409154Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAddressed the remaining MilestoneBundle workstream-order reporting issue in `src/contexts/milestone_record/bundle.rs` without restructuring existing models: `analyze_workstream_order()` now computes actual interleaving strongly connected workstream groups instead of treating every Kahn-blocked workstream as interleaved, and `render_plan_md_checked()` now renders only those true interleaving participants in the dependency summary. Added regressions proving downstream workstreams blocked behind an interleaved pair are not incorrectly reported as part of the interleaving set.\n\n## Steps\n\n1. [Completed] Inspect the existing workstream-order analysis and isolate why blocked downstream workstreams were being reported as interleaved participants.\n2. [Completed] Patch `src/contexts/milestone_record/bundle.rs` so workstream-order analysis derives actual interleaving SCC groups and update markdown rendering to use those groups instead of the full blocked set.\n3. [Completed] Add regression coverage for both the helper analysis and markdown rendering to prove downstream-only workstreams are excluded from the interleaving report.\n4. [Completed] Run targeted regressions and the repository verification gates on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed on the final tree.\n- Targeted regressions passed: `cargo test analyze_workstream_order_excludes_downstream_workstreams_from_interleaving_groups` and `cargo test render_plan_md_lists_only_actual_interleaved_workstreams`.\n- `cargo test` passed on the final tree.\n- `cargo clippy -- -D warnings` passed on the final tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\n- Pre-existing live orchestration state changes under `.ralph-burning/` were left untouched per repo instructions and remain dirty in the worktree.\n- `nix build` updated the tracked `result` symlink; if that artifact should remain untracked here, it still needs to be ignored or cleaned separately.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 9
+}
