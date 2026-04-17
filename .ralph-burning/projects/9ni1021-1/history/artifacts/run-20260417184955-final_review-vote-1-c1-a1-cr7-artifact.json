@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T22:26:43.749747515Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the serialization de-duplication amendment because the current fixture mutation path rewrites `.beads/issues.jsonl` through a second copy of the wire serializer, which can silently diverge. Reject the timing-tightening amendment because the repository's current fixture bead explicitly avoids brittle wall-clock budgets in CI/Nix, so lowering the hard threshold would reduce test robustness for little gain.\n\n## Votes\n\n- `fr-7-d2619344`: Accept\n  `src/test_support/fixtures.rs` and `src/test_support/e2e_fixtures.rs` currently maintain two independent serializers for the same `.beads/issues.jsonl` wire format. Initial fixture creation uses `SerializedBeadGraphIssue` in `BeadGraphFixtureBuilder::write_into`, but every scenario mutation rewrites the file through `SerializedScenarioIssue` in `ScenarioState::persist`. Because those serializers are separate types with separate `From` impls, future additions to the canonical on-disk shape can update one path without touching the other, and the mutation path would then silently drop data after `create`/`close`/`dep add`. A shared helper or shared serializer type is the correct maintainability fix and removes a real drift hazard.\n- `fr-7-eaeaf7d2`: Reject\n  The amendment's premise does not match the current repository contract. The active bead text for this fixture explicitly says to keep creation cheap but to avoid brittle sub-second wall-clock assertions in CI/Nix, and its acceptance criteria call for completeness checks without a flaky hard real-time budget. The existing `Duration::from_secs(10)` assertion is a coarse guard against pathological hangs while staying tolerant of slow CI workers and the Nix sandbox. Tightening that hard bound to 2-3 seconds would make the test less robust, and a soft warning adds noise without creating a reliable correctness signal.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}
