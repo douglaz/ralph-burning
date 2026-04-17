@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-plan_and_implement-c1-a1-cr13-artifact",
+  "payload_id": "run-20260417184955-plan_and_implement-c1-a1-cr13",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T23:55:34.099554812Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `src/test_support/e2e_fixtures.rs` so `build_e2e_milestone_scenario_fixture()` now supports controller-style `br ready --json` reads. The fixture factors readiness selection into a reusable `ready_issues()` helper, serves `ready --json` from the live `.beads/issues.jsonl` graph, and adds smoke assertions proving `br ready` stays aligned with the scenario as filesystem rewrites and close transitions change which bead is ready.\n\n## Steps\n\n1. [Completed] Inspected the current E2E fixture dispatcher, mock adapter wiring, and milestone controller readiness path to confirm the pending gap: the fixture handled `list/show/create/close/dep add/sync` but not `br ready --json`, even though `src/cli/run.rs` queries `BrCommand::ready()` before trusting `bv --robot-next`.\n2. [Completed] Patched `src/test_support/e2e_fixtures.rs` to derive ready beads from the live scenario graph via a new `ready_issues()` helper and taught `scenario_br_response()` to return a deterministic `ReadyBead` JSON array for `ready --json`, preserving the existing on-disk reload behavior and dangling-dependency checks.\n3. [Completed] Expanded the smoke test to exercise `BrCommand::ready()` across the scenario lifecycle, including the initial state, external `issues.jsonl` rewrites, task closes, and final empty-ready state, then ran the requested cargo validation commands and a final `nix build` attempt.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed successfully.\n- `cargo fmt --check` passed.\n- `cargo test build_e2e_milestone_scenario_fixture_smoke_test --lib` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` was started on the final tree and progressed to building `/nix/store/55idiqx2186vakd1g51m2hwladkd7psj-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0.drv`, but no successful process exit was captured.\n\n## Outstanding Risks\n\n- `nix build` was started on the final tree and reached `/nix/store/55idiqx2186vakd1g51m2hwladkd7psj-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0.drv`, but the local `nix` client did not return a clean completion before observation ended. I did not mark the tree as fully Nix-validated.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 13
+}

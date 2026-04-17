@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde_json::json;
 
-use crate::adapters::br_models::{BeadPriority, BeadStatus, BeadType, DependencyKind};
+use crate::adapters::br_models::{BeadPriority, BeadStatus, BeadType, DependencyKind, ReadyBead};
 use crate::adapters::fs::{
     FileSystem, FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
     FsMilestoneStore, FsTaskRunLineageStore,
@@ -544,6 +544,10 @@ impl ScenarioState {
     }
 
     fn next_ready_issue(&mut self) -> Result<Option<BeadGraphIssue>, String> {
+        Ok(self.ready_issues()?.into_iter().next())
+    }
+
+    fn ready_issues(&mut self) -> Result<Vec<BeadGraphIssue>, String> {
         self.reload_issues_from_disk()?;
         let issue_lookup = self
             .issues
@@ -551,32 +555,35 @@ impl ScenarioState {
             .map(|issue| (issue.id.as_str(), issue))
             .collect::<HashMap<_, _>>();
 
-        for issue in &self.issues {
-            if issue.status != BeadStatus::Open || matches!(issue.bead_type, BeadType::Epic) {
-                continue;
-            }
-
-            let mut is_ready = true;
-            for dependency in &issue.dependencies {
-                let depends_on = issue_lookup
-                    .get(dependency.depends_on_id.as_str())
-                    .ok_or_else(|| {
-                        missing_dependency_message(&issue.id, &dependency.depends_on_id)
-                    })?;
-                if dependency.kind == DependencyKind::Blocks
-                    && depends_on.status != BeadStatus::Closed
-                {
-                    is_ready = false;
-                    break;
-                }
-            }
-
-            if is_ready {
-                return Ok(Some(issue.clone()));
-            }
-        }
-
-        Ok(None)
+        self.issues
+            .iter()
+            .filter(|issue| issue.status == BeadStatus::Open)
+            .filter(|issue| !matches!(issue.bead_type, BeadType::Epic))
+            .map(|issue| {
+                let is_ready =
+                    issue
+                        .dependencies
+                        .iter()
+                        .try_fold(true, |is_ready, dependency| {
+                            let depends_on = issue_lookup
+                                .get(dependency.depends_on_id.as_str())
+                                .ok_or_else(|| {
+                                    missing_dependency_message(&issue.id, &dependency.depends_on_id)
+                                })?;
+                            Ok::<bool, String>(
+                                is_ready
+                                    && (dependency.kind != DependencyKind::Blocks
+                                        || depends_on.status == BeadStatus::Closed),
+                            )
+                        })?;
+                Ok::<Option<BeadGraphIssue>, String>(is_ready.then_some(issue.clone()))
+            })
+            .filter_map(|result| match result {
+                Ok(Some(issue)) => Some(Ok(issue)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect()
     }
 
     fn reload_issues_from_disk(&mut self) -> Result<(), String> {
@@ -737,6 +744,18 @@ fn scenario_br_response(
             Err(message) => return Some(MockBrResponse::exit_failure(1, message)),
         };
         return Some(MockBrResponse::success(br_list_json(&issues)));
+    }
+
+    if matches!(args.as_slice(), [command, flag] if command == "ready" && flag == "--json") {
+        let issues = match state
+            .lock()
+            .expect("scenario state lock poisoned")
+            .ready_issues()
+        {
+            Ok(issues) => issues,
+            Err(message) => return Some(MockBrResponse::exit_failure(1, message)),
+        };
+        return Some(MockBrResponse::success(br_ready_json(&issues)));
     }
 
     if let [command, bead_id, flag] = args.as_slice() {
@@ -1034,6 +1053,22 @@ fn next_bead_json(issue: &BeadGraphIssue) -> String {
     .to_string()
 }
 
+fn br_ready_json(issues: &[BeadGraphIssue]) -> String {
+    serde_json::to_string(
+        &issues
+            .iter()
+            .map(|issue| ReadyBead {
+                id: issue.id.clone(),
+                title: issue.title.clone(),
+                priority: issue.priority.clone(),
+                bead_type: issue.bead_type.clone(),
+                labels: issue.labels.clone(),
+            })
+            .collect::<Vec<_>>(),
+    )
+    .expect("serialize ready bead response")
+}
+
 fn dependency_kind_json(kind: &DependencyKind) -> &'static str {
     match kind {
         DependencyKind::Blocks => "blocks",
@@ -1048,8 +1083,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::adapters::br_models::{BeadDetail, BeadSummary};
-    use crate::adapters::br_process::{BrAdapter, BrError, BrOutput};
+    use crate::adapters::br_models::{BeadDetail, BeadSummary, ReadyBead};
+    use crate::adapters::br_process::{BrAdapter, BrCommand, BrError, BrOutput};
     use crate::adapters::bv_process::{BvCommand, BvError, NextBeadResponse};
     use crate::contexts::milestone_record::model::{MilestoneEventType, MilestoneStatus};
 
@@ -1297,6 +1332,18 @@ mod tests {
         assert_eq!(listed[3].id, ASSEMBLE_TASK_ID);
         assert_eq!(listed[5].id, VALIDATE_TASK_ID);
 
+        let initial_ready: Vec<ReadyBead> = br_read
+            .exec_json(&BrCommand::ready())
+            .await
+            .expect("initial br ready");
+        assert_eq!(
+            initial_ready
+                .into_iter()
+                .map(|bead| bead.id)
+                .collect::<Vec<_>>(),
+            vec![ASSEMBLE_TASK_ID.to_owned()]
+        );
+
         let initial_next: NextBeadResponse = bv
             .exec_json(&BvCommand::robot_next())
             .await
@@ -1334,6 +1381,18 @@ mod tests {
             .expect("bv robot-next after external rewrite");
         assert_eq!(next_after_external_rewrite.id, PREPARE_TASK_ID);
 
+        let ready_after_external_rewrite: Vec<ReadyBead> = br_read
+            .exec_json(&BrCommand::ready())
+            .await
+            .expect("br ready after external rewrite");
+        assert_eq!(
+            ready_after_external_rewrite
+                .into_iter()
+                .map(|bead| bead.id)
+                .collect::<Vec<_>>(),
+            vec![PREPARE_TASK_ID.to_owned()]
+        );
+
         let assemble_issue = externally_rewritten_issues
             .iter_mut()
             .find(|issue| issue.id == ASSEMBLE_TASK_ID)
@@ -1354,6 +1413,18 @@ mod tests {
             .await
             .expect("bv robot-next after reopen");
         assert_eq!(next_after_reopen.id, ASSEMBLE_TASK_ID);
+
+        let ready_after_reopen: Vec<ReadyBead> = br_read
+            .exec_json(&BrCommand::ready())
+            .await
+            .expect("br ready after reopen");
+        assert_eq!(
+            ready_after_reopen
+                .into_iter()
+                .map(|bead| bead.id)
+                .collect::<Vec<_>>(),
+            vec![ASSEMBLE_TASK_ID.to_owned()]
+        );
 
         let mut issues_with_dangling_dependency =
             load_bead_graph_issues(&issues_path).expect("load issues for dangling dependency");
@@ -1420,6 +1491,18 @@ mod tests {
             .expect("bv robot-next after assemble close");
         assert_eq!(next_after_assemble.id, PREPARE_TASK_ID);
 
+        let ready_after_assemble: Vec<ReadyBead> = br_read
+            .exec_json(&BrCommand::ready())
+            .await
+            .expect("br ready after assemble close");
+        assert_eq!(
+            ready_after_assemble
+                .into_iter()
+                .map(|bead| bead.id)
+                .collect::<Vec<_>>(),
+            vec![PREPARE_TASK_ID.to_owned()]
+        );
+
         let follow_up_labels = vec!["integration".to_owned(), "follow-up".to_owned()];
         let create_output = br_mutation
             .create_bead(
@@ -1479,6 +1562,18 @@ mod tests {
             .expect("bv robot-next after prepare close");
         assert_eq!(next_after_prepare.id, VALIDATE_TASK_ID);
 
+        let ready_after_prepare: Vec<ReadyBead> = br_read
+            .exec_json(&BrCommand::ready())
+            .await
+            .expect("br ready after prepare close");
+        assert_eq!(
+            ready_after_prepare
+                .into_iter()
+                .map(|bead| bead.id)
+                .collect::<Vec<_>>(),
+            vec![VALIDATE_TASK_ID.to_owned()]
+        );
+
         br_mutation
             .close_bead(
                 VALIDATE_TASK_ID,
@@ -1492,6 +1587,18 @@ mod tests {
             .await
             .expect("bv robot-next after validate close");
         assert_eq!(next_after_validate.id, created_id);
+
+        let ready_after_validate: Vec<ReadyBead> = br_read
+            .exec_json(&BrCommand::ready())
+            .await
+            .expect("br ready after validate close");
+        assert_eq!(
+            ready_after_validate
+                .into_iter()
+                .map(|bead| bead.id)
+                .collect::<Vec<_>>(),
+            vec![created_id.clone()]
+        );
 
         br_mutation
             .close_bead(&created_id, "Fixture cleanup")
@@ -1521,6 +1628,12 @@ mod tests {
             Some(BeadStatus::Closed)
         );
 
+        let ready_after_follow_up_close: Vec<ReadyBead> = br_read
+            .exec_json(&BrCommand::ready())
+            .await
+            .expect("br ready after follow-up close");
+        assert!(ready_after_follow_up_close.is_empty());
+
         let sync_output = br_mutation.sync_flush().await.expect("br sync");
         assert_eq!(sync_output.stdout, "synced");
 
@@ -1530,6 +1643,9 @@ mod tests {
             .iter()
             .map(|call| call.args.clone())
             .collect::<Vec<_>>();
+        assert!(br_calls
+            .iter()
+            .any(|call| { call == &vec!["ready".to_owned(), "--json".to_owned()] }));
         assert!(br_calls.iter().any(|call| {
             call == &vec![
                 "create".to_owned(),

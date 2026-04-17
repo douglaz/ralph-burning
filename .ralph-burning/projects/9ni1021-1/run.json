@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260417184955",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 13
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-12-32f38544",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 12,
-        "body": "finding_summary: `build_e2e_milestone_scenario_fixture()` is documented as a complete fixture for milestone controller / CLI flows, but its `MockBrAdapter` dispatcher never handles `br ready --json`. The controller selection path calls `BrCommand::ready()` before it trusts a `bv --robot-next` recommendation, so using this fixture in those code paths will fail with `mock br runner exhausted` instead of returning the scenario's ready beads.\naffected_files:\n- src/test_support/e2e_fixtures.rs:50\n- src/test_support/e2e_fixtures.rs:715\n- src/cli/run.rs:440\nremediation_hint: Teach `scenario_br_response()` to answer `ready --json` from the current graph (open, non-epic, unblocked tasks) and add a smoke assertion that the fixture can drive the controller's readiness query path.",
-        "created_at": "2026-04-17T23:50:54.313349786Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "e6f9ad682fdb72e6353101991a341f745eb7dd4674c207e8af3d89ce731b2371"
-      }
-    ],
-    "processed_count": 17
+    "pending": [],
+    "processed_count": 18
   },
-  "status_summary": "running: final review restart round 13 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T23:38:03.011867175Z",
