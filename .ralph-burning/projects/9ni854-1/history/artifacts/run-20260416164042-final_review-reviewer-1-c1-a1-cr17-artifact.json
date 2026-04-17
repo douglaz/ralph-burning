@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T00:25:07.790283640Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the failure-reconciliation and lineage-repair changes end-to-end. I found two correctness issues in retry accounting: historical backfills do not repair later stored attempt numbers, and attempt ordering/identity currently depends on opaque run-id strings instead of an explicit chronological key.\n\n## Amendments\n\n1. finding_summary: Backfilling a previously missing failed attempt does not repair later `BeadFailed` records, so the journal can retain duplicate or stale `attempt=` markers.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:202-335\n- src/contexts/automation_runtime/failure_reconciliation.rs:588-604\nremediation_hint: When `repair_historical_failure_state(...)` inserts an older failed attempt, recompute the ordinal for later failures on the same bead and repair their stored `outcome_detail` / completion details in the same reconciliation pass instead of relying on those later failures to replay again.\n   Rationale: Both stale-replay branches return immediately after repairing the older failure. If attempt 1 was missing when attempt 2 failed, attempt 2 is persisted with `attempt=1`; when attempt 1 is later repaired, nothing in this code rewrites attempt 2 unless that exact failure happens to replay again. That leaves an incorrect audit trail and violates the requirement that `BeadFailed` journal details carry the right attempt number.\n2. finding_summary: Retry numbering is based on the derived ordering of `AttemptIdentity { run_id, started_at }`, which treats opaque run IDs as chronological and ignores project identity.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:46-49\n- src/contexts/automation_runtime/failure_reconciliation.rs:845-869\n- src/contexts/automation_runtime/failure_reconciliation.rs:1104-1145\n- src/shared/domain.rs:931-940\nremediation_hint: Define an explicit attempt key for reconciliation, e.g. include `project_id` in the identity and sort by `started_at` (with a deterministic tiebreaker) instead of relying on Rust's derived `Ord` for `run_id` strings.\n   Rationale: `RunId` is only validated as a non-empty string, but `known_failed_attempts()` sorts `AttemptIdentity` with the struct's derived ordering and `failure_attempt_number()` uses that ordering to assign ordinals. That means retry numbering, and therefore retry-vs-needs-operator decisions, depend on the lexical shape of `run_id` and can also conflate cross-project retries because `project_id` is absent from the identity. The model/prompt treat `(project_id, run_id, started_at)` as part of attempt provenance, so this is a correctness bug rather than a cosmetic concern.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

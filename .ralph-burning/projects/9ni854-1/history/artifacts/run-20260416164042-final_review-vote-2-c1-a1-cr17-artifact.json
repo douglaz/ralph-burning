@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr17-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T00:26:04.505703973Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nEvaluated two amendments against the failure reconciliation code. Amendment fr-17-17b43ea1 raises a valid concern about stale attempt markers on later records but the actual risk is low given the idempotent reconciliation design. Amendment fr-17-bd30dfce identifies a real ordering defect in AttemptIdentity's derived Ord — sorting by Option<String> run_id lexicographically is semantically wrong and the struct lacks project_id scoping.\n\n## Votes\n\n- `fr-17-17b43ea1`: Reject\n  The concern about stale attempt markers on later BeadFailed records is theoretically valid but practically mitigated by the existing design. After repair_historical_failure_state inserts the older attempt (lines 237-251, 290-304), the function returns early with the predicted_outcome — it does NOT proceed to update the current bead's active state. Later failures, when they replay through reconcile_bead_failure themselves, re-call failure_attempt_number (line 202) which recomputes ordinals from the now-complete set of runs+journal entries. The system already reloads runs and journal after each write (lines 386-412) and recomputes attempt numbers. Adding an in-pass cascade to fix later records would add significant complexity and risk (touching records that may be concurrently being reconciled) for a scenario where the next natural reconciliation pass already self-corrects. The existing eventual-consistency approach is appropriate here.\n- `fr-17-bd30dfce`: Accept\n  This is a real defect. AttemptIdentity at lines 46-50 derives Ord, which sorts by (run_id: Option<String>, started_at). This means: (1) run_id is compared lexicographically — 'run-9' sorts after 'run-10', producing incorrect chronological ordering when run IDs aren't zero-padded; (2) run_id sorts before started_at in the derived Ord, so two attempts with different run_ids are ordered by string comparison rather than by their actual timestamps; (3) project_id is absent, so attempts from different projects on the same bead could interleave incorrectly in known_failed_attempts (line 1132). The remediation is straightforward: sort primarily by started_at with a deterministic tiebreaker (e.g., run_id string, then journal_index), and include project_id in the identity. This affects attempt numbering correctness which flows into outcome_detail strings and retry decisions.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 17
+}

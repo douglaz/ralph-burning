@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 17
+      "completion_round": 18
     },
     "started_at": "2026-04-16T16:40:42.098700951Z",
     "prompt_hash_at_cycle_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "prompt_hash_at_stage_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 16
+    "final_review_restart_count": 17
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 17,
+  "completion_rounds": 18,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-17-17b43ea1",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 17,
+        "body": "finding_summary: Backfilling a previously missing failed attempt does not repair later `BeadFailed` records, so the journal can retain duplicate or stale `attempt=` markers.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:202-335\n- src/contexts/automation_runtime/failure_reconciliation.rs:588-604\nremediation_hint: When `repair_historical_failure_state(...)` inserts an older failed attempt, recompute the ordinal for later failures on the same bead and repair their stored `outcome_detail` / completion details in the same reconciliation pass instead of relying on those later failures to replay again.",
+        "created_at": "2026-04-17T00:30:18.636062958Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "1f1700dbbbd12fc780b2d60d61ab9fabc9423ec3047776c3dd6889a8be75deaa"
+      },
+      {
+        "amendment_id": "fr-17-bd30dfce",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 17,
+        "body": "finding_summary: Retry numbering is based on the derived ordering of `AttemptIdentity { run_id, started_at }`, which treats opaque run IDs as chronological and ignores project identity.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:46-49\n- src/contexts/automation_runtime/failure_reconciliation.rs:845-869\n- src/contexts/automation_runtime/failure_reconciliation.rs:1104-1145\n- src/shared/domain.rs:931-940\nremediation_hint: Define an explicit attempt key for reconciliation, e.g. include `project_id` in the identity and sort by `started_at` (with a deterministic tiebreaker) instead of relying on Rust's derived `Ord` for `run_id` strings.",
+        "created_at": "2026-04-17T00:30:18.636066815Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "be85c547c547f670d162224864920f9a96542e3c50324ded62e6de710c393e39"
+      }
+    ],
     "processed_count": 34
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 18 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-16T23:37:48.442592917Z",
+    "resolved_at": "2026-04-17T00:12:48.941163111Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

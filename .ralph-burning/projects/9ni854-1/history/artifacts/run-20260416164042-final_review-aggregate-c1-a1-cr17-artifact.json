@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr17-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T00:30:18.636071334Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 17/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-17-bd30dfce`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-17-17b43ea1`\n\n## Final Accepted Amendments\n\n### `fr-17-17b43ea1`\n\nfinding_summary: Backfilling a previously missing failed attempt does not repair later `BeadFailed` records, so the journal can retain duplicate or stale `attempt=` markers.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:202-335\n- src/contexts/automation_runtime/failure_reconciliation.rs:588-604\nremediation_hint: When `repair_historical_failure_state(...)` inserts an older failed attempt, recompute the ordinal for later failures on the same bead and repair their stored `outcome_detail` / completion details in the same reconciliation pass instead of relying on those later failures to replay again.\n\n### `fr-17-bd30dfce`\n\nfinding_summary: Retry numbering is based on the derived ordering of `AttemptIdentity { run_id, started_at }`, which treats opaque run IDs as chronological and ignores project identity.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:46-49\n- src/contexts/automation_runtime/failure_reconciliation.rs:845-869\n- src/contexts/automation_runtime/failure_reconciliation.rs:1104-1145\n- src/shared/domain.rs:931-940\nremediation_hint: Define an explicit attempt key for reconciliation, e.g. include `project_id` in the identity and sort by `started_at` (with a deterministic tiebreaker) instead of relying on Rust's derived `Ord` for `run_id` strings.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 17
+}

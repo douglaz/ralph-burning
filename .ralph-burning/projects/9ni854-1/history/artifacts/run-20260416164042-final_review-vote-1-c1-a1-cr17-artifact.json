@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T00:28:17.831289173Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real correctness defects in failure reconciliation. One leaves persisted failure provenance internally inconsistent after historical backfill, and the other computes retry ordinals from an unstable identity/order that can be wrong across run IDs and projects.\n\n## Votes\n\n- `fr-17-17b43ea1`: Accept\n  The stale-replay branches call `repair_historical_failure_state(...)` and then return without revisiting any later failed attempts, so only the backfilled historical attempt is repaired. That is not self-healing: `normalized_failure_outcome_detail(...)` preserves an already-recorded `attempt=` field (`parsed.attempt_number.unwrap_or(attempt_number)`), so a later `BeadFailed` row that was written while the older attempt was missing can keep a stale ordinal indefinitely, leaving duplicate or inconsistent `attempt=` markers in journal/lineage state. This is a real correctness and maintainability issue, not just cosmetic logging noise.\n- `fr-17-bd30dfce`: Accept\n  `AttemptIdentity` derives `Ord` with fields ordered as `(run_id, started_at)`, and `known_failed_attempts(...)` sorts and compares attempts using that derived order, so retry numbering can depend on lexicographic `run_id` ordering instead of chronology. `RunId` is an opaque validated string, not a time-ordered identifier, so that ordering is not defensible. Separately, `known_failed_attempts(...)` consumes the full `runs` slice from `find_runs_for_bead(...)` and pushes failed lineage entries without filtering by `project_id`, while `same_run_attempt_has_newer_start(...)` also checks only `run_id` across that full slice; attempts from another project can therefore contaminate retry counts. That is a concrete correctness and isolation defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}
