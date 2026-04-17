@@ -7,6 +7,7 @@
 //! bead's failed attempts, and either keeps the controller retryable or
 //! escalates to operator intervention after too many failures.
 
+use std::cmp::Ordering;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -43,8 +44,9 @@ struct AttemptStartEvent {
     journal_index: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct AttemptIdentity {
+    project_id: String,
     run_id: Option<String>,
     started_at: DateTime<Utc>,
 }
@@ -53,6 +55,8 @@ struct AttemptIdentity {
 struct RecordedFailureProvenance {
     task_id: Option<String>,
     outcome_detail: Option<String>,
+    plan_hash: Option<String>,
+    failed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -249,6 +253,18 @@ where
             journal_store,
             lineage_store,
         )?;
+        if repaired_historical_failure {
+            repair_recorded_failure_attempt_ordinals(
+                snapshot_store,
+                journal_store,
+                lineage_store,
+                base_dir,
+                &milestone_id,
+                bead_id,
+                project_id,
+                plan_hash,
+            )?;
+        }
         tracing::info!(
             bead_id = bead_id,
             task_id = task_id,
@@ -302,6 +318,18 @@ where
             journal_store,
             lineage_store,
         )?;
+        if repaired_historical_failure {
+            repair_recorded_failure_attempt_ordinals(
+                snapshot_store,
+                journal_store,
+                lineage_store,
+                base_dir,
+                &milestone_id,
+                bead_id,
+                project_id,
+                plan_hash,
+            )?;
+        }
         tracing::info!(
             bead_id = bead_id,
             task_id = task_id,
@@ -591,17 +619,45 @@ fn normalized_failure_outcome_detail(
     attempt_number: u32,
     fallback_error_summary: &str,
 ) -> String {
+    normalized_failure_outcome_detail_with_attempt_strategy(
+        recorded_outcome_detail,
+        fallback_task_id,
+        attempt_number,
+        fallback_error_summary,
+        true,
+    )
+}
+
+fn normalized_failure_outcome_detail_with_attempt_strategy(
+    recorded_outcome_detail: Option<&str>,
+    fallback_task_id: &str,
+    attempt_number: u32,
+    fallback_error_summary: &str,
+    preserve_recorded_attempt_number: bool,
+) -> String {
     let parsed = recorded_outcome_detail
         .map(parse_failure_outcome_detail)
         .unwrap_or_default();
     let task_id = preferred_failure_task_id(parsed.task_id.as_deref(), fallback_task_id);
-    let attempt_number = parsed.attempt_number.unwrap_or(attempt_number);
+    let attempt_number = if preserve_recorded_attempt_number {
+        parsed.attempt_number.unwrap_or(attempt_number)
+    } else {
+        attempt_number
+    };
     let error_summary = parsed
         .error_summary
         .as_deref()
         .filter(|summary| !is_superseded_retry_error_summary(summary))
         .unwrap_or(fallback_error_summary);
     format_failure_outcome_detail(task_id, attempt_number, error_summary)
+}
+
+fn canonical_failure_error_summary(detail: Option<&str>) -> String {
+    detail
+        .map(parse_failure_outcome_detail)
+        .and_then(|parsed| parsed.error_summary)
+        .filter(|summary| !is_superseded_retry_error_summary(summary))
+        .unwrap_or_else(|| normalize_error_summary(detail.unwrap_or_default()))
 }
 
 fn extract_task_id_from_outcome_detail(detail: &str) -> Option<&str> {
@@ -660,6 +716,204 @@ where
     })?;
 
     Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn repair_recorded_failure_attempt_ordinals<S, J, L>(
+    snapshot_store: &S,
+    journal_store: &J,
+    lineage_store: &L,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    project_id: &str,
+    default_plan_hash: Option<&str>,
+) -> Result<(), FailureReconciliationError>
+where
+    S: MilestoneSnapshotPort,
+    J: MilestoneJournalPort,
+    L: TaskRunLineagePort,
+{
+    let mut runs =
+        milestone_service::find_runs_for_bead(lineage_store, base_dir, milestone_id, bead_id)
+            .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: project_id.to_owned(),
+                details: format!(
+                    "failed to reload task runs while repairing failure attempt ordinals: {error}"
+                ),
+            })?;
+    let mut journal =
+        milestone_service::read_journal(journal_store, base_dir, milestone_id).map_err(|error| {
+            FailureReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: project_id.to_owned(),
+                details: format!(
+                    "failed to reload milestone journal while repairing failure attempt ordinals: {error}"
+                ),
+            }
+        })?;
+
+    let failed_events = failure_attempt_events(&journal, milestone_id, bead_id, project_id);
+    let attempts = recorded_failed_attempts(&runs, &failed_events, project_id);
+
+    for (index, attempt) in attempts.iter().enumerate() {
+        let Some(run_id) = attempt.run_id.as_deref() else {
+            continue;
+        };
+        let provenance = recorded_failure_provenance(
+            &runs,
+            &journal,
+            milestone_id,
+            bead_id,
+            project_id,
+            run_id,
+            attempt.started_at,
+        );
+        let Some(task_id) = provenance.task_id.as_deref() else {
+            continue;
+        };
+        let attempt_number = index as u32 + 1;
+        let canonical_outcome_detail = normalized_failure_outcome_detail_with_attempt_strategy(
+            provenance.outcome_detail.as_deref(),
+            task_id,
+            attempt_number,
+            &canonical_failure_error_summary(provenance.outcome_detail.as_deref()),
+            false,
+        );
+        if failure_state_matches_expected(
+            &runs,
+            &journal,
+            milestone_id,
+            bead_id,
+            project_id,
+            run_id,
+            attempt.started_at,
+            task_id,
+            &canonical_outcome_detail,
+        ) {
+            continue;
+        }
+
+        milestone_service::repair_task_run_with_disposition(
+            snapshot_store,
+            journal_store,
+            lineage_store,
+            base_dir,
+            milestone_id,
+            bead_id,
+            project_id,
+            run_id,
+            provenance.plan_hash.as_deref().or(default_plan_hash),
+            attempt.started_at,
+            TaskRunOutcome::Failed,
+            Some(canonical_outcome_detail),
+            provenance.failed_at.unwrap_or(attempt.started_at),
+            CompletionMilestoneDisposition::ReconcileFromLineage,
+        )
+        .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!(
+                "failed to repair stale failure attempt markers during historical backfill: {error}"
+            ),
+        })?;
+
+        runs =
+            milestone_service::find_runs_for_bead(lineage_store, base_dir, milestone_id, bead_id)
+                .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: format!(
+                    "failed to reload task runs after repairing failure attempt markers: {error}"
+                ),
+            })?;
+        journal = milestone_service::read_journal(journal_store, base_dir, milestone_id).map_err(
+            |error| FailureReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: format!(
+                    "failed to reload milestone journal after repairing failure attempt markers: {error}"
+                ),
+            },
+        )?;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn failure_state_matches_expected(
+    runs: &[TaskRunEntry],
+    journal: &[MilestoneJournalEvent],
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    project_id: &str,
+    run_id: &str,
+    started_at: DateTime<Utc>,
+    task_id: &str,
+    outcome_detail: &str,
+) -> bool {
+    let run_matches = runs.iter().any(|entry| {
+        attempt_identity_matches(entry, project_id, run_id, started_at)
+            && entry.outcome == TaskRunOutcome::Failed
+            && entry.task_id.as_deref() == Some(task_id)
+            && entry.outcome_detail.as_deref() == Some(outcome_detail)
+    });
+    let journal_matches = failure_attempt_events(journal, milestone_id, bead_id, project_id)
+        .into_iter()
+        .find(|event| {
+            event.details.run_id.as_deref() == Some(run_id)
+                && event.details.started_at == started_at
+        })
+        .is_some_and(|event| {
+            event.details.task_id.as_deref() == Some(task_id)
+                && event.details.outcome_detail.as_deref() == Some(outcome_detail)
+        });
+
+    run_matches && journal_matches
+}
+
+fn attempt_identity_cmp(left: &AttemptIdentity, right: &AttemptIdentity) -> Ordering {
+    left.started_at
+        .cmp(&right.started_at)
+        .then_with(|| left.project_id.cmp(&right.project_id))
+        .then_with(|| left.run_id.cmp(&right.run_id))
+}
+
+fn sort_attempt_identities(attempts: &mut [AttemptIdentity]) {
+    attempts.sort_by(attempt_identity_cmp);
+}
+
+fn recorded_failed_attempts(
+    runs: &[TaskRunEntry],
+    failed_events: &[FailureAttemptEvent],
+    project_id: &str,
+) -> Vec<AttemptIdentity> {
+    let mut attempts = Vec::new();
+
+    for event in failed_events {
+        push_attempt_identity(
+            &mut attempts,
+            &event.details.project_id,
+            event.details.run_id.as_deref(),
+            event.details.started_at,
+        );
+    }
+    for entry in runs
+        .iter()
+        .filter(|entry| entry.project_id == project_id && entry.outcome == TaskRunOutcome::Failed)
+    {
+        push_attempt_identity(
+            &mut attempts,
+            &entry.project_id,
+            entry.run_id.as_deref(),
+            entry.started_at,
+        );
+    }
+
+    sort_attempt_identities(&mut attempts);
+    attempts
 }
 
 fn attempt_identity_matches(
@@ -761,6 +1015,16 @@ fn recorded_failure_provenance(
     RecordedFailureProvenance {
         task_id,
         outcome_detail,
+        plan_hash: run_provenance
+            .and_then(|entry| entry.plan_hash.clone())
+            .or_else(|| {
+                journal_provenance
+                    .as_ref()
+                    .and_then(|event| event.details.plan_hash.clone())
+            }),
+        failed_at: run_provenance
+            .and_then(|entry| entry.finished_at)
+            .or_else(|| journal_provenance.as_ref().map(|event| event.failed_at)),
     }
 }
 
@@ -817,6 +1081,7 @@ fn failure_attempt_number(
         });
 
     let exact_attempt = AttemptIdentity {
+        project_id: project_id.to_owned(),
         run_id: Some(run_id.to_owned()),
         started_at,
     };
@@ -842,7 +1107,7 @@ fn failure_attempt_number(
         }
     }
 
-    let failed_attempts = known_failed_attempts(runs, &started_events, &failed_events);
+    let failed_attempts = known_failed_attempts(runs, &started_events, &failed_events, project_id);
     if let Some(attempt_index) = failed_attempts
         .iter()
         .position(|attempt| attempt == &exact_attempt)
@@ -865,7 +1130,7 @@ fn failure_attempt_number(
 
     let insertion_index = failed_attempts
         .iter()
-        .filter(|attempt| *attempt < &exact_attempt)
+        .filter(|attempt| attempt_identity_cmp(attempt, &exact_attempt).is_lt())
         .count();
     Ok((already_recorded, insertion_index as u32 + 1))
 }
@@ -1105,53 +1370,74 @@ fn known_failed_attempts(
     runs: &[TaskRunEntry],
     started_events: &[AttemptStartEvent],
     failed_events: &[FailureAttemptEvent],
+    project_id: &str,
 ) -> Vec<AttemptIdentity> {
     let mut attempts = Vec::new();
 
     for event in failed_events {
         push_attempt_identity(
             &mut attempts,
+            &event.details.project_id,
             event.details.run_id.as_deref(),
             event.details.started_at,
         );
     }
-    for entry in runs {
-        if entry.outcome == TaskRunOutcome::Failed {
-            push_attempt_identity(&mut attempts, entry.run_id.as_deref(), entry.started_at);
-        }
+    for entry in runs
+        .iter()
+        .filter(|entry| entry.project_id == project_id && entry.outcome == TaskRunOutcome::Failed)
+    {
+        push_attempt_identity(
+            &mut attempts,
+            &entry.project_id,
+            entry.run_id.as_deref(),
+            entry.started_at,
+        );
     }
     for event in started_events {
         let Some(run_id) = event.details.run_id.as_deref() else {
             continue;
         };
-        if same_run_attempt_has_newer_start(run_id, event.started_at, started_events, runs) {
-            push_attempt_identity(&mut attempts, Some(run_id), event.started_at);
+        if same_run_attempt_has_newer_start(
+            project_id,
+            run_id,
+            event.started_at,
+            started_events,
+            runs,
+        ) {
+            push_attempt_identity(&mut attempts, project_id, Some(run_id), event.started_at);
         }
     }
 
-    attempts.sort();
+    sort_attempt_identities(&mut attempts);
     attempts
 }
 
 fn same_run_attempt_has_newer_start(
+    project_id: &str,
     run_id: &str,
     started_at: DateTime<Utc>,
     started_events: &[AttemptStartEvent],
     runs: &[TaskRunEntry],
 ) -> bool {
     started_events.iter().any(|event| {
-        event.details.run_id.as_deref() == Some(run_id) && event.started_at > started_at
-    }) || runs
-        .iter()
-        .any(|entry| entry.run_id.as_deref() == Some(run_id) && entry.started_at > started_at)
+        event.details.project_id == project_id
+            && event.details.run_id.as_deref() == Some(run_id)
+            && event.started_at > started_at
+    }) || runs.iter().any(|entry| {
+        entry.project_id == project_id
+            && entry.run_id.as_deref() == Some(run_id)
+            && entry.started_at > started_at
+    })
 }
 
 fn push_attempt_identity(
     attempts: &mut Vec<AttemptIdentity>,
+    project_id: &str,
     run_id: Option<&str>,
     started_at: DateTime<Utc>,
 ) {
     let attempt = AttemptIdentity {
+        project_id: project_id.to_owned(),
         run_id: run_id.map(str::to_owned),
         started_at,
     };
@@ -1179,7 +1465,7 @@ mod tests {
     };
     use crate::contexts::milestone_record::service::{
         self as milestone_service, create_milestone, persist_plan, read_journal, read_task_runs,
-        CreateMilestoneInput, TaskRunLineagePort,
+        CreateMilestoneInput, MilestoneJournalPort, TaskRunLineagePort,
     };
     use chrono::{Duration, Utc};
     use std::path::Path;
@@ -1409,6 +1695,110 @@ mod tests {
         assert_eq!(
             attempt_number, 1,
             "start-only orphaned attempts must not consume retry budget"
+        );
+    }
+
+    #[test]
+    fn failure_attempt_number_orders_retries_by_started_at_instead_of_run_id() {
+        let milestone_id = MilestoneId::new("ms-failure-reconcile").expect("milestone id");
+        let first_started_at = Utc::now() + Duration::seconds(1);
+        let second_started_at = first_started_at + Duration::seconds(30);
+        let runs = vec![
+            TaskRunEntry {
+                milestone_id: milestone_id.to_string(),
+                bead_id: "bead-failure".to_owned(),
+                project_id: "proj-failure".to_owned(),
+                run_id: Some("zzz-older-run".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Failed,
+                outcome_detail: Some("task_id=task-1\nattempt=1\nerror=first failure".to_owned()),
+                started_at: first_started_at,
+                finished_at: Some(first_started_at + Duration::seconds(5)),
+                task_id: Some("task-1".to_owned()),
+            },
+            TaskRunEntry {
+                milestone_id: milestone_id.to_string(),
+                bead_id: "bead-failure".to_owned(),
+                project_id: "proj-failure".to_owned(),
+                run_id: Some("aaa-newer-run".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: second_started_at,
+                finished_at: None,
+                task_id: Some("task-1".to_owned()),
+            },
+        ];
+
+        let (already_recorded, attempt_number) = failure_attempt_number(
+            &runs,
+            &[],
+            &milestone_id,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            "aaa-newer-run",
+            second_started_at,
+        )
+        .expect("attempt number");
+
+        assert!(!already_recorded);
+        assert_eq!(
+            attempt_number, 2,
+            "retry numbering must follow attempt start time, not run_id lexicographic order"
+        );
+    }
+
+    #[test]
+    fn failure_attempt_number_ignores_failed_attempts_from_other_projects() {
+        let milestone_id = MilestoneId::new("ms-failure-reconcile").expect("milestone id");
+        let other_project_started_at = Utc::now() + Duration::seconds(1);
+        let target_started_at = other_project_started_at + Duration::seconds(30);
+        let runs = vec![
+            TaskRunEntry {
+                milestone_id: milestone_id.to_string(),
+                bead_id: "bead-failure".to_owned(),
+                project_id: "proj-other".to_owned(),
+                run_id: Some("run-other".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Failed,
+                outcome_detail: Some(
+                    "task_id=task-other\nattempt=1\nerror=other project failure".to_owned(),
+                ),
+                started_at: other_project_started_at,
+                finished_at: Some(other_project_started_at + Duration::seconds(5)),
+                task_id: Some("task-other".to_owned()),
+            },
+            TaskRunEntry {
+                milestone_id: milestone_id.to_string(),
+                bead_id: "bead-failure".to_owned(),
+                project_id: "proj-failure".to_owned(),
+                run_id: Some("run-target".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: target_started_at,
+                finished_at: None,
+                task_id: Some("task-target".to_owned()),
+            },
+        ];
+
+        let (already_recorded, attempt_number) = failure_attempt_number(
+            &runs,
+            &[],
+            &milestone_id,
+            "bead-failure",
+            "task-target",
+            "proj-failure",
+            "run-target",
+            target_started_at,
+        )
+        .expect("attempt number");
+
+        assert!(!already_recorded);
+        assert_eq!(
+            attempt_number, 1,
+            "failed attempts from other projects must not consume this project's retry budget"
         );
     }
 
@@ -1917,7 +2307,7 @@ mod tests {
         let failed_at = started_at + Duration::seconds(10);
 
         start_attempt(base, &milestone_id, "task-1", "run-1", started_at)?;
-        FsTaskRunLineageStore.update_task_run(
+        FsTaskRunLineageStore.repair_task_run_terminal(
             base,
             &milestone_id,
             "bead-failure",
@@ -2763,6 +3153,161 @@ mod tests {
             .outcome_detail
             .as_deref()
             .is_some_and(|detail| detail.contains("attempt=2")));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_failure_backfill_repairs_later_attempt_markers_without_replay(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        write_beads_export(base)?;
+        let milestone_id = create_test_milestone(base)?;
+        let first_started_at = Utc::now() + Duration::seconds(1);
+        let second_started_at = first_started_at + Duration::seconds(30);
+
+        start_attempt(base, &milestone_id, "task-1", "run-1", first_started_at)?;
+        reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            first_started_at,
+            first_started_at + Duration::seconds(5),
+            "first failure",
+        )
+        .await?;
+
+        start_attempt(base, &milestone_id, "task-1", "run-2", second_started_at)?;
+        reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-2",
+            Some("plan-v1"),
+            second_started_at,
+            second_started_at + Duration::seconds(5),
+            "second failure",
+        )
+        .await?;
+
+        remove_bead_failed_events(base, &milestone_id)?;
+        FsTaskRunLineageStore.repair_task_run_terminal(
+            base,
+            &milestone_id,
+            "bead-failure",
+            "proj-failure",
+            "run-2",
+            Some("plan-v1"),
+            second_started_at,
+            TaskRunOutcome::Failed,
+            Some("task_id=task-1\nattempt=1\nerror=second failure".to_owned()),
+            second_started_at + Duration::seconds(5),
+        )?;
+
+        let stale_second_event = MilestoneJournalEvent::new(
+            MilestoneEventType::BeadFailed,
+            second_started_at + Duration::seconds(5),
+        )
+        .with_bead("bead-failure")
+        .with_details(
+            TaskRunEntry {
+                milestone_id: milestone_id.to_string(),
+                bead_id: "bead-failure".to_owned(),
+                project_id: "proj-failure".to_owned(),
+                run_id: Some("run-2".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Failed,
+                outcome_detail: Some("task_id=task-1\nattempt=1\nerror=second failure".to_owned()),
+                started_at: second_started_at,
+                finished_at: Some(second_started_at + Duration::seconds(5)),
+                task_id: Some("task-1".to_owned()),
+            }
+            .completion_journal_details(),
+        );
+        FsMilestoneJournalStore.append_event_if_missing(
+            base,
+            &milestone_id,
+            &stale_second_event,
+        )?;
+
+        let repaired_first = reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            first_started_at,
+            first_started_at + Duration::seconds(5),
+            "first failure",
+        )
+        .await?;
+        assert_eq!(
+            repaired_first,
+            FailureReconciliationOutcome::Retryable {
+                attempt_number: 1,
+                max_retries: MAX_FAILURE_RETRIES,
+            }
+        );
+
+        let repaired_runs = milestone_service::find_runs_for_bead(
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            "bead-failure",
+        )?;
+        let second_run = repaired_runs
+            .iter()
+            .find(|entry| {
+                entry.project_id == "proj-failure"
+                    && entry.run_id.as_deref() == Some("run-2")
+                    && entry.started_at == second_started_at
+            })
+            .expect("second failed run should remain present");
+        assert_eq!(
+            second_run.outcome_detail.as_deref(),
+            Some("task_id=task-1\nattempt=2\nerror=second failure")
+        );
+
+        let second_event = read_journal(&FsMilestoneJournalStore, base, &milestone_id)?
+            .into_iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadFailed)
+            .filter_map(|event| {
+                serde_json::from_str::<
+                    crate::contexts::milestone_record::model::CompletionJournalDetails,
+                >(event.details.as_deref().unwrap_or_default())
+                .ok()
+            })
+            .find(|details| {
+                details.project_id == "proj-failure"
+                    && details.run_id.as_deref() == Some("run-2")
+                    && details.started_at == second_started_at
+            })
+            .expect("second failed journal event should remain present");
+        assert_eq!(
+            second_event.outcome_detail.as_deref(),
+            Some("task_id=task-1\nattempt=2\nerror=second failure")
+        );
 
         Ok(())
     }
