@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-arbiter-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417123935-final_review-arbiter-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T13:14:46.975348608Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted. The real bead export happens in a separate CLI path, but that path records no milestone journal event, while the planning path already writes a journal reason claiming beads were exported. That leaves the durable milestone journal unable to distinguish planned state from actual export activity, which is a concrete audit/reconciliation defect rather than a purely optional observability enhancement.\n\n## Rulings\n\n- `fr-1-988679fb`: Accept\n  `handle_export_beads` in `src/cli/milestone.rs:360-379` performs the real `br` mutation path by calling `materialize_beads`, then sets the active milestone and returns, but it never instantiates a journal store or appends any `MilestoneJournalEvent`. That omission is a real consistency defect, not just a nice-to-have, because actual bead export is separate from planning: `materialize_bundle` in `src/contexts/milestone_record/service.rs:1351-1448` persists plan/snapshot state but does not call `materialize_beads` or otherwise export to `br`. Despite that, the planning path emits a ready-transition journal event whose reason is `plan finalized and beads exported` at `src/contexts/milestone_record/service.rs:2125-2131`. Without a later export-specific event, the durable milestone journal cannot represent when export actually happened, whether it was rerun, or what export result was produced after a partial/failing attempt. That makes the journal materially misleading for audit/reconciliation. The exact payload may need more than the current `BeadMaterializationReport`, but the amendment's core finding is valid.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
