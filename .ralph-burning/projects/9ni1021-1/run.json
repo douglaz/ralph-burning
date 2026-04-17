@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260417184955",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 11
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-10-db4c98e3",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 10,
-        "body": "finding_summary: `build_e2e_milestone_scenario_fixture()` does not actually hand back usable preconfigured adapters. The returned `mock_br`/`mock_bv` are bare mocks (`src/test_support/e2e_fixtures.rs:52-58,103-109`), but every dispatched response hard-fails unless the caller manually rebinds the adapter to `workspace.path()` (`src/test_support/e2e_fixtures.rs:821-833`). The smoke test had to introduce a private `mutation_adapter()` helper and explicit `.with_working_dir(...)` calls to make the fixture usable (`src/test_support/e2e_fixtures.rs:1043-1049,1181-1238`). That is a real trap because the rest of the repo normally consumes these mocks via `mock.as_br_adapter()` / `mock.as_mutation_adapter()` / `mock.as_bv_adapter()` directly (for example `tests/unit/controller_runtime_test.rs:341-345` and `src/contexts/milestone_record/service.rs:16049-16050`). Any integration test that uses the new fixture the same way will fail with `no working directory configured` instead of exercising the scenario. affected_files: `src/test_support/e2e_fixtures.rs`, `src/test_support/br.rs`, `src/test_support/bv.rs`. remediation_hint: expose pre-bound `BrAdapter`/`BrMutationAdapter`/`BvAdapter` helpers from `E2eScenarioFixture`, or make the scenario mocks default their working directory to the temp workspace root so the existing convenience constructors remain usable.",
-        "created_at": "2026-04-17T23:15:43.773456954Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "179e38302a69cedb308582e8431cb0588e64a8692cd97c34210b1f51bf0d8445"
-      }
-    ],
-    "processed_count": 15
+    "pending": [],
+    "processed_count": 16
   },
-  "status_summary": "running: final review restart round 11 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T23:06:02.726461531Z",

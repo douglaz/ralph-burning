@@ -99,6 +99,7 @@ struct MockBrState {
     calls: Mutex<Vec<MockBrCall>>,
     responses: Mutex<VecDeque<MockBrResponse>>,
     dispatch: Mutex<Option<Arc<MockBrDispatch>>>,
+    default_working_dir: Mutex<Option<PathBuf>>,
 }
 
 impl std::fmt::Debug for MockBrState {
@@ -172,9 +173,31 @@ impl MockBrAdapter {
             .clone()
     }
 
+    /// Configure the working directory used by convenience adapter
+    /// constructors such as `as_br_adapter()`.
+    pub fn set_default_working_dir(&self, dir: PathBuf) {
+        *self
+            .state
+            .default_working_dir
+            .lock()
+            .expect("mock br default working dir lock poisoned") = Some(dir);
+    }
+
+    fn default_working_dir(&self) -> Option<PathBuf> {
+        self.state
+            .default_working_dir
+            .lock()
+            .expect("mock br default working dir lock poisoned")
+            .clone()
+    }
+
     /// Build a read-only adapter backed by this mock.
     pub fn as_br_adapter(&self) -> BrAdapter<Self> {
-        BrAdapter::with_runner(self.clone())
+        let adapter = BrAdapter::with_runner(self.clone());
+        match self.default_working_dir() {
+            Some(dir) => adapter.with_working_dir(dir),
+            None => adapter,
+        }
     }
 
     /// Build a mutation adapter backed by this mock.
@@ -302,6 +325,32 @@ mod tests {
                 vec!["list".to_owned(), "--json".to_owned()],
                 vec!["show".to_owned(), "bead-7".to_owned(), "--json".to_owned()],
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_br_adapter_applies_default_working_dir_to_convenience_adapter() {
+        let mock = MockBrAdapter::from_dispatch(|call| {
+            Some(MockBrResponse::success(format!(
+                r#"{{"working_dir":"{}"}}"#,
+                call.working_dir
+                    .as_deref()
+                    .expect("working directory should be pre-bound")
+                    .display()
+            )))
+        });
+        let expected_dir = std::env::temp_dir().join("mock-br-default-working-dir");
+        mock.set_default_working_dir(expected_dir.clone());
+
+        let payload = mock
+            .as_br_adapter()
+            .exec_json::<serde_json::Value>(&BrCommand::show("bead-7"))
+            .await
+            .expect("show succeeds with default working directory");
+
+        assert_eq!(
+            payload["working_dir"],
+            expected_dir.to_string_lossy().as_ref()
         );
     }
 }

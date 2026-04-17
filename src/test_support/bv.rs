@@ -96,6 +96,7 @@ struct MockBvState {
     calls: Mutex<Vec<MockBvCall>>,
     responses: Mutex<VecDeque<MockBvResponse>>,
     dispatch: Mutex<Option<Arc<MockBvDispatch>>>,
+    default_working_dir: Mutex<Option<PathBuf>>,
 }
 
 impl std::fmt::Debug for MockBvState {
@@ -185,9 +186,31 @@ impl MockBvAdapter {
             .clone()
     }
 
+    /// Configure the working directory used by convenience adapter
+    /// constructors such as `as_bv_adapter()`.
+    pub fn set_default_working_dir(&self, dir: PathBuf) {
+        *self
+            .state
+            .default_working_dir
+            .lock()
+            .expect("mock bv default working dir lock poisoned") = Some(dir);
+    }
+
+    fn default_working_dir(&self) -> Option<PathBuf> {
+        self.state
+            .default_working_dir
+            .lock()
+            .expect("mock bv default working dir lock poisoned")
+            .clone()
+    }
+
     /// Build a read-only adapter backed by this mock.
     pub fn as_bv_adapter(&self) -> BvAdapter<Self> {
-        BvAdapter::with_runner(self.clone())
+        let adapter = BvAdapter::with_runner(self.clone());
+        match self.default_working_dir() {
+            Some(dir) => adapter.with_working_dir(dir),
+            None => adapter,
+        }
     }
 }
 
@@ -305,6 +328,32 @@ mod tests {
                 vec!["--robot-next".to_owned()],
                 vec!["--robot-triage".to_owned()],
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_bv_adapter_applies_default_working_dir_to_convenience_adapter() {
+        let mock = MockBvAdapter::from_dispatch(|call| {
+            Some(MockBvResponse::success(format!(
+                r#"{{"working_dir":"{}"}}"#,
+                call.working_dir
+                    .as_deref()
+                    .expect("working directory should be pre-bound")
+                    .display()
+            )))
+        });
+        let expected_dir = std::env::temp_dir().join("mock-bv-default-working-dir");
+        mock.set_default_working_dir(expected_dir.clone());
+
+        let payload = mock
+            .as_bv_adapter()
+            .exec_json::<serde_json::Value>(&BvCommand::robot_next())
+            .await
+            .expect("robot-next succeeds with default working directory");
+
+        assert_eq!(
+            payload["working_dir"],
+            expected_dir.to_string_lossy().as_ref()
         );
     }
 }

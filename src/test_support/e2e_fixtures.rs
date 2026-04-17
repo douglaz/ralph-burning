@@ -98,6 +98,9 @@ pub fn build_e2e_milestone_scenario_fixture() -> E2eScenarioFixture {
         .collect();
     let mock_br = build_mock_br_adapter(Arc::clone(&scenario_state));
     let mock_bv = build_mock_bv_adapter(scenario_state);
+    let workspace_root = workspace.path().to_path_buf();
+    mock_br.set_default_working_dir(workspace_root.clone());
+    mock_bv.set_default_working_dir(workspace_root);
     let milestone_id = workspace.milestones[0].milestone_id.clone();
 
     E2eScenarioFixture {
@@ -1021,7 +1024,7 @@ mod tests {
 
     use super::*;
     use crate::adapters::br_models::{BeadDetail, BeadSummary};
-    use crate::adapters::br_process::{BrAdapter, BrError, BrMutationAdapter, BrOutput};
+    use crate::adapters::br_process::{BrAdapter, BrError, BrOutput};
     use crate::adapters::bv_process::{BvCommand, BvError, NextBeadResponse};
     use crate::contexts::milestone_record::model::{MilestoneEventType, MilestoneStatus};
 
@@ -1038,15 +1041,6 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("parse bead json"))
             .collect()
-    }
-
-    fn mutation_adapter(
-        mock: &MockBrAdapter,
-        working_dir: PathBuf,
-    ) -> BrMutationAdapter<MockBrAdapter> {
-        BrMutationAdapter::with_adapter(
-            BrAdapter::with_runner(mock.clone()).with_working_dir(working_dir),
-        )
     }
 
     #[tokio::test]
@@ -1178,20 +1172,13 @@ mod tests {
             Some(PREPARE_TASK_ID)
         );
 
-        let working_dir = fixture.workspace.path().to_path_buf();
-        let br_read = fixture
-            .mock_br
-            .as_br_adapter()
-            .with_working_dir(working_dir.clone());
-        let br_mutation = mutation_adapter(&fixture.mock_br, working_dir.clone());
-        let bv = fixture
-            .mock_bv
-            .as_bv_adapter()
-            .with_working_dir(working_dir);
+        let br_read = fixture.mock_br.as_br_adapter();
+        let br_mutation = fixture.mock_br.as_mutation_adapter();
+        let bv = fixture.mock_bv.as_bv_adapter();
+        let raw_br = BrAdapter::with_runner(fixture.mock_br.clone());
+        let raw_bv = crate::adapters::bv_process::BvAdapter::with_runner(fixture.mock_bv.clone());
 
-        let missing_br_dir = fixture
-            .mock_br
-            .as_br_adapter()
+        let missing_br_dir = raw_br
             .exec_json::<BeadDetail>(&crate::adapters::br_process::BrCommand::show(ROOT_EPIC_ID))
             .await
             .expect_err("scenario br fixture should require the workspace working directory");
@@ -1205,9 +1192,7 @@ mod tests {
                 && stderr.contains("no working directory configured")
         ));
 
-        let wrong_br_dir = fixture
-            .mock_br
-            .as_br_adapter()
+        let wrong_br_dir = BrAdapter::with_runner(fixture.mock_br.clone())
             .with_working_dir(std::env::temp_dir())
             .exec_json::<BeadDetail>(&crate::adapters::br_process::BrCommand::show(ROOT_EPIC_ID))
             .await
@@ -1217,9 +1202,7 @@ mod tests {
             BrError::BrExitError { stderr, .. } if stderr.contains("fixture adapters must run in")
         ));
 
-        let missing_bv_dir = fixture
-            .mock_bv
-            .as_bv_adapter()
+        let missing_bv_dir = raw_bv
             .exec_json::<NextBeadResponse>(&BvCommand::robot_next())
             .await
             .expect_err("scenario bv fixture should require the workspace working directory");
@@ -1229,13 +1212,12 @@ mod tests {
         ));
 
         let nonexistent_bv_dir = fixture.workspace.path().join("missing-working-dir");
-        let wrong_bv_dir = fixture
-            .mock_bv
-            .as_bv_adapter()
-            .with_working_dir(nonexistent_bv_dir.clone())
-            .exec_json::<NextBeadResponse>(&BvCommand::robot_next())
-            .await
-            .expect_err("scenario bv fixture should reject a mismatched working directory");
+        let wrong_bv_dir =
+            crate::adapters::bv_process::BvAdapter::with_runner(fixture.mock_bv.clone())
+                .with_working_dir(nonexistent_bv_dir.clone())
+                .exec_json::<NextBeadResponse>(&BvCommand::robot_next())
+                .await
+                .expect_err("scenario bv fixture should reject a mismatched working directory");
         assert!(matches!(
             wrong_bv_dir,
             BvError::BvExitError { stderr, .. }
