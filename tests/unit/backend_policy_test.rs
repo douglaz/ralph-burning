@@ -79,7 +79,7 @@ fn compiled_defaults_use_codex_high_implementer_and_cross_model_final_review_pan
         panel.reviewers[1].target.backend.family
     );
     assert_eq!(
-        "claude-opus-4-6-max",
+        "claude-opus-4-7-max",
         panel.reviewers[1].target.model.model_id
     );
     assert!(!panel.reviewers[1].required);
@@ -206,10 +206,10 @@ fn compiled_default_final_review_panel_honors_role_model_overrides() {
         BackendFamily::Claude,
         panel.reviewers[1].target.backend.family
     );
-    // Second reviewer has an inline model override (claude-opus-4-6-max) that
+    // Second reviewer has an inline model override (claude-opus-4-7-max) that
     // is not affected by role_models overrides.
     assert_eq!(
-        "claude-opus-4-6-max",
+        "claude-opus-4-7-max",
         panel.reviewers[1].target.model.model_id
     );
     // Third reviewer has an inline model override that is not affected by
@@ -250,10 +250,10 @@ fn explicit_default_model_overrides_compiled_codex_role_defaults() {
     // First reviewer has an inline model override (gpt-5.4-xhigh), unaffected
     // by default_model.
     assert_eq!("gpt-5.4-xhigh", panel.reviewers[0].target.model.model_id);
-    // Second reviewer has an inline model override (claude-opus-4-6-max),
+    // Second reviewer has an inline model override (claude-opus-4-7-max),
     // unaffected by default_model.
     assert_eq!(
-        "claude-opus-4-6-max",
+        "claude-opus-4-7-max",
         panel.reviewers[1].target.model.model_id
     );
     // Third reviewer has an inline model override, unaffected by default_model.

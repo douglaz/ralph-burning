@@ -1485,7 +1485,7 @@ fn default_final_review_backends() -> Vec<PanelBackendSpec> {
         )),
         PanelBackendSpec::optional_selection(BackendSelection::new(
             BackendFamily::Claude,
-            Some("claude-opus-4-6-max".to_owned()),
+            Some("claude-opus-4-7-max".to_owned()),
         )),
         PanelBackendSpec::optional_selection(BackendSelection::new(
             BackendFamily::Codex,
@@ -1537,7 +1537,7 @@ fn default_backend_runtime_settings(backend_name: &str) -> AppResult<BackendRunt
                 ..Default::default()
             },
             "claude" => BackendRoleModels {
-                final_reviewer: Some("claude-opus-4-6-max".to_owned()),
+                final_reviewer: Some("claude-opus-4-7-max".to_owned()),
                 ..Default::default()
             },
             _ => BackendRoleModels::default(),

@@ -3653,7 +3653,7 @@ async fn daemon_requirements_quick_without_defaults_uses_role_defaults() {
     let invocations = adapter.recorded_invocations();
     assert!(!invocations.is_empty());
     // Requirements stages only use Planner and Reviewer roles.
-    // Planner default: Claude / claude-opus-4-6
+    // Planner default: Claude / claude-opus-4-7
     // Reviewer default: Claude / sonnet-4.0
     for inv in &invocations {
         let expected = if inv.contract_label.contains("review") {

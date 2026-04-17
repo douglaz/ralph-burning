@@ -10833,9 +10833,9 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         // Verify producer metadata serializes correctly.
         let producer = RecordProducer::Agent {
             requested_backend_family: "claude".to_owned(),
-            requested_model_id: "claude-opus-4-6".to_owned(),
+            requested_model_id: "claude-opus-4-7".to_owned(),
             actual_backend_family: "claude".to_owned(),
-            actual_model_id: "claude-opus-4-6".to_owned(),
+            actual_model_id: "claude-opus-4-7".to_owned(),
         };
         let producer_json =
             serde_json::to_value(&producer).map_err(|e| format!("producer serialize: {e}"))?;
@@ -11195,7 +11195,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                 exhausted_count: 0,
                 probe_exhausted_count: 0,
                 executed_voters: vec![
-                    "claude:claude-opus-4-6".to_owned(),
+                    "claude:claude-opus-4-7".to_owned(),
                     "codex:codex-1".to_owned(),
                 ],
             };
@@ -11324,7 +11324,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             exhausted_count: 0,
             probe_exhausted_count: 0,
             executed_voters: vec![
-                "claude:claude-opus-4-6".to_owned(),
+                "claude:claude-opus-4-7".to_owned(),
                 "codex:codex-1".to_owned(),
             ],
         };
@@ -11688,7 +11688,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             // ── Helper assertions ──
             let old_target = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Claude,
-                "claude-opus-4-6".to_owned(),
+                "claude-opus-4-7".to_owned(),
             );
             let new_target = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Codex,
@@ -11796,7 +11796,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         );
         let new_target = ResolvedBackendTarget::new(
             crate::shared::domain::BackendFamily::Claude,
-            "claude-opus-4-6".to_owned(),
+            "claude-opus-4-7".to_owned(),
         );
         let old = build_single_target_snapshot(StageId::AcceptanceQa, &old_target);
         let new = build_single_target_snapshot(StageId::AcceptanceQa, &new_target);
@@ -11862,7 +11862,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             // ── Helper: model-level drift within same family ──
             let old_target = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Claude,
-                "claude-opus-4-6".to_owned(),
+                "claude-opus-4-7".to_owned(),
             );
             let new_target = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Claude,
@@ -11942,7 +11942,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             // ── Helper: completer model change drift ──
             let target_a = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Claude,
-                "claude-opus-4-6".to_owned(),
+                "claude-opus-4-7".to_owned(),
             );
             let target_b = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Codex,

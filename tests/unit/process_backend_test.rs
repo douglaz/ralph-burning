@@ -623,7 +623,7 @@ async fn claude_suffix_model_adds_reasoning_effort_flag() {
 
     let (_dir, mut request) = request_fixture(BackendFamily::Claude);
     request.resolved_target =
-        ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6-max");
+        ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-7-max");
 
     let envelope_file = request.working_dir.join("claude-envelope.json");
     write_claude_envelope(
@@ -642,11 +642,11 @@ async fn claude_suffix_model_adds_reasoning_effort_flag() {
     let args_text =
         fs::read_to_string(request.working_dir.join("claude-args.txt")).expect("read args");
     assert!(
-        args_text.contains("--model claude-opus-4-6"),
+        args_text.contains("--model claude-opus-4-7"),
         "should strip the effort suffix from --model: {args_text}"
     );
     assert!(
-        !args_text.contains("--model claude-opus-4-6-max"),
+        !args_text.contains("--model claude-opus-4-7-max"),
         "should not pass the suffixed model id through to the CLI: {args_text}"
     );
     assert!(
@@ -707,12 +707,12 @@ async fn claude_resume_suffix_model_adds_reasoning_effort_flag() {
 
     let (_dir, mut request) = request_fixture(BackendFamily::Claude);
     request.resolved_target =
-        ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6-max");
+        ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-7-max");
     request.session_policy = SessionPolicy::ReuseIfAllowed;
     request.prior_session = Some(SessionMetadata {
         role: BackendRole::Planner,
         backend_family: BackendFamily::Claude,
-        model_id: "claude-opus-4-6-max".to_owned(),
+        model_id: "claude-opus-4-7-max".to_owned(),
         session_id: "ses-prior-123".to_owned(),
         created_at: Utc::now(),
         last_used_at: Utc::now(),
@@ -732,7 +732,7 @@ async fn claude_resume_suffix_model_adds_reasoning_effort_flag() {
     let args_text =
         fs::read_to_string(request.working_dir.join("claude-args.txt")).expect("read args");
     assert!(
-        args_text.contains("--model claude-opus-4-6"),
+        args_text.contains("--model claude-opus-4-7"),
         "should strip the effort suffix from --model on resume: {args_text}"
     );
     assert!(
