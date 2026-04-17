@@ -6586,7 +6586,7 @@ mod tests {
         bundle.acceptance_map[0].covered_by.clear();
         bundle.workstreams[0].beads[0].description = None;
         bundle.workstreams[0].beads[0].bead_type = None;
-        bundle.workstreams[0].beads[0].priority = None;
+        bundle.workstreams[0].beads[0].priority = Some(0);
         bundle.workstreams[0].beads[0].labels.clear();
 
         let record = materialize_bundle(
@@ -6606,6 +6606,7 @@ mod tests {
             plan.acceptance_map[0].covered_by,
             vec!["legacy-covered-by.bead-1".to_owned()]
         );
+        assert_eq!(plan.workstreams[0].beads[0].priority, Some(0));
         Ok(())
     }
 

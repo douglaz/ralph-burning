@@ -170,10 +170,20 @@ impl MilestoneBundle {
                 if mode.requires_generated_metadata() && !has_bead_type {
                     errors.push(format!("{location}.bead_type must not be empty"));
                 }
+                let has_bead_id = bead
+                    .bead_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|bead_id| !bead_id.is_empty())
+                    .is_some();
+                if mode.requires_generated_metadata() && !has_bead_id {
+                    errors.push(format!("{location}.bead_id must not be empty"));
+                }
                 match bead.priority {
-                    Some(1..=3) => {}
+                    Some(priority) if mode.allows_priority(priority) => {}
                     Some(priority) => errors.push(format!(
-                        "{location}.priority must be between 1 and 3, got {priority}"
+                        "{location}.priority must be {}, got {priority}",
+                        mode.priority_expectation()
                     )),
                     None if mode.requires_generated_metadata() => {
                         errors.push(format!("{location}.priority must not be empty"))
@@ -265,6 +275,11 @@ impl MilestoneBundle {
                     }
                 }
 
+                if mode.requires_generated_metadata() && bead.acceptance_criteria.is_empty() {
+                    errors.push(format!(
+                        "{location}.acceptance_criteria must contain at least one item"
+                    ));
+                }
                 for (k, acceptance_id) in bead.acceptance_criteria.iter().enumerate() {
                     if acceptance_id.trim().is_empty() {
                         errors.push(format!(
@@ -405,6 +420,20 @@ enum BundleValidationMode {
 impl BundleValidationMode {
     fn requires_generated_metadata(self) -> bool {
         matches!(self, Self::Generated)
+    }
+
+    fn allows_priority(self, priority: u32) -> bool {
+        match self {
+            Self::Compatibility => matches!(priority, 0..=4),
+            Self::Generated => matches!(priority, 1..=3),
+        }
+    }
+
+    fn priority_expectation(self) -> &'static str {
+        match self {
+            Self::Compatibility => "between 0 and 4",
+            Self::Generated => "between 1 and 3",
+        }
     }
 }
 
@@ -1698,6 +1727,30 @@ mod tests {
     }
 
     #[test]
+    fn bundle_validation_accepts_legacy_priority_range() -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].priority = Some(0);
+        bundle.workstreams[0].beads[1].priority = Some(4);
+
+        bundle.validate().map_err(|errors| errors.join("; "))?;
+        Ok(())
+    }
+
+    #[test]
+    fn generated_bundle_validation_rejects_legacy_priority_values(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].priority = Some(0);
+
+        let errors = bundle.validate_generated().unwrap_err();
+
+        assert!(errors.iter().any(|error| {
+            error.contains("workstreams[0].beads[0].priority must be between 1 and 3")
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn bundle_validation_catches_empty_goals() -> Result<(), Box<dyn std::error::Error>> {
         let mut bundle = sample_bundle();
         bundle.goals.clear();
@@ -2156,12 +2209,32 @@ mod tests {
     }
 
     #[test]
+    fn generated_bundle_validation_rejects_missing_bead_ids_and_acceptance_mappings(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].bead_id = None;
+        bundle.workstreams[0].beads[0].acceptance_criteria.clear();
+
+        let errors = bundle.validate_generated().unwrap_err();
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("workstreams[0].beads[0].bead_id must not be empty")));
+        assert!(errors.iter().any(|error| {
+            error.contains(
+                "workstreams[0].beads[0].acceptance_criteria must contain at least one item",
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn bundle_validation_accepts_legacy_missing_metadata_and_backfills_covered_by(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut bundle = sample_bundle();
         bundle.workstreams[0].beads[0].description = None;
         bundle.workstreams[0].beads[0].bead_type = None;
-        bundle.workstreams[0].beads[0].priority = None;
+        bundle.workstreams[0].beads[0].priority = Some(0);
         bundle.workstreams[0].beads[0].labels.clear();
         bundle.acceptance_map[0].covered_by.clear();
         bundle.acceptance_map[1].covered_by.clear();
@@ -2181,7 +2254,7 @@ mod tests {
         );
         assert_eq!(parsed.workstreams[0].beads[0].description, None);
         assert_eq!(parsed.workstreams[0].beads[0].bead_type, None);
-        assert_eq!(parsed.workstreams[0].beads[0].priority, None);
+        assert_eq!(parsed.workstreams[0].beads[0].priority, Some(0));
         assert!(parsed.workstreams[0].beads[0].labels.is_empty());
         Ok(())
     }

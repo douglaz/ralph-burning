@@ -1698,7 +1698,7 @@ mod service_integration {
         legacy_bundle.acceptance_map[0].covered_by.clear();
         legacy_bundle.workstreams[0].beads[0].description = None;
         legacy_bundle.workstreams[0].beads[0].bead_type = None;
-        legacy_bundle.workstreams[0].beads[0].priority = None;
+        legacy_bundle.workstreams[0].beads[0].priority = Some(0);
         legacy_bundle.workstreams[0].beads[0].labels.clear();
         run.milestone_bundle = Some(legacy_bundle.clone());
         store
@@ -1720,7 +1720,7 @@ mod service_integration {
         assert!(handoff.bundle.acceptance_map[0].covered_by.is_empty());
         assert_eq!(handoff.bundle.workstreams[0].beads[0].description, None);
         assert_eq!(handoff.bundle.workstreams[0].beads[0].bead_type, None);
-        assert_eq!(handoff.bundle.workstreams[0].beads[0].priority, None);
+        assert_eq!(handoff.bundle.workstreams[0].beads[0].priority, Some(0));
         assert!(handoff.bundle.workstreams[0].beads[0].labels.is_empty());
     }
 
@@ -3983,10 +3983,9 @@ fn milestone_bundle_contract_rejects_legacy_missing_planner_metadata() {
             "name": "Planning",
             "description": "Define milestone output.",
             "beads": [{
-                "bead_id": "ms-alpha.bead-1",
                 "title": "Wire milestone bundle output",
                 "depends_on": [],
-                "acceptance_criteria": ["AC-1"]
+                "acceptance_criteria": []
             }]
         }],
         "default_flow": "quick_dev"
@@ -4001,8 +4000,10 @@ fn milestone_bundle_contract_rejects_legacy_missing_planner_metadata() {
     };
     assert!(details.contains(".description must not be empty"));
     assert!(details.contains(".bead_type must not be empty"));
+    assert!(details.contains(".bead_id must not be empty"));
     assert!(details.contains(".priority must not be empty"));
     assert!(details.contains(".labels must contain at least one label"));
+    assert!(details.contains(".acceptance_criteria must contain at least one item"));
     assert!(details.contains("covered_by must contain at least one bead"));
 }
 
