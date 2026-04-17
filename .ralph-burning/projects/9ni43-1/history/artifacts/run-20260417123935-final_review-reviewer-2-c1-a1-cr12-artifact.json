@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr12-artifact",
+  "payload_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T17:23:19.287807183Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed bead materialization end-to-end. materialize_beads() in src/contexts/milestone_record/service.rs:1525 creates root epic, workstream epics, and task beads with parent-child/blocks dependencies; idempotency is label-based (milestone:<id>, proposal:<id>, workstream:<norm>-<idx>, milestone-root) with active-vs-historical disambiguation. The CLI subcommand `milestone export-beads` (src/cli/milestone.rs:382) serializes concurrent exports via flock + pid/proc_start_ticks/proc_start_marker liveness detection with four reservation arms (same-pid refresh, live-other-pid error, stale same-plan recovery, stale overwrite) and only clears the attempt when owner_token matches. The bundle validator rejects commas in labels and reserved exporter label prefixes (src/contexts/milestone_record/bundle.rs); create_bead now joins labels as a single --labels=a,b,c argument with a pre-spawn comma re-check (src/adapters/br_process.rs:1336). BeadDetail gains a custom Deserialize that handles both single-object and single-element-array `br show` responses (src/adapters/br_models.rs). record_beads_exported_event persists planned_bead_id_map onto the ProgressUpdated journal entry so load_runtime_bead_membership_refs can reconcile live ids against the last successful export (service.rs:4173, 4245). DependencyKind::Blocks vs ParentChild are serialized distinctly and hashed distinctly in MaterializedDependency, so a pair with both kinds produces two edges. Mid-export mutation failure propagates without a premature sync_flush; a subsequent successful retry replays pending mutations before resolving bead ids. 15+ tests cover creation, idempotency for existing titles, explicit-id reuse, closed/deferred history, multi-milestone isolation, pending-sync replay, partial failure without sync, and runtime ready-check parity. No correctness, safety, robustness, or significant maintainability defects found in scope; .ralph-burning/ excluded per contract.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 12
+}
