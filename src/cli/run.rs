@@ -6888,11 +6888,19 @@ mod tests {
 
         let task_runs = read_task_runs(&FsTaskRunLineageStore, base_dir, &milestone.id)
             .expect("read task-runs");
-        assert_eq!(task_runs.len(), 1);
-        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-1"));
-        assert_eq!(task_runs[0].started_at, resumed_at);
-        assert_eq!(task_runs[0].finished_at, Some(completed_at));
-        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(task_runs.len(), 2);
+        assert!(task_runs.iter().any(|entry| {
+            entry.run_id.as_deref() == Some("run-1")
+                && entry.started_at == original_started_at
+                && entry.finished_at == Some(failed_at)
+                && entry.outcome == TaskRunOutcome::Failed
+        }));
+        assert!(task_runs.iter().any(|entry| {
+            entry.run_id.as_deref() == Some("run-1")
+                && entry.started_at == resumed_at
+                && entry.finished_at == Some(completed_at)
+                && entry.outcome == TaskRunOutcome::Succeeded
+        }));
 
         let journal =
             read_journal(&FsMilestoneJournalStore, base_dir, &milestone.id).expect("journal");

@@ -398,7 +398,11 @@ impl TaskRunEntry {
         }
 
         match (left.run_id.as_deref(), right.run_id.as_deref()) {
-            (Some(left_run_id), Some(right_run_id)) => left_run_id == right_run_id,
+            (Some(left_run_id), Some(right_run_id)) => {
+                left_run_id == right_run_id
+                    && (left.started_at == right.started_at
+                        || (!left.outcome.is_terminal() && !right.outcome.is_terminal()))
+            }
             _ => {
                 left.started_at == right.started_at
                     && (!left.outcome.is_terminal() || !right.outcome.is_terminal())
@@ -670,9 +674,14 @@ fn group_matches_named_attempt(group: &[TaskRunEntry], entry: &TaskRunEntry, run
 
 fn group_accepts_entry(group: &[TaskRunEntry], entry: &TaskRunEntry) -> bool {
     group.iter().all(|existing| {
-        !existing.outcome.is_terminal()
-            || !entry.outcome.is_terminal()
-            || existing.outcome == entry.outcome
+        let terminal_state_changed = existing.outcome.is_terminal() || entry.outcome.is_terminal();
+        let same_named_attempt =
+            existing.run_id.is_some() && entry.run_id.is_some() && existing.run_id == entry.run_id;
+
+        (!same_named_attempt || !terminal_state_changed || existing.started_at == entry.started_at)
+            && (!existing.outcome.is_terminal()
+                || !entry.outcome.is_terminal()
+                || existing.outcome == entry.outcome)
     })
 }
 

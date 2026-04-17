@@ -4283,6 +4283,33 @@ fn extract_task_id_from_outcome_detail(detail: &str) -> Option<&str> {
     (!task_id.is_empty()).then_some(task_id)
 }
 
+fn task_id_is_cli_sync_placeholder(task_id: &str) -> bool {
+    task_id.starts_with("cli-sync:")
+}
+
+fn backfill_task_id_from_outcome_detail(entry: &mut TaskRunEntry) -> bool {
+    let Some(detail) = entry.outcome_detail.as_deref() else {
+        return false;
+    };
+    let Some(task_id) = extract_task_id_from_outcome_detail(detail) else {
+        return false;
+    };
+
+    match entry.task_id.as_deref() {
+        Some(existing) if existing == task_id => false,
+        Some(existing)
+            if !task_id_is_cli_sync_placeholder(existing)
+                && task_id_is_cli_sync_placeholder(task_id) =>
+        {
+            false
+        }
+        _ => {
+            entry.task_id = Some(task_id.to_owned());
+            true
+        }
+    }
+}
+
 pub struct FsTaskRunLineageStore;
 
 impl FsTaskRunLineageStore {
@@ -4414,15 +4441,7 @@ impl FsTaskRunLineageStore {
                 changed = true;
             }
         }
-        // Extract structured task_id from outcome_detail when present.
-        if entry.task_id.is_none() {
-            if let Some(ref detail) = entry.outcome_detail {
-                if let Some(tid) = extract_task_id_from_outcome_detail(detail) {
-                    entry.task_id = Some(tid.to_owned());
-                    changed = true;
-                }
-            }
-        }
+        changed |= backfill_task_id_from_outcome_detail(entry);
         if overwrite_finished_at {
             if entry.finished_at != Some(finished_at) {
                 entry.finished_at = Some(finished_at);
@@ -4488,17 +4507,41 @@ impl FsTaskRunLineageStore {
             entry.finished_at = Some(finished_at);
             changed = true;
         }
-        // Extract structured task_id from outcome_detail when present.
-        if entry.task_id.is_none() {
-            if let Some(ref detail) = entry.outcome_detail {
-                if let Some(tid) = extract_task_id_from_outcome_detail(detail) {
-                    entry.task_id = Some(tid.to_owned());
-                    changed = true;
-                }
-            }
-        }
+        changed |= backfill_task_id_from_outcome_detail(entry);
 
         Ok(changed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn append_repaired_terminal_entry(
+        path: &Path,
+        milestone_id: &MilestoneId,
+        entries: &mut Vec<TaskRunEntry>,
+        bead_id: &str,
+        project_id: &str,
+        run_id: &str,
+        plan_hash: Option<&str>,
+        started_at: DateTime<Utc>,
+        outcome: TaskRunOutcome,
+        outcome_detail: Option<String>,
+        finished_at: DateTime<Utc>,
+    ) -> AppResult<TaskRunEntry> {
+        let mut entry = TaskRunEntry {
+            milestone_id: milestone_id.to_string(),
+            bead_id: bead_id.to_owned(),
+            project_id: project_id.to_owned(),
+            run_id: Some(run_id.to_owned()),
+            plan_hash: plan_hash.map(str::to_owned),
+            outcome,
+            outcome_detail,
+            started_at,
+            finished_at: Some(finished_at),
+            task_id: None,
+        };
+        let _ = backfill_task_id_from_outcome_detail(&mut entry);
+        entries.push(entry.clone());
+        Self::write_task_runs(path, entries)?;
+        Ok(entry)
     }
 
     fn backfill_running_entry(
@@ -4553,8 +4596,9 @@ impl FsTaskRunLineageStore {
             .filter_map(|(index, entry)| {
                 (milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id)
                     && entry.project_id == project_id
-                    && entry.run_id.as_deref() == Some(run_id))
-                .then_some(index)
+                    && entry.run_id.as_deref() == Some(run_id)
+                    && entry.started_at == canonical_entry.started_at)
+                    .then_some(index)
             })
             .collect();
         if exact_match_indices.is_empty() {
@@ -4675,7 +4719,7 @@ impl FsTaskRunLineageStore {
     fn finalize_task_run_internal(
         path: &Path,
         milestone_id: &MilestoneId,
-        entries: &mut [TaskRunEntry],
+        entries: &mut Vec<TaskRunEntry>,
         bead_id: &str,
         project_id: &str,
         run_id: &str,
@@ -4717,10 +4761,15 @@ impl FsTaskRunLineageStore {
 
         let mut duplicate_indices_to_remove = Vec::new();
         let target_index = {
-            let exact_matches: Vec<usize> = matching_indices
+            let run_id_matches: Vec<usize> = matching_indices
                 .iter()
                 .copied()
                 .filter(|index| entries[*index].run_id.as_deref() == Some(run_id))
+                .collect();
+            let exact_matches: Vec<usize> = run_id_matches
+                .iter()
+                .copied()
+                .filter(|index| entries[*index].started_at == started_at)
                 .collect();
             match exact_matches.as_slice() {
                 [index] => *index,
@@ -4746,6 +4795,21 @@ impl FsTaskRunLineageStore {
                                 run_id,
                             ) {
                                 Some(index) => index,
+                                None if allow_terminal_repair && outcome.is_terminal() => {
+                                    return Self::append_repaired_terminal_entry(
+                                        path,
+                                        milestone_id,
+                                        entries,
+                                        bead_id,
+                                        project_id,
+                                        run_id,
+                                        plan_hash,
+                                        started_at,
+                                        outcome,
+                                        outcome_detail,
+                                        finished_at,
+                                    );
+                                }
                                 None => {
                                     return Err(AppError::CorruptRecord {
                                         file: format!("milestones/{}/task-runs.ndjson", milestone_id),
@@ -4757,6 +4821,31 @@ impl FsTaskRunLineageStore {
                             }
                         }
                         [index] => {
+                            if allow_terminal_repair && outcome.is_terminal() {
+                                return Self::append_repaired_terminal_entry(
+                                    path,
+                                    milestone_id,
+                                    entries,
+                                    bead_id,
+                                    project_id,
+                                    run_id,
+                                    plan_hash,
+                                    started_at,
+                                    outcome,
+                                    outcome_detail,
+                                    finished_at,
+                                );
+                            }
+                            if entries[*index].run_id.as_deref() == Some(run_id) {
+                                return Err(AppError::CorruptRecord {
+                                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                    details: format!(
+                                        "stale task run update for bead={bead_id} project={project_id} run={run_id}; active attempt started_at={} but completion targeted started_at={}",
+                                        entries[*index].started_at.to_rfc3339(),
+                                        started_at.to_rfc3339(),
+                                    ),
+                                });
+                            }
                             return Err(AppError::CorruptRecord {
                                 file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                                 details: format!(
@@ -4814,6 +4903,14 @@ impl FsTaskRunLineageStore {
                 }
             }
         };
+
+        if !entries[target_index].outcome.is_terminal() {
+            duplicate_indices_to_remove.extend(matching_indices.iter().copied().filter(|index| {
+                *index != target_index
+                    && entries[*index].run_id.as_deref() == Some(run_id)
+                    && !entries[*index].outcome.is_terminal()
+            }));
+        }
 
         let mut should_write = !duplicate_indices_to_remove.is_empty();
         if !duplicate_indices_to_remove.is_empty() {
@@ -4926,15 +5023,7 @@ impl FsTaskRunLineageStore {
                 entry.outcome = outcome;
                 entry.outcome_detail = outcome_detail;
                 entry.finished_at = Some(finished_at);
-                // Extract structured task_id from the outcome_detail
-                // "task_id=<value>" format set by success reconciliation.
-                if entry.task_id.is_none() {
-                    if let Some(ref detail) = entry.outcome_detail {
-                        if let Some(tid) = extract_task_id_from_outcome_detail(detail) {
-                            entry.task_id = Some(tid.to_owned());
-                        }
-                    }
-                }
+                let _ = backfill_task_id_from_outcome_detail(entry);
                 should_write = true;
             }
 
@@ -5049,6 +5138,34 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                 return Err(AppError::RunStartFailed {
                     reason: format!(
                         "cannot start bead '{bead_id}': {finalized_attempt} for project '{project_id}' is already finalized"
+                    ),
+                });
+            }
+            _ if finalized_attempts
+                .iter()
+                .all(|entry| entry.outcome == TaskRunOutcome::Failed) =>
+            {
+                let latest_failed_attempt = finalized_attempts
+                    .iter()
+                    .max_by_key(|entry| entry.started_at)
+                    .expect("non-empty finalized attempts should have a latest failed attempt");
+                if let Some(reopened_entry) = Self::reopen_failed_exact_attempt(
+                    &mut entries,
+                    milestone_id,
+                    latest_failed_attempt,
+                    bead_id,
+                    project_id,
+                    run_id,
+                    plan_hash,
+                    started_at,
+                )? {
+                    Self::write_task_runs(&path, &entries)?;
+                    return Ok(reopened_entry);
+                }
+                return Err(AppError::RunStartFailed {
+                    reason: format!(
+                        "cannot start bead '{bead_id}': ambiguous finalized attempts already exist for project '{project_id}' started_at={}",
+                        started_at.to_rfc3339()
                     ),
                 });
             }
