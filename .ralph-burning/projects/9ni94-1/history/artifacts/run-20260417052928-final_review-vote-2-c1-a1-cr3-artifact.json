@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417052928-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260417052928-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T06:45:16.874810215Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nEvaluated fr-3-ef7edfaf on technical merit. The amendment correctly identifies that sync_active_milestone_from_project_record only sets and never clears, producing a stale active-milestone pointer that resolve_active_milestone at src/cli/milestone.rs:547-554 will silently follow. However, that stale-pointer asymmetry is pre-existing behavior of project::select_active_project (the diff just extracts it into a shared helper) and is system-wide (no code path clears active-milestone). The proposed remediation — reverting task select to set_active_project only — does not fix the root cause and would re-diverge task select from project select, contradicting this bead's 'compatibility alias' framing. It would also remove a genuine correctness improvement: task select of a bead-backed project now syncs active-milestone instead of leaving prior state stale. A proper fix is to add clearing semantics to the sync helper, which is legitimately a separate bead. Voting reject.\n\n## Votes\n\n- `fr-3-ef7edfaf`: Reject\n  The stale-pointer behavior is pre-existing in project::select_active_project (the helper was extracted from inline code that already did this); reverting task select does not fix the root cause in sync_active_milestone_from_project_record, which never clears active-milestone for any caller. The amendment's remediation would re-introduce divergence between task select and project select — counter to the 'compatibility alias' goal — and would remove a real correctness improvement: task select of a bead-backed project now correctly syncs active-milestone (previously it silently left whatever prior milestone pointer was in place, which is itself a stale-pointer footgun). A proper fix requires adding explicit clear semantics to the sync helper so every caller benefits; that work should land as a focused separate bead with its own tests, not as a revert of this one-line consistency change.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 3
+}
