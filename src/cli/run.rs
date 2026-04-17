@@ -6497,12 +6497,16 @@ mod tests {
 
         let task_runs = read_task_runs(&FsTaskRunLineageStore, base_dir, &milestone.id)
             .expect("read task-runs");
-        assert_eq!(task_runs.len(), 1);
-        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-1"));
-        assert_eq!(task_runs[0].started_at, resumed_at);
-        assert_eq!(task_runs[0].finished_at, Some(second_failed_at));
-        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
-        assert!(task_runs[0]
+        assert_eq!(task_runs.len(), 2);
+        let resumed_attempt = task_runs
+            .iter()
+            .find(|entry| {
+                entry.run_id.as_deref() == Some("run-1") && entry.started_at == resumed_at
+            })
+            .expect("resumed failed attempt should remain present");
+        assert_eq!(resumed_attempt.finished_at, Some(second_failed_at));
+        assert_eq!(resumed_attempt.outcome, TaskRunOutcome::Failed);
+        assert!(resumed_attempt
             .outcome_detail
             .as_deref()
             .is_some_and(|detail| detail.contains("error=resumed attempt failed")));
@@ -6626,11 +6630,15 @@ mod tests {
 
         let task_runs = read_task_runs(&FsTaskRunLineageStore, base_dir, &milestone.id)
             .expect("read task-runs");
-        assert_eq!(task_runs.len(), 1);
-        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-1"));
-        assert_eq!(task_runs[0].started_at, resumed_at);
-        assert_eq!(task_runs[0].finished_at, Some(second_failed_at));
-        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(task_runs.len(), 2);
+        let resumed_attempt = task_runs
+            .iter()
+            .find(|entry| {
+                entry.run_id.as_deref() == Some("run-1") && entry.started_at == resumed_at
+            })
+            .expect("repaired resumed failed attempt should remain present");
+        assert_eq!(resumed_attempt.finished_at, Some(second_failed_at));
+        assert_eq!(resumed_attempt.outcome, TaskRunOutcome::Failed);
 
         let failed_events = read_journal(&FsMilestoneJournalStore, base_dir, &milestone.id)
             .expect("read milestone journal")
@@ -8692,11 +8700,15 @@ mod tests {
 
         let task_runs = read_task_runs(&FsTaskRunLineageStore, base_dir, &milestone.id)
             .expect("read task-runs after failed sync");
-        assert_eq!(task_runs.len(), 1);
-        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-1"));
-        assert_eq!(task_runs[0].started_at, resumed_at);
-        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Running);
-        assert_eq!(task_runs[0].finished_at, None);
+        assert_eq!(task_runs.len(), 2);
+        let resumed_attempt = task_runs
+            .iter()
+            .find(|entry| {
+                entry.run_id.as_deref() == Some("run-1") && entry.started_at == resumed_at
+            })
+            .expect("resumed running attempt should remain present");
+        assert_eq!(resumed_attempt.outcome, TaskRunOutcome::Running);
+        assert_eq!(resumed_attempt.finished_at, None);
     }
 
     #[test]

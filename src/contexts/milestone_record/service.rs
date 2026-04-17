@@ -8426,9 +8426,17 @@ mod tests {
         )?;
 
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
-        assert_eq!(runs[0].run_id.as_deref(), Some("run-1"));
+        assert_eq!(runs.len(), 2);
+        assert!(runs.iter().any(|entry| {
+            entry.outcome == TaskRunOutcome::Failed
+                && entry.run_id.as_deref() == Some("run-1")
+                && entry.started_at == now
+        }));
+        assert!(runs.iter().any(|entry| {
+            entry.outcome == TaskRunOutcome::Running
+                && entry.run_id.as_deref() == Some("run-1")
+                && entry.started_at == now + chrono::Duration::seconds(10)
+        }));
 
         let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
         assert_eq!(snapshot.status, MilestoneStatus::Running);
@@ -9127,9 +9135,17 @@ mod tests {
         assert!(error.to_string().contains("run=run-1"));
 
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
-        assert_eq!(runs[0].started_at, second_started_at);
+        assert_eq!(runs.len(), 2);
+        assert!(runs.iter().any(|entry| {
+            entry.outcome == TaskRunOutcome::Failed
+                && entry.started_at == first_started_at
+                && entry.run_id.as_deref() == Some("run-1")
+        }));
+        assert!(runs.iter().any(|entry| {
+            entry.outcome == TaskRunOutcome::Running
+                && entry.started_at == second_started_at
+                && entry.run_id.as_deref() == Some("run-1")
+        }));
 
         Ok(())
     }
@@ -9726,16 +9742,147 @@ mod tests {
         )?;
 
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].run_id.as_deref(), Some("run-1"));
-        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
-        assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v1"));
-        assert!(runs[0].finished_at.is_none());
-        assert!(runs[0].outcome_detail.is_none());
+        assert_eq!(runs.len(), 2);
+        let failed_attempt = runs
+            .iter()
+            .find(|entry| {
+                entry.run_id.as_deref() == Some("run-1")
+                    && entry.started_at == now
+                    && entry.outcome == TaskRunOutcome::Failed
+            })
+            .expect("historical failed attempt should be preserved");
+        assert_eq!(failed_attempt.plan_hash.as_deref(), Some("plan-v1"));
+        assert_eq!(
+            failed_attempt.outcome_detail.as_deref(),
+            Some("interrupted before resume")
+        );
+        assert_eq!(
+            failed_attempt.finished_at,
+            Some(now + chrono::Duration::seconds(5))
+        );
+
+        let retried_attempt = runs
+            .iter()
+            .find(|entry| {
+                entry.run_id.as_deref() == Some("run-1")
+                    && entry.started_at == now + chrono::Duration::seconds(10)
+                    && entry.outcome == TaskRunOutcome::Running
+            })
+            .expect("retried running attempt should be appended");
+        assert_eq!(retried_attempt.plan_hash.as_deref(), Some("plan-v1"));
+        assert!(retried_attempt.finished_at.is_none());
+        assert!(retried_attempt.outcome_detail.is_none());
 
         let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
         assert_eq!(snapshot.status, MilestoneStatus::Running);
         assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
+        Ok(())
+    }
+
+    #[test]
+    fn bead_execution_history_preserves_same_run_failed_attempt_after_success(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+        let retry_started_at = now + chrono::Duration::seconds(10);
+        let retry_finished_at = retry_started_at + chrono::Duration::seconds(5);
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "same-run-history-preserved",
+            "Same Run History Preserved",
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now,
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Failed,
+            Some("first failure"),
+            now,
+            now + chrono::Duration::seconds(5),
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            retry_started_at,
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("retry succeeded"),
+            retry_started_at,
+            retry_finished_at,
+        )?;
+
+        let runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].started_at, now);
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(runs[1].started_at, retry_started_at);
+        assert_eq!(runs[1].outcome, TaskRunOutcome::Succeeded);
+
+        let history = bead_execution_history(
+            &store,
+            &plan_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+        )?;
+        assert_eq!(history.runs.len(), 2);
+        assert_eq!(history.runs[0].started_at, now);
+        assert_eq!(history.runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(history.runs[1].started_at, retry_started_at);
+        assert_eq!(history.runs[1].outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(history.runs[1].duration_ms, Some(5_000));
+
         Ok(())
     }
 

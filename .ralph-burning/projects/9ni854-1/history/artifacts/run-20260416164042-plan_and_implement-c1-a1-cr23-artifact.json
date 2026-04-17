@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-plan_and_implement-c1-a1-cr23-artifact",
+  "payload_id": "run-20260416164042-plan_and_implement-c1-a1-cr23",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T02:51:00.632300094Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nPatched the remaining failure-reconciliation correctness gaps additively. Same-run retries now preserve the historical failed TaskRunEntry instead of overwriting it in place, so bead execution history retains fail->resume/succeed audit trails across reused run_ids. I also fixed failure-attempt ordinal repair to use each recorded attempt’s own project_id when re-reading provenance and repairing lineage/journal state, which lets stale old-project replays correctly renumber replacement-project failures. To keep stale same-run completions fail-closed, I added a targeted stale-terminal guard that still allows duplicate-running-row finalization, then updated the affected service, CLI, and daemon regression coverage to match the preserved-history model.\n\n## Steps\n\n1. [Completed] Updated `src/adapters/fs.rs` so reopening a failed same-run attempt keeps the canonical failed row, appends a fresh running retry row with cleared runtime-only fields, and rejects stale terminal updates only when a newer same-run retry already exists.\n2. [Completed] Fixed `src/contexts/automation_runtime/failure_reconciliation.rs` to repair recorded failure ordinals using `attempt.project_id` instead of the outer project context, and added a replacement-project backfill regression covering stale old-project replay repair.\n3. [Completed] Expanded milestone history coverage in `src/contexts/milestone_record/service.rs` so same-run fail->resume flows preserve both attempts in lineage/history, while stale completion and qualified-bead retry tests now assert the preserved-history behavior.\n4. [Completed] Aligned `src/cli/run.rs` and `src/contexts/automation_runtime/daemon_loop.rs` regression expectations with preserved same-run history, then reran the Rust validation suite and relaunched the Nix gate.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test failure_reconciliation -- --nocapture` passed; all 27 failure-reconciliation tests succeeded after the project-scoped ordinal repair and preserved-history updates.\n- `cargo test --features test-stub contexts::automation_runtime::daemon_loop::tests::try_reconcile_failure -- --nocapture` passed; all 9 daemon failure-reconciliation tests succeeded after updating the preserved-history expectations.\n- `cargo clippy -- -D warnings` passed.\n- `cargo clippy --features test-stub -- -D warnings` passed.\n- `CARGO_TARGET_DIR=target-final cargo test` passed on the final tree.\n- `nix build` was relaunched after the fixes, but no final exit status was observed in-session.\n\n## Outstanding Risks\n\n- `nix build` was relaunched on the updated tree and remained in-flight without a terminal success/failure exit during this session, so the authoritative Nix gate is still unresolved.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 23
+}

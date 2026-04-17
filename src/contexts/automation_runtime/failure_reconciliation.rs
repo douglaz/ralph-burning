@@ -880,12 +880,13 @@ where
         let Some(run_id) = attempt.run_id.as_deref() else {
             continue;
         };
+        let attempt_project_id = attempt.project_id.as_str();
         let provenance = recorded_failure_provenance(
             &runs,
             &journal,
             milestone_id,
             bead_id,
-            project_id,
+            attempt_project_id,
             run_id,
             attempt.started_at,
         );
@@ -905,7 +906,7 @@ where
             &journal,
             milestone_id,
             bead_id,
-            project_id,
+            attempt_project_id,
             run_id,
             attempt.started_at,
             task_id,
@@ -921,7 +922,7 @@ where
             base_dir,
             milestone_id,
             bead_id,
-            project_id,
+            attempt_project_id,
             run_id,
             provenance.plan_hash.as_deref().or(default_plan_hash),
             attempt.started_at,
@@ -3111,11 +3112,13 @@ mod tests {
         )?;
         assert_eq!(
             runs.len(),
-            1,
-            "same run_id retry should reuse the lineage row"
+            2,
+            "same run_id retry should preserve both attempts"
         );
         assert_eq!(runs[0].outcome, TaskRunOutcome::Failed);
-        assert_eq!(runs[0].started_at, second_started_at);
+        assert_eq!(runs[0].started_at, first_started_at);
+        assert_eq!(runs[1].outcome, TaskRunOutcome::Failed);
+        assert_eq!(runs[1].started_at, second_started_at);
 
         let failed_events = read_journal(&FsMilestoneJournalStore, base, &milestone_id)?
             .into_iter()
@@ -3814,6 +3817,186 @@ mod tests {
         assert_eq!(
             second_event.outcome_detail.as_deref(),
             Some("task_id=task-1\nattempt=2\nerror=second failure")
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_failure_backfill_repairs_replacement_project_attempt_markers(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        write_beads_export(base)?;
+        let milestone_id = create_test_milestone(base)?;
+        let first_started_at = Utc::now() + Duration::seconds(1);
+        let second_started_at = first_started_at + Duration::seconds(30);
+
+        start_attempt_with_project(
+            base,
+            &milestone_id,
+            "task-original",
+            "proj-original",
+            "run-1",
+            first_started_at,
+        )?;
+        reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-original",
+            "proj-original",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            first_started_at,
+            first_started_at + Duration::seconds(5),
+            "original failure",
+        )
+        .await?;
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base,
+            &milestone_id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::Selecting,
+                "replacement project selected for retry",
+            ),
+            second_started_at,
+        )?;
+
+        start_attempt_with_project(
+            base,
+            &milestone_id,
+            "task-replacement",
+            "proj-replacement",
+            "run-2",
+            second_started_at,
+        )?;
+        reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-replacement",
+            "proj-replacement",
+            milestone_id.as_str(),
+            "run-2",
+            Some("plan-v1"),
+            second_started_at,
+            second_started_at + Duration::seconds(5),
+            "replacement failure",
+        )
+        .await?;
+
+        remove_bead_failed_events(base, &milestone_id)?;
+        FsTaskRunLineageStore.repair_task_run_terminal(
+            base,
+            &milestone_id,
+            "bead-failure",
+            "proj-replacement",
+            "run-2",
+            Some("plan-v1"),
+            second_started_at,
+            TaskRunOutcome::Failed,
+            Some("task_id=task-replacement\nattempt=1\nerror=replacement failure".to_owned()),
+            second_started_at + Duration::seconds(5),
+        )?;
+        let stale_replacement_event = MilestoneJournalEvent::new(
+            MilestoneEventType::BeadFailed,
+            second_started_at + Duration::seconds(5),
+        )
+        .with_bead("bead-failure")
+        .with_details(
+            TaskRunEntry {
+                milestone_id: milestone_id.to_string(),
+                bead_id: "bead-failure".to_owned(),
+                project_id: "proj-replacement".to_owned(),
+                run_id: Some("run-2".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Failed,
+                outcome_detail: Some(
+                    "task_id=task-replacement\nattempt=1\nerror=replacement failure".to_owned(),
+                ),
+                started_at: second_started_at,
+                finished_at: Some(second_started_at + Duration::seconds(5)),
+                task_id: Some("task-replacement".to_owned()),
+            }
+            .completion_journal_details(),
+        );
+        FsMilestoneJournalStore.append_event_if_missing(
+            base,
+            &milestone_id,
+            &stale_replacement_event,
+        )?;
+
+        let repaired_original = reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-original",
+            "proj-original",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            first_started_at,
+            first_started_at + Duration::seconds(5),
+            "original failure",
+        )
+        .await?;
+        assert_eq!(
+            repaired_original,
+            FailureReconciliationOutcome::Retryable {
+                attempt_number: 1,
+                max_retries: MAX_FAILURE_RETRIES,
+            }
+        );
+
+        let repaired_runs = milestone_service::find_runs_for_bead(
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            "bead-failure",
+        )?;
+        let replacement_run = repaired_runs
+            .iter()
+            .find(|entry| {
+                entry.project_id == "proj-replacement"
+                    && entry.run_id.as_deref() == Some("run-2")
+                    && entry.started_at == second_started_at
+            })
+            .expect("replacement failed run should remain present");
+        assert_eq!(
+            replacement_run.outcome_detail.as_deref(),
+            Some("task_id=task-replacement\nattempt=2\nerror=replacement failure")
+        );
+
+        let replacement_event = read_journal(&FsMilestoneJournalStore, base, &milestone_id)?
+            .into_iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadFailed)
+            .filter_map(|event| {
+                serde_json::from_str::<
+                    crate::contexts::milestone_record::model::CompletionJournalDetails,
+                >(event.details.as_deref().unwrap_or_default())
+                .ok()
+            })
+            .find(|details| {
+                details.project_id == "proj-replacement"
+                    && details.run_id.as_deref() == Some("run-2")
+                    && details.started_at == second_started_at
+            })
+            .expect("replacement failed journal event should remain present");
+        assert_eq!(
+            replacement_event.outcome_detail.as_deref(),
+            Some("task_id=task-replacement\nattempt=2\nerror=replacement failure")
         );
 
         Ok(())

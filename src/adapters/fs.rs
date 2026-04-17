@@ -4606,13 +4606,15 @@ impl FsTaskRunLineageStore {
         }
 
         let target_index = exact_match_indices[0];
+        entries[target_index] = canonical_entry.clone();
         let mut reopened_entry = canonical_entry.clone();
         reopened_entry.started_at = started_at;
         reopened_entry.outcome = TaskRunOutcome::Running;
         reopened_entry.outcome_detail = None;
         reopened_entry.finished_at = None;
+        reopened_entry.task_id = None;
         Self::backfill_running_entry(&mut reopened_entry, bead_id, project_id, run_id, plan_hash)?;
-        entries[target_index] = reopened_entry.clone();
+        entries.push(reopened_entry.clone());
 
         if exact_match_indices.len() > 1 {
             let filtered_entries: Vec<TaskRunEntry> = entries
@@ -4903,6 +4905,26 @@ impl FsTaskRunLineageStore {
                 }
             }
         };
+
+        if !allow_terminal_repair && entries[target_index].outcome.is_terminal() {
+            let newer_same_run_started_at = matching_indices
+                .iter()
+                .copied()
+                .filter(|index| entries[*index].run_id.as_deref() == Some(run_id))
+                .map(|index| entries[index].started_at)
+                .filter(|entry_started_at| *entry_started_at > started_at)
+                .max();
+            if let Some(active_started_at) = newer_same_run_started_at {
+                return Err(AppError::CorruptRecord {
+                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                    details: format!(
+                        "stale task run update for bead={bead_id} project={project_id} run={run_id}; newer same-run attempt started_at={} but completion targeted started_at={}",
+                        active_started_at.to_rfc3339(),
+                        started_at.to_rfc3339(),
+                    ),
+                });
+            }
+        }
 
         if !entries[target_index].outcome.is_terminal() {
             duplicate_indices_to_remove.extend(matching_indices.iter().copied().filter(|index| {
