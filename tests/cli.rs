@@ -3860,6 +3860,33 @@ fn project_select_sets_active_project_and_rejects_missing_projects() {
 }
 
 #[test]
+fn project_select_prints_deprecation_notice_to_stderr_only() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["project", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project select");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stdout.contains("Selected project alpha"));
+    assert!(
+        !stdout.contains("deprecated"),
+        "deprecation notice must not be printed to stdout: {stdout}"
+    );
+    assert!(
+        stderr.contains("Note: `ralph-burning project select` is deprecated. Use `ralph-burning task select` instead."),
+        "stderr should contain the deprecation notice: {stderr}"
+    );
+}
+
+#[test]
 fn project_select_updates_active_milestone_for_bead_backed_projects() {
     let temp_dir = initialize_workspace_fixture();
     create_bead_backed_project_fixture(temp_dir.path(), "bead-beta", "ms-beta", "ms-beta.bead-1");
@@ -6934,12 +6961,18 @@ fn project_create_from_requirements_creates_project_and_selects_it() {
         .expect("project create from requirements");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "create from requirements should succeed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "create from requirements should succeed: {stderr}"
     );
     assert!(stdout.contains("Project: stub-project (active)"));
+    assert!(
+        stderr.contains(
+            "Note: `ralph-burning project create` is deprecated. Use `ralph-burning task create or milestone create (depending on context)` instead."
+        ),
+        "stderr should contain the deprecation notice: {stderr}"
+    );
     assert!(stdout.contains("Flow: standard"));
     assert_eq!(
         fs::read_to_string(active_project_path(temp_dir.path()))
@@ -6979,7 +7012,14 @@ fn project_create_from_requirements_materializes_milestone_bundle_output() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stdout.contains("Created milestone 'ms-planned'"));
+    assert!(
+        stderr.contains(
+            "Note: `ralph-burning project create` is deprecated. Use `ralph-burning task create or milestone create (depending on context)` instead."
+        ),
+        "stderr should contain the deprecation notice: {stderr}"
+    );
 
     let milestone_root = milestone_root(temp_dir.path(), "ms-planned");
     assert!(milestone_root.join("milestone.toml").is_file());
@@ -17195,6 +17235,37 @@ fn task_select_sets_active_project_with_task_aware_output() {
 }
 
 #[test]
+fn task_select_updates_active_milestone_for_bead_backed_projects() {
+    let temp_dir = initialize_workspace_fixture();
+    create_bead_backed_project_fixture(temp_dir.path(), "bead-beta", "ms-beta", "ms-beta.bead-1");
+    fs::write(active_milestone_path(temp_dir.path()), "ms-alpha").expect("seed active milestone");
+
+    let output = Command::new(binary())
+        .args(["task", "select", "bead-beta"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task select");
+
+    assert!(
+        output.status.success(),
+        "task select should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(active_project_path(temp_dir.path()))
+            .expect("read active project")
+            .trim(),
+        "bead-beta"
+    );
+    assert_eq!(
+        fs::read_to_string(active_milestone_path(temp_dir.path()))
+            .expect("read active milestone")
+            .trim(),
+        "ms-beta"
+    );
+}
+
+#[test]
 fn task_select_and_project_select_produce_same_state() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -17324,6 +17395,8 @@ fn task_list_shows_same_entries_as_project_list() {
 
     let task_stdout = String::from_utf8_lossy(&task_list.stdout);
     let project_stdout = String::from_utf8_lossy(&project_list.stdout);
+    let task_stderr = String::from_utf8_lossy(&task_list.stderr);
+    let project_stderr = String::from_utf8_lossy(&project_list.stderr);
 
     // Both should show the same entries (same format)
     assert!(task_stdout.contains("alpha *"));
@@ -17332,6 +17405,37 @@ fn task_list_shows_same_entries_as_project_list() {
     assert!(task_stdout.contains("quick_dev"));
     // The entry lines themselves should be identical
     assert_eq!(task_stdout, project_stdout);
+    assert!(
+        task_stderr.is_empty(),
+        "task aliases should not emit deprecation notices: {task_stderr}"
+    );
+    assert!(
+        project_stderr.contains(
+            "Note: `ralph-burning project list` is deprecated. Use `ralph-burning task list` instead."
+        ),
+        "project list should emit a deprecation notice to stderr: {project_stderr}"
+    );
+}
+
+#[test]
+fn project_help_mentions_deprecation_and_aliases() {
+    let project_help = Command::new(binary())
+        .args(["project", "--help"])
+        .output()
+        .expect("run project --help");
+    assert!(project_help.status.success());
+    let project_stdout = String::from_utf8_lossy(&project_help.stdout);
+    assert!(project_stdout.contains("Project commands (deprecated"));
+    assert!(project_stdout.contains("task select"));
+    assert!(project_stdout.contains("task list"));
+
+    let create_help = Command::new(binary())
+        .args(["project", "create", "--help"])
+        .output()
+        .expect("run project create --help");
+    assert!(create_help.status.success());
+    let create_stdout = String::from_utf8_lossy(&create_help.stdout);
+    assert!(create_stdout.contains("alias: prefer `task create` or `milestone create`"));
 }
 
 #[test]

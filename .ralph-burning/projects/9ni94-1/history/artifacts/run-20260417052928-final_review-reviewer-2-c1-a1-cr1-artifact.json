@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417052928-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417052928-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T05:49:14.814699972Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed src/cli/project.rs and tests/cli.rs. The additive change correctly: (1) introduces `print_deprecation_notice` writing to stderr, (2) adds notices to `handle_create`, `handle_create_from_bead`, `handle_select`, `handle_list`, `handle_show`, (3) updates `#[command(about = ...)]` for the Project command and for subcommands with clear equivalents, and (4) adds stderr-vs-stdout, help-text, and no-deprecation-for-task tests. All 243 + 800 tests pass; clippy/fmt clean. Found one minor consistency gap: `handle_create_from_requirements` (invoked by `project create --from-requirements`) is the only project-command handler that does not emit a deprecation notice, so the same top-level `project create` surface warns for some flag combinations but not others. Flagged as low-severity fix-now. No safety, correctness, or security issues in the diff; behavior of existing commands is preserved (stdout unchanged).\n\n## Amendments\n\n1. Coverage gap: `handle_create_from_requirements` in src/cli/project.rs (line 267) is dispatched from `ProjectSubcommand::Create` when `--from-requirements` is set (src/cli/project.rs:185-191), but unlike the sibling `handle_create` (line 201) it does not call `print_deprecation_notice`. Result: `ralph-burning project create --from-requirements <run-id>` produces no deprecation warning even though it's a project-surface entry point the user is supposed to migrate away from. The surrounding `handle_create` path does warn, so a user only sees a deprecation notice for some invocations of `project create`, which is inconsistent.\n\nRemediation: add `print_deprecation_notice(\"create --from-requirements\", \"<recommended replacement>\")` at the top of `handle_create_from_requirements`. If no clear replacement exists today (since `milestone create --from-requirements` does not exist), the spec permits a softer phrasing (e.g., \"This command surface is deprecated and may move to `milestone` in a future release\"). Either approach resolves the inconsistency so every `project create ...` invocation gets the same deprecation signal.\n   Rationale: Spec says \"at the top of each handler function, call the deprecation notice\". `handle_create_from_requirements` is a handler function that fires for `project create --from-requirements ...`. Leaving it silent means users only see the deprecation for some invocations of `project create`, which contradicts the bead's goal of signaling migration away from the `project` command surface.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

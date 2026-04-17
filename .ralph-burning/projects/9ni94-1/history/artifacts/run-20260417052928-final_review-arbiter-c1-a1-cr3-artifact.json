@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417052928-final_review-arbiter-c1-a1-cr3-artifact",
+  "payload_id": "run-20260417052928-final_review-arbiter-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T06:47:24.264102689Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment. The stale active-milestone pointer is a genuine shared issue, but this patch does not introduce it as a new task-specific defect; it aligns `task select` with the long-standing `project select` behavior. The proper remedy is a separate fix to clear stale milestone state in the shared selection path.\n\n## Rulings\n\n- `fr-3-ef7edfaf`: Reject\n  The stale `active-milestone` behavior is real, but the evidence points to a pre-existing shared bug rather than a review-blocking regression in this patch. `src/cli/project.rs:182-185` is a shared helper that performs the same two operations `project select` already performed inline before this change: `set_active_project(...)` and then `sync_active_milestone_from_project_record(...)`. The actual asymmetry comes from `src/contexts/workspace_governance/mod.rs:159-168`, which only writes `active-milestone` when a project has one and never clears it, combined with `src/cli/milestone.rs:543-560`, which prefers the persisted active milestone before falling back to the active project's milestone. This patch changes `src/cli/task.rs:96-99` to reuse that existing `project select` behavior, and the new test at `tests/cli.rs:17238-17265` simply mirrors the already-existing `project select` coverage at `tests/cli.rs:3890-3908`. Reverting `task select` would reintroduce alias divergence instead of fixing the root cause. The actionable fix is to add explicit clearing semantics in the shared milestone-sync path for all callers, which belongs in a focused follow-up rather than as a rejection of this parity change.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

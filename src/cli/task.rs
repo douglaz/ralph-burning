@@ -96,7 +96,7 @@ async fn handle_show(id: Option<String>) -> AppResult<()> {
 async fn handle_select(id: String) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
     let project_id = ProjectId::new(id)?;
-    workspace_governance::set_active_project(&current_dir, &project_id)?;
+    project::select_active_project(&current_dir, &project_id)?;
     println!("Selected task '{}' (project '{}')", project_id, project_id);
     Ok(())
 }

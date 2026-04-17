@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417052928-final_review-reviewer-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417052928-final_review-reviewer-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T06:11:57.134491833Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nAdditive compatibility-alias change is correct and spec-compliant. Deprecation notices print to stderr only via a shared helper; project commands retain identical behavior. `task create` correctly bypasses notices by calling `project::execute_create_from_bead` (shared internal API) rather than the CLI handler. Clap `about` annotations deprecate ProjectCommand and the Create/CreateFromBead/Select/List/Show subcommands with alias pointers. Skips for bootstrap/delete/amend match the spec. All 800 tests pass, clippy -D warnings is clean, cargo fmt --check passes, and the `result` symlink update indicates nix build succeeded. No behavior changes, no test regressions, and no leaks of the notice into programmatic callers. No bugs, safety issues, or correctness gaps to report.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 2
+}

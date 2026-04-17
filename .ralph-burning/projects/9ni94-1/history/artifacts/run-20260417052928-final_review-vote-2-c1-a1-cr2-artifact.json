@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417052928-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417052928-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T06:13:36.659750767Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified the claim against current source. project select at src/cli/project.rs:686-694 calls sync_active_milestone_from_project_record, but task select at src/cli/task.rs:96-102 only updates the active project pointer. resolve_active_milestone at src/cli/milestone.rs:543-560 resolves from the saved milestone pointer before falling back to the project's milestone, so the advertised replacement is not behaviorally equivalent and can leave milestone next/run/status operating on a stale milestone. This is a real correctness defect in the deprecation guidance.\n\n## Votes\n\n- `fr-2-3ecddec9`: Accept\n  Confirmed by reading the three cited sites. project select syncs the active milestone pointer via sync_active_milestone_from_project_record (src/cli/project.rs:692), whereas task select only calls set_active_project (src/cli/task.rs:99) with no milestone sync. Because resolve_active_milestone (src/cli/milestone.rs:547-558) honors the saved milestone pointer first and only falls back to the project's milestone, a user who follows the new deprecation notice will keep the previously active project's milestone, silently routing subsequent milestone next/run/status to the wrong milestone. The remediation — extract a shared selection helper that also calls sync_active_milestone_from_project_record and add a bead-backed integration test — is correct and low-risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 2
+}

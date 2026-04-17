@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417052928-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260417052928-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T06:31:55.766468927Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the diff against `origin/master`, read the changed CLI implementation/tests end-to-end, ran targeted CLI tests, and manually reproduced one regression. The main issue is that `task select` now mutates `active-milestone`, introducing history-dependent behavior that was not part of the deprecation-only scope.\n\n## Amendments\n\n1. finding_summary: `task select` now writes `active-milestone` for bead-backed projects, which is an observable behavior change to the non-deprecated `task` vocabulary and can leave a stale milestone pointer behind on the next select.\naffected_files:\n- `src/cli/task.rs`\n- `src/contexts/workspace_governance/mod.rs`\n- `src/cli/milestone.rs`\n- `tests/cli.rs`\nfile_refs:\n- `src/cli/task.rs:96-99` switches from `workspace_governance::set_active_project(...)` to `project::select_active_project(...)`.\n- `src/contexts/workspace_governance/mod.rs:159-168` only sets `active-milestone` when the selected project has one; it never clears the pointer for plain projects.\n- `src/cli/milestone.rs:528-550` resolves omitted milestone IDs from the active milestone, so later `milestone ...` commands will follow that stale pointer.\n- `tests/cli.rs:17237-17265` adds coverage that locks in the new side effect.\nremediation_hint: Keep `task select` on `workspace_governance::set_active_project(...)` for this bead. If parity with `project select` is desired, land it as a separate change with explicit active-milestone clearing semantics so selection history cannot silently retarget milestone commands.\n   Rationale: This bead was explicitly scoped as an additive deprecation pass that should not change behavior. The new `task select` implementation now mutates persistent milestone state, and because milestone commands default to the active milestone, that can redirect later operations based on prior task-selection history.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
