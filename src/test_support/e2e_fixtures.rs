@@ -6,7 +6,6 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use serde::Serialize;
 use serde_json::json;
 
 use crate::adapters::br_models::{BeadPriority, BeadStatus, BeadType, DependencyKind};
@@ -25,8 +24,8 @@ use crate::shared::domain::FlowPreset;
 use crate::test_support::br::{MockBrAdapter, MockBrResponse};
 use crate::test_support::bv::{MockBvAdapter, MockBvResponse};
 use crate::test_support::fixtures::{
-    BeadGraphDependency, BeadGraphFixtureBuilder, BeadGraphIssue, MilestoneFixture, TempWorkspace,
-    TempWorkspaceBuilder,
+    write_bead_graph_issues, BeadGraphDependency, BeadGraphFixtureBuilder, BeadGraphIssue,
+    MilestoneFixture, TempWorkspace, TempWorkspaceBuilder,
 };
 
 const MILESTONE_ID: &str = "ms-e2e-scenario";
@@ -560,21 +559,7 @@ impl ScenarioState {
 
     fn persist(&self) -> Result<(), String> {
         let issues_path = self.workspace_root.join(".beads").join("issues.jsonl");
-        let content = self
-            .issues
-            .iter()
-            .map(|issue| {
-                serde_json::to_string(&SerializedScenarioIssue::from(issue))
-                    .map_err(|error| error.to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .join("\n");
-        let content = if content.is_empty() {
-            String::new()
-        } else {
-            format!("{content}\n")
-        };
-        FileSystem::write_atomic(&issues_path, &content).map_err(|error| error.to_string())
+        write_bead_graph_issues(&issues_path, &self.issues).map_err(|error| error.to_string())
     }
 }
 
@@ -851,104 +836,6 @@ fn dependency_kind_json(kind: &DependencyKind) -> &'static str {
     match kind {
         DependencyKind::Blocks => "blocks",
         DependencyKind::ParentChild => "parent_child",
-    }
-}
-
-fn serialize_acceptance_criteria(items: &[String]) -> Option<String> {
-    if items.is_empty() {
-        None
-    } else if items.len() == 1 {
-        Some(items[0].clone())
-    } else {
-        Some(
-            items
-                .iter()
-                .map(|item| format!("- {item}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct SerializedScenarioIssue {
-    id: String,
-    title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    acceptance_criteria: Option<String>,
-    status: BeadStatus,
-    priority: BeadPriority,
-    #[serde(rename = "issue_type")]
-    bead_type: BeadType,
-    created_at: DateTime<Utc>,
-    created_by: String,
-    updated_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    closed_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    close_reason: Option<String>,
-    source_repo: String,
-    compaction_level: u32,
-    original_size: u64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    labels: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    dependencies: Vec<SerializedScenarioDependency>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct SerializedScenarioDependency {
-    issue_id: String,
-    depends_on_id: String,
-    #[serde(rename = "type")]
-    kind: DependencyKind,
-    created_at: DateTime<Utc>,
-    created_by: String,
-    metadata: String,
-    thread_id: String,
-}
-
-impl From<&BeadGraphIssue> for SerializedScenarioIssue {
-    fn from(issue: &BeadGraphIssue) -> Self {
-        Self {
-            id: issue.id.clone(),
-            title: issue.title.clone(),
-            description: issue.description.clone(),
-            acceptance_criteria: serialize_acceptance_criteria(&issue.acceptance_criteria),
-            status: issue.status.clone(),
-            priority: issue.priority.clone(),
-            bead_type: issue.bead_type.clone(),
-            created_at: issue.created_at,
-            created_by: issue.created_by.clone(),
-            updated_at: issue.updated_at,
-            closed_at: issue.closed_at,
-            close_reason: issue.close_reason.clone(),
-            source_repo: issue.source_repo.clone(),
-            compaction_level: issue.compaction_level,
-            original_size: issue.original_size,
-            labels: issue.labels.clone(),
-            dependencies: issue
-                .dependencies
-                .iter()
-                .map(SerializedScenarioDependency::from)
-                .collect(),
-        }
-    }
-}
-
-impl From<&BeadGraphDependency> for SerializedScenarioDependency {
-    fn from(dependency: &BeadGraphDependency) -> Self {
-        Self {
-            issue_id: dependency.issue_id.clone(),
-            depends_on_id: dependency.depends_on_id.clone(),
-            kind: dependency.kind.clone(),
-            created_at: dependency.created_at,
-            created_by: dependency.created_by.clone(),
-            metadata: dependency.metadata.clone(),
-            thread_id: dependency.thread_id.clone(),
-        }
     }
 }
 
