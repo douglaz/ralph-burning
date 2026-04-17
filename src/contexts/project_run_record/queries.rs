@@ -349,6 +349,8 @@ pub struct RunStatusJsonView {
     pub completion_round: Option<u32>,
     pub summary: String,
     pub amendment_queue_depth: usize,
+    pub milestone_id: Option<String>,
+    pub bead_id: Option<String>,
 }
 
 impl RunStatusJsonView {
@@ -377,6 +379,8 @@ impl RunStatusJsonView {
             completion_round,
             summary: snapshot.status_summary.clone(),
             amendment_queue_depth: snapshot.amendment_queue.pending.len(),
+            milestone_id: None,
+            bead_id: None,
         }
     }
 }

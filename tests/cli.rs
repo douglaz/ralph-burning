@@ -125,6 +125,20 @@ fn create_bead_backed_project_fixture(
     let project_root = project_root(base_dir, project_id);
     fs::create_dir_all(&project_root).expect("create project directory");
     let prompt_contents = "# Fixture prompt\n";
+    let milestone_plan_path = milestone_root(base_dir, milestone_id).join("plan.json");
+    let lineage_metadata = if milestone_plan_path.exists() {
+        let plan_json = fs::read_to_string(&milestone_plan_path).expect("read milestone plan");
+        let mut hasher = Sha256::new();
+        hasher.update(plan_json.as_bytes());
+        let plan_hash = format!("{:x}", hasher.finalize());
+        format!(
+            r#"
+plan_hash = "{plan_hash}"
+plan_version = 2"#
+        )
+    } else {
+        String::new()
+    };
     let project_toml = format!(
         r#"id = "{project_id}"
 name = "Fixture {project_id}"
@@ -138,6 +152,7 @@ status_summary = "created"
 milestone_id = "{milestone_id}"
 bead_id = "{bead_id}"
 origin = "milestone"
+{lineage_metadata}
 "#,
         ralph_burning::adapters::fs::FileSystem::prompt_hash(prompt_contents)
     );
@@ -7613,6 +7628,30 @@ fn project_show_resolves_active_project_when_no_id_given() {
     assert!(stdout.contains("Project: active-show (active)"));
 }
 
+#[test]
+fn project_show_json_includes_task_lineage() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    create_bead_backed_project_fixture(temp_dir.path(), "show-json", "ms-alpha", "ms-alpha.bead-2");
+
+    let output = Command::new(binary())
+        .args(["project", "show", "--json", "show-json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project show --json");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("project show json should parse");
+    assert_eq!(value["record"]["id"], "show-json");
+    assert_eq!(value["task_lineage"]["milestone_id"], "ms-alpha");
+    assert_eq!(value["task_lineage"]["bead_id"], "ms-alpha.bead-2");
+    assert_eq!(
+        value["task_lineage"]["bead_title"],
+        "Bootstrap bead-backed task creation"
+    );
+}
+
 // ── Project Delete ──
 
 #[test]
@@ -11092,6 +11131,49 @@ fn run_status_json_outputs_stable_fields() {
     assert_eq!(value["completion_round"], serde_json::Value::Null);
     assert_eq!(value["summary"], "paused for review");
     assert_eq!(value["amendment_queue_depth"], 1);
+    assert!(value["milestone_id"].is_null());
+    assert!(value["bead_id"].is_null());
+}
+
+#[test]
+fn run_status_displays_lineage_for_milestone_linked_project() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    create_bead_backed_project_fixture(temp_dir.path(), "alpha", "ms-alpha", "ms-alpha.bead-2");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Milestone: Alpha Milestone | Bead: Bootstrap bead-backed task creation"),
+        "run status should show bead lineage summary, got: {stdout}"
+    );
+}
+
+#[test]
+fn run_status_json_includes_lineage_fields_for_milestone_linked_project() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    create_bead_backed_project_fixture(temp_dir.path(), "alpha", "ms-alpha", "ms-alpha.bead-2");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "status", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status --json");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status json should parse");
+    assert_eq!(value["milestone_id"], "ms-alpha");
+    assert_eq!(value["bead_id"], "ms-alpha.bead-2");
 }
 
 #[test]
@@ -11185,6 +11267,52 @@ fn run_history_json_includes_optional_lineage_fields() {
         serde_json::from_slice(&output.stdout).expect("history json should parse");
     assert_eq!(value["milestone_id"], "ms-alpha");
     assert_eq!(value["bead_id"], "ms-alpha.bead-1");
+}
+
+#[test]
+fn run_history_entries_include_bead_id_for_lineage_linked_history() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_lineage_fixture(
+        temp_dir.path(),
+        "alpha",
+        "ms-alpha",
+        "ms-alpha.bead-1",
+    );
+
+    let text_output = Command::new(binary())
+        .args(["run", "history"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history");
+
+    assert!(text_output.status.success());
+    let stdout = String::from_utf8_lossy(&text_output.stdout);
+    assert!(
+        stdout.contains("stage_completed (bead=ms-alpha.bead-1)")
+            || stdout.contains("StageCompleted (bead=ms-alpha.bead-1)"),
+        "history text should annotate event entries with bead scope, got: {stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "p1 (planning, cycle 1, attempt 1, kind=primary, round=1 (bead=ms-alpha.bead-1))"
+        ),
+        "history text should annotate payload entries with bead scope, got: {stdout}"
+    );
+
+    let json_output = Command::new(binary())
+        .args(["run", "history", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --json");
+
+    assert!(json_output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&json_output.stdout).expect("history json should parse");
+    assert_eq!(value["events"][0]["bead_id"], "ms-alpha.bead-1");
+    assert_eq!(value["payloads"][0]["bead_id"], "ms-alpha.bead-1");
+    assert_eq!(value["artifacts"][0]["bead_id"], "ms-alpha.bead-1");
 }
 
 #[test]
@@ -17517,6 +17645,51 @@ fn task_show_resolves_active_project_when_no_id_given() {
     assert!(
         stdout.contains("Task: 'active-task' (project 'active-task') (active)"),
         "task show should show active marker, got: {stdout}"
+    );
+}
+
+#[test]
+fn task_show_json_includes_lineage_for_milestone_tasks() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    create_bead_backed_project_fixture(temp_dir.path(), "task-json", "ms-alpha", "ms-alpha.bead-2");
+
+    let output = Command::new(binary())
+        .args(["task", "show", "--json", "task-json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task show --json");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("task show json should parse");
+    assert_eq!(value["record"]["id"], "task-json");
+    assert_eq!(value["task_lineage"]["milestone_id"], "ms-alpha");
+    assert_eq!(value["task_lineage"]["bead_id"], "ms-alpha.bead-2");
+    assert_eq!(
+        value["task_lineage"]["bead_title"],
+        "Bootstrap bead-backed task creation"
+    );
+}
+
+#[test]
+fn task_show_json_omits_lineage_for_non_milestone_tasks() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "plain-task");
+
+    let output = Command::new(binary())
+        .args(["task", "show", "--json", "plain-task"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task show --json");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("task show json should parse");
+    assert_eq!(value["record"]["id"], "plain-task");
+    assert!(
+        value.get("task_lineage").is_none(),
+        "non-milestone task json should omit task_lineage"
     );
 }
 
