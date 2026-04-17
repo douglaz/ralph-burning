@@ -80,6 +80,9 @@ pub enum ProjectSubcommand {
     List,
     #[command(about = "Show project details (alias: use `task show`)")]
     Show {
+        /// Emit a stable JSON object for scripts.
+        #[arg(long)]
+        json: bool,
         id: Option<String>,
     },
     Delete {
@@ -202,7 +205,7 @@ pub async fn handle(command: ProjectCommand) -> AppResult<()> {
         ProjectSubcommand::CreateFromBead(args) => handle_create_from_bead(args).await,
         ProjectSubcommand::Bootstrap(args) => handle_bootstrap(args).await,
         ProjectSubcommand::List => handle_list().await,
-        ProjectSubcommand::Show { id } => handle_show(id).await,
+        ProjectSubcommand::Show { json, id } => handle_show(json, id).await,
         ProjectSubcommand::Delete { id } => handle_delete(id).await,
         ProjectSubcommand::Amend(amend) => handle_amend(amend).await,
     }
@@ -733,7 +736,7 @@ async fn handle_list() -> AppResult<()> {
     Ok(())
 }
 
-async fn handle_show(id: Option<String>) -> AppResult<()> {
+async fn handle_show(as_json: bool, id: Option<String>) -> AppResult<()> {
     print_deprecation_notice("show", "task show");
     let current_dir = std::env::current_dir()?;
 
@@ -748,7 +751,11 @@ async fn handle_show(id: Option<String>) -> AppResult<()> {
     };
 
     let detail = load_project_detail(&current_dir, &project_id)?;
-    print_project_detail(&detail);
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&detail)?);
+    } else {
+        print_project_detail(&detail);
+    }
     Ok(())
 }
 

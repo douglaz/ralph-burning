@@ -32,9 +32,9 @@ use crate::adapters::bv_process::{BvAdapter, BvCommand, BvProcessRunner, NextBea
 use crate::adapters::fs::{
     FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
     FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
-    FsMilestoneSnapshotStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRollbackPointStore,
-    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore,
-    FsTaskRunLineageStore,
+    FsMilestoneSnapshotStore, FsMilestoneStore, FsPayloadArtifactWriteStore, FsProjectStore,
+    FsRollbackPointStore, FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore,
+    FsRuntimeLogWriteStore, FsTaskRunLineageStore,
 };
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::composition::agent_execution_builder;
@@ -232,6 +232,14 @@ impl MilestoneControllerExecutionOrigin {
 struct ProjectMilestoneControllerRuntime<'a> {
     base_dir: &'a std::path::Path,
     milestone_id: &'a MilestoneId,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RunLineageSummary {
+    milestone_id: Option<String>,
+    bead_id: Option<String>,
+    milestone_label: Option<String>,
+    bead_label: Option<String>,
 }
 
 impl ProjectMilestoneControllerRuntime<'_> {
@@ -2436,6 +2444,53 @@ fn stale_status_json_view(project_id: &ProjectId, snapshot: &RunSnapshot) -> Run
     status.status = "stale".to_owned();
     status.summary = stale_status_summary();
     status
+}
+
+fn load_run_lineage_summary(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+) -> AppResult<RunLineageSummary> {
+    let record = FsProjectStore.read_project_record(base_dir, project_id)?;
+    let Some(task_source) = record.task_source.as_ref() else {
+        return Ok(RunLineageSummary::default());
+    };
+
+    let mut summary = RunLineageSummary {
+        milestone_id: Some(task_source.milestone_id.clone()),
+        bead_id: Some(task_source.bead_id.clone()),
+        milestone_label: Some(task_source.milestone_id.clone()),
+        bead_label: Some(task_source.bead_id.clone()),
+    };
+
+    let milestone_id = match MilestoneId::new(task_source.milestone_id.clone()) {
+        Ok(milestone_id) => milestone_id,
+        Err(_) => return Ok(summary),
+    };
+
+    if let Ok(lineage) = milestone_service::read_bead_lineage(
+        &FsMilestoneStore,
+        &FsMilestonePlanStore,
+        base_dir,
+        &milestone_id,
+        &task_source.bead_id,
+        task_source.plan_hash.as_deref(),
+    ) {
+        summary.milestone_label = Some(
+            if lineage.milestone_name == "<milestone metadata unavailable>" {
+                lineage.milestone_id.clone()
+            } else {
+                lineage.milestone_name
+            },
+        );
+        summary.bead_label = Some(lineage.bead_title.unwrap_or(lineage.bead_id));
+    }
+
+    Ok(summary)
+}
+
+fn apply_run_status_lineage(status: &mut RunStatusJsonView, lineage: &RunLineageSummary) {
+    status.milestone_id = lineage.milestone_id.clone();
+    status.bead_id = lineage.bead_id.clone();
 }
 
 #[derive(Clone, Copy)]
@@ -10714,6 +10769,7 @@ async fn handle_attach() -> AppResult<()> {
 
 async fn handle_status(as_json: bool) -> AppResult<()> {
     let (current_dir, project_id) = load_active_project_context()?;
+    let lineage = load_run_lineage_summary(&current_dir, &project_id)?;
     let mut snapshot = FsRunSnapshotStore.read_run_snapshot(&current_dir, &project_id)?;
     if let Ok(events) = FsJournalStore.read_journal(&current_dir, &project_id) {
         crate::contexts::project_run_record::queries::reconcile_snapshot_status(
@@ -10750,13 +10806,14 @@ async fn handle_status(as_json: bool) -> AppResult<()> {
     };
 
     if as_json {
-        let status = if snapshot.status == RunStatus::Running
+        let mut status = if snapshot.status == RunStatus::Running
             && matches!(running_liveness, Some(RunningSnapshotLiveness::Stale))
         {
             stale_status_json_view(&project_id, &snapshot)
         } else {
             RunStatusJsonView::from_snapshot(project_id.as_str(), &snapshot)
         };
+        apply_run_status_lineage(&mut status, &lineage);
         println!("{}", format_json_status(&status)?);
         return Ok(());
     }
@@ -10769,6 +10826,12 @@ async fn handle_status(as_json: bool) -> AppResult<()> {
         RunStatusView::from_snapshot(project_id.as_str(), &snapshot)
     };
     println!("Project: {}", status.project_id);
+    if let (Some(milestone), Some(bead)) = (
+        lineage.milestone_label.as_deref(),
+        lineage.bead_label.as_deref(),
+    ) {
+        println!("Milestone: {milestone} | Bead: {bead}");
+    }
     println!("Status: {}", status.status);
     if let Some(ref stage) = status.stage {
         println!("Stage: {}", stage);
@@ -11675,6 +11738,15 @@ fn format_json_history(
     verbose: bool,
 ) -> AppResult<String> {
     #[derive(Serialize)]
+    struct HistoryEventJsonView {
+        sequence: u64,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        event_type: crate::contexts::project_run_record::model::JournalEventType,
+        details: Value,
+        bead_id: Option<String>,
+    }
+
+    #[derive(Serialize)]
     struct HistoryPayloadJsonView {
         payload_id: String,
         stage_id: String,
@@ -11684,6 +11756,7 @@ fn format_json_history(
         record_kind: String,
         producer: Option<String>,
         completion_round: u32,
+        bead_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         payload: Option<Value>,
     }
@@ -11697,6 +11770,7 @@ fn format_json_history(
         record_kind: String,
         producer: Option<String>,
         completion_round: u32,
+        bead_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<String>,
     }
@@ -11706,11 +11780,22 @@ fn format_json_history(
         project_id: String,
         milestone_id: Option<String>,
         bead_id: Option<String>,
-        events: Vec<crate::contexts::project_run_record::model::JournalEvent>,
+        events: Vec<HistoryEventJsonView>,
         payloads: Vec<HistoryPayloadJsonView>,
         artifacts: Vec<HistoryArtifactJsonView>,
     }
 
+    let events = history
+        .events
+        .iter()
+        .map(|event| HistoryEventJsonView {
+            sequence: event.sequence,
+            timestamp: event.timestamp,
+            event_type: event.event_type.clone(),
+            details: event.details.clone(),
+            bead_id: history.bead_id.clone(),
+        })
+        .collect();
     let payloads = history
         .payloads
         .iter()
@@ -11723,6 +11808,7 @@ fn format_json_history(
             record_kind: payload.record_kind.to_string(),
             producer: payload.producer.as_ref().map(ToString::to_string),
             completion_round: payload.completion_round,
+            bead_id: history.bead_id.clone(),
             payload: verbose.then(|| payload.payload.clone()),
         })
         .collect();
@@ -11737,6 +11823,7 @@ fn format_json_history(
             record_kind: artifact.record_kind.to_string(),
             producer: artifact.producer.as_ref().map(ToString::to_string),
             completion_round: artifact.completion_round,
+            bead_id: history.bead_id.clone(),
             content: verbose.then(|| artifact.content.clone()),
         })
         .collect();
@@ -11744,7 +11831,7 @@ fn format_json_history(
         project_id: history.project_id.clone(),
         milestone_id: history.milestone_id.clone(),
         bead_id: history.bead_id.clone(),
-        events: history.events.clone(),
+        events,
         payloads,
         artifacts,
     };
@@ -11769,12 +11856,20 @@ fn print_history_text(
         &history.artifacts,
         verbose,
         false,
+        history.bead_id.as_deref(),
     );
 }
 
 fn print_tail_text(tail: &crate::contexts::project_run_record::queries::RunTailView) {
     println!("Project: {}", tail.project_id);
-    print_durable_records(&tail.events, &tail.payloads, &tail.artifacts, false, true);
+    print_durable_records(
+        &tail.events,
+        &tail.payloads,
+        &tail.artifacts,
+        false,
+        true,
+        None,
+    );
     print_runtime_logs(tail.runtime_logs.as_deref());
 }
 
@@ -11785,7 +11880,7 @@ fn print_follow_update(
     runtime_logs: &[crate::contexts::project_run_record::model::RuntimeLogEntry],
 ) {
     if !events.is_empty() || !payloads.is_empty() || !artifacts.is_empty() {
-        print_durable_records(events, payloads, artifacts, false, true);
+        print_durable_records(events, payloads, artifacts, false, true, None);
     }
     if !runtime_logs.is_empty() {
         println!("--- Runtime Logs ---");
@@ -11804,7 +11899,11 @@ fn print_durable_records(
     artifacts: &[crate::contexts::project_run_record::model::ArtifactRecord],
     verbose: bool,
     durable_heading: bool,
+    bead_id: Option<&str>,
 ) {
+    let bead_suffix = bead_id
+        .map(|bead_id| format!(" (bead={bead_id})"))
+        .unwrap_or_default();
     println!(
         "{}",
         if durable_heading {
@@ -11815,8 +11914,8 @@ fn print_durable_records(
     );
     for event in events {
         println!(
-            "  [{}] {} - {:?}",
-            event.sequence, event.timestamp, event.event_type
+            "  [{}] {} - {:?}{}",
+            event.sequence, event.timestamp, event.event_type, bead_suffix
         );
         if verbose {
             print_json_block("    details:", &event.details);
@@ -11834,7 +11933,7 @@ fn print_durable_records(
                 .map(|p| format!(" producer={p}"))
                 .unwrap_or_default();
             println!(
-                "  {} ({}, cycle {}, attempt {}, kind={}, round={}{})",
+                "  {} ({}, cycle {}, attempt {}, kind={}, round={}{}{})",
                 payload.payload_id,
                 payload.stage_id,
                 payload.cycle,
@@ -11842,6 +11941,7 @@ fn print_durable_records(
                 payload.record_kind,
                 payload.completion_round,
                 producer_str,
+                bead_suffix,
             );
             if verbose {
                 print_json_block(
@@ -11870,12 +11970,13 @@ fn print_durable_records(
                 .map(|p| format!(" producer={p}"))
                 .unwrap_or_default();
             println!(
-                "  {} (payload: {}, stage: {}, kind={}{})",
+                "  {} (payload: {}, stage: {}, kind={}{}{})",
                 artifact.artifact_id,
                 artifact.payload_id,
                 artifact.stage_id,
                 artifact.record_kind,
                 producer_str,
+                bead_suffix,
             );
             if verbose {
                 print_json_block(

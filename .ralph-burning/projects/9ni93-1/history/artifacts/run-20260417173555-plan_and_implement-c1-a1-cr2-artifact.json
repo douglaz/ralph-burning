@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417173555-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417173555-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T18:17:17.891045784Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nReworked `run status` lineage loading to read `project.toml` directly instead of routing through `project show`, so corrupt or unreadable `journal.ndjson` no longer aborts status reporting. Milestone/bead IDs are still emitted from stored task metadata, milestone/bead labels are hydrated on a best-effort basis from milestone data, and they fall back to stored IDs when metadata lookup is unavailable. Added CLI regressions covering corrupt-journal status for both plain and milestone-linked projects.\n\n## Steps\n\n1. [Completed] Inspect the regression path in `run status` lineage loading and confirm why corrupt journals started failing the command\n2. [Completed] Patch `src/cli/run.rs` so lineage comes from `project.toml` task metadata with best-effort milestone/bead label hydration instead of `project show`\n3. [Completed] Add CLI regression coverage for corrupt-journal status output on plain and milestone-linked projects\n4. [Completed] Run formatting, targeted regression tests, full `cargo test`, `cargo clippy -- -D warnings`, and `nix build` verification\n\n## Validation Evidence\n\n- `cargo fmt --check` passed\n- Targeted CLI regressions passed: `cargo test run_status_tolerates_corrupt_journal_for_plain_project --test cli`, `cargo test run_status_still_shows_lineage_when_journal_is_corrupt --test cli`, and `cargo test run_status_json_includes_lineage_fields_for_milestone_linked_project --test cli`\n- `cargo test` passed\n- `cargo clippy -- -D warnings` passed\n- `nix build` realized a fresh output and updated `result` to `/nix/store/qysyqnkgm5vrgp29rlcp484ivgxcmyn9-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`; `result/bin/ralph-burning` exists and is executable\n\n## Outstanding Risks\n\n- The local `nix build` client did not return cleanly after realizing the output path, so command-level success was inferred from the updated `result` symlink and built `result/bin/ralph-burning` artifact rather than an observed zero exit from the client process.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 2
+}

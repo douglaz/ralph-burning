@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417173555-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417173555-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T17:53:01.969768691Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded additive lineage-aware output across task, project, and run commands. `task show` and `project show` now accept `--json` and emit full `ProjectDetail`, preserving `task_lineage` for milestone-backed work. `run status` now enriches JSON with `milestone_id` and `bead_id` and prints a milestone/bead summary line in text output when lineage exists. `run history` now annotates entry output with bead scope and includes `bead_id` on JSON history entries. Integration and parser tests were added for the new JSON and lineage behavior.\n\n## Steps\n\n1. [Completed] Add `--json` handling to `task show` and `project show` without changing existing text output\n2. [Completed] Extend run status and run history views to surface milestone/bead lineage in additive text and JSON fields\n3. [Completed] Add targeted CLI coverage for milestone-linked and non-milestone cases, then run full formatting, test, lint, and nix validation\n\n## Validation Evidence\n\n- `cargo test` passed\n- `cargo clippy -- -D warnings` passed\n- `cargo fmt --check` passed\n- `nix build` passed\n- Targeted coverage added for `task show --json`, `project show --json`, `run status` lineage text/JSON, and `run history` bead-scoped entries\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 1
+}

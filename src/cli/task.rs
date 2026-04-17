@@ -28,6 +28,9 @@ pub enum TaskSubcommand {
     Create(TaskCreateArgs),
     /// Show task details (wraps `project show`)
     Show {
+        /// Emit a stable JSON object for scripts.
+        #[arg(long)]
+        json: bool,
         /// Task/project ID. Defaults to the active project if omitted.
         id: Option<String>,
     },
@@ -57,7 +60,7 @@ pub struct TaskCreateArgs {
 pub async fn handle(command: TaskCommand) -> AppResult<()> {
     match command.command {
         TaskSubcommand::Create(args) => handle_create(args).await,
-        TaskSubcommand::Show { id } => handle_show(id).await,
+        TaskSubcommand::Show { json, id } => handle_show(json, id).await,
         TaskSubcommand::Select { id } => handle_select(id).await,
         TaskSubcommand::List => handle_list().await,
     }
@@ -78,7 +81,7 @@ async fn handle_create(args: TaskCreateArgs) -> AppResult<()> {
     Ok(())
 }
 
-async fn handle_show(id: Option<String>) -> AppResult<()> {
+async fn handle_show(as_json: bool, id: Option<String>) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
     let config = workspace_governance::load_workspace_config(&current_dir)?;
     workspace_governance::ensure_supported_workspace_version(&config)?;
@@ -89,7 +92,11 @@ async fn handle_show(id: Option<String>) -> AppResult<()> {
     };
 
     let detail = project::load_project_detail(&current_dir, &project_id)?;
-    print_task_detail(&detail);
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&detail)?);
+    } else {
+        print_task_detail(&detail);
+    }
     Ok(())
 }
 
@@ -242,7 +249,10 @@ mod tests {
         };
         assert!(matches!(
             task_cmd.command,
-            TaskSubcommand::Show { id: None }
+            TaskSubcommand::Show {
+                json: false,
+                id: None
+            }
         ));
         Ok(())
     }
@@ -253,9 +263,24 @@ mod tests {
         let Commands::Task(task_cmd) = cli.command else {
             panic!("expected Task command");
         };
-        let TaskSubcommand::Show { id } = task_cmd.command else {
+        let TaskSubcommand::Show { json, id } = task_cmd.command else {
             panic!("expected Show subcommand");
         };
+        assert!(!json);
+        assert_eq!(id.as_deref(), Some("my-task"));
+        Ok(())
+    }
+
+    #[test]
+    fn task_show_parses_json_flag() -> Result<(), Box<dyn std::error::Error>> {
+        let cli = Cli::parse_from(["ralph-burning", "task", "show", "--json", "my-task"]);
+        let Commands::Task(task_cmd) = cli.command else {
+            panic!("expected Task command");
+        };
+        let TaskSubcommand::Show { json, id } = task_cmd.command else {
+            panic!("expected Show subcommand");
+        };
+        assert!(json);
         assert_eq!(id.as_deref(), Some("my-task"));
         Ok(())
     }

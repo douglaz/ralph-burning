@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417173555-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417173555-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T17:58:57.793717426Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `master`, read the changed CLI/query implementation, and ran the new lineage-focused CLI tests. I found one substantive regression: `run status` now depends on `show_project()` for lineage, which makes the command fail whenever the journal cannot be parsed even though the preexisting status path could still report from `run.json`.\n\n## Amendments\n\n1. finding_summary: `run status` now hard-fails on unreadable or corrupt `journal.ndjson`, even for non-milestone projects, because lineage loading was wired through `project::load_project_detail`.\nseverity: high\naffected_files:\n- `src/cli/run.rs`\n- `src/contexts/project_run_record/service.rs`\nevidence:\n- `src/cli/run.rs:2449-2485` makes `load_run_lineage_summary()` call `project::load_project_detail(...)`.\n- `src/cli/run.rs:10766-10770` invokes that helper before the existing snapshot-based status path.\n- `src/contexts/project_run_record/service.rs:1464-1467` shows `show_project()` always reads and parses the journal and propagates failures.\nimpact:\n- Before this patch, `run status` treated journal reads as best-effort (`if let Ok(events) = ...`) and could still report the canonical snapshot from `run.json`.\n- After this patch, any malformed/missing journal, or a transient partial write while a run is active, aborts `run status` before it can print anything. That breaks the additive-output contract and regresses a core monitoring command.\nremediation_hint: Read `project.toml` / `task_source` directly for lineage IDs, then hydrate milestone/bead labels on a best-effort basis. If label lookup fails, fall back to the stored IDs or omit the lineage line instead of routing `run status` through `show_project()`.\n   Rationale: This change turns `run status` from a snapshot-first command into one that depends on successful journal parsing, even though the command already has a degraded-but-useful path when the journal cannot be read. That is a real behavior regression on an existing command, not just a missing edge-case test.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

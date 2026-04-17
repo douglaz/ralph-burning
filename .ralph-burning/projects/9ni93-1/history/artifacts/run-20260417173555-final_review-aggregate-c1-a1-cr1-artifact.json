@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417173555-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417173555-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T18:02:34.163975286Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-24a0ee6b`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-24a0ee6b`\n\nfinding_summary: `run status` now hard-fails on unreadable or corrupt `journal.ndjson`, even for non-milestone projects, because lineage loading was wired through `project::load_project_detail`.\nseverity: high\naffected_files:\n- `src/cli/run.rs`\n- `src/contexts/project_run_record/service.rs`\nevidence:\n- `src/cli/run.rs:2449-2485` makes `load_run_lineage_summary()` call `project::load_project_detail(...)`.\n- `src/cli/run.rs:10766-10770` invokes that helper before the existing snapshot-based status path.\n- `src/contexts/project_run_record/service.rs:1464-1467` shows `show_project()` always reads and parses the journal and propagates failures.\nimpact:\n- Before this patch, `run status` treated journal reads as best-effort (`if let Ok(events) = ...`) and could still report the canonical snapshot from `run.json`.\n- After this patch, any malformed/missing journal, or a transient partial write while a run is active, aborts `run status` before it can print anything. That breaks the additive-output contract and regresses a core monitoring command.\nremediation_hint: Read `project.toml` / `task_source` directly for lineage IDs, then hydrate milestone/bead labels on a best-effort basis. If label lookup fails, fall back to the stored IDs or omit the lineage line instead of routing `run status` through `show_project()`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}
