@@ -1,11 +1,12 @@
 //! Scenario-specific workspace fixtures for integration-style tests.
 
-use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use serde::Serialize;
 use serde_json::json;
 
 use crate::adapters::br_models::{BeadPriority, BeadStatus, BeadType, DependencyKind};
@@ -30,11 +31,15 @@ use crate::test_support::fixtures::{
 
 const MILESTONE_ID: &str = "ms-e2e-scenario";
 const MILESTONE_NAME: &str = "E2E Milestone Scenario Fixture";
-const ROOT_EPIC_ID: &str = "ms-e2e-scenario.root-epic";
+const ROOT_EPIC_ID: &str = "ms-e2e-scenario.milestone-root";
+const WORKSPACE_EPIC_ID: &str = "ms-e2e-scenario.workstream-workspace-assembly";
+const VALIDATION_EPIC_ID: &str = "ms-e2e-scenario.workstream-validation";
+const ASSEMBLE_TASK_ID: &str = "ms-e2e-scenario.task-assemble-workspace";
 const PREPARE_TASK_ID: &str = "ms-e2e-scenario.task-prepare-workspace";
 const VALIDATE_TASK_ID: &str = "ms-e2e-scenario.task-validate-mocks";
 const FOLLOW_UP_TASK_ID: &str = "ms-e2e-scenario.task-follow-up-validation";
-const FOLLOW_UP_TASK_TITLE: &str = "Follow-up validation bead";
+const WORKSPACE_LABEL: &str = "workstream:workspace-assembly-1";
+const VALIDATION_LABEL: &str = "workstream:validation-2";
 
 fn scenario_timestamp() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 4, 17, 9, 0, 0)
@@ -54,7 +59,7 @@ pub struct E2eScenarioFixture {
 }
 
 /// Build a workspace fixture with a planned milestone, `.beads` graph, and
-/// queued mock adapter responses for scenario-style tests.
+/// shared mock adapter state for scenario-style tests.
 pub fn build_e2e_milestone_scenario_fixture() -> E2eScenarioFixture {
     let bundle = scenario_bundle();
     let bead_graph_issues = scenario_bead_graph_issues(&bundle);
@@ -83,13 +88,17 @@ pub fn build_e2e_milestone_scenario_fixture() -> E2eScenarioFixture {
 
     workspace.milestones = vec![load_materialized_fixture(workspace.path(), &bundle)];
 
-    let milestone_id = workspace.milestones[0].milestone_id.clone();
+    let scenario_state = Arc::new(Mutex::new(ScenarioState::new(
+        workspace.path().to_path_buf(),
+        bead_graph_issues.clone(),
+    )));
     let bead_ids = bead_graph_issues
         .iter()
         .map(|issue| issue.id.clone())
         .collect();
-    let mock_br = build_mock_br_adapter(&bead_graph_issues);
-    let mock_bv = build_mock_bv_adapter(&bead_graph_issues);
+    let mock_br = build_mock_br_adapter(Arc::clone(&scenario_state));
+    let mock_bv = build_mock_bv_adapter(scenario_state);
+    let milestone_id = workspace.milestones[0].milestone_id.clone();
 
     E2eScenarioFixture {
         workspace,
@@ -101,69 +110,12 @@ pub fn build_e2e_milestone_scenario_fixture() -> E2eScenarioFixture {
     }
 }
 
-#[derive(Debug, Clone)]
-struct CreatedFollowUpBead {
-    issue: BeadGraphIssue,
+fn milestone_scope_label() -> String {
+    format!("milestone:{MILESTONE_ID}")
 }
 
-#[derive(Debug, Default)]
-struct ScenarioBrState {
-    created_follow_ups: Vec<CreatedFollowUpBead>,
-}
-
-impl ScenarioBrState {
-    fn create_follow_up(&mut self) -> String {
-        let create_index = self.created_follow_ups.len();
-        let bead_id = next_follow_up_task_id(create_index);
-        self.created_follow_ups.push(CreatedFollowUpBead {
-            issue: follow_up_validation_issue(&bead_id, BeadStatus::Open, create_index),
-        });
-        bead_id
-    }
-
-    fn close_follow_up(&mut self, bead_id: &str) -> Result<(), String> {
-        let Some(create_index) = self
-            .created_follow_ups
-            .iter()
-            .position(|created| created.issue.id == bead_id)
-        else {
-            return Err(format!("bead not found: {bead_id}"));
-        };
-        let created = &mut self.created_follow_ups[create_index];
-
-        if created.issue.status != BeadStatus::Closed {
-            let created_at = created.issue.created_at;
-            created.issue = follow_up_validation_issue(bead_id, BeadStatus::Closed, create_index)
-                .with_created_at(created_at);
-        }
-
-        Ok(())
-    }
-
-    fn created_issues(&self) -> Vec<BeadGraphIssue> {
-        self.created_follow_ups
-            .iter()
-            .map(|created| created.issue.clone())
-            .collect()
-    }
-}
-
-trait ScenarioIssueExt {
-    fn with_created_at(self, created_at: DateTime<Utc>) -> Self;
-}
-
-impl ScenarioIssueExt for BeadGraphIssue {
-    fn with_created_at(mut self, created_at: DateTime<Utc>) -> Self {
-        self.created_at = created_at;
-        self.updated_at = if self.status == BeadStatus::Closed {
-            created_at + Duration::minutes(1)
-        } else {
-            created_at
-        };
-        self.closed_at =
-            (self.status == BeadStatus::Closed).then_some(created_at + Duration::minutes(1));
-        self
-    }
+fn proposal_label(bead_id: &str) -> String {
+    format!("proposal:{bead_id}")
 }
 
 fn scenario_bundle() -> MilestoneBundle {
@@ -178,29 +130,28 @@ fn scenario_bundle() -> MilestoneBundle {
                 .to_owned(),
         goals: vec![
             "Materialize a Ready milestone with durable plan artifacts.".to_owned(),
-            "Expose a realistic `.beads` graph for integration-style tests.".to_owned(),
-            "Preload mock br/bv responses that line up with the scenario graph.".to_owned(),
+            "Expose a production-shaped `.beads` graph for integration-style tests.".to_owned(),
+            "Keep mocked br and bv responses aligned with filesystem mutations.".to_owned(),
         ],
         non_goals: vec!["Running real br or bv subprocesses.".to_owned()],
         constraints: vec![
             "Fixture creation must stay local-only and deterministic.".to_owned(),
-            "All milestone and bead identifiers must remain inspectable in test assertions."
-                .to_owned(),
+            "Milestone and bead identifiers must remain stable for assertions.".to_owned(),
         ],
         acceptance_map: vec![
             AcceptanceCriterion {
                 id: "AC-1".to_owned(),
-                description: "Workspace scaffolding is prepared in the temp directory.".to_owned(),
-                covered_by: vec![ROOT_EPIC_ID.to_owned()],
+                description: "Workspace roots and the initial bead graph are assembled.".to_owned(),
+                covered_by: vec![ASSEMBLE_TASK_ID.to_owned()],
             },
             AcceptanceCriterion {
                 id: "AC-2".to_owned(),
-                description: "Milestone plan artifacts are written and readable.".to_owned(),
+                description: "The milestone plan artifacts are persisted in Ready state.".to_owned(),
                 covered_by: vec![PREPARE_TASK_ID.to_owned()],
             },
             AcceptanceCriterion {
                 id: "AC-3".to_owned(),
-                description: "Mock adapters mirror the staged bead graph.".to_owned(),
+                description: "Mocked br and bv responses stay consistent with graph mutations.".to_owned(),
                 covered_by: vec![VALIDATE_TASK_ID.to_owned()],
             },
         ],
@@ -208,21 +159,21 @@ fn scenario_bundle() -> MilestoneBundle {
             Workstream {
                 name: "Workspace Assembly".to_owned(),
                 description: Some(
-                    "Create the temp workspace and persist the scenario milestone plan."
+                    "Create the temp workspace scaffold and persist the milestone plan artifacts."
                         .to_owned(),
                 ),
                 beads: vec![
                     BeadProposal {
-                        bead_id: Some(ROOT_EPIC_ID.to_owned()),
+                        bead_id: Some(ASSEMBLE_TASK_ID.to_owned()),
                         explicit_id: Some(true),
-                        title: "Assemble temp workspace fixture".to_owned(),
+                        title: "Assemble temp workspace scaffold".to_owned(),
                         description: Some(
-                            "Parent epic for the scenario-specific temp workspace and milestone setup."
+                            "Create the temp workspace roots and seed the initial `.beads` graph."
                                 .to_owned(),
                         ),
-                        bead_type: Some("epic".to_owned()),
+                        bead_type: Some("task".to_owned()),
                         priority: Some(1),
-                        labels: vec!["integration".to_owned(), "scenario".to_owned()],
+                        labels: vec!["integration".to_owned(), "workspace".to_owned()],
                         depends_on: Vec::new(),
                         acceptance_criteria: vec!["AC-1".to_owned()],
                         flow_override: None,
@@ -230,15 +181,15 @@ fn scenario_bundle() -> MilestoneBundle {
                     BeadProposal {
                         bead_id: Some(PREPARE_TASK_ID.to_owned()),
                         explicit_id: Some(true),
-                        title: "Prepare scenario workspace".to_owned(),
+                        title: "Prepare milestone planning artifacts".to_owned(),
                         description: Some(
-                            "Seed the temp workspace with milestone artifacts and ready bead state."
+                            "Persist the Ready milestone record with `plan.md` and `plan.json`."
                                 .to_owned(),
                         ),
                         bead_type: Some("task".to_owned()),
                         priority: Some(1),
                         labels: vec!["integration".to_owned(), "workspace".to_owned()],
-                        depends_on: vec![ROOT_EPIC_ID.to_owned()],
+                        depends_on: vec![ASSEMBLE_TASK_ID.to_owned()],
                         acceptance_criteria: vec!["AC-2".to_owned()],
                         flow_override: None,
                     },
@@ -247,20 +198,20 @@ fn scenario_bundle() -> MilestoneBundle {
             Workstream {
                 name: "Validation".to_owned(),
                 description: Some(
-                    "Exercise the mocked adapters against the prepared workspace.".to_owned(),
+                    "Exercise the mocked adapters against the staged workspace state.".to_owned(),
                 ),
                 beads: vec![BeadProposal {
                     bead_id: Some(VALIDATE_TASK_ID.to_owned()),
                     explicit_id: Some(true),
                     title: "Validate mocked adapter responses".to_owned(),
                     description: Some(
-                        "Confirm the staged br/bv responses line up with the workspace bead graph."
+                        "Confirm `br` and `bv` stay in sync with the persisted scenario graph."
                             .to_owned(),
                     ),
                     bead_type: Some("task".to_owned()),
                     priority: Some(2),
                     labels: vec!["integration".to_owned(), "mocks".to_owned()],
-                    depends_on: vec![ROOT_EPIC_ID.to_owned(), PREPARE_TASK_ID.to_owned()],
+                    depends_on: vec![PREPARE_TASK_ID.to_owned()],
                     acceptance_criteria: vec!["AC-3".to_owned()],
                     flow_override: None,
                 }],
@@ -268,7 +219,7 @@ fn scenario_bundle() -> MilestoneBundle {
         ],
         default_flow: FlowPreset::QuickDev,
         agents_guidance: Some(
-            "Use the staged milestone artifacts and mock adapter outputs instead of calling real tooling."
+            "Use the staged milestone artifacts and shared mock adapter state instead of real tooling."
                 .to_owned(),
         ),
     }
@@ -280,59 +231,117 @@ fn scenario_bead_graph_issues(bundle: &MilestoneBundle) -> Vec<BeadGraphIssue> {
         .iter()
         .map(|criterion| (criterion.id.as_str(), criterion.description.as_str()))
         .collect::<HashMap<_, _>>();
-    let proposals = bundle
-        .workstreams
-        .iter()
-        .flat_map(|workstream| workstream.beads.iter())
-        .collect::<Vec<_>>();
-    let proposal_lookup = proposals
-        .iter()
-        .filter_map(|proposal| {
-            proposal
-                .bead_id
-                .as_deref()
-                .map(|bead_id| (bead_id, *proposal))
-        })
-        .collect::<BTreeMap<_, _>>();
+    let milestone_label = milestone_scope_label();
     let created_at = scenario_timestamp();
     let actor = "fixture".to_owned();
-    [ROOT_EPIC_ID, PREPARE_TASK_ID, VALIDATE_TASK_ID]
-        .into_iter()
-        .map(|bead_id| {
-            let proposal = proposal_lookup
-                .get(bead_id)
-                .copied()
-                .expect("scenario bead proposal must exist");
-            let dependencies = proposal
-                .depends_on
-                .iter()
-                .map(|depends_on_id| {
-                    let kind = if depends_on_id == ROOT_EPIC_ID {
-                        DependencyKind::ParentChild
-                    } else {
-                        DependencyKind::Blocks
-                    };
-                    BeadGraphDependency::new(
-                        bead_id,
-                        depends_on_id.as_str(),
-                        kind,
-                        created_at,
-                        actor.clone(),
-                    )
-                })
-                .collect::<Vec<_>>();
 
-            BeadGraphIssue {
+    let mut issues = vec![
+        BeadGraphIssue {
+            id: ROOT_EPIC_ID.to_owned(),
+            title: MILESTONE_NAME.to_owned(),
+            status: BeadStatus::Open,
+            priority: BeadPriority::new(1),
+            bead_type: BeadType::Epic,
+            labels: vec![milestone_label.clone(), "milestone-root".to_owned()],
+            description: Some(bundle.executive_summary.clone()),
+            acceptance_criteria: Vec::new(),
+            created_at,
+            created_by: actor.clone(),
+            updated_at: created_at,
+            source_repo: ".".to_owned(),
+            compaction_level: 0,
+            original_size: 0,
+            dependencies: Vec::new(),
+            closed_at: None,
+            close_reason: None,
+        },
+        BeadGraphIssue {
+            id: WORKSPACE_EPIC_ID.to_owned(),
+            title: bundle.workstreams[0].name.clone(),
+            status: BeadStatus::Open,
+            priority: BeadPriority::new(1),
+            bead_type: BeadType::Epic,
+            labels: vec![milestone_label.clone(), WORKSPACE_LABEL.to_owned()],
+            description: bundle.workstreams[0].description.clone(),
+            acceptance_criteria: Vec::new(),
+            created_at,
+            created_by: actor.clone(),
+            updated_at: created_at,
+            source_repo: ".".to_owned(),
+            compaction_level: 0,
+            original_size: 0,
+            dependencies: vec![BeadGraphDependency::new(
+                WORKSPACE_EPIC_ID,
+                ROOT_EPIC_ID,
+                DependencyKind::ParentChild,
+                created_at,
+                actor.clone(),
+            )],
+            closed_at: None,
+            close_reason: None,
+        },
+        BeadGraphIssue {
+            id: VALIDATION_EPIC_ID.to_owned(),
+            title: bundle.workstreams[1].name.clone(),
+            status: BeadStatus::Open,
+            priority: BeadPriority::new(1),
+            bead_type: BeadType::Epic,
+            labels: vec![milestone_label.clone(), VALIDATION_LABEL.to_owned()],
+            description: bundle.workstreams[1].description.clone(),
+            acceptance_criteria: Vec::new(),
+            created_at,
+            created_by: actor.clone(),
+            updated_at: created_at,
+            source_repo: ".".to_owned(),
+            compaction_level: 0,
+            original_size: 0,
+            dependencies: vec![BeadGraphDependency::new(
+                VALIDATION_EPIC_ID,
+                ROOT_EPIC_ID,
+                DependencyKind::ParentChild,
+                created_at,
+                actor.clone(),
+            )],
+            closed_at: None,
+            close_reason: None,
+        },
+    ];
+
+    for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
+        let workstream_epic_id = match workstream_index {
+            0 => WORKSPACE_EPIC_ID,
+            1 => VALIDATION_EPIC_ID,
+            _ => unreachable!("scenario bundle has two workstreams"),
+        };
+        for proposal in &workstream.beads {
+            let bead_id = proposal
+                .bead_id
+                .as_deref()
+                .expect("scenario bead ids are explicit");
+            let mut dependencies = vec![BeadGraphDependency::new(
+                bead_id,
+                workstream_epic_id,
+                DependencyKind::ParentChild,
+                created_at,
+                actor.clone(),
+            )];
+            dependencies.extend(proposal.depends_on.iter().map(|depends_on_id| {
+                BeadGraphDependency::new(
+                    bead_id,
+                    depends_on_id.as_str(),
+                    DependencyKind::Blocks,
+                    created_at,
+                    actor.clone(),
+                )
+            }));
+
+            issues.push(BeadGraphIssue {
                 id: bead_id.to_owned(),
                 title: proposal.title.clone(),
                 status: BeadStatus::Open,
                 priority: BeadPriority::new(proposal.priority.unwrap_or(2)),
-                bead_type: match proposal.bead_type.as_deref() {
-                    Some("epic") => BeadType::Epic,
-                    Some("task") | None => BeadType::Task,
-                    Some(other) => BeadType::Other(other.to_owned()),
-                },
-                labels: proposal.labels.clone(),
+                bead_type: bead_type_from_name(proposal.bead_type.as_deref()),
+                labels: scenario_task_labels(&milestone_label, bead_id, &proposal.labels),
                 description: proposal.description.clone(),
                 acceptance_criteria: proposal
                     .acceptance_criteria
@@ -352,9 +361,36 @@ fn scenario_bead_graph_issues(bundle: &MilestoneBundle) -> Vec<BeadGraphIssue> {
                 dependencies,
                 closed_at: None,
                 close_reason: None,
-            }
-        })
-        .collect()
+            });
+        }
+    }
+
+    issues
+}
+
+fn bead_type_from_name(value: Option<&str>) -> BeadType {
+    match value.unwrap_or("task") {
+        "task" => BeadType::Task,
+        "bug" => BeadType::Bug,
+        "feature" => BeadType::Feature,
+        "epic" => BeadType::Epic,
+        "chore" => BeadType::Chore,
+        "docs" => BeadType::Docs,
+        "question" => BeadType::Question,
+        "spike" => BeadType::Spike,
+        "meta" => BeadType::Meta,
+        other => BeadType::Other(other.to_owned()),
+    }
+}
+
+fn scenario_task_labels(milestone_label: &str, bead_id: &str, labels: &[String]) -> Vec<String> {
+    let mut merged = vec![milestone_label.to_owned(), proposal_label(bead_id)];
+    for label in labels {
+        if !merged.iter().any(|existing| existing == label) {
+            merged.push(label.clone());
+        }
+    }
+    merged
 }
 
 fn load_materialized_fixture(base_dir: &Path, bundle: &MilestoneBundle) -> MilestoneFixture {
@@ -381,23 +417,12 @@ fn load_materialized_fixture(base_dir: &Path, bundle: &MilestoneBundle) -> Miles
     }
 }
 
-fn build_mock_br_adapter(issues: &[BeadGraphIssue]) -> MockBrAdapter {
-    let scenario = ScenarioBrMock::new(issues);
-    MockBrAdapter::from_dispatch(move |call| scenario.response_for_call(&call.args))
+fn build_mock_br_adapter(state: Arc<Mutex<ScenarioState>>) -> MockBrAdapter {
+    MockBrAdapter::from_dispatch(move |call| scenario_br_response(&state, &call.args))
 }
 
-fn build_mock_bv_adapter(issues: &[BeadGraphIssue]) -> MockBvAdapter {
-    let prepare_issue = issues
-        .iter()
-        .find(|issue| issue.id == PREPARE_TASK_ID)
-        .expect("prepare task issue");
-    let response_json = next_bead_json(prepare_issue);
-    MockBvAdapter::from_dispatch(move |call| match call.args.as_slice() {
-        [command] if command == "--robot-next" => {
-            Some(MockBvResponse::success(response_json.clone()))
-        }
-        _ => None,
-    })
+fn build_mock_bv_adapter(state: Arc<Mutex<ScenarioState>>) -> MockBvAdapter {
+    MockBvAdapter::from_dispatch(move |call| scenario_bv_response(&state, &call.args))
 }
 
 fn next_follow_up_task_id(create_index: usize) -> String {
@@ -408,47 +433,338 @@ fn next_follow_up_task_id(create_index: usize) -> String {
     }
 }
 
-fn follow_up_validation_issue(
-    bead_id: &str,
-    status: BeadStatus,
-    create_index: usize,
-) -> BeadGraphIssue {
-    let created_at =
-        scenario_timestamp() + Duration::minutes(2) + Duration::seconds(create_index as i64);
-    BeadGraphIssue {
-        id: bead_id.to_owned(),
-        title: FOLLOW_UP_TASK_TITLE.to_owned(),
-        status: status.clone(),
-        priority: BeadPriority::new(2),
-        bead_type: BeadType::Task,
-        labels: vec!["integration".to_owned(), "follow-up".to_owned()],
-        description: Some(
-            "Capture a synthetic follow-up task created during scenario execution.".to_owned(),
-        ),
-        acceptance_criteria: vec![
-            "The mocked `br create` flow returns a unique bead id.".to_owned(),
-            "A subsequent `br show` can inspect the created bead.".to_owned(),
-        ],
-        created_at,
-        created_by: "fixture".to_owned(),
-        updated_at: if status == BeadStatus::Closed {
-            created_at + Duration::minutes(1)
-        } else {
-            created_at
-        },
-        source_repo: ".".to_owned(),
-        compaction_level: 0,
-        original_size: 0,
-        dependencies: vec![BeadGraphDependency::new(
-            bead_id,
-            VALIDATE_TASK_ID,
-            DependencyKind::Blocks,
-            created_at,
-            "fixture",
-        )],
-        closed_at: (status == BeadStatus::Closed).then_some(created_at + Duration::minutes(1)),
-        close_reason: (status == BeadStatus::Closed).then_some("Fixture cleanup".to_owned()),
+#[derive(Debug)]
+struct ScenarioState {
+    workspace_root: PathBuf,
+    issues: Vec<BeadGraphIssue>,
+    next_follow_up_index: usize,
+}
+
+impl ScenarioState {
+    fn new(workspace_root: PathBuf, issues: Vec<BeadGraphIssue>) -> Self {
+        Self {
+            workspace_root,
+            issues,
+            next_follow_up_index: 0,
+        }
     }
+
+    fn current_issues(&self) -> Vec<BeadGraphIssue> {
+        self.issues.clone()
+    }
+
+    fn create_issue(&mut self, spec: CreateIssueSpec) -> Result<String, String> {
+        let bead_id = next_follow_up_task_id(self.next_follow_up_index);
+        self.next_follow_up_index += 1;
+        let created_at = scenario_timestamp()
+            + Duration::minutes(10)
+            + Duration::seconds(self.next_follow_up_index as i64);
+        self.issues.push(BeadGraphIssue {
+            id: bead_id.clone(),
+            title: spec.title,
+            status: BeadStatus::Open,
+            priority: spec.priority,
+            bead_type: spec.bead_type,
+            labels: spec.labels,
+            description: spec.description,
+            acceptance_criteria: Vec::new(),
+            created_at,
+            created_by: "fixture".to_owned(),
+            updated_at: created_at,
+            source_repo: ".".to_owned(),
+            compaction_level: 0,
+            original_size: 0,
+            dependencies: Vec::new(),
+            closed_at: None,
+            close_reason: None,
+        });
+        self.persist()?;
+        Ok(bead_id)
+    }
+
+    fn add_dependency(
+        &mut self,
+        issue_id: &str,
+        depends_on_id: &str,
+        kind: DependencyKind,
+    ) -> Result<(), String> {
+        if !self.issues.iter().any(|issue| issue.id == depends_on_id) {
+            return Err(format!("bead not found: {depends_on_id}"));
+        }
+        let index = self
+            .issues
+            .iter()
+            .position(|issue| issue.id == issue_id)
+            .ok_or_else(|| format!("bead not found: {issue_id}"))?;
+        if self.issues[index]
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.depends_on_id == depends_on_id && dependency.kind == kind)
+        {
+            return Ok(());
+        }
+
+        let updated_at = self.issues[index].updated_at;
+        let created_by = self.issues[index].created_by.clone();
+        self.issues[index]
+            .dependencies
+            .push(BeadGraphDependency::new(
+                issue_id,
+                depends_on_id,
+                kind,
+                updated_at,
+                created_by,
+            ));
+        self.persist()
+    }
+
+    fn close_issue(&mut self, issue_id: &str, reason: String) -> Result<(), String> {
+        let index = self
+            .issues
+            .iter()
+            .position(|issue| issue.id == issue_id)
+            .ok_or_else(|| format!("bead not found: {issue_id}"))?;
+        if self.issues[index].status == BeadStatus::Closed {
+            return Ok(());
+        }
+
+        let closed_at = self.issues[index].updated_at + Duration::minutes(1);
+        self.issues[index].status = BeadStatus::Closed;
+        self.issues[index].updated_at = closed_at;
+        self.issues[index].closed_at = Some(closed_at);
+        self.issues[index].close_reason = Some(reason);
+        self.persist()
+    }
+
+    fn next_ready_issue(&self) -> Option<BeadGraphIssue> {
+        let issue_lookup = self
+            .issues
+            .iter()
+            .map(|issue| (issue.id.as_str(), issue))
+            .collect::<HashMap<_, _>>();
+
+        self.issues
+            .iter()
+            .find(|issue| {
+                issue.status == BeadStatus::Open
+                    && !matches!(issue.bead_type, BeadType::Epic)
+                    && issue.dependencies.iter().all(|dependency| {
+                        dependency.kind != DependencyKind::Blocks
+                            || issue_lookup
+                                .get(dependency.depends_on_id.as_str())
+                                .is_none_or(|depends_on| depends_on.status == BeadStatus::Closed)
+                    })
+            })
+            .cloned()
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let issues_path = self.workspace_root.join(".beads").join("issues.jsonl");
+        let content = self
+            .issues
+            .iter()
+            .map(|issue| {
+                serde_json::to_string(&SerializedScenarioIssue::from(issue))
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join("\n");
+        let content = if content.is_empty() {
+            String::new()
+        } else {
+            format!("{content}\n")
+        };
+        FileSystem::write_atomic(&issues_path, &content).map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Debug)]
+struct CreateIssueSpec {
+    title: String,
+    bead_type: BeadType,
+    priority: BeadPriority,
+    labels: Vec<String>,
+    description: Option<String>,
+}
+
+fn scenario_br_response(
+    state: &Arc<Mutex<ScenarioState>>,
+    args: &[String],
+) -> Option<MockBrResponse> {
+    if matches!(args, [command, flag] if command == "list" && flag == "--json") {
+        let issues = state
+            .lock()
+            .expect("scenario state lock poisoned")
+            .current_issues();
+        return Some(MockBrResponse::success(br_list_json(&issues)));
+    }
+
+    if let [command, bead_id, flag] = args {
+        if command == "show" && flag == "--json" {
+            let issues = state
+                .lock()
+                .expect("scenario state lock poisoned")
+                .current_issues();
+            let Some(issue) = issues.iter().find(|issue| issue.id == *bead_id).cloned() else {
+                return Some(MockBrResponse::exit_failure(
+                    1,
+                    format!("bead not found: {bead_id}"),
+                ));
+            };
+            return Some(MockBrResponse::success(br_show_json(&issue, &issues)));
+        }
+    }
+
+    if let Some(spec) = parse_create_issue_spec(args) {
+        let result = state
+            .lock()
+            .expect("scenario state lock poisoned")
+            .create_issue(spec);
+        return Some(match result {
+            Ok(bead_id) => MockBrResponse::success(format!("Created bead {bead_id}")),
+            Err(message) => MockBrResponse::exit_failure(1, message),
+        });
+    }
+
+    if let Some((issue_id, depends_on_id, kind)) = parse_dep_add_args(args) {
+        let result = state
+            .lock()
+            .expect("scenario state lock poisoned")
+            .add_dependency(&issue_id, &depends_on_id, kind);
+        return Some(match result {
+            Ok(()) => MockBrResponse::success("dependency added"),
+            Err(message) => MockBrResponse::exit_failure(1, message),
+        });
+    }
+
+    if let Some((issue_id, reason)) = parse_close_args(args) {
+        let result = state
+            .lock()
+            .expect("scenario state lock poisoned")
+            .close_issue(&issue_id, reason);
+        return Some(match result {
+            Ok(()) => MockBrResponse::success(format!("Closed {issue_id}")),
+            Err(message) => MockBrResponse::exit_failure(1, message),
+        });
+    }
+
+    if matches!(args, [command, flag] if command == "sync" && flag == "--flush-only") {
+        return Some(MockBrResponse::success("synced"));
+    }
+
+    None
+}
+
+fn scenario_bv_response(
+    state: &Arc<Mutex<ScenarioState>>,
+    args: &[String],
+) -> Option<MockBvResponse> {
+    match args {
+        [command] if command == "--robot-next" => {
+            let maybe_issue = state
+                .lock()
+                .expect("scenario state lock poisoned")
+                .next_ready_issue();
+            Some(match maybe_issue {
+                Some(issue) => MockBvResponse::success(next_bead_json(&issue)),
+                None => MockBvResponse::exit_failure(1, "no ready bead"),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn parse_flag_value(arg: &str, name: &str) -> Option<String> {
+    arg.strip_prefix(&format!("--{name}=")).map(str::to_owned)
+}
+
+fn parse_create_issue_spec(args: &[String]) -> Option<CreateIssueSpec> {
+    if args.first().map(String::as_str) != Some("create") {
+        return None;
+    }
+
+    let mut title = None;
+    let mut bead_type = None;
+    let mut priority = None;
+    let mut labels = Vec::new();
+    let mut description = None;
+    for arg in &args[1..] {
+        if title.is_none() {
+            title = parse_flag_value(arg, "title");
+        }
+        if bead_type.is_none() {
+            bead_type = parse_flag_value(arg, "type");
+        }
+        if priority.is_none() {
+            priority = parse_flag_value(arg, "priority");
+        }
+        if labels.is_empty() {
+            labels = parse_flag_value(arg, "labels")
+                .map(|value| {
+                    value
+                        .split(',')
+                        .filter(|label| !label.is_empty())
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+        }
+        if description.is_none() {
+            description = parse_flag_value(arg, "description");
+        }
+    }
+
+    let title = title?;
+    let bead_type = bead_type
+        .as_deref()
+        .map(|value| bead_type_from_name(Some(value)))
+        .unwrap_or(BeadType::Task);
+    let priority = priority
+        .as_deref()
+        .and_then(parse_priority)
+        .unwrap_or_else(|| BeadPriority::new(2));
+
+    Some(CreateIssueSpec {
+        title,
+        bead_type,
+        priority,
+        labels,
+        description,
+    })
+}
+
+fn parse_priority(value: &str) -> Option<BeadPriority> {
+    BeadPriority::from_str(value).ok()
+}
+
+fn parse_dep_add_args(args: &[String]) -> Option<(String, String, DependencyKind)> {
+    match args {
+        [command, action, from_id, to_id] if command == "dep" && action == "add" => {
+            Some((from_id.clone(), to_id.clone(), DependencyKind::Blocks))
+        }
+        [command, action, from_id, to_id, kind]
+            if command == "dep" && action == "add" && kind == "--type=parent-child" =>
+        {
+            Some((from_id.clone(), to_id.clone(), DependencyKind::ParentChild))
+        }
+        [command, action, from_id, to_id, kind]
+            if command == "dep" && action == "add" && kind == "--type=blocks" =>
+        {
+            Some((from_id.clone(), to_id.clone(), DependencyKind::Blocks))
+        }
+        _ => None,
+    }
+}
+
+fn parse_close_args(args: &[String]) -> Option<(String, String)> {
+    if args.first().map(String::as_str) != Some("close") {
+        return None;
+    }
+    let issue_id = args.get(1)?.clone();
+    let reason = args[2..]
+        .iter()
+        .find_map(|arg| parse_flag_value(arg, "reason"))?;
+    Some((issue_id, reason))
 }
 
 fn br_list_json(issues: &[BeadGraphIssue]) -> String {
@@ -459,9 +775,9 @@ fn br_list_json(issues: &[BeadGraphIssue]) -> String {
                 json!({
                     "id": issue.id,
                     "title": issue.title,
-                    "status": issue.status.to_string(),
-                    "priority": issue.priority.value(),
-                    "issue_type": issue.bead_type.to_string(),
+                    "status": issue.status,
+                    "priority": issue.priority,
+                    "issue_type": issue.bead_type,
                     "labels": issue.labels,
                 })
             })
@@ -478,9 +794,9 @@ fn br_show_json(issue: &BeadGraphIssue, issues: &[BeadGraphIssue]) -> String {
     json!({
         "id": issue.id,
         "title": issue.title,
-        "status": issue.status.to_string(),
-        "priority": issue.priority.value(),
-        "issue_type": issue.bead_type.to_string(),
+        "status": issue.status,
+        "priority": issue.priority,
+        "issue_type": issue.bead_type,
         "labels": issue.labels,
         "description": issue.description,
         "acceptance_criteria": issue.acceptance_criteria,
@@ -492,22 +808,22 @@ fn br_show_json(issue: &BeadGraphIssue, issues: &[BeadGraphIssue]) -> String {
                 "id": dependency.depends_on_id,
                 "dependency_type": dependency_kind_json(&dependency.kind),
                 "title": linked_issue.title,
-                "status": linked_issue.status.to_string(),
+                "status": linked_issue.status,
             })
         }).collect::<Vec<_>>(),
         "dependents": issues
             .iter()
-            .filter_map(|candidate| {
+            .flat_map(|candidate| {
                 candidate
                     .dependencies
                     .iter()
-                    .find(|dependency| dependency.depends_on_id == issue.id)
+                    .filter(|dependency| dependency.depends_on_id == issue.id)
                     .map(|dependency| {
                         json!({
                             "id": candidate.id,
                             "dependency_type": dependency_kind_json(&dependency.kind),
                             "title": candidate.title,
-                            "status": candidate.status.to_string(),
+                            "status": candidate.status,
                         })
                     })
             })
@@ -538,87 +854,101 @@ fn dependency_kind_json(kind: &DependencyKind) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone)]
-struct ScenarioBrMock {
-    issues: Vec<BeadGraphIssue>,
-    state: Arc<Mutex<ScenarioBrState>>,
+fn serialize_acceptance_criteria(items: &[String]) -> Option<String> {
+    if items.is_empty() {
+        None
+    } else if items.len() == 1 {
+        Some(items[0].clone())
+    } else {
+        Some(
+            items
+                .iter()
+                .map(|item| format!("- {item}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
 }
 
-impl ScenarioBrMock {
-    fn new(issues: &[BeadGraphIssue]) -> Self {
+#[derive(Debug, Clone, Serialize)]
+struct SerializedScenarioIssue {
+    id: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acceptance_criteria: Option<String>,
+    status: BeadStatus,
+    priority: BeadPriority,
+    #[serde(rename = "issue_type")]
+    bead_type: BeadType,
+    created_at: DateTime<Utc>,
+    created_by: String,
+    updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    closed_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    close_reason: Option<String>,
+    source_repo: String,
+    compaction_level: u32,
+    original_size: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    dependencies: Vec<SerializedScenarioDependency>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SerializedScenarioDependency {
+    issue_id: String,
+    depends_on_id: String,
+    #[serde(rename = "type")]
+    kind: DependencyKind,
+    created_at: DateTime<Utc>,
+    created_by: String,
+    metadata: String,
+    thread_id: String,
+}
+
+impl From<&BeadGraphIssue> for SerializedScenarioIssue {
+    fn from(issue: &BeadGraphIssue) -> Self {
         Self {
-            issues: issues.to_vec(),
-            state: Arc::new(Mutex::new(ScenarioBrState::default())),
+            id: issue.id.clone(),
+            title: issue.title.clone(),
+            description: issue.description.clone(),
+            acceptance_criteria: serialize_acceptance_criteria(&issue.acceptance_criteria),
+            status: issue.status.clone(),
+            priority: issue.priority.clone(),
+            bead_type: issue.bead_type.clone(),
+            created_at: issue.created_at,
+            created_by: issue.created_by.clone(),
+            updated_at: issue.updated_at,
+            closed_at: issue.closed_at,
+            close_reason: issue.close_reason.clone(),
+            source_repo: issue.source_repo.clone(),
+            compaction_level: issue.compaction_level,
+            original_size: issue.original_size,
+            labels: issue.labels.clone(),
+            dependencies: issue
+                .dependencies
+                .iter()
+                .map(SerializedScenarioDependency::from)
+                .collect(),
         }
     }
+}
 
-    fn response_for_call(&self, args: &[String]) -> Option<MockBrResponse> {
-        match args {
-            [command, flag] if command == "list" && flag == "--json" => Some(
-                MockBrResponse::success(br_list_json(&self.current_issues())),
-            ),
-            [command, bead_id, flag] if command == "show" && flag == "--json" => {
-                Some(self.show_response(bead_id))
-            }
-            [command, title, bead_type, priority]
-                if command == "create"
-                    && title == "--title=Follow-up validation bead"
-                    && bead_type == "--type=task"
-                    && priority == "--priority=2" =>
-            {
-                Some(self.create_response())
-            }
-            [command, bead_id, reason]
-                if command == "close" && reason == "--reason=Fixture cleanup" =>
-            {
-                Some(self.close_response(bead_id))
-            }
-            [command, flag] if command == "sync" && flag == "--flush-only" => {
-                Some(MockBrResponse::success("synced"))
-            }
-            _ => None,
+impl From<&BeadGraphDependency> for SerializedScenarioDependency {
+    fn from(dependency: &BeadGraphDependency) -> Self {
+        Self {
+            issue_id: dependency.issue_id.clone(),
+            depends_on_id: dependency.depends_on_id.clone(),
+            kind: dependency.kind.clone(),
+            created_at: dependency.created_at,
+            created_by: dependency.created_by.clone(),
+            metadata: dependency.metadata.clone(),
+            thread_id: dependency.thread_id.clone(),
         }
-    }
-
-    fn show_response(&self, bead_id: &str) -> MockBrResponse {
-        let issues = self.current_issues();
-        let Some(issue) = issues.iter().find(|issue| issue.id == bead_id).cloned() else {
-            return MockBrResponse::exit_failure(1, format!("bead not found: {bead_id}"));
-        };
-
-        MockBrResponse::success(br_show_json(&issue, &issues))
-    }
-
-    fn create_response(&self) -> MockBrResponse {
-        let bead_id = self
-            .state
-            .lock()
-            .expect("scenario follow-up state lock poisoned")
-            .create_follow_up();
-        MockBrResponse::success(format!("Created bead {bead_id}"))
-    }
-
-    fn close_response(&self, bead_id: &str) -> MockBrResponse {
-        match self
-            .state
-            .lock()
-            .expect("scenario follow-up state lock poisoned")
-            .close_follow_up(bead_id)
-        {
-            Ok(()) => MockBrResponse::success(format!("Closed {bead_id}")),
-            Err(message) => MockBrResponse::exit_failure(1, message),
-        }
-    }
-
-    fn current_issues(&self) -> Vec<BeadGraphIssue> {
-        let mut issues = self.issues.clone();
-        issues.extend(
-            self.state
-                .lock()
-                .expect("scenario follow-up state lock poisoned")
-                .created_issues(),
-        );
-        issues
     }
 }
 
@@ -630,7 +960,7 @@ mod tests {
 
     use super::*;
     use crate::adapters::br_models::{BeadDetail, BeadSummary};
-    use crate::adapters::br_process::BrCommand;
+    use crate::adapters::br_process::{BrAdapter, BrMutationAdapter, BrOutput};
     use crate::adapters::bv_process::{BvCommand, NextBeadResponse};
     use crate::contexts::milestone_record::model::{MilestoneEventType, MilestoneStatus};
 
@@ -639,6 +969,23 @@ mod tests {
             .strip_prefix("Created bead ")
             .expect("created bead output prefix")
             .to_owned()
+    }
+
+    fn bead_rows(path: &Path) -> Vec<serde_json::Value> {
+        fs::read_to_string(path)
+            .expect("read bead graph")
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("parse bead json"))
+            .collect()
+    }
+
+    fn mutation_adapter(
+        mock: &MockBrAdapter,
+        working_dir: PathBuf,
+    ) -> BrMutationAdapter<MockBrAdapter> {
+        BrMutationAdapter::with_adapter(
+            BrAdapter::with_runner(mock.clone()).with_working_dir(working_dir),
+        )
     }
 
     #[tokio::test]
@@ -656,8 +1003,11 @@ mod tests {
         assert_eq!(fixture.workspace.milestones.len(), 1);
         assert!(fixture.workspace.audit_root().is_dir());
         assert!(fixture.workspace.live_root().is_dir());
-        assert!(fixture.workspace.audit_root().join("projects").is_dir());
-        assert!(fixture.workspace.live_root().join("projects").is_dir());
+        assert!(fixture
+            .workspace
+            .beads_root()
+            .join("issues.jsonl")
+            .is_file());
 
         let milestone = &fixture.workspace.milestones[0];
         assert_eq!(milestone.snapshot.status, MilestoneStatus::Ready);
@@ -708,12 +1058,12 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             [
                 (
-                    ROOT_EPIC_ID.to_owned(),
-                    "Assemble temp workspace fixture".to_owned()
+                    ASSEMBLE_TASK_ID.to_owned(),
+                    "Assemble temp workspace scaffold".to_owned()
                 ),
                 (
                     PREPARE_TASK_ID.to_owned(),
-                    "Prepare scenario workspace".to_owned()
+                    "Prepare milestone planning artifacts".to_owned()
                 ),
                 (
                     VALIDATE_TASK_ID.to_owned(),
@@ -723,43 +1073,30 @@ mod tests {
             .into_iter()
             .collect::<BTreeSet<_>>()
         );
+        assert!(persisted_bundle
+            .workstreams
+            .iter()
+            .flat_map(|workstream| workstream.beads.iter())
+            .all(|bead| bead.bead_id.as_deref() != Some(ROOT_EPIC_ID)));
 
-        let raw_beads = fs::read_to_string(fixture.workspace.beads_root().join("issues.jsonl"))
-            .expect("read bead graph");
-        let bead_rows = raw_beads
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("parse bead json"))
-            .collect::<Vec<_>>();
-        assert_eq!(bead_rows.len(), 3);
+        let issues_path = fixture.workspace.beads_root().join("issues.jsonl");
+        let initial_rows = bead_rows(&issues_path);
+        assert_eq!(initial_rows.len(), 6);
         assert_eq!(
-            bead_rows
+            initial_rows
                 .iter()
                 .map(|row| row["id"].as_str().expect("string bead id").to_owned())
                 .collect::<BTreeSet<_>>(),
             fixture.bead_ids.iter().cloned().collect::<BTreeSet<_>>()
         );
-
-        let validate_row = bead_rows
-            .iter()
-            .find(|row| row["id"] == VALIDATE_TASK_ID)
-            .expect("validate task row");
-        assert_eq!(validate_row["status"], "open");
-        assert_eq!(
-            validate_row["dependencies"].as_array().map(Vec::len),
-            Some(2)
-        );
-        let prepare_row = bead_rows
+        let prepare_row = initial_rows
             .iter()
             .find(|row| row["id"] == PREPARE_TASK_ID)
             .expect("prepare task row");
         assert_eq!(
-            prepare_row["dependencies"][0]["type"].as_str(),
-            Some("parent_child")
-        );
-        assert_eq!(
-            validate_row["dependencies"]
+            prepare_row["dependencies"]
                 .as_array()
-                .expect("validate dependencies")
+                .expect("prepare dependencies")
                 .iter()
                 .map(|dependency| dependency["type"].as_str().expect("dependency type"))
                 .collect::<BTreeSet<_>>(),
@@ -767,36 +1104,32 @@ mod tests {
                 .into_iter()
                 .collect::<BTreeSet<_>>()
         );
+        let validate_row = initial_rows
+            .iter()
+            .find(|row| row["id"] == VALIDATE_TASK_ID)
+            .expect("validate task row");
+        assert_eq!(
+            validate_row["dependencies"][0]["depends_on_id"].as_str(),
+            Some(VALIDATION_EPIC_ID)
+        );
+        assert_eq!(
+            validate_row["dependencies"][1]["depends_on_id"].as_str(),
+            Some(PREPARE_TASK_ID)
+        );
 
         let working_dir = fixture.workspace.path().to_path_buf();
-        let br = fixture
+        let br_read = fixture
             .mock_br
             .as_br_adapter()
             .with_working_dir(working_dir.clone());
+        let br_mutation = mutation_adapter(&fixture.mock_br, working_dir.clone());
         let bv = fixture
             .mock_bv
             .as_bv_adapter()
             .with_working_dir(working_dir);
 
-        let prepare_detail: BeadDetail = br
-            .exec_json(&BrCommand::show(PREPARE_TASK_ID))
-            .await
-            .expect("br show");
-        assert_eq!(prepare_detail.id, PREPARE_TASK_ID);
-        assert_eq!(prepare_detail.dependencies.len(), 1);
-        assert_eq!(prepare_detail.dependencies[0].id, ROOT_EPIC_ID);
-        assert_eq!(prepare_detail.dependents.len(), 1);
-        assert_eq!(prepare_detail.dependents[0].id, VALIDATE_TASK_ID);
-        assert_eq!(prepare_detail.dependents[0].kind, DependencyKind::Blocks);
-
-        let listed: Vec<BeadSummary> = br.exec_json(&BrCommand::list()).await.expect("br list");
-        assert_eq!(listed.len(), 3);
-        assert_eq!(listed[0].id, ROOT_EPIC_ID);
-        assert_eq!(listed[1].id, PREPARE_TASK_ID);
-        assert_eq!(listed[2].id, VALIDATE_TASK_ID);
-
-        let root_detail: BeadDetail = br
-            .exec_json(&BrCommand::show(ROOT_EPIC_ID))
+        let root_detail: BeadDetail = br_read
+            .exec_json(&crate::adapters::br_process::BrCommand::show(ROOT_EPIC_ID))
             .await
             .expect("br show root");
         assert_eq!(root_detail.id, ROOT_EPIC_ID);
@@ -808,263 +1141,217 @@ mod tests {
                 .map(|dependency| (dependency.id.clone(), dependency.kind.to_string()))
                 .collect::<BTreeSet<_>>(),
             [
-                (PREPARE_TASK_ID.to_owned(), "parent_child".to_owned()),
-                (VALIDATE_TASK_ID.to_owned(), "parent_child".to_owned()),
+                (VALIDATION_EPIC_ID.to_owned(), "parent_child".to_owned()),
+                (WORKSPACE_EPIC_ID.to_owned(), "parent_child".to_owned()),
             ]
             .into_iter()
             .collect::<BTreeSet<_>>()
         );
 
-        let validate_detail: BeadDetail = br
-            .exec_json(&BrCommand::show(VALIDATE_TASK_ID))
+        let prepare_detail: BeadDetail = br_read
+            .exec_json(&crate::adapters::br_process::BrCommand::show(
+                PREPARE_TASK_ID,
+            ))
             .await
-            .expect("br show validate");
-        assert_eq!(validate_detail.id, VALIDATE_TASK_ID);
-        assert_eq!(validate_detail.dependencies.len(), 2);
-        assert_eq!(validate_detail.dependencies[0].id, ROOT_EPIC_ID);
-        assert_eq!(validate_detail.dependencies[1].id, PREPARE_TASK_ID);
-        assert!(validate_detail.dependents.is_empty());
+            .expect("br show prepare");
+        assert_eq!(prepare_detail.id, PREPARE_TASK_ID);
+        assert_eq!(prepare_detail.dependencies.len(), 2);
+        assert_eq!(prepare_detail.dependencies[0].id, WORKSPACE_EPIC_ID);
+        assert_eq!(
+            prepare_detail.dependencies[0].kind,
+            DependencyKind::ParentChild
+        );
+        assert_eq!(prepare_detail.dependencies[1].id, ASSEMBLE_TASK_ID);
+        assert_eq!(prepare_detail.dependencies[1].kind, DependencyKind::Blocks);
+        assert_eq!(prepare_detail.dependents.len(), 1);
+        assert_eq!(prepare_detail.dependents[0].id, VALIDATE_TASK_ID);
 
-        let repeated_prepare_detail: BeadDetail = br
-            .exec_json(&BrCommand::show(PREPARE_TASK_ID))
+        let listed: Vec<BeadSummary> = br_read
+            .exec_json(&crate::adapters::br_process::BrCommand::list())
             .await
-            .expect("repeated br show");
-        assert_eq!(repeated_prepare_detail, prepare_detail);
+            .expect("br list");
+        assert_eq!(listed.len(), 6);
+        assert_eq!(listed[0].id, ROOT_EPIC_ID);
+        assert_eq!(listed[3].id, ASSEMBLE_TASK_ID);
+        assert_eq!(listed[5].id, VALIDATE_TASK_ID);
 
-        let create_output = br
-            .exec_read(&BrCommand::create("Follow-up validation bead", "task", "2"))
+        let initial_next: NextBeadResponse = bv
+            .exec_json(&BvCommand::robot_next())
             .await
-            .expect("br create");
-        let first_follow_up_id = created_bead_id(&create_output.stdout);
-        assert_eq!(first_follow_up_id, FOLLOW_UP_TASK_ID);
+            .expect("initial bv robot-next");
+        assert_eq!(initial_next.id, ASSEMBLE_TASK_ID);
 
-        let listed_with_follow_up: Vec<BeadSummary> = br
-            .exec_json(&BrCommand::list())
+        let close_assemble: BrOutput = br_mutation
+            .close_bead(
+                ASSEMBLE_TASK_ID,
+                &format!("task {ASSEMBLE_TASK_ID} completed successfully"),
+            )
             .await
-            .expect("br list after create");
-        assert_eq!(listed_with_follow_up.len(), 4);
-        assert_eq!(listed_with_follow_up[3].id, first_follow_up_id);
-        assert_eq!(listed_with_follow_up[3].status, BeadStatus::Open);
+            .expect("close assemble task");
+        assert!(close_assemble.stdout.contains(ASSEMBLE_TASK_ID));
 
-        let created_detail: BeadDetail = br
-            .exec_json(&BrCommand::show(&first_follow_up_id))
+        let rows_after_assemble_close = bead_rows(&issues_path);
+        assert_eq!(
+            rows_after_assemble_close
+                .iter()
+                .find(|row| row["id"] == ASSEMBLE_TASK_ID)
+                .and_then(|row| row["status"].as_str()),
+            Some("closed")
+        );
+
+        let next_after_assemble: NextBeadResponse = bv
+            .exec_json(&BvCommand::robot_next())
             .await
-            .expect("br show created bead");
-        assert_eq!(created_detail.id, first_follow_up_id);
-        assert_eq!(created_detail.title, FOLLOW_UP_TASK_TITLE);
+            .expect("bv robot-next after assemble close");
+        assert_eq!(next_after_assemble.id, PREPARE_TASK_ID);
+
+        let follow_up_labels = vec!["integration".to_owned(), "follow-up".to_owned()];
+        let create_output = br_mutation
+            .create_bead(
+                "Follow-up validation bead",
+                "task",
+                "2",
+                &follow_up_labels,
+                Some("Capture a synthetic follow-up task created during scenario execution."),
+            )
+            .await
+            .expect("create follow-up bead");
+        let created_id = created_bead_id(&create_output.stdout);
+        assert_eq!(created_id, FOLLOW_UP_TASK_ID);
+
+        br_mutation
+            .add_dependency(&created_id, VALIDATE_TASK_ID)
+            .await
+            .expect("link follow-up dependency");
+
+        let created_detail: BeadDetail = br_read
+            .exec_json(&crate::adapters::br_process::BrCommand::show(&created_id))
+            .await
+            .expect("show created bead");
+        assert_eq!(created_detail.id, created_id);
+        assert_eq!(created_detail.title, "Follow-up validation bead");
+        assert_eq!(created_detail.labels, follow_up_labels);
+        assert_eq!(
+            created_detail.description.as_deref(),
+            Some("Capture a synthetic follow-up task created during scenario execution.")
+        );
         assert_eq!(created_detail.dependencies.len(), 1);
         assert_eq!(created_detail.dependencies[0].id, VALIDATE_TASK_ID);
-        assert_eq!(created_detail.status, BeadStatus::Open);
+        assert_eq!(created_detail.dependencies[0].kind, DependencyKind::Blocks);
 
-        let second_create_output = br
-            .exec_read(&BrCommand::create("Follow-up validation bead", "task", "2"))
-            .await
-            .expect("second br create");
-        let second_follow_up_id = created_bead_id(&second_create_output.stdout);
-        assert_eq!(second_follow_up_id, next_follow_up_task_id(1));
-        assert_ne!(second_follow_up_id, first_follow_up_id);
-
-        let listed_with_two_follow_ups: Vec<BeadSummary> = br
-            .exec_json(&BrCommand::list())
-            .await
-            .expect("br list after second create");
-        assert_eq!(listed_with_two_follow_ups.len(), 5);
-        assert_eq!(listed_with_two_follow_ups[3].id, first_follow_up_id);
-        assert_eq!(listed_with_two_follow_ups[4].id, second_follow_up_id);
-        assert_eq!(listed_with_two_follow_ups[4].status, BeadStatus::Open);
-
-        let second_created_detail: BeadDetail = br
-            .exec_json(&BrCommand::show(&second_follow_up_id))
-            .await
-            .expect("br show second created bead");
-        assert_eq!(second_created_detail.id, second_follow_up_id);
-        assert_eq!(second_created_detail.title, FOLLOW_UP_TASK_TITLE);
-        assert_eq!(second_created_detail.dependencies.len(), 1);
-        assert_eq!(second_created_detail.dependencies[0].id, VALIDATE_TASK_ID);
-        assert_eq!(second_created_detail.status, BeadStatus::Open);
-
-        let validate_after_create: BeadDetail = br
-            .exec_json(&BrCommand::show(VALIDATE_TASK_ID))
-            .await
-            .expect("br show validate after create");
-        assert_eq!(validate_after_create.dependents.len(), 2);
+        let rows_after_create = bead_rows(&issues_path);
+        assert_eq!(rows_after_create.len(), 7);
+        let created_row = rows_after_create
+            .iter()
+            .find(|row| row["id"] == created_id)
+            .expect("created row on disk");
         assert_eq!(
-            validate_after_create
-                .dependents
-                .iter()
-                .map(|dependency| {
-                    (
-                        dependency.id.clone(),
-                        dependency.kind.to_string(),
-                        dependency.status.as_ref().map(ToString::to_string),
-                    )
-                })
-                .collect::<BTreeSet<_>>(),
-            [
-                (
-                    first_follow_up_id.clone(),
-                    DependencyKind::Blocks.to_string(),
-                    Some(BeadStatus::Open.to_string()),
-                ),
-                (
-                    second_follow_up_id.clone(),
-                    DependencyKind::Blocks.to_string(),
-                    Some(BeadStatus::Open.to_string()),
-                ),
-            ]
-            .into_iter()
-            .collect::<BTreeSet<_>>()
+            created_row["dependencies"][0]["depends_on_id"].as_str(),
+            Some(VALIDATE_TASK_ID)
         );
 
-        let close_output = br
-            .exec_read(&BrCommand::close(&first_follow_up_id, "Fixture cleanup"))
+        br_mutation
+            .close_bead(
+                PREPARE_TASK_ID,
+                &format!("task {PREPARE_TASK_ID} completed successfully"),
+            )
             .await
-            .expect("br close");
-        assert!(close_output.stdout.contains(&first_follow_up_id));
+            .expect("close prepare task");
 
-        let closed_detail: BeadDetail = br
-            .exec_json(&BrCommand::show(&first_follow_up_id))
+        let next_after_prepare: NextBeadResponse = bv
+            .exec_json(&BvCommand::robot_next())
             .await
-            .expect("br show closed bead");
-        assert_eq!(closed_detail.id, first_follow_up_id);
-        assert_eq!(closed_detail.status, BeadStatus::Closed);
+            .expect("bv robot-next after prepare close");
+        assert_eq!(next_after_prepare.id, VALIDATE_TASK_ID);
 
-        let validate_after_close: BeadDetail = br
-            .exec_json(&BrCommand::show(VALIDATE_TASK_ID))
+        br_mutation
+            .close_bead(
+                VALIDATE_TASK_ID,
+                &format!("task {VALIDATE_TASK_ID} completed successfully"),
+            )
             .await
-            .expect("br show validate after close");
-        assert_eq!(validate_after_close.dependents.len(), 2);
+            .expect("close validate task");
+
+        let next_after_validate: NextBeadResponse = bv
+            .exec_json(&BvCommand::robot_next())
+            .await
+            .expect("bv robot-next after validate close");
+        assert_eq!(next_after_validate.id, created_id);
+
+        br_mutation
+            .close_bead(&created_id, "Fixture cleanup")
+            .await
+            .expect("close follow-up bead");
+        let rows_after_follow_up_close = bead_rows(&issues_path);
+        let closed_follow_up_row = rows_after_follow_up_close
+            .iter()
+            .find(|row| row["id"] == created_id)
+            .expect("closed follow-up row");
+        assert_eq!(closed_follow_up_row["status"].as_str(), Some("closed"));
         assert_eq!(
-            validate_after_close
-                .dependents
-                .iter()
-                .map(|dependency| {
-                    (
-                        dependency.id.clone(),
-                        dependency.status.as_ref().map(ToString::to_string),
-                    )
-                })
-                .collect::<BTreeSet<_>>(),
-            [
-                (
-                    first_follow_up_id.clone(),
-                    Some(BeadStatus::Closed.to_string()),
-                ),
-                (
-                    second_follow_up_id.clone(),
-                    Some(BeadStatus::Open.to_string()),
-                ),
-            ]
-            .into_iter()
-            .collect::<BTreeSet<_>>()
+            closed_follow_up_row["close_reason"].as_str(),
+            Some("Fixture cleanup")
         );
 
-        let listed_after_close: Vec<BeadSummary> = br
-            .exec_json(&BrCommand::list())
+        let listed_after_mutations: Vec<BeadSummary> = br_read
+            .exec_json(&crate::adapters::br_process::BrCommand::list())
             .await
-            .expect("br list after close");
-        assert_eq!(listed_after_close.len(), 5);
-        assert_eq!(listed_after_close[3].id, first_follow_up_id);
-        assert_eq!(listed_after_close[3].status, BeadStatus::Closed);
-        assert_eq!(listed_after_close[4].id, second_follow_up_id);
-        assert_eq!(listed_after_close[4].status, BeadStatus::Open);
+            .expect("br list after mutations");
+        assert_eq!(listed_after_mutations.len(), 7);
+        assert_eq!(
+            listed_after_mutations
+                .iter()
+                .find(|summary| summary.id == created_id)
+                .map(|summary| summary.status.clone()),
+            Some(BeadStatus::Closed)
+        );
 
-        let sync_output = br
-            .exec_read(&BrCommand::sync_flush())
-            .await
-            .expect("br sync");
+        let sync_output = br_mutation.sync_flush().await.expect("br sync");
         assert_eq!(sync_output.stdout, "synced");
 
-        let next_bead: NextBeadResponse = bv
-            .exec_json(&BvCommand::robot_next())
-            .await
-            .expect("bv robot-next");
-        assert_eq!(next_bead.id, PREPARE_TASK_ID);
-        assert_eq!(next_bead.title, "Prepare scenario workspace");
-        let repeated_next_bead: NextBeadResponse = bv
-            .exec_json(&BvCommand::robot_next())
-            .await
-            .expect("repeated bv robot-next");
-        assert_eq!(repeated_next_bead.id, next_bead.id);
-        assert_eq!(repeated_next_bead.title, next_bead.title);
-
-        assert_eq!(
-            fixture
-                .mock_br
-                .calls()
-                .iter()
-                .map(|call| call.args.clone())
-                .collect::<Vec<_>>(),
-            vec![
-                vec![
-                    "show".to_owned(),
-                    PREPARE_TASK_ID.to_owned(),
-                    "--json".to_owned()
-                ],
-                vec!["list".to_owned(), "--json".to_owned()],
-                vec![
-                    "show".to_owned(),
-                    ROOT_EPIC_ID.to_owned(),
-                    "--json".to_owned()
-                ],
-                vec![
-                    "show".to_owned(),
-                    VALIDATE_TASK_ID.to_owned(),
-                    "--json".to_owned()
-                ],
-                vec![
-                    "show".to_owned(),
-                    PREPARE_TASK_ID.to_owned(),
-                    "--json".to_owned()
-                ],
-                vec![
-                    "create".to_owned(),
-                    "--title=Follow-up validation bead".to_owned(),
-                    "--type=task".to_owned(),
-                    "--priority=2".to_owned(),
-                ],
-                vec!["list".to_owned(), "--json".to_owned()],
-                vec![
-                    "show".to_owned(),
-                    first_follow_up_id.clone(),
-                    "--json".to_owned()
-                ],
-                vec![
-                    "create".to_owned(),
-                    "--title=Follow-up validation bead".to_owned(),
-                    "--type=task".to_owned(),
-                    "--priority=2".to_owned(),
-                ],
-                vec!["list".to_owned(), "--json".to_owned()],
-                vec![
-                    "show".to_owned(),
-                    second_follow_up_id.clone(),
-                    "--json".to_owned()
-                ],
-                vec![
-                    "show".to_owned(),
-                    VALIDATE_TASK_ID.to_owned(),
-                    "--json".to_owned()
-                ],
-                vec![
-                    "close".to_owned(),
-                    first_follow_up_id.clone(),
-                    "--reason=Fixture cleanup".to_owned(),
-                ],
-                vec![
-                    "show".to_owned(),
-                    first_follow_up_id.clone(),
-                    "--json".to_owned()
-                ],
-                vec![
-                    "show".to_owned(),
-                    VALIDATE_TASK_ID.to_owned(),
-                    "--json".to_owned()
-                ],
-                vec!["list".to_owned(), "--json".to_owned()],
-                vec!["sync".to_owned(), "--flush-only".to_owned()],
+        let br_calls = fixture
+            .mock_br
+            .calls()
+            .iter()
+            .map(|call| call.args.clone())
+            .collect::<Vec<_>>();
+        assert!(br_calls.iter().any(|call| {
+            call == &vec![
+                "create".to_owned(),
+                "--title=Follow-up validation bead".to_owned(),
+                "--type=task".to_owned(),
+                "--priority=2".to_owned(),
+                "--labels=integration,follow-up".to_owned(),
+                "--description=Capture a synthetic follow-up task created during scenario execution."
+                    .to_owned(),
             ]
-        );
+        }));
+        assert!(br_calls.iter().any(|call| {
+            call == &vec![
+                "dep".to_owned(),
+                "add".to_owned(),
+                created_id.clone(),
+                VALIDATE_TASK_ID.to_owned(),
+            ]
+        }));
+        assert!(br_calls.iter().any(|call| {
+            call == &vec![
+                "close".to_owned(),
+                ASSEMBLE_TASK_ID.to_owned(),
+                format!("--reason=task {ASSEMBLE_TASK_ID} completed successfully"),
+            ]
+        }));
+        assert!(br_calls.iter().any(|call| {
+            call == &vec![
+                "close".to_owned(),
+                created_id.clone(),
+                "--reason=Fixture cleanup".to_owned(),
+            ]
+        }));
+        assert!(br_calls
+            .iter()
+            .any(|call| { call == &vec!["sync".to_owned(), "--flush-only".to_owned()] }));
+
         assert_eq!(
             fixture
                 .mock_bv
@@ -1073,6 +1360,8 @@ mod tests {
                 .map(|call| call.args.clone())
                 .collect::<Vec<_>>(),
             vec![
+                vec!["--robot-next".to_owned()],
+                vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
             ]
