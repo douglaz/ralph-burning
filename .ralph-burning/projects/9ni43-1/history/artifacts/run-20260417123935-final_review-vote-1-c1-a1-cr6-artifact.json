@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260417123935-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T15:14:49.839296169Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendments that identify missing durable identity in the bead export flow: exported task IDs are not resolvable back to plan refs, and duplicate-name workstreams are not safely reusable because workstream epics lack a stable discriminator. Rejected the export-attempt cleanup amendment because the claimed retry blockage is not supported by the current recovery logic: stale attempt records are recoverable on the next invocation when the old PID is no longer live, and same-process same-plan retries are also permitted.\n\n## Votes\n\n- `fr-6-cff9be0a`: Accept\n  `materialize_beads()` only keeps the proposal-id to live-bead-id mapping in memory, while downstream selection still filters `br ready`/`br show` results against refs derived from `plan.json`. The export path never supplies a plan ID to `br create`, so the created bead IDs are workspace-generated IDs rather than the plan proposal refs. Without persisting or reconstructing that mapping, exported beads cannot be recognized reliably by `milestone next`/`milestone run`.\n- `fr-6-cf4eb196`: Accept\n  This is a real idempotency bug. Workstream epics are exported with only milestone-scoped labels, and reuse is keyed by normalized title plus type. For bundles that intentionally allow duplicate workstream names, the first export can create two same-title epics, and the next export will see multiple active eligible matches and fail. A deterministic per-workstream identity is needed for safe reruns.\n- `fr-6-684da846`: Reject\n  The suggested cleanup would be harmless, but the claimed retry failure is not demonstrated. If export fails and the process exits, the next invocation treats the recorded attempt as stale because the old PID is no longer live and reuses or replaces it immediately. If the same process retries the same plan, that is also explicitly allowed. The persistent `.lock` file is expected because flock files remain on disk after the lock is released. This amendment does not establish a concrete correctness or user-blocking defect.\n- `fr-6-8aba633b`: Accept\n  The verified core issue is real: workstream epics do not have a stable discriminator analogous to task `proposal:` labels, so duplicate-name workstreams are ambiguous on rerun and cannot be matched safely by title alone. Adding a stable per-workstream label and matching on it is a sound fix. The amendment is stronger and more prescriptive than necessary, but its underlying defect and direction are technically valid.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}
