@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T21:43:46.485745796Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nAll three amendments identify legitimate fidelity and contract issues in the new e2e fixture. Voting accept on each: the BV mock is non-repeatable (inconsistent with the BR mock's dispatch model), the synthetic br create path aliases duplicate creates to a single id, and the smoke test's 10s ceiling fails to enforce the stated <1s performance target.\n\n## Votes\n\n- `fr-5-e1a464cb`: Accept\n  Confirmed: MockBvAdapter only exposes queue-based responses (from_responses/push_response) — no from_dispatch variant — and pop_front().expect(...) panics with 'mock bv runner exhausted' at bv.rs:168-169 once the queue drains. build_mock_bv_adapter() seeds exactly one response, so a second robot-next call through the same fixture panics even though MockBrAdapter happily answers repeated calls via dispatch. That asymmetry is a real fixture defect: callers naturally reuse the returned adapters, and the contract that a 'pre-configured' mock matches the bead graph implies answering the same query repeatedly. Making the BV mock dispatch-based (or at minimum queueing enough responses) is the right remediation.\n- `fr-5-bfa320c9`: Accept\n  The create branch at e2e_fixtures.rs:490-503 unconditionally sets follow_up_state to Open and returns the hard-coded follow_up_open_issue.id regardless of prior state, so a second create or retry returns the same id — diverging from real `br create` which always allocates a fresh id. That silently masks bugs in any code path that creates multiple follow-up beads or retries after partial failure. Either generating unique ids per create or rejecting duplicate creates is a faithful-to-reality fix; both match the remediation hint. Low-risk, additive test-infrastructure change.\n- `fr-5-14998f88`: Accept\n  prompt.md explicitly lists 'Target: <1 second for fixture creation' under 'Ensure fixture creation is fast' and repeats 'Fixture creation is fast (<1 second)' in the acceptance criteria, but the smoke test at e2e_fixtures.rs:573-576 asserts only `elapsed < Duration::from_secs(10)`. A 2–9s regression would pass silently even though it violates the contracted budget — the advertised performance contract is therefore unverified. Tightening the assertion to the promised ≤1s (or adding a dedicated timing test) is a trivial, safe change that makes the performance gate meaningful.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 5
+}
